@@ -1,0 +1,236 @@
+---
+id: "cloud_run_sessions"
+title: "Session Management on Google Cloud Run with Serverless Redis"
+sidebar_label: "Session Management on Google Cloud Run"
+description: "This tutorial shows how to manage user sessions on Google Cloud Run using Serverless Redis."
+image: img/examples/redis_cloud_run.jpg
+---
+
+
+
+Developers are moving their apps to serverless architectures and one of the most common questions is [how to store user sessions](https://stackoverflow.com/questions/57711095/are-users-sessions-on-google-cloud-run-apps-directed-to-the-same-instance). You need to keep your state and session data in an external data store because serverless environments are stateless by design. Unfortunately most of the databases are not serverless friendly. They do not support per-request pricing or they require heavy and persistent connections. These also explain the motivations why we built Upstash. Upstash is a serverless Redis database with per-request pricing, durable storage.
+
+In this article I will write a basic web application which will run on Google Cloud Run and keep the user sessions in Upstash Redis. Google Cloud Run provides Serverless Container service which is also stateless. Cloud Run is more powerful than serverless functions (AWS Lambda, Cloud Functions) as you can run your own container. But you can not guarantee that the same container instance will process the requests of the same user. So you need to keep the user session in an external storage. Redis is the most popular choice to keep the session data thanks to its speed and simplicity. Upstash gives you the serverless Redis database which fits perfectly to your serverless stack.
+
+If you want to store your session data manually on Redis, check [here](https://docs.upstash.com/tutorials/using_google_cloud_functions). But in this article I will use [Express session](https://github.com/expressjs/session) middleware which can work with Redis for user session management.
+
+Here is the [live demo.](https://cloud-run-sessions-dr7fcdmn3a-uc.a.run.app)
+
+Here is the [source code](https://github.com/upstash/examples/tree/master/cloud-run-sessions)
+
+## The Stack
+
+Serverless processing: Google Cloud Run
+
+Serverless data: Upstash
+
+Web framework: Express
+
+
+## Project Setup
+
+Create a directory for your project:
+
+```
+
+mkdir cloud-run-sessions
+
+cd cloud-run-sessions
+
+```
+
+Create a node project and install dependencies:
+
+```
+
+npm init
+
+npm install express redis connect-redis express-session
+
+```
+
+Create a Redis DB from [Upstash](https://console.upstash.com). In the database details page, click the Connect button, copy the connection code (Node.js node-redis).
+
+If you do not have it already, install Google Cloud SDK as described [here.](https://cloud.google.com/sdk/docs/install) Set the project and enable Google Run and Build services:
+
+```
+
+gcloud config set project cloud-run-sessions
+
+gcloud services enable run.googleapis.com
+
+gcloud services enable cloudbuild.googleapis.com
+
+```
+
+
+## The Code
+
+Create index.js and update as below:
+
+``` javascript
+var express = require('express')
+var parseurl = require('parseurl')
+var session = require('express-session')
+const redis = require('redis')
+
+var RedisStore = require('connect-redis')(session)
+var client = redis.createClient ({
+// REPLACE HERE
+});
+
+var app = express()
+
+app.use(session({
+store: new RedisStore({ client: client }),
+secret: 'forest squirrel',
+resave: false,
+saveUninitialized: true
+}))
+
+app.use(function (req, res, next) {
+if (!req.session.views) {
+req.session.views = {}
+}
+
+// get the url pathname
+var pathname = parseurl(req).pathname
+
+// count the views
+req.session.views[pathname] = (req.session.views[pathname] || 0) + 1
+next()
+})
+
+app.get('/', function (req, res, next) {
+res.send('you viewed this page ' + req.session.views['/'] + ' times')
+})
+
+app.get('/foo', function (req, res, next) {
+res.send('you viewed this page ' + req.session.views['/foo'] + ' times')
+})
+
+app.get('/bar', function (req, res, next) {
+res.send('you viewed this page ' + req.session.views['/bar'] + ' times')
+})
+
+app.listen(8080, function () {
+console.log('Example app listening on port 8080!');
+});
+```
+
+Run the app: `node index.js`
+
+Check [http://localhost:3000/foo](http://localhost:3000/foo) in different browsers to validate it keeps the session.
+
+Add the start script to your `package.json`:
+```json
+"scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index"
+  }
+```
+
+
+## Build
+
+Create a Docker file (Dockerfile) in the project folder as below:
+
+```
+# Use the official lightweight Node.js 12 image.
+# https://hub.docker.com/_/node
+FROM node:12-slim
+
+# Create and change to the app directory.
+WORKDIR /usr/src/app
+
+# Copy application dependency manifests to the container image.
+# A wildcard is used to ensure both package.json AND package-lock.json are copied.
+# Copying this separately prevents re-running npm install on every code change.
+COPY package*.json ./
+
+# Install dependencies.
+RUN npm install
+
+# Copy local code to the container image.
+COPY . ./
+
+# Run the web service on container startup.
+CMD [ "npm", "start" ]
+```
+
+Build your container image:
+
+```
+
+gcloud builds submit --tag gcr.io/cloud-run-sessions/main
+
+```
+
+List your container images: `gcloud container images list`
+
+Run the container locally:
+
+```
+
+gcloud auth configure-docker
+
+docker run -d -p 8080:8080 gcr.io/cloud-run-sessions/main:v0.1
+
+```
+
+In case you have an issue on docker run, check [here](https://cloud.google.com/container-registry/docs/troubleshooting).
+
+
+## Deploy
+
+Run:
+
+```
+
+gcloud run deploy cloud-run-sessions \
+
+  --image gcr.io/cloud-run-sessions/main:v0.1 \
+
+  --platform managed \
+
+  --region us-central1 \
+
+  --allow-unauthenticated
+
+```
+
+This command should give you [the URL of your application](https://cloud-run-sessions-dr7fcdmn3a-uc.a.run.app) as below:
+
+```
+
+Deploying container to Cloud Run service [cloud-run-sessions] in project [cloud-run-sessions] region [us-central1]
+
+  ✓ Deploying... Done.                                                                                                                                 
+
+  ✓ Creating Revision...                                                                                                                             
+
+  ✓ Routing traffic...                                                                                                                               
+
+  ✓ Setting IAM Policy...                                                                                                                            
+
+Done.                                                                                                                                                
+
+Service [cloud-run-sessions] revision [cloud-run-sessions-00006-dun] has been deployed and is serving 100 percent of traffic.
+
+Service URL: https://cloud-run-sessions-dr7fcdmn3a-uc.a.run.app
+
+```
+
+
+## Cloud Run vs Cloud Functions
+
+I have developed two small prototypes with both. Here my impression:
+
+
+
+* Simplicity: Cloud functions are simpler to deploy as it does not require any container building step.
+* Portability: Cloud Run leverages your container, so anytime you can move your application to any containerized system. This is a plus for Cloud Run.
+* Cloud Run looks more powerful as it runs your own container with more configuration options. It also allows running longer tasks (can be extended to 60 minutes)
+* Cloud Run looks more testable as you can run the container locally. Cloud Functions require a simulated environment.
+
+Personally, I see Cloud Functions as a pure serverless solution where Cloud Run is a hybrid solution.  I would choose Cloud functions for simple, self contained tasks or event driven solutions. If my use case is more complex with portability/testability requirements, then I would choose Cloud Run.

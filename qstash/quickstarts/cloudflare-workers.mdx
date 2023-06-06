@@ -1,0 +1,216 @@
+---
+id: "cloudflare-workers"
+title: "Cloudflare Workers"
+slug: "/qstash/quickstarts/cloudflare-workers"
+---
+
+[Source Code](https://github.com/upstash/qstash-examples/tree/main/cloudflare-workers)
+
+This is a step by step guide on how to receive webhooks from QStash in your
+Cloudflare Worker.
+
+This example is written in typescript, because it is the default when creating
+new workers with `wrangler v2`.
+
+### 0. Prerequisites
+
+- [wrangler 2.0](https://github.com/cloudflare/wrangler2)
+- A cloudflare account
+
+### 1. Create a new wrangler app
+
+```bash
+ $ wrangler init cloudflare-workers 
+
+ ⛅️ wrangler 2.0.17 
+--------------------
+Using npm as package manager.
+✨ Created cloudflare-workers/wrangler.toml
+No package.json found. Would you like to create one? (y/n)
+✨ Created cloudflare-workers/package.json
+Would you like to use TypeScript? (y/n)
+✨ Created cloudflare-workers/tsconfig.json
+Would you like to create a Worker at cloudflare-workers/src/index.ts?
+  None
+❯ Fetch handler
+  Scheduled handler
+✨ Created cloudflare-workers/src/index.ts
+
+To start developing your Worker, run `cd cloudflare-workers && npm start`
+To publish your Worker to the Internet, run `npm run deploy`
+```
+
+Go to the new directory
+
+```
+cd cloudflare-workers
+```
+
+### 2. Install QStash
+
+```bash
+npm install @upstash/qstash
+```
+
+### 3. Use QStash in your handler
+
+First we import the library:
+
+```ts
+import { Receiver } from "@upstash/qstash/cloudflare";
+```
+
+Then we adjust the `Env` interface to include the `QSTASH_CURRENT_SIGNING_KEY`
+and `QSTASH_NEXT_SIGNING_KEY` environment variables.
+
+```ts
+export interface Env {
+  QSTASH_CURRENT_SIGNING_KEY: string;
+  QSTASH_NEXT_SIGNING_KEY: string;
+}
+```
+
+And then we validate the signature in the `handler` function.
+
+First we create a new receiver and provide it with the signing keys.
+
+```ts
+const receiver = new Receiver({
+  currentSigningKey: env.QSTASH_CURRENT_SIGNING_KEY,
+  nextSigningKey: env.QSTASH_NEXT_SIGNING_KEY,
+});
+```
+
+Then we verify the signature.
+
+```ts
+const body = await request.text();
+
+const isValid = r.verify({
+  signature: request.headers.get("Upstash-Signature")!,
+  body,
+});
+```
+
+The entire file looks like this now:
+
+```ts
+// src/index.ts
+import { Receiver } from "@upstash/qstash/cloudflare";
+export interface Env {
+  QSTASH_CURRENT_SIGNING_KEY: string;
+  QSTASH_NEXT_SIGNING_KEY: string;
+}
+
+export default {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
+    const c = new Receiver({
+      currentSigningKey: env.QSTASH_CURRENT_SIGNING_KEY,
+      nextSigningKey: env.QSTASH_NEXT_SIGNING_KEY,
+    });
+
+    const body = await request.text();
+
+    const isValid = await c.verify({
+      signature: request.headers.get("Upstash-Signature")!,
+      body,
+    }).catch((err) => {
+      console.error(err);
+      return false;
+    });
+    if (!isValid) {
+      return new Response("Invalid signature", { status: 401 });
+    }
+    console.log("The signature was valid");
+
+    // do work here
+
+    return new Response("Hello World!");
+  },
+};
+```
+
+### 4. Add your signing keys to cloudflare
+
+Get your current and next signing key from
+[Upstash](https://console.upstash.com/qstash) and then set them using
+`wrangler secret put ...`
+
+```bash
+wrangler secret put QSTASH_CURRENT_SIGNING_KEY
+ ⛅️ wrangler 2.0.17 
+--------------------
+Retrieving cached values for account from node_modules/.cache/wrangler
+Enter a secret value: ****************************************************** 
+🌀 Creating the secret for the Worker "cloudflare-workers" 
+✨ Success! Uploaded secret QSTASH_CURRENT_SIGNING_KEY
+➜  cloudflare-workers git:(master) ✗ wrangler secret put QSTASH_NEXT_SIGNING_KEY
+ ⛅️ wrangler 2.0.17 
+--------------------
+Retrieving cached values for account from node_modules/.cache/wrangler
+Enter a secret value: ****************************************************** 
+🌀 Creating the secret for the Worker "cloudflare-workers" 
+✨ Success! Uploaded secret QSTASH_NEXT_SIGNING_KEY
+```
+
+### 5. Deploy your worker
+
+Deploy your worker to cloudflare using `npm run deploy`
+
+```bash
+$ npm run deploy                                 
+
+> cloudflare-workers@0.0.0 deploy
+> wrangler publish
+
+ ⛅️ wrangler 2.0.17 
+--------------------
+Retrieving cached values for account from node_modules/.cache/wrangler
+Total Upload: 6.32 KiB / gzip: 2.01 KiB
+Uploaded cloudflare-workers (2.06 sec)
+Published cloudflare-workers (1.73 sec)
+  cloudflare-workers.upstash.workers.dev
+```
+
+You can view the logs from your deployed worker.
+
+```bash
+wrangler tail
+```
+
+### 6. Publish a message
+
+Open a different terminal and publish a message to QStash. Note the destination
+url is the same that was printed in the previous deploy step.
+
+```bash
+curl --request POST "https://qstash.upstash.io/v1/publish/https://cloudflare-workers.upstash.workers.dev" \
+     -H "Authorization: Bearer <QSTASH_TOKEN>" \
+     -H "Content-Type: application/json" \
+     -d "{ \"hello\": \"world\"}"
+```
+
+In the logs you should see something like this:
+
+```bash
+$ wrangler tail
+
+⛅️ wrangler 2.0.17 
+--------------------
+Retrieving cached values for account from node_modules/.cache/wrangler
+Successfully created tail, expires at 2022-07-11T21:11:36Z
+Connected to cloudflare-workers, waiting for logs...
+POST https://cloudflare-workers.upstash.workers.dev/ - Ok @ 7/11/2022, 5:13:19 PM
+  (log) The signature was valid
+```
+
+## Next Steps
+
+That's it, you have successfully created a secure Cloudflare Worker, that
+receives and verifies incoming webhooks from qstash.
+
+Learn more about publishing a message to qstash [here](/qstash/howto/publishing)

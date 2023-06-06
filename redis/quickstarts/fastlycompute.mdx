@@ -1,0 +1,119 @@
+---
+id: fastlycompute
+sidebar_label: 'Fastly'
+title: 'Upstash Redis in Fastly'
+---
+
+### Database Setup
+Create a Redis database using [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli). Select the global to minimize the latency from all edge locations. Copy the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` for the next steps.
+
+### Project Setup
+We will use Fastly CLI for deployment, so please install [Fastly CLI](https://developer.fastly.com/reference/cli/).
+
+Create a folder for your project and run `fastly init`. Select `[2] JavaScript`, then `[2] Empty starter for JavaScript`
+
+```shell
+> fastly compute init
+
+Creating a new Compute@Edge project.
+
+Press ^C at any time to quit.
+
+Name: [fastly-upstash]
+Description:
+Author: [enes@upstash.com]
+Language:
+[1] Rust
+[2] JavaScript
+[3] AssemblyScript (beta)
+[4] Other ('bring your own' Wasm binary)
+Choose option: [1] 2
+Starter kit:
+[1] Default starter for JavaScript
+    A basic starter kit that demonstrates routing, simple synthetic responses and
+    overriding caching rules.
+    https://github.com/fastly/compute-starter-kit-javascript-default
+[2] Empty starter for JavaScript
+    An empty application template for the Fastly Compute@Edge environment which simply
+    returns a 200 OK response.
+    https://github.com/fastly/compute-starter-kit-javascript-empty
+Choose option or paste git URL: [1] 2
+```
+
+Install @upstash/redis:
+```shell
+npm install @upstash/redis
+```
+
+Now, we will create a Fastly Compute service by running, `fastly compute publish`. You need to add your Upstash database's endpoint as a backend and select 443 as its port.
+```shell
+> fastly compute publish
+✓ Initializing...
+✓ Verifying package manifest...
+✓ Verifying local javascript toolchain...
+✓ Building package using javascript toolchain...
+✓ Creating package archive...
+
+SUCCESS: Built package 'fastly-upstash' (pkg/fastly-upstash.tar.gz)
+
+
+There is no Fastly service associated with this package. To connect to an existing service
+add the Service ID to the fastly.toml file, otherwise follow the prompts to create a
+service now.
+
+Press ^C at any time to quit.
+
+Create new service: [y/N] y
+
+✓ Initializing...
+✓ Creating service...
+
+Domain: [supposedly-included-corgi.edgecompute.app]
+
+Backend (hostname or IP address, or leave blank to stop adding backends): global-concise-scorpion-30984.upstash.io
+Backend port number: [80] 443
+Backend name: [backend_1] upstash
+
+Backend (hostname or IP address, or leave blank to stop adding backends):
+
+✓ Creating domain 'supposedly-smart-corgi.edgecompute.app'...
+✓ Creating backend 'upstash' (host: global-concise-scorpion-30984.upstash.io, port: 443)...
+✓ Uploading package...
+✓ Activating version...
+```
+
+
+### The Code
+Update `src/index.js` as below:
+```js
+import { Redis } from '@upstash/redis/fastly'
+
+addEventListener("fetch", (event) => event.respondWith(handleRequest(event)));
+
+async function handleRequest(event) {
+    const redis = new Redis({
+        url: "UPSTASH_REDIS_REST_URL",
+        token: "UPSTASH_REDIS_REST_TOKEN",
+        backend: "upstash"
+    })
+    const data = await redis.incr("count");
+    return new Response("View Count:" + data , { status: 200 });
+}
+```
+
+### Deploy
+Deploy: `fastly compute deploy`
+
+After deployment, the CLI logs the endpoint. You can check the logs with: `fastly log-tail --service-id=<YOUR_FASTLY_SERVICE_ID>`
+
+
+
+### Run Locally 
+
+To run the function locally add the backend to your `fastly.toml` as below:
+```toml
+[local_server.backends.upstash]
+url = "UPSTASH_REDIS_REST_URL"
+```
+Then run: `fastly compute serve`
+

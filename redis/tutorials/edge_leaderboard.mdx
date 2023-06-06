@@ -1,0 +1,134 @@
+---
+id: "edge_leaderboard"
+title: "Build a Leaderboard API At Edge using Cloudflare Workers and Redis"
+sidebar_label: "Leaderboard API At Edge"
+description: "This tutorial shows how to build a Leaderboard API At Edge using Cloudflare Workers and Redis."
+image: img/examples/cloudflareredis.jpg
+---
+
+
+With edge functions, it is possible to run your backend at the closest location to your users. Cloudflare Workers and Fastly Compute@Edge runs your function at the closest location to your user using their CDN infrastructure.
+
+In this article we will implement a very common web use case at Edge. We will implement a leaderboard API without any backend servers, containers or even serverless functions. We will just use edge functions.  Leaderboard will have the following APIs:
+
+*   addScore: Adds a score with the player's name. This will write the score to the Upstash Redis directly from the Edge functions.
+*   getLeaderBoard: Returns the list of score-player pairs. This call will first check the Edge cache. If the leaderboard does not exist at the Edge Cache then it will fetch it from the Upstash Redis.
+   
+:::info
+Edge caching is deprecated. Please use global database instead.
+:::
+
+## Project Setup
+
+In this tutorial, we will use Cloudflare Workers and Upstash. You can create a free database from [Upstash Console](https://console.upstash.com). Then create a Workers project using [Wrangler](https://developers.cloudflare.com/workers/get-started/guide).
+
+Install wrangler: `npm install -g @cloudflare/wrangler`
+
+Authenticate: `wrangler login` or `wrangler config`
+
+Then create a project: `wrangler generate edge-leaderboard`
+
+Open `wrangler.toml`. Run `wrangler whoami` and copy/paste your account id to your wrangler.toml.
+
+Find your REST token from database details page in the [Upstash Console](https://console.upstash.com). Copy/paste your token to your wrangler toml as below:
+
+```
+name = "edge-leaderboard"
+type = "javascript"
+
+account_id = "REPLACE_YOUR_ACCOUNT_ID"
+workers_dev = true
+route = ""
+zone_id = ""
+
+[vars]
+TOKEN = "REPLACE_YOUR_UPSTASH_REST_TOKEN"
+```
+
+## The Code
+
+The only file we need is the Workers Edge function. Update the index.js as below:
+
+
+``` javascript
+addEventListener("fetch", event => {
+ event.respondWith(handleRequest(event.request))
+})
+
+async function handleRequest(request) {
+ if (request.method === "GET") {
+   return getLeaderboard();
+ } else if (request.method === "POST") {
+   return addScore(request);
+ } else {
+   return new Response("Invalid Request!")
+ }
+}
+
+async function getLeaderboard() {
+ let url = "https://us1-full-bug-31874.upstash.io/zrevrange/scores/0/1000/WITHSCORES/?_token=" + TOKEN;
+ let res = await fetch(new Request(url),
+   {
+     cf:
+       {
+         cacheTtl: 10,
+         cacheEverything: true,
+         cacheKey: url,
+       },
+   }
+ )
+ return res;
+}
+
+async function addScore(request) {
+ const { searchParams } = new URL(request.url)
+ let player = searchParams.get('player')
+ let score = searchParams.get('score')
+ let url = "https://us1-full-bug-31874.upstash.io/zadd/scores/" + score + "/"  + player + "?_token=" + TOKEN;
+ let res = await fetch(url)
+ return new Response(await res.text())
+}
+```
+
+
+We route the request to two methods: if it is a GET, we return the leaderboard. If it is a POST, we read the query parameters and add a new score.
+
+In the getLeaderboard() method, you will see we pass a cache configuration to the fetch() method. It caches the result of the request at the Edge for 10 seconds.
+
+
+## Test The API
+
+In your project folder run ` wrangler dev`. It will give you a local URL. You can test your API with curl:
+
+Add new scores:
+ 
+```shell
+curl -X POST http://127.0.0.1:8787\?player\=messi\&score\=13
+
+curl -X POST http://127.0.0.1:8787\?player\=ronaldo\&score\=17
+
+curl -X POST http://127.0.0.1:8787\?player\=benzema\&score\=18
+```
+
+Get the leaderboard:
+```shell
+curl -w '\n Latency: %{time_total}s\n' http://127.0.0.1:8787
+```
+
+Call the “curl -w '\n Total: %{time_total}s\n' [http://127.0.0.1:8787](http://127.0.0.1:8787)” multiple times. You will see the latency becomes very small with the next calls as the cached result comes from the edge.
+
+If you wait more than 10 seconds then you will see the latency becomes higher as the cache is evicted and the function fetches the leaderboard from the Upstash Redis again.
+
+
+## Deploy The API
+
+First change the type in the wrangler.toml to `webpack`
+
+
+```
+name = "edge-leaderboard"
+type = "webpack"
+```
+
+Then, run `wrangler publish`. Wrangler will output the URL. If you want to deploy to a custom domain see [here](https://developers.cloudflare.com/workers/get-started/guide#optional-configure-for-deploying-to-a-registered-domain).
+

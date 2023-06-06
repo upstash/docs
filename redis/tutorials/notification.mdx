@@ -1,0 +1,123 @@
+---
+id: "notification"
+title: "Building a Serverless Notification API for Your Web Application with Redis"
+sidebar_label: Serverless Notification API
+description: "This tutorial shows how to create a Serverless Notification API for Your Web Application with Redis."
+image: img/examples/notif/cover-notif.jpg
+---
+
+
+Notifications and announcements help you communicate with your web site visitors. It is not feasible to update your code and redeploy your website each time you want to show a new message. It may also be too much investment to set up a backend and maintain it to just serve these notifications. In this article, we will build a website which will load the notification message directly from the Redis database without a backend.
+
+
+### Backendless? How is that possible?
+
+Yes, we will not use any backend service, even a serverless function. We will access Redis from the client side directly. This is possible with the read only REST API provided by Upstash.
+
+
+### Requirements
+
+
+
+* The page will display a notification if the user has not already seen the notification before.
+* The page will only show the latest notification.
+
+Check out [the code here](https://github.com/upstash/examples/tree/master/serverless-notification-api).
+
+
+### Project Setup
+
+I will create a React application but you can use any other web framework. It will simply call the Redis REST API and show the message as a notification.
+
+Create the app:
+```shell
+npx create-react-app serverless-notification-api
+```
+
+Install a toast component to show the notification:
+```shell
+npm install --save react-toastify
+```
+
+
+Create a free database from [Upstash](https://console.upstash.com/) and copy the REST url and read only token. You should switch the Read-Only Token setting. In the database details page, click on the `Read-Only Token` switch.
+
+
+![alt_text](/img/examples/restapi.png "Rest Api")
+
+### Implementation
+
+The logic is simple. We will keep the notifications in a Redis Sorted Set. We will keep a version (integer) in the local storage. We will use the versions as scores in the sorted set. Each notification message will have a version (score) and the higher score means the newer message. At each page load, we will query the Redis sorted set to load the messages which have higher scores than the locally stored version. After loading a notification message I will set my local version equal to the latest notification’s version. This will prevent showing the same notification to the same users more than once. Here the implementation:
+
+
+```javascript
+import logo from './logo.svg';
+import './App.css';
+import {ToastContainer, toast} from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+import {useEffect} from "react";
+
+function App() {
+
+   useEffect(() => {
+       async function fetchData() {
+           try {
+               let version = localStorage.getItem("notification-version");
+               version = version ? version : 0;
+               const response = await fetch("REPLACE_UPSTASH_REDIS_REST_URL/zrevrangebyscore/messages/+inf/" + version + "/WITHSCORES/LIMIT/0/1", {
+   headers: {
+       Authorization: "Bearer REPLACE_UPSTASH_REDIS_REST_TOKEN"
+   }
+});
+               const res = await response.json();
+               const v = parseInt(res.result[1]);
+               if (v) {
+                   localStorage.setItem("notification-version", v + 1)
+               }
+               toast(res.result[0]);
+           } catch (e) {
+               console.error(e);
+           }
+       };
+        fetchData();
+   });
+
+   return (
+       <div className="App">
+           <header className="App-header">
+               <img src={logo} className="App-logo" alt="logo"/>
+               <p>
+                   Edit <code>src/App.js</code> and save to reload.
+               </p>
+               <a
+                   className="App-link"
+                   href="https://reactjs.org"
+                   target="_blank"
+                   rel="noopener noreferrer"
+               >
+                   Learn React
+               </a>
+           </header>
+           <ToastContainer/>
+       </div>
+   );
+}
+
+export default App;
+```
+
+
+
+### How to Add New Notification Messages
+
+You can simply add new messages to the Redis sorted set with a highest score so it will be displayed to the user with page loads. For our application the name of the sorted set is `messages`.
+
+![alt_text](/img/examples/notif/cli.png "cli")
+
+
+You can also remove a message using the [ZREM](https://redis.io/commands/zrem) command.
+
+
+### Conclusion
+
+You do not need a backend to access Upstash Redis thanks to the REST API. You can expose the token with your client side application, as the token only allows read-only access. This helps developers to build applications without backend for many use cases where the data is already available publicly.

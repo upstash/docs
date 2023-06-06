@@ -1,0 +1,215 @@
+---
+id: "go"
+title: "Golang"
+slug: "/qstash/quickstarts/fly-io/go"
+---
+
+[Source Code](https://github.com/upstash/qstash-examples/tree/main/fly.io/go)
+
+This is a step by step guide on how to receive webhooks from QStash in your
+Golang application running on [fly.io](https://fly.io).
+
+## 0. Prerequisites
+
+- [flyctl](https://fly.io/docs/getting-started/installing-flyctl/) - The fly.io
+  CLI
+
+## 1. Create a new project
+
+Let's create a new folder called `flyio-go` and initialize a new project.
+
+```bash
+mkdir flyio-go
+cd flyio-go
+go mod init flyio-go
+```
+
+## 2. Creating the main function
+
+In this example we will show how to receive a webhook from QStash and verify the
+signature using the popular [golang-jwt/jwt](https://github.com/golang-jwt/jwt)
+library.
+
+First, let's import everything we need:
+
+```go
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"github.com/golang-jwt/jwt/v4"
+	"io"
+	"net/http"
+	"os"
+	"time"
+)
+```
+
+Next we create `main.go`. Ignore the `verify` function for now. We will add that
+next. In the handler we will prepare all necessary variables that we need for
+verification. This includes the signature and the signing keys. Then we try to
+verify the request using the current signing key and if that fails we will try
+the next one. If the signature could be verified, we can start processing the
+request.
+
+```go
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		currentSigningKey := os.Getenv("QSTASH_CURRENT_SIGNING_KEY")
+		nextSigningKey := os.Getenv("QSTASH_NEXT_SIGNING_KEY")
+		tokenString := r.Header.Get("Upstash-Signature")
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		err = verify(body, tokenString, currentSigningKey)
+		if err != nil {
+			fmt.Printf("Unable to verify signature with current signing key: %v", err)
+			err = verify(body, tokenString, nextSigningKey)
+		}
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		// handle your business logic here
+
+		w.WriteHeader(http.StatusOK)
+
+	})
+
+	fmt.Println("listening on", port)
+	err := http.ListenAndServe(":"+port, nil)
+	if err != nil {
+		panic(err)
+	}
+}
+```
+
+The `verify` function will handle verification of the [JWT](https://jwt.io),
+that includes claims about the request. See
+[here](/qstash/features/security#claims).
+
+```go
+func verify(body []byte, tokenString, signingKey string) error {
+	token, err := jwt.Parse(
+		tokenString,
+		func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(signingKey), nil
+		})
+
+	if err != nil {
+		return err
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return fmt.Errorf("Invalid token")
+	}
+
+	if !claims.VerifyIssuer("Upstash", true) {
+		return fmt.Errorf("invalid issuer")
+	}
+	if !claims.VerifyExpiresAt(time.Now().Unix(), true) {
+		return fmt.Errorf("token has expired")
+	}
+	if !claims.VerifyNotBefore(time.Now().Unix(), true) {
+		return fmt.Errorf("token is not valid yet")
+	}
+
+	bodyHash := sha256.Sum256(body)
+	if claims["body"] != base64.URLEncoding.EncodeToString(bodyHash[:]) {
+		return fmt.Errorf("body hash does not match")
+	}
+
+	return nil
+}
+```
+
+You can find the complete file
+[here](https://github.com/upstash/qstash-examples/blob/main/fly.io/go/main.go).
+
+That's it, now we can deploy our API and test it.
+
+## 3. Create app on fly.io
+
+[Login](https://fly.io/docs/getting-started/log-in-to-fly/) with `flyctl` and
+then `flyctl launch` the new app. This will create the necessary `fly.toml` for
+us. It will ask you a bunch of questions. I chose all defaults here except for
+the last question. We do not want to deploy just yet.
+
+```bash
+$ flyctl launch
+Creating app in /Users/andreasthomas/github/upstash/qstash-examples/fly.io/go
+Scanning source code
+Detected a Go app
+Using the following build configuration:
+        Builder: paketobuildpacks/builder:base
+        Buildpacks: gcr.io/paketo-buildpacks/go
+? App Name (leave blank to use an auto-generated name): 
+Automatically selected personal organization: Andreas Thomas
+? Select region: fra (Frankfurt, Germany)
+Created app winer-cherry-9545 in organization personal
+Wrote config file fly.toml
+? Would you like to setup a Postgresql database now? No
+? Would you like to deploy now? No
+Your app is ready. Deploy with `flyctl deploy`
+```
+
+## 4. Set Environment Variables
+
+Get your current and next signing key from the
+[Upstash Console](https://console.upstash.com/qstash)
+
+Then set them using `flyctl secrets set ...`
+
+```bash
+flyctl secrets set QSTASH_CURRENT_SIGNING_KEY=...
+flyctl secrets set QSTASH_NEXT_SIGNING_KEY=...
+```
+
+## 5. Deploy the app
+
+Fly.io made this step really simple. Just `flyctl deploy` and enjoy.
+
+```bash
+flyctl deploy
+```
+
+## 6. Publish a message
+
+Now you can publish a message to QStash. Note the destination url is basically
+your app name, if you are not sure what it is, you can go to
+[fly.io/dashboard](https://fly.io/dashboard) and find out. In my case the app is
+named "winter-cherry-9545" and the public url is
+"https://winter-cherry-9545.fly.dev".
+
+```bash
+curl --request POST "https://qstash.upstash.io/v1/publish/https://winter-cherry-9545.fly.dev" \
+     -H "Authorization: Bearer <QSTASH_TOKEN>" \
+     -H "Content-Type: application/json" \
+     -d "{ \"hello\": \"world\"}"
+```
+
+## Next Steps
+
+That's it, you have successfully created a Go API hosted on fly.io, that
+receives and verifies incoming webhooks from qstash.
+
+Learn more about publishing a message to qstash [here](/qstash/howto/publishing)

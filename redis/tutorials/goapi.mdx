@@ -1,0 +1,92 @@
+---
+id: goapi
+title: Serverless Golang API with Redis
+sidebar_label: Serverless Go API
+---
+
+
+This tutorial shows how to build a serverless API with Golang and Redis. The API will simply count the page views and show it in JSON format. 
+### The Stack
+- Serverless compute: AWS Lambda (Golang)
+- Serverless data store: Redis via Upstash
+- Deployment tool: AWS SAM
+
+### Prerequisites:
+- An AWS account for AWS Lambda functions.
+- Install AWS SAM CLI tool as described here to create and deploy the project.
+- An Upstash account for serverless Redis.
+
+### Step 1: Init the Project
+Run the sam init and then
+- Select AWS Quick Start Templates
+- Select 4 - go1.x
+- Enter your project name: go-redis-example
+- Select 1 - Hello World Example SAM will generate your project in a new folder.
+
+### Step 2: Install a Redis Client
+Our only dependency is redis client. Install go-redis via `go get github.com/go-redis/redis/v8`
+### Step 3: Create a Redis Database
+Create a Redis database from Upstash console. Free tier should be enough. It is pretty straight forward but if you need help, check [getting started](../overall/getstarted.md) guide. In the database details page, click the Connect button. You will need the endpoint and password in the next step.
+### Step 4: The function Code
+Edit the hello-world>main.go as below:
+```go
+package main
+import (
+    "context"
+    "encoding/json"
+    "github.com/aws/aws-lambda-go/events"
+    "github.com/aws/aws-lambda-go/lambda"
+    "github.com/go-redis/redis/v8"
+    "strconv"
+)
+var ctx = context.Background()
+
+type MyResponse struct {
+    Count string `json:"count:"`
+}
+
+var rdb = redis.NewClient(&redis.Options{
+    Addr: "YOUR_REDIS_ENDPOINT",
+    Password: "YOUR_REDIS_PASSWORD",
+    DB: 0,
+})
+
+func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+    count, err := rdb.Incr(ctx, "count").Result()
+    if err != nil {
+        panic(err)
+    }
+    response := &MyResponse{
+        Count: strconv.FormatInt(count, 10),
+    }
+    body, err := json.Marshal(response)
+    return events.APIGatewayProxyResponse{
+        Headers: map[string]string{"Content-Type": "application/json"},
+        Body: string(body),
+        StatusCode: 200,
+        }, nil
+}
+
+func main() {
+    lambda.Start(handler)
+}
+```
+Replace the "YOUR_REDIS_ENDPOINT" and "YOUR_REDIS_PASSWORD" with your database's endpoint and password which you created in the Step 3.
+The code simply increments a counter in Redis database and returns its value in json format.
+### Step 5: Deployment
+Now we are ready to deploy our API. First build it via `sam build`. 
+Then run the command `sam local start-api`. 
+You can check your API locally on [http://127.0.0.1:3000/hello](http://127.0.0.1:3000/hello)
+<br/>
+<br/>
+If it is working, you can deploy your app to AWS by running `sam deploy --guided`. Enter a stack name and pick your region. After confirming changes, the deployment should begin.
+The command will output API Gateway endpoint URL, check the API in your browser.
+You can also check your deployment on your AWS console. You will see your function has been created.
+<br/>
+<br/>
+Click on your function, you will see the code is uploaded and API Gateway is configured.
+
+### Notes
+- Check the template.yaml file. You can add new functions and APIGateway endpoints editing this file. 
+- It is a good practice to keep your Redis endpoint and password as environment variable.
+- You can use [serverless framework](https://www.serverless.com/) instead of AWS SAM to deploy your function. 

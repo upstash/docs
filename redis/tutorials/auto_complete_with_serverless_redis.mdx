@@ -1,0 +1,212 @@
+---
+slug: auto_complete_with_serverless_redis
+title: Autocomplete API with Serverless Redis
+sidebar_label: Autocomplete API
+---
+import IORedisNote from '../howto/ioredisnote.md'
+
+This tutorial implements an autocomplete API powered by serverless Redis. See [the demo](https://auto-complete-example.vercel.app/) and [API endpoint](https://wfgz7cju24.execute-api.us-east-1.amazonaws.com/query?term=ca) and [the source code](https://github.com/upstash/serverless-tutorials/tree/master/auto-complete-api).  
+                                                                      
+We will keep country names in a Redis Sorted set. In Redis sorted set, elements with the same score are sorted lexicographically. So in our case, all country names will have the same score, 0. We keep all prefixes of country and use ZRANK to find the terms to suggest. See [this blog post](http://oldblog.antirez.com/post/autocomplete-with-redis.html) for the details of the algorithm. 
+
+
+### Step 1: Project Setup
+:::note
+I will use Serverless framework for this tutorial. You can also use [AWS SAM](using_aws_sam.md)
+:::
+
+If you do not have it already install serverless framework via: `npm install -g serverless`
+
+In any folder run `serverless` as below:
+```text
+>> serverless
+
+Serverless: No project detected. Do you want to create a new one? Yes
+Serverless: What do you want to make? AWS Node.js
+Serverless: What do you want to call this project? test-upstash
+
+Project successfully created in 'test-upstash' folder.
+
+You can monitor, troubleshoot, and test your new service with a free Serverless account.
+
+Serverless: Would you like to enable this? No
+You can run the “serverless” command again if you change your mind later.
+```
+
+Inside the project folder create a node project with the command:
+```
+npm init
+```
+
+Then install the redis client with:
+```
+npm install ioredis
+``` 
+
+### Step 2: API Implementation
+
+
+Edit handler.js file as below.
+See [the blog post](http://oldblog.antirez.com/post/autocomplete-with-redis.html) for the details of the algorithm.
+
+
+```javascript
+var Redis = require("ioredis");
+if (typeof client === 'undefined') {
+    var client = new Redis(process.env.REDIS_URL);
+}
+const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Credentials': true,
+};
+
+module.exports.query = async (event, context, callback) => {
+    if (!event.queryStringParameters || !event.queryStringParameters.term) {
+        return {
+            statusCode: 400,
+            headers: headers,
+            body: JSON.stringify(
+                {
+                    message: 'Invalid parameters. Term needed as query param.',
+                }
+            ),
+        };
+    }
+    let term = event.queryStringParameters.term.toUpperCase();
+    let res = []
+    let rank = await client.zrank("terms", term)
+    if (rank != null) {
+        let temp = await client.zrange("terms", rank, rank + 100)
+        for (const el of temp) {
+            if (!el.startsWith(term)) {
+                break;
+            }
+            if (el.endsWith("*")) {
+                res.push(el.substring(0, el.length - 1));
+            }
+        }
+    }
+    return {
+        statusCode: 200,
+        headers: headers,
+        body: JSON.stringify(
+            {
+                message: 'Query:' + event.queryStringParameters.term,
+                result: res,
+            }
+        ),
+    };
+};
+```
+
+### Step 3: Create database on Upstash
+
+If you do not have one, create a database following this [guide](../overall/getstarted.md). Copy the Redis URL by clicking `Redis Connect` button inside database page. Copy the URL for ioredis as we use ioredis in our application. Create .env file and paste your Redis URL:
+```text
+REDIS_URL=YOUR_REDIS_URL
+```
+
+<IORedisNote />
+
+### Step 4: Initialize Database
+We will initialize the database with country names. Copy and run initdb.js script from [here](https://github.com/upstash/serverless-tutorials/blob/master/auto-complete-api/initdb.js). 
+
+We simply put the country names and all their prefixes to the sorted set.
+
+```javascript
+require('dotenv').config()
+var Redis = require("ioredis");
+
+var countries = [
+    {"name": "Afghanistan", "code": "AF"},
+    {"name": "Åland Islands", "code": "AX"},
+    {"name": "Albania", "code": "AL"},
+    {"name": "Algeria", "code": "DZ"},
+    ...
+]
+var client = new Redis(process.env.REDIS_URL);
+
+for (const country of countries) {
+    let term = country.name.toUpperCase();
+    let terms = [];
+
+    for (let i = 1; i < term.length; i++) {
+        terms.push(0);
+        terms.push(term.substring(0, i));
+    }
+    terms.push(0);
+    terms.push(term + "*");
+    (async () => {
+        await client.zadd("terms", ...terms)
+    })();
+}
+
+
+
+```
+
+### Step 5: Deploy Your Function
+
+Edit `serverless.yml` as below and replace your Redis URL:
+```yaml
+service: auto-complete-api
+# add this if you set REDIS_URL in .env
+useDotenv: true
+frameworkVersion: '2'
+
+provider:
+  name: aws
+  runtime: nodejs14.x
+  lambdaHashingVersion: 20201221
+  environment:
+    REDIS_URL: REPLACE_YOUR_REDIS_URL
+
+functions:
+  query:
+    handler: handler.query
+    events:
+      - httpApi:
+          path: /query
+          method: get
+          cors: true
+```
+
+In the project folder run:
+```
+serverless deploy
+```
+
+Now you can run your function with:
+```shell 
+serverless invoke -f query -d '{ "queryStringParameters": {"term":"ca"}}'
+```
+It should give the following output:
+```json
+ {
+  "statusCode": 200,
+  "headers": {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Credentials": true
+  },
+  "body": "{\"message\":\"Query:ca\",\"result\":[\"CAMBODIA\",\"CAMEROON\",\"CANADA\",\"CAPE VERDE\",\"CAYMAN ISLANDS\"]}"
+}
+```
+
+You can also test your function using AWS console. In your AWS Lambda section, click on your function. Scroll down to the code sections and click on the `Test` button on the top right. Use `{ "queryStringParameters": {"term":"ar"}}` as your event data.
+
+### Step 6: Run Your Function Locally
+In your project folder run:
+```shell
+ serverless invoke local -f query -d '{ "queryStringParameters": {"term":"ca"}}'
+```
+It should give the following output:
+```json
+ {
+  "statusCode": 200,
+  "headers": {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Credentials": true
+  },
+  "body": "{\"message\":\"Query:ca\",\"result\":[\"CAMBODIA\",\"CAMEROON\",\"CANADA\",\"CAPE VERDE\",\"CAYMAN ISLANDS\"]}"
+}
+```

@@ -1,0 +1,132 @@
+---
+id: "rate-limiting"
+title: "AWS Lambda Rate Limiting with Serverless Redis"
+sidebar_label: Serverless Rate Limiting
+description: "This tutorial shows how to limit rate in AWS Lambda with Serverless Redis."
+---
+                  
+UPDATE: We have developed [Upstash Rate Limiting SDK](https://github.com/upstash/ratelimit). We recommend it with Upstash Redis.
+
+In this tutorial, we will throttle AWS Lambda functions using Serverless Redis based on the client's IP address.                                                              
+
+See [code](https://github.com/upstash/examples/tree/master/serverless-rate-limiting).
+
+See [demo](https://5hg3vtj7gk.execute-api.us-west-1.amazonaws.com/hello).
+
+### `1` Serverless Project Setup
+If you do not have it already, install serverless framework via: 
+`npm install -g serverless`
+
+In any folder run `serverless` as below:
+```text
+>> serverless
+
+Serverless: No project detected. Do you want to create a new one? Yes
+Serverless: What do you want to make? AWS Node.js
+Serverless: What do you want to call this project? serverless-rate-limiting
+
+Project successfully created in 'serverless-rate-limiting' folder.
+
+You can monitor, troubleshoot, and test your new service with a free Serverless account.
+
+Serverless: Would you like to enable this? No
+You can run the “serverless” command again if you change your mind later.
+
+```
+
+:::note
+See [Using AWS SAM](using_aws_sam.md), if you prefer AWS SAM over Serverless Framework.
+:::
+
+Inside the project folder create a node project with the command:
+```
+npm init
+```
+
+Then install the redis client and rate limiting libraries with:
+```
+npm install ioredis async-ratelimiter request-ip
+```
+
+Update the `serverless.yml` as below. Copy your Redis URL from console and replace below: 
+```yaml
+service: serverless-rate-limiting
+frameworkVersion: '2'
+provider:
+  name: aws
+  runtime: nodejs12.x
+  lambdaHashingVersion: 20201221
+functions:
+  hello:
+    handler: handler.hello
+    events:
+      - httpApi:
+          path: /hello
+          method: get
+```
+:::note
+For the best performance choose the same region for your Lambda function and Upstash database.
+:::
+
+
+### `2` Create a Redis (Upstash) Database
+
+Create a database from [Upstash console](https://console.upstash.com)
+
+
+### `3` Code
+      
+Edit handler.js and replace your REDIS_URL below.
+
+import IORedisNote from '../howto/ioredisnote.md'
+
+<IORedisNote />
+
+```javascript
+const RateLimiter = require('async-ratelimiter')
+const Redis = require('ioredis')
+const { getClientIp } = require('request-ip')
+
+const rateLimiter = new RateLimiter({
+    db: new Redis("YOUR_REDIS_URL"),
+    max: 1,
+    duration: 5_000
+})
+
+module.exports.hello = async (event) => {
+    const clientIp = getClientIp(event) || 'NA'
+    const limit = await rateLimiter.get({id: clientIp})
+    if (!limit.remaining) {
+        return {
+            statusCode: 429,
+            body: JSON.stringify(
+                {
+                    message: 'Sorry, you are rate limited. Wait for 5 seconds'
+                },
+            ),
+        };
+    }
+
+    return {
+        statusCode: 200,
+        body: JSON.stringify(
+            {
+                message: 'hello!'
+            },
+        ),
+    };
+};
+
+```
+Above, we have configured the rate limiting to accept 1 request from the same IP address in 5 seconds.
+
+
+### `4` Deploy and Try the API
+
+Deploy your functions with:
+
+```bash
+serverless deploy
+```
+
+The command will deploy the function and show the endpoint url. Click to the endpoint url. If you refresh your page, you will see that your request is throttled.

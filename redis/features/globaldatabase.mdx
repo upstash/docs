@@ -1,0 +1,74 @@
+---
+id: globaldatabase
+title: Global Database
+sidebar_label: Global Database
+---
+
+In the global database, the replicas are distributed across multiple regions around the world. The clients are routed to the nearest region. This helps with minimizing latency for use cases where users can be anywhere in the world.
+
+### Primary Region and Read Regions
+The Upstash Global database has a single Primary Region and multiple Read Regions. A write command is first sent and processed at the primary region then replicated to all read regions. A read command is sent to the nearest read region for the fastest response. Global database helps you to minimize the latency of read operations.  
+
+User selects a single primary region and multiple read regions. For the best performance, you should select the primary region in the same location where your writes happen. Select the read regions where your clients that read the Redis located. You may have your database with a single primary region but no read regions which would be practically same with a single region (regional) database. You can add or remove regions on a running Redis database.
+
+Here the list of regions currently supported:
+
+- AWS US-East-1 North Virginia
+- AWS US-West-1 North California
+- AWS US-West-2 Oregon
+- AWS EU-West-1 Ireland
+- AWS EU-Central-1 Frankfurt
+- AWS AP-SouthEast-1 Singapore
+- AWS AP-SouthEast-2 Sydney
+- AWS SA-East-1 São Paulo
+
+<img class="ss" src="/img/globaldb/regionselect.png" width="520" />
+
+                            
+In our internal tests, we see the following latencies (99th percentile):
+- Read latency from the same region <1ms
+- Write latency from the same region <5ms
+- Read/write latency from the same continent <50ms
+
+<img src="/img/globaldb/map2.png" width="1000" />
+
+
+### Architecture
+
+In the multi region architecture, each key is owned by a primary replica which is located at the region that you choose as primary region. Read replicas become the backups of the primary for the related keys. The primary replica processes the writes, then propagates them to the read replicas. Read requests are processed by all replicas, this means you can read a value from any of the replicas. This model gives a better write consistency and read scalability.
+
+Each replica employs a failure detector to track the liveness of the primary replica. When the primary replica fails for a reason, read replicas start a new leader election round and elect a new leader (primary). This is the only unavailability window for the cluster where your requests can be blocked for a short period of time.
+
+:::note
+Global Database is designed to optimize the latency of READ operations. It may not be a good choice if your use case is WRITE heavy.
+:::
+
+
+### Use Cases
+
+- **Edge functions:** Edge computing (Cloudflare workers, Fastly Compute) is becoming a popular way of building globally fast applications. But there are limited data solutions accessible from edge functions. Upstash Global Database is accessible from Edge functions with the REST API. Low latency from all edge locations makes it a perfect solution for Edge functions
+
+- Multi region serverless architectures: You can run your AWS Lambda function in multiple regions to lower global latency. Vercel/Netlify functions can be run in different regions. Upstash Global database provides low latency data wherever your serverless functions are.
+
+- Web/mobile use cases where you need low latency globally. Thanks to the read only REST API, you can access Redis from your web/mobile application directly. In such a case, Global Database will help to lower the latency as you can expect the clients from anywhere. 
+
+
+
+### High Availability and Disaster Recovery
+Although the main motivation behind the Global Database is to provide low latency; it also makes your database resilient to region wide failures. When a region is not available, your requests are routed to another region; so your database remains available.
+
+
+
+### Consistency
+
+Global Database is an eventually consistent database. The write request returns after the primary replica processes the operation. Write operation is replicated to read replicas asynchronously. Read requests can be served by any replica, which gives better horizontal scalability but also means a read request may return a stale value while a write operation for the same key is being propagated to read replicas.
+
+In case of cluster wide failures like network partitioning (split brain); periodically running anti entropy jobs resolve the conflicts using LWW algorithms and converge the replicas to the same state.
+
+### Upgrade from Regional to Global
+Currently, we do not support auto-upgrade from regional to global database. You can export data from your old database and import into the global database. 
+
+### Pricing
+
+Global Database charges $0.4 per 100K commands. The write commands are replicated to all read regions in addition to primary region so the replications are counted as commands. For example, if you have 1 primary 1 read region, 100K writes will cost $0.8 ($0.4 x 2). You can use Global Database in the free tier too. Free usage is limited with max one read region. 
+

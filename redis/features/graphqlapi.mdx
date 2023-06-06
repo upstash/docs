@@ -1,0 +1,341 @@
+---
+id: graphqlapi
+title: GraphQL API (deprecated)
+---
+
+:::info
+GraphQL API has been deprecated.
+Please use the [REST API](restapi) which has a lower latency.
+:::
+
+GraphQL API enables you to connect your Upstash database using GraphQL in addition to Redis protocol. 
+
+## GraphQL API vs Redis Protocol
+
+Upstash supports both Redis protocol and GraphQL. Here are some notes that can help you to decide which one to use:
+
+### GraphQL API Pros
+- GraphQL is request (HTTP) based where Redis protocol is connection based. If you are running serverless functions (AWS Lambda etc), you may need to manage the Redis client's connections. GraphQL API does not have such issues.
+
+- Redis protocol requires Redis clients. On the other hand, GraphQL API is accessible with any HTTP (or GraphQL) client.
+
+- If you want to access to Upstash database directly from your client side or mobile app, this is only possible with GraphQL API. Redis clients work only on serverside, you need to run your code on a serverless function, container or an instance. 
+
+
+### Redis Protocol Pros
+- Redis protocol have lower latency than GraphQL. In our benchmarks, read latency with Redis protocol is sub millisecond (0.5 msec) while the median with GraphQL API is about 4 milliseconds for GraphQL API.
+
+- If you have a legacy code based on Redis clients, Redis protocol will help you to use Upstash without a code change.
+
+- Using Redis protocol, you can benefit from the rich Redis ecosystem. For example, you can directly use your Upstash database as session cache for your express application.
+
+## Security and Authentication
+We create 3 type of access keys to access a database via GraphQL API: 
+- Read-only: This key can do only queries. 
+- Read-write: This key can do queries and mutations.
+- Admin: There are some special commands like `keys` and `flushdb` which access or mutates all entries. Only admin key can run those commands.
+
+You need to add a header to your API requests as `Authorization: Bearer $YOUR_ACCESS_KEY`.              
+
+As a good practice, try to use the key with the least priviledge in your application. Especially, exposing your read-write and admin keys in your client side application can be dangerous. Using Serverless functions for the API calls can be a good solution. You can revoke your exposed key in the Upstash console. 
+
+We are planning to support a new type of key (`custom-key`) where you will select the commands which the key will have access. 
+
+You can disable GraphQL API completely for a database, if you are not using it. 
+
+## Cost and Pricing
+
+Upstash pricing is based on per command/request. In the first version, every GraphQL API call runs a single command on database. So the same pricing  listed in our [pricing](../overall/pricing.md) applies to your GraphQL calls too. If we have more complicated APIs which executes multiple commands on database, then we will document them here.
+
+## Metrics and Monitoring 
+In the current version, we do not expose any metrics specific to API calls in the console. But the metrics of the database backing the API should give a good summary about the performance of your APIs.
+
+               
+# Getting Started
+
+## Create an Account and Database
+If you do not have a database already, follow [these steps](../overall/getstarted.md) to create one.
+
+## Check the Query Browser
+In [Upstash Console](https://console.upstash.com), click the `GraphQL Explorer` from the left sidebar. You will see the browser page. Select your database and select `Redis Strings` example. Click to the play/run button to execute the query. You will see the response as below:
+
+<img src="/img/graphql/browser.png" width="600" />
+
+You can check other examples and write your own queries in the browser.
+
+## Get the API URL and Access Keys
+Now, in the Query Browser, click to the `Configure` button at the top. You will see the page where the GraphQL API URL and access keys are shared as below. You can copy the url end point, access keys. You can download the schema. Also you can revoke the keys and disable the GraphQL API for this database completely. Note that, everthing you see in this page is specific to the selected database.
+
+<img src="/img/graphql/config.png" width="600" />
+
+You can access the same page clicking `GraphQL API` button in your database details page.
+
+
+## Create a Basic Node.js Application
+Create a new NodeJS app with `npm init` and then edit index.js as below:
+
+```javascript
+const fetch = require("node-fetch");
+
+const query = `
+query { redisGet(key : "key") }
+`;
+const url = "YOUR_API_URL_HERE";
+const opts = {
+    method: "POST",
+    headers: {"Content-Type": "application/json",
+        Authorization: "Bearer YOUR_ACCESS_KEY_HERE"},
+    body: JSON.stringify({query})
+};
+fetch(url, opts)
+    .then(res => res.json())
+    .then(console.log)
+    .catch(console.error);
+
+```
+Now, run the app by `node index.js`. You will see the output like:
+```javascript
+{ data: { redisGet: 'value' } }
+```
+
+You can use the above code in client side javascript removing require("node-fetch"). But be careful, your access key will be exposed publicly. Using a serverless function to call the GraphQL API can be a better solution.
+
+The above approach should be enough for simple application. If you have more sophisticated needs then you may want to use GraphQL clients like [Apollo](https://github.com/apollographql/apollo-client) or [Relay](https://github.com/facebook/relay).
+
+Check [here](https://graphql.org/code/) for clients and tools in other languages.
+
+
+# GraphQL Redis API Compatibility
+
+GraphQL Redis API, enables developers to run Redis commands through GraphQL API. See the below table:
+
+
+
+| Feature | GraphQL Support? | Notes |
+| --- | :----: | :----: |
+| [String](https://redis.io/commands#string) | ✅ ||
+| [Hash](https://redis.io/commands#hash) | ✅| |
+| [List](https://redis.io/commands#list) | ✅ | Blocking commands (BLPOP - BRPOP - BRPOPLPUSH) are not supported.|
+| [Set](https://redis.io/commands#set) | ✅ |  |
+| [SortedSet](https://redis.io/commands#sorted_set) | ✅ | Blocking commands (BZPOPMAX - BZPOPMIN) are not supported. |
+| [Transactions](https://redis.io/commands#transactions) | ❌ | Planned. |
+| [Generic](https://redis.io/commands#generic) | ✅ | |
+| [Connection](https://redis.io/commands#connection) | ❌| Only PING is supported. |
+| [Server](https://redis.io/commands#server) | ✅|  |
+| [Scripting](https://redis.io/commands#scripting) | ✅ |  |
+| [Pub/Sub](https://redis.io/commands#pubsub) | ❌| Planned. |
+| [Cluster](https://redis.io/commands#cluster) | ❌ | |
+| [Geo](https://redis.io/commands#geo) | ❌| |
+| [HyperLogLog](https://redis.io/commands#hyperloglog) | ❌| |
+| [Streams](https://redis.io/commands#stream) | ❌| |
+
+
+## API Naming
+We tried to follow the Redis API together with GraphQL API conventions as much as possible. The Redis GET command is accessible via GraphQL API as:
+`    redisGet(key: String!): String`
+
+Read only commands are implemented as Query; the rest are implemented as Mutation.
+
+
+## Examples
+
+### Redis String Mutations
+Example Query:
+```javascript
+mutation { 
+ redisSet(key : "key", value: "value")
+ redisMSet(keyValuePairs: ["key1", "value1", "key2", "value2"])
+ redisSetEX(key : "temp", value: "value", seconds: 5)
+ redisSetNX(key : "key", value: "value")
+ redisSetXX(key : "key", value: "value") 
+}
+```             
+
+Example Response:
+```json
+{
+    "data": {
+        "redisSet": "OK",
+            "redisMSet": "OK",
+            "redisSetEX": "OK",
+            "redisSetNX": false,
+            "redisSetXX": true
+    }
+}
+```             
+
+### Redis String Queries
+Example Query:
+```javascript
+query {
+    redisGet(key : "key")
+    redisMGet(keys: ["key", "key1", "key2"])
+}
+```             
+
+Example Response:
+```json
+{
+  "data": {
+    "redisGet": "value",
+    "redisMGet": [
+      "value",
+      "value1",
+      "value2"
+    ]
+  }
+}
+```             
+
+
+### Redis List Mutations
+Example Query:
+```javascript
+mutation {
+    redisLPush(key : "list", elements: ["item1", "item2", "item3"])
+    redisLPop(key: "list")
+}
+```             
+
+Example Response:
+```json
+{
+  "data": {
+    "redisLPush": 9,
+    "redisLPop": "item3"
+  }
+}
+```             
+
+### Redis List Queries
+Example Query:
+```javascript
+query {
+    redisLLen(key : "list")
+    redisLIndex(key: "list", index: 0)
+}
+```             
+
+Example Response:
+```json
+{
+  "data": {
+    "redisLLen": 8,
+    "redisLIndex": "item2"
+  }
+}
+```             
+
+
+### Redis Hash Mutations
+Example Query:
+```javascript
+mutation {
+    redisHSet(key : "hash", field: "field1", value: "value1")
+    redisHMSet(key : "hash", fieldValuePairs: ["field1","value1", "field2", "value2"])
+}
+```             
+
+Example Response:
+```json
+{
+  "data": {
+    "redisHSet": 0,
+    "redisHMSet": 0
+  }
+}
+```             
+
+### Redis Hash Queries
+Example Query:
+```javascript
+query {
+    redisHGet(key : "hash", field: "field1")
+    redisHGetAll(key : "hash"){ field, value }
+}
+```             
+
+Example Response:
+```json
+{
+  "data": {
+    "redisHGet": "value1",
+    "redisHGetAll": [
+      {
+        "field": "field1",
+        "value": "value1"
+      },
+      {
+        "field": "field2",
+        "value": "value2"
+      }
+    ]
+  }
+}
+```             
+
+
+
+### Redis Sorted Set Mutations
+Example Query:
+```javascript
+mutation {
+    a: redisZAdd(key: "Champions League",
+        score: 10, member: "Real Madrid" )
+    b: redisZAdd(key: "Champions League",
+        score: 8, member: "Bayern Munich" )
+    c: redisZAdd(key: "Champions League",
+        score: 6, member: "Liverpool" )
+}
+```             
+
+Example Response:
+```json
+{
+  "data": {
+    "a": 0,
+    "b": 0,
+    "c": 0
+  }
+}
+```             
+
+### Redis Sorted Set Queries
+Example Query:
+```javascript
+query {
+    redisZRevRangeWithScores(key: "Champions League",
+        min: 0, max: 20){member, score}
+    redisZScore(key: "Champions League",
+        member: "Real Madrid")
+    redisZRevRank(key: "Champions League",
+        member: "Liverpool")
+}
+```             
+
+Example Response:
+```json
+{
+  "data": {
+    "redisZRevRangeWithScores": [
+      {
+        "member": "Real Madrid",
+        "score": 10
+      },
+      {
+        "member": "Bayern Munich",
+        "score": 8
+      },
+      {
+        "member": "Liverpool",
+        "score": 6
+      }
+    ],
+    "redisZScore": 10,
+    "redisZRevRank": 2
+  }
+}
+```             
+       
+    
+    
