@@ -1,0 +1,62 @@
+---
+title: Features
+---
+
+## Block until ready
+
+You also have the option to try and wait for a request to pass in the given timeout.
+
+It is very similar to the `limit` method and takes an identifier and returns the same 
+response. However if the current limit has already been exceeded, it will automatically 
+wait until the next window starts and will try again. Setting the timeout parameter (in seconds) will cause the method to block a finite amount of time.
+
+```python
+from upstash_ratelimit import Ratelimit, SlidingWindow
+from upstash_redis import Redis
+
+# Create a new ratelimiter, that allows 10 requests per 10 seconds
+ratelimit = Ratelimit(
+    redis=Redis.from_env(),
+    limiter=SlidingWindow(max_requests=10, window=10),
+)
+
+response = ratelimit.block_until_ready("id", timeout=30)
+
+if not response.allowed:
+    print("Unable to process, even after 30 seconds")
+else:
+    do_expensive_calculation()
+    print("Here you go!")
+```
+
+
+## Using multiple limits
+Sometimes you might want to apply different limits to different users. For example you might want to allow 10 requests per 10 seconds for free users, but 60 requests per 10 seconds for paid users.
+
+Here's how you could do that:
+
+```python
+from upstash_ratelimit import Ratelimit, SlidingWindow
+from upstash_redis import Redis
+
+class MultiRL:
+    def __init__(self) -> None:
+        redis = Redis.from_env()
+        self.free = Ratelimit(
+            redis=redis,
+            limiter=SlidingWindow(max_requests=10, window=10),
+            prefix="ratelimit:free",
+        )
+
+        self.paid = Ratelimit(
+            redis=redis,
+            limiter=SlidingWindow(max_requests=60, window=10),
+            prefix="ratelimit:paid",
+        )
+
+# Create a new ratelimiter, that allows 10 requests per 10 seconds
+ratelimit = MultiRL()
+
+ratelimit.free.limit("userIP")
+ratelimit.paid.limit("userIP")
+```
