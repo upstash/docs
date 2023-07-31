@@ -1,0 +1,187 @@
+---
+title: Features
+---
+
+### Timeout
+
+You can define an optional timeout in milliseconds, after which the request will
+be allowed to pass regardless of what the current limit is. This can be useful
+if you don't want network issues to cause your application to reject requests.
+
+```ts
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(10, "10 s"),
+  timeout: 1000, // 1 second
+  analytics: true
+});
+```
+
+### Block until ready
+
+In case you don't want to reject a request immediately but wait until it can be
+processed, we also provide
+
+```ts
+ratelimit.blockUntilReady(identifier: string, timeout: number): Promise<RatelimitResponse>
+```
+
+It is very similar to the `limit` method and takes an identifier and returns the
+same response. However if the current limit has already been exceeded, it will
+automatically wait until the next window starts and will try again. Setting the
+timeout parameter (in milliseconds) will cause the returned Promise to resolve
+in a finite amount of time.
+
+```ts
+// Create a new ratelimiter, that allows 10 requests per 10 seconds
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(10, "10 s"),
+  analytics: true
+});
+
+// `blockUntilReady` returns a promise that resolves as soon as the request is allowed to be processed, or after 30 seconds
+const { success } = await ratelimit.blockUntilReady("id", 30_000);
+
+if (!success) {
+  return "Unable to process, even after 30 seconds";
+}
+doExpensiveCalculation();
+return "Here you go!";
+```
+
+### Ephemeral Cache
+
+For extreme load or denial of service attacks, it might be too expensive to call
+redis for every incoming request, just to find out it should be blocked because
+they have exceeded the limit.
+
+You can use an ephemeral in memory cache by passing the `ephemeralCache` option:
+
+```ts
+const cache = new Map(); // must be outside of your serverless function handler
+
+// ...
+
+const ratelimit = new Ratelimit({
+  // ...
+  ephemeralCache: cache,
+});
+```
+
+If enabled, the ratelimiter will keep a global cache of identifiers and their
+reset timestamps, that have exhausted their ratelimit. In serverless
+environments this is only possible if you create the cache or ratelimiter
+instance outside of your handler function. While the function is still hot, the
+ratelimiter can block requests without having to request data from redis, thus
+saving time and money.
+
+
+## Using multiple limits
+
+Sometimes you might want to apply different limits to different users. For example you might want to allow 10 requests per 10 seconds for free users, but 60 requests per 10 seconds for paid users.
+
+Here's how you could do that:
+
+```ts
+import { Redis } from "@upstash/redis"
+import { Ratelimit } from "@upstash/ratelimit"
+
+const redis = Redis.fromEnv()
+
+const ratelimit = {
+  free: new Ratelimit({
+    redis,
+    analytics: true,
+    prefix: "ratelimit:free",
+    limiter: Ratelimit.slidingWindow(10, "10s"),
+  }),
+  paid: new Ratelimit({
+    redis,
+    analytics: true,
+    prefix: "ratelimit:paid",
+    limiter: Ratelimit.slidingWindow(60, "10s"),
+  })
+}
+
+
+await ratelimit.free.limit(ip)
+// or for a paid user you might have an email or userId available:
+await ratelimit.paid.limit(userId)
+
+```
+
+## MultiRegion replicated ratelimiting
+
+Using a single redis instance has the downside of providing low latencies only
+to the part of your userbase closest to the deployed db. That's why we also
+built `MultiRegionRatelimit` which replicates the state across multiple redis
+databases as well as offering lower latencies to more of your users.
+
+`MultiRegionRatelimit` does this by checking the current limit in the closest db
+and returning immediately. Only afterwards will the state be asynchronously
+replicated to the other datbases leveraging
+[CRDTs](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type). Due
+to the nature of distributed systems, there is no way to guarantee the set
+ratelimit is not exceeded by a small margin. This is the tradeoff for reduced
+global latency.
+
+### Usage
+
+The api is the same, except for asking for multiple redis instances:
+
+```ts
+import { MultiRegionRatelimit } from "@upstash/ratelimit"; // for deno: see above
+import { Redis } from "@upstash/redis";
+
+// Create a new ratelimiter, that allows 10 requests per 10 seconds
+const ratelimit = new MultiRegionRatelimit({
+  redis: [
+    new Redis({
+      /* auth */
+    }),
+    new Redis({
+      /* auth */
+    }),
+    new Redis({
+      /* auth */
+    }),
+  ],
+  limiter: MultiRegionRatelimit.slidingWindow(10, "10 s"),
+  analytics: true
+});
+
+// Use a constant string to limit all requests with a single ratelimit
+// Or use a userID, apiKey or ip address for individual limits.
+const identifier = "api";
+const { success } = await ratelimit.limit(identifier);
+```
+
+### Asynchronous synchronization between databases
+
+The MultiRegion setup will do some synchronization between databases after
+returning the current limit. This can lead to problems on Cloudflare Workers and
+therefore Vercel Edge functions, because dangling promises must be taken care
+of:
+
+**Vercel Edge:**
+[docs](https://nextjs.org/docs/api-reference/next/server#nextfetchevent)
+
+```ts
+const { pending } = await ratelimit.limit("id");
+event.waitUntil(pending);
+```
+
+**Cloudflare Worker:**
+[docs](https://developers.cloudflare.com/workers/runtime-apis/fetch-event/#syntax-module-worker)
+
+```ts
+const { pending } = await ratelimit.limit("id");
+context.waitUntil(pending);
+```
+
+### Example
+
+Let's assume you have customers in the US and Europe. In this case you can
+create 2 regional redis databases on [Upstash](https://console.upstash.com) and
+your users will enjoy the latency of whichever db is closest to them.
