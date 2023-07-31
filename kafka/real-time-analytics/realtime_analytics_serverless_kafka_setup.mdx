@@ -4,18 +4,28 @@ title: "Streaming from Cloudflare Workers (and Vercel Edge) to Kafka"
 description: "This tutorial shows how to set up a pipeline to stream click events to Upstash Kafka"
 ---
 
-In this tutorial series, we will show how to build an end to end real time analytics system. We will stream the traffic (click) events from our web application to Upstash Kafka then we will analyse it on real time using different products. We will implement one simply query with each of the tools:
+In this tutorial series, we will show how to build an end to end real time
+analytics system. We will stream the traffic (click) events from our web
+application to Upstash Kafka then we will analyse it on real time using
+different products. We will implement one simply query with each of the tools:
 
 ```sql
 SELECT city, count() FROM kafka_topic_page_views where  timestamp > now() - INTERVAL 15 MINUTE group by city
 ```
 
-Namely, we will query the number of page views from different cities in last 15 minutes. We keep the query and scenario intentionally simple to make the series easy to understand. But you can easily extend the model for your more complex realtime analytics scenarios.  
+Namely, we will query the number of page views from different cities in last 15
+minutes. We keep the query and scenario intentionally simple to make the series
+easy to understand. But you can easily extend the model for your more complex
+realtime analytics scenarios.
 
- 
-This is the first part of the series where we will set up our pipeline which will stream your web app's click events to Upstash Kafka. We will use edge functions to intercept the web request to send the event to Kafka. We will show how to do that using Cloudflare Workers or Vercel Edge.  
+This is the first part of the series where we will set up our pipeline which
+will stream your web app's click events to Upstash Kafka. We will use edge
+functions to intercept the web request to send the event to Kafka. We will show
+how to do that using Cloudflare Workers or Vercel Edge.
 
-In the next parts, we will analyse the data consuming Kafka topic using different products including:
+In the next parts, we will analyse the data consuming Kafka topic using
+different products including:
+
 - ksqlDB
 - Decodable
 - Startree
@@ -24,19 +34,29 @@ In the next parts, we will analyse the data consuming Kafka topic using differen
 - Rockset
 - Immerok
 
-At the end of the series we will share our comparative experiences with each product.
-
+At the end of the series we will share our comparative experiences with each
+product.
 
 ### Kafka Setup
-Create an Upstash Kafka cluster, and a topic as explained [here](https://docs.upstash.com/kafka). You will use the url and credentials in next steps.
-     
 
-### Option 1: Cloudflare Workers 
-You can use Cloudflare Workers to intercept incoming requests to your web site and run a serverless function. You can add Cloudflare Workers to your existing web site without changing any code. You need to create a site in Cloudflare and [set nameservers](https://developers.cloudflare.com/automatic-platform-optimization/get-started/change-nameservers/) for your domain accordingly. So Cloudflare will be able to intercept the requests to your website and run the Workers function.
+Create an Upstash Kafka cluster, and a topic as explained
+[here](https://docs.upstash.com/kafka). You will use the url and credentials in
+next steps.
 
-We will use Wrangler for Cloudflare Workers set up, so first install [Wrangler](https://developers.cloudflare.com/workers/wrangler/).
+### Option 1: Cloudflare Workers
 
-Create a folder for your project and run `wrangler init`. Choose the default options:
+You can use Cloudflare Workers to intercept incoming requests to your web site
+and run a serverless function. You can add Cloudflare Workers to your existing
+web site without changing any code. You need to create a site in Cloudflare and
+[set nameservers](https://developers.cloudflare.com/automatic-platform-optimization/get-started/change-nameservers/)
+for your domain accordingly. So Cloudflare will be able to intercept the
+requests to your website and run the Workers function.
+
+We will use Wrangler for Cloudflare Workers set up, so first install
+[Wrangler](https://developers.cloudflare.com/workers/wrangler/).
+
+Create a folder for your project and run `wrangler init`. Choose the default
+options:
 
 ```shell
  kafka-examples git:(master) ✗ wrangler init
@@ -53,11 +73,10 @@ Would you like to create a Worker at src/index.ts?
 ❯ Fetch handler
   Scheduled handler
 ✨ Created src/index.ts
-
 ```
 
-
 Update `src/index.ts` as below:
+
 ```js
 import { Kafka } from "@upstash/kafka"
 
@@ -99,15 +118,18 @@ export default {
         return new Response("My website");
     },
 };
-
 ```
-Replace url, username and password above. Also update the name of the topic.     
 
-Above, we simply parse the request object and send useful information to Kafka. You may add/remove information depending on your own requirements.
+Replace url, username and password above. Also update the name of the topic.
 
-You can test the function locally with `wrangler dev`. Deploy your function to Cloudflare with `wrangler publish`
+Above, we simply parse the request object and send useful information to Kafka.
+You may add/remove information depending on your own requirements.
 
-The endpoint of the function will be printed. You can check if logs are collected in Kafka by copying the `curl` expression from the console:
+You can test the function locally with `wrangler dev`. Deploy your function to
+Cloudflare with `wrangler publish`
+
+The endpoint of the function will be printed. You can check if logs are
+collected in Kafka by copying the `curl` expression from the console:
 
 ```shell
 curl https://real-goldfish-14081-us1-rest-kafka.upstash.io/consume/GROUP_NAME/GROUP_INSTANCE_NAME/mytopic -H "Kafka-Auto-Offset-Reset: earliest" -u \
@@ -115,15 +137,20 @@ curl https://real-goldfish-14081-us1-rest-kafka.upstash.io/consume/GROUP_NAME/GR
 ```
 
 ### Option 2: Vercel Edge Middleware
-Vercel Edge middleware allows you to intercept the requests to your application served by Vercel platform. We will create a simple Next.js application and send the traffic events to Upstash Kafka using the Vercel Edge functions.
 
-Create a Next.js application: 
+Vercel Edge middleware allows you to intercept the requests to your application
+served by Vercel platform. We will create a simple Next.js application and send
+the traffic events to Upstash Kafka using the Vercel Edge functions.
+
+Create a Next.js application:
+
 ```shell
 npx create-next-app@latest --typescript
 ```
 
-Create a middleware.ts (or .js) file at the same level as your pages directory. Update the file as below:
-                       
+Create a middleware.ts (or .js) file at the same level as your pages directory.
+Update the file as below:
+
 ```js
 import {NextResponse} from 'next/server';
 import type {NextRequest, NextFetchEvent} from 'next/server';
@@ -162,16 +189,18 @@ export async function middleware(req: NextRequest, event: NextFetchEvent) {
     // Rewrite to URL
     return NextResponse.next();
 }
-
 ```
 
 Replace url, username and password above. Also update the name of the topic.
 
-Above, we simply parse the request object and send useful information to Kafka. You may add/remove information depending on your own requirements.
+Above, we simply parse the request object and send useful information to Kafka.
+You may add/remove information depending on your own requirements.
 
-You can test the function locally with `npm run dev`. Deploy your function to Vercel with `vercel --prod`
+You can test the function locally with `npm run dev`. Deploy your function to
+Vercel with `vercel --prod`
 
-The endpoint of the function will be printed. You can check if logs are collected in Kafka by copying the `curl` expression from the console:
+The endpoint of the function will be printed. You can check if logs are
+collected in Kafka by copying the `curl` expression from the console:
 
 ```shell
 curl https://real-goldfish-14081-us1-rest-kafka.upstash.io/consume/GROUP_NAME/GROUP_INSTANCE_NAME/mytopic -H "Kafka-Auto-Offset-Reset: earliest" -u \
@@ -180,6 +209,7 @@ curl https://real-goldfish-14081-us1-rest-kafka.upstash.io/consume/GROUP_NAME/GR
 
 ### Conclusion
 
-We have successfully built to the pipeline to collect the traffic data from our web application to Upstash Kafka. In the remaining of the series, we will analyze the data in Kafka with different realtime analytics tool which are capable to read from Kafka.
-
-
+We have successfully built to the pipeline to collect the traffic data from our
+web application to Upstash Kafka. In the remaining of the series, we will
+analyze the data in Kafka with different realtime analytics tool which are
+capable to read from Kafka.

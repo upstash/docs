@@ -5,25 +5,34 @@ description: "This tutorial shows how to build a histogram API with Redis."
 image: img/examples/histogram.jpg
 ---
 
-While developing [the latency benchmark for the serverless databases (DynamoDB, FaunaDB, Upstash)](https://blog.upstash.com/latency-comparison), I wished there was an API where I will record the latency numbers and get the histogram back. In this tutorial, I will build such an API where you can record your latency values from any application. It will be a REST API with following methods:
+While developing
+[the latency benchmark for the serverless databases (DynamoDB, FaunaDB, Upstash)](https://blog.upstash.com/latency-comparison),
+I wished there was an API where I will record the latency numbers and get the
+histogram back. In this tutorial, I will build such an API where you can record
+your latency values from any application. It will be a REST API with following
+methods:
+
 - record: Records numeric values into the histogram.
 - get: Returns the histogram object.
-                                                              
+
 ### Motivation
-I will show how easy to develop a generic API using AWS Lambda and Serverless Redis.  
+
+I will show how easy to develop a generic API using AWS Lambda and Serverless
+Redis.
 
 See [code](https://github.com/upstash/examples/tree/master/histogram-api).
 
-
 ### `1` Create a Redis (Upstash) Database
 
-Create a database as [getting started](../overall/getstarted.md)
+Create a database as [getting started](../overall/getstarted)
 
 ### `2` Serverless Project Setup
-If you do not have it already install serverless framework via: 
+
+If you do not have it already install serverless framework via:
 `npm install -g serverless`
 
 In any folder run `serverless` as below:
+
 ```text
 >> serverless
 
@@ -37,26 +46,29 @@ You can monitor, troubleshoot, and test your new service with a free Serverless 
 
 Serverless: Would you like to enable this? No
 You can run the “serverless” command again if you change your mind later.
-
 ```
 
-:::note
-See [Using AWS SAM](using_aws_sam.md), if you prefer AWS SAM over Serverless Framework.
-:::
+<Note>
+See [Using AWS SAM](using_aws_sam), if you prefer AWS SAM over Serverless Framework.
+</Note>
 
 Inside the project folder create a node project with the command:
+
 ```
 npm init
 ```
 
 Then install the redis client and histogram library with:
+
 ```
 npm install ioredis
 
 npm install hdr-histogram-js
 ```
 
-Update the `serverless.yml` as below. Copy your Redis URL from console and replace below: 
+Update the `serverless.yml` as below. Copy your Redis URL from console and
+replace below:
+
 ```yaml
 service: histogram-api
 frameworkVersion: '2'
@@ -83,104 +95,106 @@ functions:
           path: /get
           method: get
           cors: true
-
 ```
 
-
-import IORedisNote from '../howto/ioredisnote.md'
+import IORedisNote from '../howto/ioredisnote'
 
 <IORedisNote />
 
 ### `3` Code
-      
-Edit handler.js as below. 
+
+Edit handler.js as below.
+
 ```javascript
 const hdr = require("hdr-histogram-js");
 const Redis = require("ioredis");
-if (typeof client === 'undefined') {
-    var client = new Redis(fixUrl(process.env.REDIS_URL));
+if (typeof client === "undefined") {
+  var client = new Redis(fixUrl(process.env.REDIS_URL));
 }
 const headers = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Credentials': true,
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Credentials": true,
 };
 const SIZE = 10000;
 
 module.exports.get = async (event) => {
-    if (!event.queryStringParameters || !event.queryStringParameters.name) {
-        return {
-            statusCode: 400,
-            headers: headers,
-            body: JSON.stringify(
-                {
-                    message: 'Invalid parameters. Name is needed.',
-                }
-            ),
-        };
-    }
-    const name = event.queryStringParameters.name;
-    const data = await client.lrange(name, 0, SIZE);
-    const histogram = hdr.build();
-    data.forEach(item => {
-        histogram.recordValue(item);
-    })
-
+  if (!event.queryStringParameters || !event.queryStringParameters.name) {
     return {
-        statusCode: 200,
-        body: JSON.stringify(
-            {
-                histogram: histogram
-            }
-        ),
+      statusCode: 400,
+      headers: headers,
+      body: JSON.stringify(
+        {
+          message: "Invalid parameters. Name is needed.",
+        },
+      ),
     };
+  }
+  const name = event.queryStringParameters.name;
+  const data = await client.lrange(name, 0, SIZE);
+  const histogram = hdr.build();
+  data.forEach((item) => {
+    histogram.recordValue(item);
+  });
+
+  return {
+    statusCode: 200,
+    body: JSON.stringify(
+      {
+        histogram: histogram,
+      },
+    ),
+  };
 };
 
 module.exports.record = async (event) => {
-    let body = JSON.parse(event.body)
-    if (!body || !body.name || !body.values) {
-        return {
-            statusCode: 400,
-            headers: headers,
-            body: JSON.stringify(
-                {
-                    message: 'Invalid parameters. Name and values are needed.',
-                }
-            ),
-        };
-    }
-    const name = body.name;
-    const values = body.values;
-    await client.lpush(name, values)
+  let body = JSON.parse(event.body);
+  if (!body || !body.name || !body.values) {
     return {
-        statusCode: 200,
-        body: JSON.stringify(
-            {
-                message: 'Success',
-                name: name
-            }
-        ),
+      statusCode: 400,
+      headers: headers,
+      body: JSON.stringify(
+        {
+          message: "Invalid parameters. Name and values are needed.",
+        },
+      ),
     };
+  }
+  const name = body.name;
+  const values = body.values;
+  await client.lpush(name, values);
+  return {
+    statusCode: 200,
+    body: JSON.stringify(
+      {
+        message: "Success",
+        name: name,
+      },
+    ),
+  };
 };
 
-
 function fixUrl(url) {
-    if (!url) {
-        return ''
-    }
-    if (url.startsWith('redis://') && !url.startsWith('redis://:')) {
-        return url.replace('redis://', 'redis://:')
-    }
-    if (url.startsWith('rediss://') && !url.startsWith('rediss://:')) {
-        return url.replace('rediss://', 'rediss://:')
-    }
-    return url
+  if (!url) {
+    return "";
+  }
+  if (url.startsWith("redis://") && !url.startsWith("redis://:")) {
+    return url.replace("redis://", "redis://:");
+  }
+  if (url.startsWith("rediss://") && !url.startsWith("rediss://:")) {
+    return url.replace("rediss://", "rediss://:");
+  }
+  return url;
 }
 ```
-We have two serverless functions above. `get` takes `name` as parameter and loads a list from Redis. Then builds a histogram using the values in the list.
 
-The `record` function takes `name` and `values` as parameters. It adds the `values` to the Redis List with name `name`. 
-                  
-The `get` function calculates the histogram over the latest 10000 latency records. Update the SIZE parameter to change this number.
+We have two serverless functions above. `get` takes `name` as parameter and
+loads a list from Redis. Then builds a histogram using the values in the list.
+
+The `record` function takes `name` and `values` as parameters. It adds the
+`values` to the Redis List with name `name`.
+
+The `get` function calculates the histogram over the latest 10000 latency
+records. Update the SIZE parameter to change this number.
 
 The `fixUrl` is a helper method which corrects the Redis url format.
 
@@ -192,28 +206,36 @@ Deploy your functions with:
 serverless deploy
 ```
 
-The command will deploy two functions and output two endpoints. Try the endpoints with setting parameters as below:
+The command will deploy two functions and output two endpoints. Try the
+endpoints with setting parameters as below:
 
-Record latency numbers to `perf-test-1`: 
+Record latency numbers to `perf-test-1`:
+
 ```shell
 curl --header "Content-Type: application/json" -d "{\"name\":\"perf-test-1\", \"values\": [90,80,34,97,93,45,49,57,99,12]}" https://v7xx4aa2ib.execute-api.us-east-1.amazonaws.com/record
 ```
-                          
-Get the histogram for `perf-test-1`: 
+
+Get the histogram for `perf-test-1`:
+
 ```shell
-curl https://v7xx4aa2ib.execute-api.us-east-1.amazonaws.com/get?name=perf-test-1 
+curl https://v7xx4aa2ib.execute-api.us-east-1.amazonaws.com/get?name=perf-test-1
 ```
 
-### Batching 
-It can be costly to call a remote function each time for latency calculation. In your application, you should keep an array or queue as a buffer for the latency numbers, then submit them in batches to the API when the array reaches the batch size. Something like below:
+### Batching
+
+It can be costly to call a remote function each time for latency calculation. In
+your application, you should keep an array or queue as a buffer for the latency
+numbers, then submit them in batches to the API when the array reaches the batch
+size. Something like below:
+
 ```javascript
 let records = [];
 let batchSize = 1000;
 function recordLatency(value) {
-    records.push(value);
-   if(records.length >= batchSize) {
-       // the below submits the records to the API then empties the records array.
-       submitToAPI(records);
-   } 
+  records.push(value);
+  if (records.length >= batchSize) {
+    // the below submits the records to the API then empties the records array.
+    submitToAPI(records);
+  }
 }
 ```
