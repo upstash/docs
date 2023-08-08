@@ -1,0 +1,280 @@
+---
+title: "Koyeb"
+---
+
+Integrate a serverless Upstash Redis database with your Koyeb applications. Combine the serverless features of Koyeb on the application side and Upstash for your key-value storage to deploy and scale applications globally with ease.
+
+This guide explains how to connect an Upstash Redis data store as a database cache with an application running on Koyeb. To successfully follow this documentation, you will need to have:
+
+- A [Koyeb account](https://app.koyeb.com/) to deploy the application. You can optionally install the [Koyeb CLI](https://www.koyeb.com/docs/quickstart/koyeb-cli) to deploy the application from the command line
+- An [Upstash account](https://console.upstash.com/) to deploy the database
+- [Node.js](https://nodejs.org/en) and `npm` installed on your local machine to create the demo application.
+
+If you already have a freshly created Upstash Redis database running and want to quickly preview how to connect your Upstash database to an application running on Koyeb, use the [Deploy to Koyeb](https://www.koyeb.com/docs/deploy-to-koyeb-button) button below.
+
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&repository=github.com/koyeb/example-koyeb-upstash&branch=main&name=example-koyeb-upstash&env[UPSTASH_REDIS_REST_URL]=REPLACE_ME&env[UPSTASH_REDIS_REST_TOKEN]=REPLACE_ME&env[PORT]=8000)
+
+_Make sure to replace the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` environment variables with the values for your Upstash database._
+
+## Create an Upstash Redis database
+
+To create an Upstash Redis database, sign into your [Upstash account](https://console.upstash.com/).
+
+In the Upstash console, select **Redis** from the top navigation bar. On the Redis page, click **Create database**:
+
+1. In the **Name** field, choose a name for your database. In this example, we'll use `example-koyeb-upstash`.
+2. Select the **Type** of deployment you want. Because this is demo does not have global requirements, we will use "Regional" in this guide to limit the choices we have to make.
+3. In the **Region** drop-down menu, choose a location that's geographically convenient for your database and users. We use "N. Virginia (us-east-1)".
+4. Select your preferred options. In this example, we will select "TLS (SSL) Enabled" so that connections to the database are encrypted and "Eviction" so that older data will be purged when we run out of space.
+5. Click **Create** to provision the Redis database.
+
+### Retrieve your Upstash URL and token
+
+On your Upstash Redis page, scroll down to the **REST API** section of the page.
+
+Click on the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` buttons to copy their respective values to your clipboard. Paste the copied values to a safe location so that you can reference them later when testing and deploying your application.
+
+Alternatively, you can click on the `@upstash/redis` tab to view a code snippet:
+
+```javascript
+import { Redis } from "@upstash/redis";
+
+const redis = new Redis({
+  url: "<YOUR_UPSTASH_REDIS_REST_URL>",
+  token: "<YOUR_UPSTASH_REDIS_REST_TOKEN>",
+});
+
+const data = await redis.set("foo", "bar");
+```
+
+When you copy the code block using the provided copy button, the code snippet, along with your database's URL and access token will be copied to your clipboard. While this works well for private or demonstration code, it generally isn't good practice to hard-code sensitive data like tokens within your application. To avoid this, we will configure the application to get these values from the environment instead.
+
+## Create a demo application
+
+Next, you can create a simple Node.js application that uses your Upstash Redis database. The application will use the [Express](https://expressjs.com/) web framework to build and serve a simple page and Upstash's own [`@upstash/redis`](/redis/sdks/redis-ts/overview) package to connect to the database.
+
+### Install the dependencies
+
+Create a new directory for your demo application and navigate to the new location:
+
+```bash
+mkdir example-koyeb-upstash
+cd example-koyeb-upstash
+```
+
+Within the new directory, generate a `package.json` file for the new project using the default settings:
+
+```bash
+npm init -y
+```
+
+Next, install the `@upstash/redis` package so that you can connect to your Redis database from within the application and the `express` package so that we can build a basic web application:
+
+```bash
+npm install @upstash/redis express
+```
+
+### Create the application file
+
+Now, create a new file called `index.js` with the following contents:
+
+```javascript
+// Note: if you are using Node.js version 17 or lower,
+//       change the first line to the following:
+// const { Redis } = require ("@upstash/redis/with-fetch");
+const { Redis } = require("@upstash/redis");
+const express = require("express");
+
+const app = express();
+const redis = Redis.fromEnv();
+
+app.get("/", async (req, res) => {
+  const value = await redis.get("counter");
+  await redis.set("counter", parseInt(value || 0) + 1);
+  res.send(`Counter: ${value || 0}`);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+```
+
+**Note:** If you are running Node.js version 17 or lower, you need to adjust the first line of the app to import from the `@upstash/redis/with-fetch` instead of `@upstash/redis`. Node.js versions prior to 18 did not natively support `fetch` API, so you need to change the import path in order to access that functionality.
+
+This above code will introduce a simple `counter` key to your Redis database. It will use this key to store the number of times the page has been accessed and display that value on the page.
+
+### Add the run scripts
+
+Finally, edit the `package.json` file to define the scripts used to run the application. The `dev` script runs the application in debug mode while the `start` script starts the application normally:
+
+```diff
+{
+  "name": "example-koyeb-upstash",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
++   "dev": "DEBUG=express:* node index.js",
++   "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@upstash/redis": "^1.20.6",
+    "express": "^4.18.2"
+  }
+}
+```
+
+## Run the demo application locally
+
+Now that the project is set up, you can run the application locally verify that it functions correctly.
+
+In your shell, set and export the variables you copied from your Upstash Redis page:
+
+```bash
+export UPSTASH_REDIS_REST_URL="<YOUR_UPSTASH_REDIS_REST_URL>"
+export UPSTASH_REDIS_REST_TOKEN="<YOUR_UPSTASH_REDIS_REST_TOKEN>"
+```
+
+In the same terminal, you should now be able to test your application by typing:
+
+```bash
+npm run dev
+```
+
+The application server should start in debug mode, printing information about the process to the display. In your browser, navigate to `127.0.0.1:3000` to see your application. It should show the counter and number of visits you've made: "Counter: 0". The number should increase by one every time you refresh the page.
+
+Press <kbd>CTRL</kbd>-<kbd>c</kbd> to stop the application when you are finished.
+
+## Deploy the application to Koyeb using git-driven deployment
+
+Once you've verified that the project runs locally, create a new Git repository to save your work.
+
+Run the following commands to create a new Git repository within the project's root directory, commit the project files, and push changes to GitHub. Remember to replace the values of `<YOUR_GITHUB_USERNAME>` and `<YOUR_REPOSITORY_NAME>` with your own information:
+
+```bash
+git init
+echo 'node_modules' >> .gitignore
+git add .
+git commit -m "Initial commit"
+git remote add origin git@github.com:<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY_NAME>.git
+git push -u origin main
+```
+
+You can deploy the demo application to Koyeb and connect it to the Upstash Redis database using the [control panel](#via-the-koyeb-control-panel) or via the [Koyeb CLI](#via-the-koyeb-cli).
+
+### Via the Koyeb control panel
+
+To deploy the using the [control panel](https://app.koyeb.com/), follow these steps:
+
+1. Click **Create App** in the Koyeb control panel.
+2. Select **GitHub** as the deployment option.
+3. Choose the GitHub **repository** and **branch** containing your application code.
+4. Name your service, for example `upstash-service`.
+5. Click **Advanced** to view additional options. Under **Environment variables**, click **Add Variable** to add two new variables called `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. Populate them with the values you copied for your Upstash Redis database.
+6. Name the App, for example `upstash-demo`.
+7. Click the **Deploy** button.
+
+A Koyeb App and Service will be created. Your application will be built and deployed to Koyeb. Once the build has finished, you will be able to access your application running on Koyeb by clicking the URL ending with `.koyeb.app`.
+
+### Via the Koyeb CLI
+
+To deploy the example application using the [Koyeb CLI](https://www.koyeb.com/docs/cli/installation), run the following command in your terminal:
+
+```bash
+koyeb app init example-koyeb-upstash \
+  --git github.com/<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY_NAME> \
+  --git-branch main \
+  --ports 3000:http \
+  --routes /:3000 \
+  --env PORT=3000 \
+  --env UPSTASH_REDIS_REST_URL="<YOUR_UPSTASH_REDIS_REST_URL>" \
+  --env UPSTASH_REDIS_REST_TOKEN="<YOUR_UPSTASH_REDIS_REST_TOKEN>"
+```
+
+_Make sure to replace `<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY_NAME>` with your GitHub username and repository name and replace `<YOUR_UPSTASH_REDIS_REST_URL>` and `<YOUR_UPSTASH_REDIS_REST_TOKEN>` with the values copied from your Upstash Redis page._
+
+#### Access deployment logs
+
+To track the app deployment and view the build logs, execute the following command:
+
+```bash
+koyeb service logs example-koyeb-upstash/example-koyeb-upstash -t build
+```
+
+#### Access your app
+
+Once the deployment of your application has finished, you can retrieve the public domain to access your application by running the following command:
+
+```bash
+$ koyeb app get example-koyeb-upstash
+ID      	NAME         	        DOMAINS                          	        CREATED AT
+85c78d9a	example-koyeb-upstash	["example-koyeb-upstash-myorg.koyeb.app"]	31 May 23 13:08 UTC
+```
+
+#### Access runtime logs
+
+With your app running, you can track the runtime logs by running the following command:
+
+```bash
+koyeb service logs example-koyeb-upstash/example-koyeb-upstash -t runtime
+```
+
+## Deploy the application to Koyeb using a pre-built container
+
+As an alternative to using git-driven deployment, you can deploy a pre-built container from any public or private registry. This can be useful if your application needs specific system dependencies or you need more control over how the build is performed.
+
+To dockerize the application, start by adding a file called `.dockerignore` to the project's root directory. Paste the following contents to limit the files copied to the Docker image:
+
+```
+Dockerfile
+.dockerignore
+.git
+node_modules
+npm-debug.log
+/.cache
+.env
+README.md
+```
+
+Afterwards, create a `Dockerfile` in your project root directory and copy the content below:
+
+```dockerfile
+FROM node:18-alpine AS base
+
+FROM base AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM base AS runner
+WORKDIR /app
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nodejs
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+USER node
+EXPOSE 3000
+ENV PORT 3000
+CMD ["npm", "run", "start"]
+```
+
+The Dockerfile above provides the minimum requirements to run the sample Node.js application. You can easily extend it depending on your needs.
+
+_Be sure to set the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` environment variables to the values you copied from the Upstash console when you deploy the container in the Koyeb control panel._
+
+To build and push the Docker image to a registry and deploy it on Koyeb, refer to the [Deploy an app from a Docker image](https://www.koyeb.com/docs/quickstart/deploy-a-docker-application) documentation.
+
+A Koyeb App and Service will be created. Your Docker image will be pulled and deployed to Koyeb. Once the deployment has finished, you will be able to access your application running on Koyeb by clicking the URL ending with `.koyeb.app`.
+
+## Delete the example application and Upstash Redis database
+
+To delete the example application and the Upstash Redis database and avoid incurring any charges, follow these steps:
+
+- From the [Upstash console](https://console.upstash.com/), select your Redis database and scroll to the bottom of the **Details** page. Click **Delete this database** and follow the instructions.
+- From the [Koyeb control panel](https://app.koyeb.com/), select your App. Click the **Settings** tab, and click the **Danger Zone**. Click **Delete App** and follow the instructions. Alternatively, from the CLI, you can delete your Koyeb App and service by typing `koyeb app delete example-koyeb-upstash`.
