@@ -1,85 +1,93 @@
 ---
-title: "Cloudflare Workers and Vercel Edge"
-description: "This tutorial shows how to set up a pipeline to stream click events to Upstash Kafka"
+title: "Cloudflare Workers"
 ---
 
-In this tutorial series, we will show how to build an end to end real time
-analytics system. We will stream the traffic (click) events from our web
-application to Upstash Kafka then we will analyse it on real time using
-different products. We will implement one simply query with each of the tools:
+As a tutorial for this integration, we'll implement a real time analytics system. We'll stream the traffic (click) events from our web application to Upstash Kafka. Here's the implementation for this simple query:
 
 ```sql
 SELECT city, count() FROM kafka_topic_page_views where  timestamp > now() - INTERVAL 15 MINUTE group by city
 ```
 
-Namely, we will query the number of page views from different cities in last 15
-minutes. We keep the query and scenario intentionally simple to make the series
-easy to understand. But you can easily extend the model for your more complex
-realtime analytics scenarios.
+Namely, we will query the number of page views from different cities in last 15 minutes. We keep the query and scenario intentionally simple to make the series easy to understand. But you can easily extend the model for your more complex realtime analytics scenarios.
 
-This is the first part of the series where we will set up our pipeline which
-will stream your web app's click events to Upstash Kafka. We will use edge
-functions to intercept the web request to send the event to Kafka. We will show
-how to do that using Cloudflare Workers or Vercel Edge.
-
-In the next parts, we will analyse the data consuming Kafka topic using
-different products including:
-
-- ksqlDB
-- Decodable
-- Startree
-- Materialize
-- Tinybird
-- Rockset
-- Immerok
-
-At the end of the series we will share our comparative experiences with each
-product.
+We'll use Clouflare Workers to intercept incoming requests to the website, and run a serverless function.
 
 ### Kafka Setup
 
-Create an Upstash Kafka cluster, and a topic as explained
-[here](https://docs.upstash.com/kafka). You will use the url and credentials in
-next steps.
+Create an Upstash Kafka cluster and a topic as explained
+[here](https://docs.upstash.com/kafka).
 
-### Option 1: Cloudflare Workers
+### Project Setup
 
-You can use Cloudflare Workers to intercept incoming requests to your web site
-and run a serverless function. You can add Cloudflare Workers to your existing
-web site without changing any code. You need to create a site in Cloudflare and
-[set nameservers](https://developers.cloudflare.com/automatic-platform-optimization/get-started/change-nameservers/)
-for your domain accordingly. So Cloudflare will be able to intercept the
-requests to your website and run the Workers function.
+We will use **C3 (create-cloudflare-cli)** command-line tool to create our application. You can open a new terminal window and run C3 using the prompt below.
 
-We will use Wrangler for Cloudflare Workers set up, so first install
-[Wrangler](https://developers.cloudflare.com/workers/wrangler/).
+<CodeGroup>
 
-Create a folder for your project and run `wrangler init`. Choose the default
-options:
-
-```shell
- kafka-examples git:(master) ✗ wrangler init
- ⛅️ wrangler 2.1.3
--------------------
-Using npm as package manager.
-✨ Created wrangler.toml
-No package.json found. Would you like to create one? (y/n)
-✨ Created package.json
-Would you like to use TypeScript? (y/n)
-✨ Created tsconfig.json
-Would you like to create a Worker at src/index.ts?
-  None
-❯ Fetch handler
-  Scheduled handler
-✨ Created src/index.ts
+```shell npm
+npm create clourflare@latest
 ```
 
-Update `src/index.ts` as below:
+```shell yarn
+yarn create cloudflare@latest
+```
 
-```js
+</CodeGroup>
+
+This will install the `create-cloudflare` package, and lead you through setup. C3 will also install Wrangler in projects by default, which helps us testing and deploying the application.
+
+```text
+➜  npm create cloudflare@latest
+Need to install the following packages:
+  create-cloudflare@2.1.0
+Ok to proceed? (y) y
+
+using create-cloudflare version 2.1.0
+
+╭ Create an application with Cloudflare Step 1 of 3
+│
+├ In which directory do you want to create your application?
+│ dir ./cloudflare_starter
+│
+├ What type of application do you want to create?
+│ type "Hello World" Worker
+│
+├ Do you want to use TypeScript?
+│ yes typescript
+│
+├ Copying files from "hello-world" template
+│
+├ Do you want to use TypeScript?
+│ yes typescript
+│
+├ Retrieving current workerd compatibility date
+│ compatibility date 2023-08-07
+│
+├ Do you want to use git for version control?
+│ yes git
+│
+╰ Application created
+```
+
+We will also install the **Upstash Kafka SDK** to connect to Kafka.
+
+```bash
+npm install @upstash/kafka
+```
+
+### The Code
+
+You can update the `src/index.ts` file with the code below:
+
+<CodeGroup>
+
+```ts src/index.ts
 import { Kafka } from "@upstash/kafka";
 
-export interface Env {}
+export interface Env {
+  UPSTASH_KAFKA_REST_URL: string;
+  UPSTASH_KAFKA_REST_USERNAME: string;
+  UPSTASH_KAFKA_REST_PASSWORD: string;
+}
 
 export default {
   async fetch(
@@ -103,12 +111,13 @@ export default {
     };
 
     const kafka = new Kafka({
-      url: "https://real-goldfish-14081-us1-rest-kafka.upstash.io",
-      username: "ZGVmaW5453tZ29sZhgf65yzQy26tVXO_fm8Y",
-      password: "v02ibEEtghfg56OybgOHwjmRdNS3nthrt=",
+      url: env.UPSTASH_KAFKA_REST_URL,
+      username: env.UPSTASH_KAFKA_REST_USERNAME,
+      password: env.UPSTASH_KAFKA_REST_PASSWORD,
     });
 
     const p = kafka.producer();
+    // Please update the topic according to your configuration
     const topic = "mytopic";
 
     ctx.waitUntil(p.produce(topic, JSON.stringify(message)));
@@ -119,96 +128,95 @@ export default {
 };
 ```
 
-Replace url, username and password above. Also update the name of the topic.
-
-Above, we simply parse the request object and send useful information to Kafka.
-You may add/remove information depending on your own requirements.
-
-You can test the function locally with `wrangler dev`. Deploy your function to
-Cloudflare with `wrangler publish`
-
-The endpoint of the function will be printed. You can check if logs are
-collected in Kafka by copying the `curl` expression from the console:
-
-```shell
-curl https://real-goldfish-14081-us1-rest-kafka.upstash.io/consume/GROUP_NAME/GROUP_INSTANCE_NAME/mytopic -H "Kafka-Auto-Offset-Reset: earliest" -u \
-  REPLACE_HERE
-```
-
-### Option 2: Vercel Edge Middleware
-
-Vercel Edge middleware allows you to intercept the requests to your application
-served by Vercel platform. We will create a simple Next.js application and send
-the traffic events to Upstash Kafka using the Vercel Edge functions.
-
-Create a Next.js application:
-
-```shell
-npx create-next-app@latest --typescript
-```
-
-Create a middleware.ts (or .js) file at the same level as your pages directory.
-Update the file as below:
-
-```js
-import { NextResponse } from "next/server";
-import type { NextRequest, NextFetchEvent } from "next/server";
+```js src/index.js
 import { Kafka } from "@upstash/kafka";
 
-// Trigger this middleware to run on the `/secret-page` route
-export const config = {
-  matcher: "/",
+export default {
+  async fetch(request, env, ctx) {
+    if (new URL(request.url).pathname == "/favicon.ico") {
+      return new Response(null, { status: 200 });
+    }
+
+    let message = {
+      country: request.cf?.country,
+      city: request.cf?.city,
+      region: request.cf?.region,
+      url: request.url,
+      ip: request.headers.get("x-real-ip"),
+      mobile: request.headers.get("sec-ch-ua-mobile"),
+      platform: request.headers.get("sec-ch-ua-platform"),
+      useragent: request.headers.get("user-agent"),
+    };
+
+    const kafka = new Kafka({
+      url: env.UPSTASH_KAFKA_REST_URL,
+      username: env.UPSTASH_KAFKA_REST_USERNAME,
+      password: env.UPSTASH_KAFKA_REST_PASSWORD,
+    });
+
+    const p = kafka.producer();
+    // Please update the topic according to your configuration
+    const topic = "mytopic";
+
+    ctx.waitUntil(p.produce(topic, JSON.stringify(message)));
+    // if you use CF Workers to intercept your existing site, uncomment below
+    // return await fetch(request);
+    return new Response("My website");
+  },
 };
-
-export async function middleware(req: NextRequest, event: NextFetchEvent) {
-  // Extract country. Default to US if not found.
-  console.log(req.url);
-
-  const kafka = new Kafka({
-    url: "https://real-goldfish-14081-us1-rest-kafka.upstash.io",
-    username: "ZGVmaW5453tZ29sZhgf65yzQy26tVXO_fm8Y",
-    password: "v02ibEEtghfg56OybgOHwjmRdNS3nthrt=",
-  });
-
-  let message = {
-    country: req.geo?.country,
-    city: req.geo?.city,
-    region: req.geo?.region,
-    url: req.url,
-    ip: req.headers.get("x-real-ip"),
-    mobile: req.headers.get("sec-ch-ua-mobile"),
-    platform: req.headers.get("sec-ch-ua-platform"),
-    useragent: req.headers.get("user-agent"),
-  };
-  const p = kafka.producer();
-  const topic = "mytopic";
-
-  event.waitUntil(p.produce(topic, JSON.stringify(message)));
-
-  // Rewrite to URL
-  return NextResponse.next();
-}
 ```
 
-Replace url, username and password above. Also update the name of the topic.
+</CodeGroup>
 
-Above, we simply parse the request object and send useful information to Kafka.
-You may add/remove information depending on your own requirements.
+Above, we simply parse the request object and send the useful information to Upstash Kafka. You may add/remove information depending on your own requirements.
 
-You can test the function locally with `npm run dev`. Deploy your function to
-Vercel with `vercel --prod`
+### Configure Credentials
 
-The endpoint of the function will be printed. You can check if logs are
-collected in Kafka by copying the `curl` expression from the console:
+There are two methods for setting up the credentials for Upstash Kafka client. The recommended way is to use Cloudflare Upstash Integration. Alternatively, you can add the credentials manually.
+
+#### Using the Cloudflare Integration
+
+Access to the [Cloudflare Dashboard](https://dash.cloudflare.com) and login with the same account that you've used while setting up the Worker application. Then, navigate to **Workers & Pages > Overview** section on the sidebar. Here, you'll find your application listed.
+
+<Frame>
+  <img src="/img/cloudflare-integration/overview.png" />
+</Frame>
+
+Clicking on the application will direct you to the application details page, where you can perform the integration process. Switch to the **Settings** tab in the application details, and proceed to **Integrations** section. You will see various Worker integrations listed. To proceed, click the **Add Integration** button associated with the Upstash Kafka.
+
+<Frame>
+  <img src="/img/cloudflare-integration/kafka-add-integration.png" />
+</Frame>
+
+On the Integration page, connect to your Upstash account. Then, select the related cluster from the dropdown menu. Finalize the process by pressing **Add Integration** button.
+
+<Frame>
+  <img src="/img/cloudflare-integration/kafka-credentials.png" />
+</Frame>
+
+#### Setting up Manually
+
+Navigate to [Upstash Console](https://console.upstash.com) and copy/paste your `UPSTASH_KAFKA_REST_URL`, `UPSTASH_KAFKA_REST_USERNAME` and `UPSTASH_KAFKA_REST_PASSWORD` credentials to your `wrangler.toml` as below.
+
+```yaml
+[vars]
+UPSTASH_KAFKA_REST_URL="REPLACE_HERE"
+UPSTASH_KAFKA_REST_USERNAME="REPLACE_HERE"
+UPSTASH_KAFKA_REST_PASSWORD="REPLACE_HERE"
+```
+
+### Test and Deploy
+
+You can test the function locally with `npx wrangler dev`
+
+Deploy your function to Cloudflare with `npx wrangler deploy`
+
+Once the deployment is done, the endpoint of the function will be provided to you.
+
+You can check if logs are collected in Kafka by copying the `curl` expression from the console:
 
 ```shell
-curl https://real-goldfish-14081-us1-rest-kafka.upstash.io/consume/GROUP_NAME/GROUP_INSTANCE_NAME/mytopic -H "Kafka-Auto-Offset-Reset: earliest" -u \
+curl https://<UPSTASH_KAFKA_REST_URL>/consume/GROUP_NAME/GROUP_INSTANCE_NAME/TOPIC \
+  -H "Kafka-Auto-Offset-Reset: earliest" -u \
   REPLACE_HERE
 ```
-
-### Conclusion
-
-We have successfully built to the pipeline to collect the traffic data from our
-web application to Upstash Kafka. In the remaining of the series, we will
-analyze the data in Kafka with different realtime analytics tool which are
-capable to read from Kafka.
