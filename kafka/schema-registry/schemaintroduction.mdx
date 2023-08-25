@@ -1,0 +1,202 @@
+---
+title: Introduction
+---
+
+TODO sancar trademark ?
+
+Schema Registry serves as a central hub to handle and validate schemas for message data related to Kafka topics. 
+It also manages serialization and deserialization of data over the network. 
+This aids producers and consumers in maintaining data consistency and compatibility as schemas change. 
+
+See [How to](../schemahowto) to find how to configure to use schema registry in various different scenarios.
+
+## Register Schema
+
+`POST /subjects/$SUBJECT/versions?normalize=[true/false]`
+
+Registers the schema under given $SUBKJECT only if the new schema is [compatible](./compatibility). 
+
+`normalize` is false by default. If passed, the schema will be normalized. 
+Normalization enables semantically same but syntatically different schemas to be accounted as same schema.
+
+```shell
+   curl https://tops-stingray-7863-eu1-rest-kafka.upstash.io/schema-reguistry/mytopic-key/$SUBJECT/versions -u myuser:mypass -d '
+{
+  "schema": "{
+    \"type\": \"record\",
+    \"name\": \"myRecord\",
+    \"fields\":
+        [
+        {\"type\": \"string\",\"name\": \"field1\"},
+        {\"type\": \"int\"   ,\"name\": \"field2\"}
+        ]
+  }",
+  "schemaType": "AVRO"
+}'
+   ```
+
+**Success Response:**
+
+The schema id returned as response:
+
+```json
+{"id" : 2}
+```
+
+**Fail Response:**
+
+```
+- 409 Conflict – Incompatible schema
+- 422 Unprocessable Entity
+    - Error code 42201 – Invalid schema
+- 500 Internal Server Error
+    - Error code 50001 – Error in the backend data store
+    - Error code 50002 – Operation timed out
+    - Error code 50003 – Error while forwarding the request to the primary
+```
+
+## Check schema 
+
+`POST /subjects/$SUBJECT?normalize=[true/false]&deleted=[true/false]`
+
+Check if the given schema registered under the $SUBJECT. Returns the schema along with subject, version and schema type.
+
+`normalize` is false by default. If set to `true`, the schema will be normalized. 
+Normalization enables semantically same but syntatically different schemas to be accounted as same schema.
+
+`deleted` is false by default. If set to `true`, the soft-deleted schemas under the subject will also be take into account. 
+See [Delete Subject](#delete-subject) or [Delete Schema](#delete-schema) for details.
+
+```shell
+   curl https://tops-stingray-7863-eu1-rest-kafka.upstash.io/schema-reguistry/mytopic-key/$SUBJECT -u myuser:mypass -d '
+{
+  "schema": "{
+    \"type\": \"record\",
+    \"name\": \"myRecord\",
+    \"fields\":
+        [
+        {\"type\": \"string\",\"name\": \"field1\"},
+        {\"type\": \"int\"   ,\"name\": \"field2\"}
+        ]
+  }",
+  "schemaType": "AVRO"
+}'
+
+**Success Response:**
+
+```json
+{
+      "subject": "mytopic-key",
+      "id": 2
+      "version": 3
+      "schema":
+         "
+          {
+            "schema": "{
+              \"type\": \"record\",
+              \"name\": \"myRecord\",
+              \"fields\":
+                  [
+                  {\"type\": \"string\",\"name\": \"field1\"},
+                  {\"type\": \"int\"   ,\"name\": \"field2\"}
+                  ]
+            }",
+            "schemaType": "AVRO"
+          }
+         "
+    }
+```
+
+**Fail Response**
+
+
+```
+- 404 Not Found 
+  - Error code 40401 – Subject not found
+  - Error code 40403 – Schema not found
+- 500 Internal Server Error
+    - Error code 50001 – Error in the backend data store
+    - Error code 50002 – Operation timed out
+    - Error code 50003 – Error while forwarding the request to the primary
+```
+
+## Set Config 
+
+
+`POST /config`
+
+Sets the global compatibility. The global compatibility is effective if a subject is not assigned a compatibility by default.
+See [Compatiblity](../schemacompatibility) for options.
+
+```shell
+curl https://tops-stingray-7863-eu1-rest-kafka.upstash.io/schema-registry/config -u myuser:mypass -d '
+{
+  "compatibility" : "FULL"
+}'
+```
+
+`POST /config/$SUBJECT`
+
+Sets the compatibility of a subject.
+See [Compatiblity](../schemacompatibility) for options.
+
+```shell
+curl https://tops-stingray-7863-eu1-rest-kafka.upstash.io/schema-registry/config/mytopic-key -u myuser:mypass -d '
+{
+  "compatibility" : "FULL"
+}'
+```
+
+**Success Response:**
+
+```json
+{
+  "compatibilityLevel" : "FULL"
+}
+```
+
+**Fail Response**
+
+```
+- 500 Internal Server Error
+    - Error code 50001 – Error in the backend data store
+    - Error code 50002 – Operation timed out
+    - Error code 50003 – Error while forwarding the request to the primary
+```
+
+## Get Config
+
+`GET /config`
+
+Retrieves the global config. Note that default global config is BACKWARD_TRANSITIVE by default if not set.
+
+`GET /config/#SUBJECT?defaultToGlobal=[true/false]`
+
+Retrieves the subject config.
+
+`defaultToGlobal` is false by default. When set to `true`, this endpoint will show the effective compatibility on a register 
+operation. When set to `false`, it may return 404 Not found if a subject level compatibility is not set.
+
+**Success Response:**
+
+```json
+{
+  "compatibilityLevel" : "FULL"
+}
+```
+
+**Fail Response**
+
+```
+- 404 Not Found – Subject not found
+- 500 Internal Server Error
+    - Error code 50001 – Error in the backend data store
+    - Error code 50002 – Operation timed out
+    - Error code 50003 – Error while forwarding the request to the primary
+```
+
+
+## Delete Subject
+
+
+## Delete Schema
