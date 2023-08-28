@@ -2,24 +2,112 @@
 title: How to
 ---
 
-Schema registry can be used in various different ways, each will require its own configuration. 
-- Producer/Consumer 
-- SchemaRegistryClient
-- Connectors
-- Thirdy party UI tools
+Schema registry can be used in various scenarios. In this page, the configurations for different use-cases are listed.
+
+You can find the related parameters that you need the use in the configurations from [Upstash Console](https://console.upstash.com).
+Scroll down to the `REST API` section to find the values you need:
+
+- `UPSTASH_KAFKA_REST_URL`
+- `UPSTASH_KAFKA_REST_USERNAME`
+- `UPSTASH_KAFKA_REST_PASSWORD`
 
 ## Producer/Consumer
 
-TODO sancar
+### Producer
 
-## SchemaRegistryClient
+If you need to configure your producers to use the schema registry add following
+properties to consumer properties in addition to the broker configurations. 
+Note that the seleted deserializer needs to be schema-registry aware.
 
-TODO sancar
+```java
+Properties props = new Properties();
+// ... other configurations like broker.url and broker authentication is skipped
+props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+props.put("value.serializer, "io.confluent.kafka.serializers.KafkaAvroSerializer");
+props.put("schema.registry.url", UPSTASH_KAFKA_REST_URL + "/schema-registry");
+props.put("basic.auth.credentials.source", "USER_INFO");
+props.put("basic.auth.user.info", UPSTASH_KAFKA_REST_USERNAME + ":" + UPSTASH_KAFKA_REST_PASSWORD);
+
+try (var producer = new KafkaProducer<String, org.apache.avro.GenericRecord>(props)) {
+    // ...
+  }
+```
+
+### Consumer 
+
+If you need to configure your consumers to use the schema registry add following
+properties to consumer properties in addition to the broker configurations. 
+Note that the seleted deserializer needs to be schema-registry aware.
+
+```java
+Properties props = new Properties();
+// ... other configurations like broker.url and broker authentication is skipped
+props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+props.put("value.deserializer, "io.confluent.kafka.serializers.KafkaAvroDeserializer");
+props.put("schema.registry.url", "$UPSTASH_KAFKA_REST_URL/schema-registry");
+props.put("basic.auth.credentials.source", "USER_INFO");
+props.put("basic.auth.user.info", UPSTASH_KAFKA_REST_USERNAME + ":" + UPSTASH_KAFKA_REST_PASSWORD);
+
+try(var consumer = new KafkaConsumer<String, org.apache.avro.GenericRecord>(props)) {
+    // ...
+}
+```
 
 ## Connectors
 
-TODO sancar
+Some connectors forces you to use a STRUCT as key/value which means that you need a schema and a schema aware convertor to use with the connector.
+For this case, you can add the following configurations to your connector.
+
+```
+{
+    "name": "myConnector",
+    "properties": {
+        "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+        // other configurations are skipped.
+
+        "key.converter": "io.confluent.connect.avro.AvroConverter",
+        "key.converter.upstash.schema.registry.enable": "true",
+        "value.converter": "io.confluent.connect.avro.AvroConverter",
+        "value.converter.upstash.schema.registry.enable": "true"
+    }
+}
+```
+
+The config above is the shorther version of the following.
+
+```
+{
+    "name": "myConnector",
+    "properties": {
+        "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+        // other configurations are skipped.
+
+        "key.converter": "io.confluent.connect.avro.AvroConverter",
+        "key.converter.basic.auth.credentials.source": "USER_INFO",
+        "key.converter.basic.auth.user.info": "UPSTASH_KAFKA_REST_USERNAME:UPSTASH_KAFKA_REST_PASSWORD",
+        "key.converter.schema.registry.url": "UPSTASH_KAFKA_REST_URL/schemaRegistry",
+
+        "value.converter": "io.confluent.connect.avro.AvroConverter",
+        "value.converter.basic.auth.credentials.source": "USER_INFO",
+        "value.converter.basic.auth.user.info": "UPSTASH_KAFKA_REST_USERNAME:UPSTASH_KAFKA_REST_PASSWORD",
+        "value.converter.schema.registry.url": "UPSTASH_KAFKA_REST_URL/schemaRegistry"
+    }
+}
+```
 
 ## Thirdy party UI tools
 
-TODO sancar
+You can use third-party UI tools to use the schema registry with. 
+We have schema registry configuration examples in our [Monitoring](../monitoring) section.
+
+## SchemaRegistryClient
+
+[SchemaRegistryClient](https://github.com/confluentinc/schema-registry/blob/master/client/src/main/java/io/confluent/kafka/schemaregistry/client/SchemaRegistryClient.java) 
+can be used to access the schema registry programmatically. In this case, you can configure it as following:
+
+```java
+Map<String, String> configs = new HashMap<>();
+configs.put(SchemaRegistryClientConfig.BASIC_AUTH_CREDENTIALS_SOURCE, "USER_INFO");
+configs.put(SchemaRegistryClientConfig.USER_INFO_CONFIG, UPSTASH_KAFKA_REST_USERNAME + ":" + UPSTASH_KAFKA_REST_PASSWORD);
+var client = new CachedSchemaRegistryClient(UPSTASH_KAFKA_REST_URL + "/schema-registry", 100, configs);
+```
