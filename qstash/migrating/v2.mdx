@@ -21,8 +21,33 @@ In the [console](https://console.upstash.com/qstash) you can toggle between vers
 
 Instead of creating schedules through the `/v2/publish` endpoint, there is a dedicated `/v2/schedules` api now.
 
-### Dead Letter Queue
+### Where are the messages in V2 ?
 
-We now have a dead letter queue, where all failed messages go after they have exceeded their retries. You can then manually handle them by republishing or deleting.
+A big difference on v2 is that we no longer keep the messages to be accessed via [Get Message](/qstash/api/messages/get) to scale better.
 
-Read more about DLQs [here](/qstash/features/dlq).
+- a message is removed from the messages list if the call was successfull.
+- If the pubhlish is failed, it will be moved to [DLQs](/qstash/features/dlq) when it is failed.
+- This endpoint will return a message only if a message is retrying. 
+
+A common workflow was to check the message via message id [Get Message](/qstash/api/messages/get) to see if it was successfull or not.
+This was not a good workflow because, it is not clear when to check this endpoint to take an action. 
+
+Instead v2, to check a message is failed and act on it, you can:
+
+1. Use [Upstash-Failure-Callback](/qstash/features/callbacks#what-is-a-failure-callback). Give the `Upstash-Failure-Callback` when publishing 
+the message to be called when the message is failed to be delivered. In the given endpoint:
+
+    - Handle the message. 
+    - Remove it from DLQ using [Delete a Message From DLQ](/qstash/api/dlq/deleteMessage) via the `dlqId` delivered to [Upstash-Failure-Callback](/qstash/features/callbacks#what-is-a-failure-callback).
+
+2. Use [DLQs](/qstash/features/dlq). This means that you need to a continously running task to read the messages from DLQ. 
+The workflow in this case look like this:
+
+    - Get all the messages with the last known cursor(Cursor will be empty in the beginning)
+    - Update the last known cursor with the cursor in the response.
+    - If the messages are empty, query the endpoint again after a delay.
+    - If there are messages, handle and delete them from DLQ via [Delete a Message From DLQ](/qstash/api/dlq/deleteMessage)
+    - Query the endpoint again after a delay with the updated cursor.
+
+With this follow, in a good run, DLQ should be empty. It will have messages only when there is something wrong with your service.
+
