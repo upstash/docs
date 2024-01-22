@@ -1,7 +1,126 @@
 ---
 title: Image Similarity Search
+description: "Build a image similarity search using CLIP and Upstash Vector"
 ---
 
+This tutorial will show you how to build an image similarity search functionality using Upstash Vector and CLIP.
+
+Clip is a zero-shot image classification network. It's used classifying an image given possible class names.
+For example it can choose between dog, cat and plane when shown an image.
+
+But it can also be used to generate embeddings for these images. Since the model will generate similar embeddings
+for similar images, we can use this to build a similarity search.
+
+You can find the full code in the [notebook](https://colab.research.google.com/drive/1M41C_9ObDXa71fZm2jpQk_Bht_X2Ykm0?usp=sharing) here.
+
+### `1` Install the packages
+
+```bash
+pip install upstash_vector torch torchvision pillow pinecone-client transformers numpy
+```
+
+### `2` Create a new Index
+
+Create a new index with 512 dimensions and cosine distance.
+Look at [getting started](../overall/getstarted) for details.
+
+### `3` Initialize the Index
+
+```python
+from upstash_vector import Index
+
+index = Index(
+    url="...",
+    token="..."
+)
+```
+
+### `4` Load the model
+
+```python
+from transformers import CLIPModel
+
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+```
+
+### `5` Get image embeddings for images
+
+```python
+# Define image preprocessing (ensure consistency with CLIP's training setup)
+preprocess = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
 
 
-// todo yusuf
+def transform_image(image):
+    image = image.convert("RGB")
+    image = preprocess(image)
+    image = image.unsqueeze(0)
+    with torch.no_grad():
+        features = model.get_image_features(pixel_values=image)
+    embedding = features.squeeze().cpu().numpy()
+    return embedding.astype(np.float32)
+
+vectors = []
+
+image_dir = "./images"
+
+# Extract embedding for each image and insert into index
+for filename in os.listdir(image_dir):
+    image_path = os.path.join(image_dir, filename)
+    image = Image.open(image_path)
+
+    # Get the image's embedding
+    embedding = transform_image(image)
+
+    name = filename.split('.')[0]
+
+    # Store the vectors in an array to upsert all of them at the same time.
+    # Image path is stored in the metadata
+    vectors.append({"vector": embedding.tolist(), "metadata": {"path": image_path}, "id": name})
+
+    print(f"- [+] {filename}")
+```
+
+### `6` Upsert the vectors to the Index
+
+```python
+index.upsert(vectors)
+```
+
+That's it. Now you can go to [upstash console](https://console.upstash.com) and see your vectors
+in the data browser tab.
+
+## Get similar images from image
+
+We can generate embeddings for an image we want to query for and look at the top 3 closest vectors to it.
+
+```python
+# Load the image
+query_image = Image.open(path)
+
+# Get the embedding of the image using the same pipeline
+vector = transform_image(query_image)
+
+# Get the top 3 closest from the index
+result = index.query(vector=vector.tolist(), top_k=3, include_metadata=True)
+```
+
+The response is an array of result objects which holds `metadata` and `id` for the top 3 closest images.
+
+Using this we can display the original photo and the closest images
+
+```python
+display(NotebookImage(filename=path))
+
+for i, res in enumerate(result):
+    print(f'{i + 1}: ID={res.id}, score={res.score}')
+
+    display(NotebookImage(filename=res.metadata["path"]))
+```
+
+And that's it, you have a working image similarity search. There is probably a lot of room for improvement but
+the point of this tutorial is to show how easy it is to use Upstash Vector.
+You can find the full code in the [notebook](https://colab.research.google.com/drive/1M41C_9ObDXa71fZm2jpQk_Bht_X2Ykm0?usp=sharing) here.
