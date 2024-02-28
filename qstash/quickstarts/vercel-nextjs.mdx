@@ -1,204 +1,392 @@
 ---
-title: "Next.js on Vercel"
+title: Next.js
 ---
 
-[Source Code](https://github.com/upstash/qstash-examples/tree/main/vercel-nextjs)
+In this tutorial, we'll create a Next.js app that calls a long-running 
+background job using QStash.
 
-This is a step by step guide on how to receive webhooks from qstash in your
-Next.js app.
+## Prerequisites
+- Create an Upstash account and get your [QStash token](https://console.upstash.com/qstash)
+- Node.js installed
 
 <Steps>
-<Step titleSize="h3"  title="Create a new nextjs app named `qstash-receiver`">
+  <Step titleSize="h3"  title="Create Next.js app and install QStash">
+  ```bash
+  npx create-next-app@latest --ts --eslint --tailwind --src-dir --app --import-alias='@/*' qstash-bg-job 
+  ```
+  ```bash
+  cd qstash-bg-job
+  ```
+  ```bash
+  npm install @upstash/qstash
+  ```
+  ```bash
+  npm run dev
+  ```
+  </Step>
 
-There are [great tutorials](https://nextjs.org/learn/basics/create-nextjs-app/setup) on
-how to setup Next.js on [Vercel](https://vercel.com/), so I won't go into
-details here.
+  <Step titleSize="h3"  title="Create UI">
+  After removing the default content in `src/app/page.tsx`, let's create a simple UI to trigger the background job
+  using a button.
+
+  ```tsx src/app/page.tsx
+  "use client"
+  
+  export default function Home() {
+    return (
+      <main className="flex h-lvh items-center justify-center">
+        <button onClick={handleClick} className="btn btn-primary w-1/2 h-56 bg-green-500 text-xl sm:text-3xl rounded-lg hover:bg-green-600">
+          Start Background Job
+        </button>
+      </main>
+    );
+  }
+  ```
+
+  <Accordion title="Beautiful">
+    <Frame>
+      <img src="/img/qstash/quickstart-qstash-ui.png" alt="Quickstart UI" />
+    </Frame>
+  </Accordion>
+  </Step>
+
+  <Step titleSize="h3"  title="Start Background Job">
+  We can use QStash to start a background job by calling the `publishJSON` method.
+  In this example, we're using Next.js server actions, but you can also use route handlers.
+
+  Since we don't have our public API endpoint yet, we can use [Request Catcher](https://requestcatcher.com/) to test the background job.
+  This will eventually be replaced with our own API endpoint.
+
+  ```ts src/app/actions.ts
+  "use server"
+  import { Client } from "@upstash/qstash";
+
+  const qstashClient = new Client({
+    // Add your token to a .env file
+    token: process.env.QSTASH_TOKEN!,
+  });
+
+  export async function startBackgroundJob() {
+    await qstashClient.publishJSON({
+      "url": "https://firstqstashmessage.requestcatcher.com/test",
+      body: {
+        "hello": "world"
+      }
+    });
+  }
+  ```
+  Now let's invoke the `startBackgroundJob` function when the button is clicked.
+
+  ```tsx src/app/page.tsx
+  "use client"
+  import { startBackgroundJob } from "@/app/actions";
+
+  export default function Home() {
+    async function handleClick() {
+      await startBackgroundJob();
+    }
+
+    return (
+      <main className="flex h-lvh items-center justify-center">
+        <button onClick={handleClick} className="btn btn-primary w-1/2 h-56 bg-green-500 text-xl sm:text-3xl rounded-lg hover:bg-green-600">
+          Start Background Job
+        </button>
+      </main>
+    );
+  }
+  ```
+
+  To test the background job, click the button and check the Request Catcher for the incoming request.
+
+  <Accordion title="Verification screenshots">
+    <Frame>
+      <img src="/img/qstash/reqcatcher.png" />
+    </Frame>
 
 
+    You can also head over to [Upstash Console](https://console.upstash.com/qstash) and go to the
+    `Logs` tab where you can see your message activities.
 
-```bash
-npx create-next-app qstash-receiver
-cd qstash-receiver
-```
+    <Frame>
+      <img src="/img/qstash/log.png" />
+    </Frame>
+  </Accordion>
+  </Step>
 
-</Step>
+  <Step titleSize="h3"  title="Create your own endpoint">
+  Now that we know QStash is working, let's create our own endpoint to handle a background job. This
+  is the endpoint that will be invoked by QStash.
 
-<Step titleSize="h3"  title="Install qstash">
+  This job will be responsible for sending 10 requests, each with a 500ms delay. Since we're deploying
+  to Vercel, we have to be cautious of the [time limit for serverless functions](https://vercel.com/docs/functions/runtimes#max-duration).
 
-```bash
-npm install @upstash/qstash@latest
-```
-</Step>
-<Step titleSize="h3"  title="Write your function">
-<Tabs>
-<Tab title="Pages Serverless Function">
+  ```ts src/app/api/long-task/route.ts
+  export async function POST(request: Request) {
+    const data = await request.json()
+
+    for (let i = 0; i < 10; i++) {
+      await fetch('https://firstqstashmessage.requestcatcher.com/test', {
+        method: 'POST',
+        body: JSON.stringify(data),
+        headers: { 'Content-Type': 'application/json' }
+      })
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
 
 
-```ts /pages/api/qstash-serverless.ts
-import type { NextApiRequest, NextApiResponse } from "next";
-import { verifySignature } from "@upstash/qstash/dist/nextjs";
+    return Response.json({ success: true })
+  }
+  ```
 
-async function handler(req: NextApiRequest, res: NextApiResponse) {
-  console.log(req.headers);
+  Now let's update our `startBackgroundJob` function to use our new endpoint.
 
-  await new Promise((r) => setTimeout(r, 1000));
+  There's 1 problem: our endpoint is not public. We need to make it public so that QStash can call it.
+  We have 2 options:
 
-  console.log("Success");
-  console.log(typeof req.body, { body: req.body });
-  res.status(200).json({ name: "John Doe", body: req.body });
-}
+  1. Deploy our application to a platform like Vercel and use the public URL.
+  2. Create a [local tunnel](/qstash/howto/local-tunnel) to test the endpoint locally.
 
-export default verifySignature(handler);
+  For the purpose, of this tutorial, I'll deploy the application to Vercel, but 
+  feel free to use a local tunnel if you prefer.
 
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
-```
+  <Accordion title="Deploying to Vercel">
+    There are many ways to [deploy to Vercel](https://vercel.com/docs/deployments/overview), but
+    I'm going to use the Vercel CLI.
 
-</Tab>
+    ```bash
+    npm install -g vercel
+    ```
 
-<Tab title="Pages Edge">
-```ts /pages/api/qstash-edge.ts
-import { NextRequest, NextResponse } from "next/server";
-import { verifySignatureEdge } from "@upstash/qstash/dist/nextjs";
+    ```bash
+    vercel
+    ```
 
-async function handler(req: NextRequest) {
-    console.log(req.headers);
-    await new Promise((r) => setTimeout(r, 1000));
-    console.log("Success");
-    console.log(typeof req.body, { body: req.body });
-    return NextResponse.json({ name: "John Doe", body: req.body });
-}
+    Once deployed, you can find the public URL in the Vercel dashboard.
+  </Accordion>
 
-export default verifySignatureEdge(handler);
-export const config = {
-    runtime: "edge",
-    api: {
-    bodyParser: false,
-    },
-};
-```
+  Now that we have a public URL, we can update the URL.
 
-  </Tab>
+  ```ts src/app/actions.ts
+  "use server"
+  import { Client } from "@upstash/qstash";
 
-<Tab title="App Router Serverless">
-```ts /app/api/qstash-serverless/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { verifySignatureAppRouter } from "@upstash/qstash/dist/nextjs";
+  const qstashClient = new Client({
+    token: process.env.QSTASH_TOKEN!,
+  });
 
-async function handler(_req: NextRequest) {
-  await new Promise((r) => setTimeout(r, 1000));
+  export async function startBackgroundJob() {
+    await qstashClient.publishJSON({
+      // Replace with your public URL
+      "url": "https://qstash-bg-job.vercel.app/api/long-task",
+      body: {
+        "hello": "world"
+      }
+    })
+  }
+  ```
 
-  console.log("Success");
-  return NextResponse.json({ name: "John Doe " });
-}
+  And voila! You've created a Next.js app that calls a long-running background job using QStash.
+  </Step>
 
-export const POST = verifySignatureAppRouter(handler);
-```
+  <Step title="Error catching and security">
+  QStash is a great way to handle background jobs, but it's important to remember that it's a public
+  API. This means that anyone can call your endpoint. Make sure to add security measures to your endpoint
+  to ensure that QStash is the sender of the request.
 
-</Tab>
+  Luckily, our SDK provides a way to verify the sender of the request. Make sure to get your signing keys
+  from the QStash console and add them to your environment variables. The `verifySignatureAppRouter` will try to
+  load `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` from the environment. If one of them is missing, 
+  an error is thrown.
 
-<Tab title="App Router Edge">
-```ts /app/api/qstash-edge/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { verifySignatureEdge } from "@upstash/qstash/dist/nextjs";
+  ```ts src/app/api/long-task/route.ts
+  import { verifySignatureAppRouter } from "@upstash/qstash/dist/nextjs";
 
-async function handler(_req: NextRequest) {
-  await new Promise((r) => setTimeout(r, 1000));
+  async function handler(request: Request) {
+    const data = await request.json();
 
-  console.log("Success");
-  return NextResponse.json({ name: "John Doe" });
-}
+    for (let i = 0; i < 10; i++) {
+      await fetch('https://firstqstashmessage.requestcatcher.com/test', {
+        method: 'POST',
+        body: JSON.stringify(data),
+        headers: { 'Content-Type': 'application/json' }
+      });
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
 
-export const POST = verifySignatureEdge(handler);
-export const runtime = "edge";
-```
-</Tab>
-</Tabs>
 
-`verifySignature` or `verifySignatureEdge` will try to load `QSTASH_CURRENT_SIGNING_KEY` and
-`QSTASH_NEXT_SIGNING_KEY` from the environment. If one of them is missing, an
-error is thrown. We will set these in step 5.
-</Step>
+    return Response.json({ success: true });
+  }
 
-<Step titleSize="h3"  title="Deploy to Vercel">
+  export const POST = verifySignatureAppRouter(handler);
+  ```
 
-I'm deploying using [Vercel's CLI](https://vercel.com/docs/cli), but you could
-also push your project to a remote repo and deploy that way. If you have never
-used the cli, please run `npx vercel login` before.
-[See here](https://vercel.com/docs/cli#commands/login)
+  Let's also add error catching to our action and a loading state to our UI.
 
-You can accept all the default settings.
+  <CodeGroup>
+    ```ts src/app/actions.ts
+    "use server"
+    import { Client } from "@upstash/qstash";
 
-```bash
-$ npx vercel
+    const qstashClient = new Client({
+      token: process.env.QSTASH_TOKEN!,
+    });
 
-Vercel CLI 24.2.5
-? Set up and deploy “~/github/upstash/qstash-examples/vercel-nextjs”? [Y/n] y
-? Which scope do you want to deploy to? Andreas Thomas
-? Link to existing project? [y/N] n
-? What’s your project’s name? vercel-nextjs
-? In which directory is your code located? ./
-Auto-detected Project Settings (Next.js):
-- Build Command: next build
-- Output Directory: Next.js default
-- Development Command: next dev --port $PORT
-? Want to override the settings? [y/N] n
-🔗  Linked to chronark/vercel-nextjs (created .vercel)
-🔍  Inspect: https://vercel.com/chronark/vercel-nextjs/FZScmeKCWr5snn6P8voyv3W28npf [904ms]
-✅  Production: https://vercel-nextjs-two-sandy.vercel.app [copied to clipboard] [37s]
-📝  Deployed to production. Run `vercel --prod` to overwrite later (https://vercel.link/2F).
-💡  To change the domain or build command, go to https://vercel.com/chronark/vercel-nextjs/settings
-```
-</Step>
-<Step titleSize="h3"  title="Set Signing Keys in Vercel">
+    export async function startBackgroundJob() {
+      try {
+        const response = await qstashClient.publishJSON({
+          "url": "https://qstash-bg-job.vercel.app/api/long-task",
+          body: {
+            "hello": "world"
+          }
+        });
+        return response.messageId;
+      } catch (error) {
+        console.error(error);
+        return null;
+      }
+    }
+    ```
+    ```tsx src/app/page.tsx
+    "use client"
+    import { startBackgroundJob } from "@/app/actions";
+    import { useState } from "react";
 
-Go to your project's settings and set the following environment variables:
+    export default function Home() {
+      const [loading, setLoading] = useState(false);
+      const [msg, setMsg] = useState("");
 
-![](/img/qstash/vercel_env.png)
-</Step>
-<Step titleSize="h3"  title="Redeploy to use the new environment variables">
+      async function handleClick() {
+        setLoading(true);
+        const messageId = await startBackgroundJob();
+        if (messageId) {
+          setMsg(`Started job with ID ${messageId}`);
+        } else {
+          setMsg("Failed to start background job");
+        }
+        setLoading(false);
+      }
 
-To make the added environment variables take effect, you must redeploy your
-project.
+      return (
+        <main className="flex flex-col h-lvh items-center justify-center">
+          <button onClick={handleClick} disabled={loading} className="btn btn-primary w-1/2 h-56 bg-green-500 text-xl sm:text-3xl rounded-lg hover:bg-green-600 disabled:bg-gray-500">
+            Start Background Job
+          </button>
 
-```bash
-$ npx vercel --prod
-Vercel CLI 24.2.5
-🔍  Inspect: https://vercel.com/chronark/vercel-nextjs/3wPxyEPwdcMrncSNqFNcDD41rjxB [3s]
-✅  Production: https://vercel-nextjs-two-sandy.vercel.app [copied to clipboard] [39s]
-```
-</Step>
-<Step titleSize="h3"  title="Publish a message">
+          {loading && <div className="text-2xl mt-8">Loading...</div>}
+          {msg && <p className="text-center text-lg">{msg}</p>}
+        </main>
+      );
+    }
+    ```
+  </CodeGroup>
 
-Go to your project's logs and then publish a new message.
-
-```bash
-curl --request POST "https://qstash.upstash.io/v2/publish/https://vercel-nextjs-two-sandy.vercel.app/api/qstash" \
-     -H "Authorization: Bearer <QSTASH_TOKEN>" \
-     -H "Content-Type: application/json" \
-     -d "{ \"hello\": \"world\"}"
-```
-
-```bash
-{"messageId":"msg_5GJrFa5aMFxDYsDygAnW9YW8cmRm"}
-```
-
-In the logs you should see something like this:
-
-```
-[POST] /api/qstash
-If this is printed, the signature has already been verified
-```
-</Step>
-
+  </Step>
 
 </Steps>
 
+## Result
 
-That's it, you have successfully created a secure Next.js API route, that
-receives and verifies incoming webhooks from qstash.
+We have now created a Next.js app that calls a long-running background job using QStash! 
+Here's the app in action:
 
-Learn more about publishing a message to qstash [here](/qstash/howto/publishing)
+<Frame>
+  <img src="/img/qstash/nextjs-quickstart-result-gif.gif" alt="Quickstart Result Gif" />
+</Frame>
+
+We can also view the logs on Vercel and QStash
+
+<Accordion title="Logs">
+  Vercel
+  <Frame>
+    <img src="/img/qstash/vercel-log-quickstart.png" alt="Vercel Logs" />
+  </Frame>
+  QStash
+  <Frame>
+    <img src="/img/qstash/quickstart-qstash-result.png" alt="Vercel Logs" />
+  </Frame>
+</Accordion>
+
+And the code for the 3 files we created:
+
+<CodeGroup>
+  ```tsx src/app/page.tsx
+  "use client"
+  import { startBackgroundJob } from "@/app/actions";
+  import { useState } from "react";
+
+  export default function Home() {
+    const [loading, setLoading] = useState(false);
+    const [msg, setMsg] = useState("");
+
+    async function handleClick() {
+      setLoading(true);
+      const messageId = await startBackgroundJob();
+      if (messageId) {
+        setMsg(`Started job with ID ${messageId}`);
+      } else {
+        setMsg("Failed to start background job");
+      }
+      setLoading(false);
+    }
+
+    return (
+      <main className="flex flex-col h-lvh items-center justify-center">
+        <button onClick={handleClick} disabled={loading} className="btn btn-primary w-1/2 h-56 bg-green-500 text-xl sm:text-3xl rounded-lg hover:bg-green-600 disabled:bg-gray-500">
+          Start Background Job
+        </button>
+
+        {loading && <div className="text-2xl mt-8">Loading...</div>}
+        {msg && <p className="text-center text-lg">{msg}</p>}
+      </main>
+    );
+  }
+  
+  ```
+  ```ts src/app/actions.ts
+  "use server"
+  import { Client } from "@upstash/qstash";
+
+  const qstashClient = new Client({
+    token: process.env.QSTASH_TOKEN!,
+  });
+
+  export async function startBackgroundJob() {
+    try {
+      const response = await qstashClient.publishJSON({
+        "url": "https://qstash-bg-job.vercel.app/api/long-task",
+        body: {
+          "hello": "world"
+        }
+      });
+      return response.messageId;
+    } catch (error) {
+      console.error(error);
+      return null;
+    }
+  } 
+  ```
+  ```ts src/app/api/long-task/route.ts
+  import { verifySignatureAppRouter } from "@upstash/qstash/dist/nextjs";
+
+  async function handler(request: Request) {
+    const data = await request.json();
+
+    for (let i = 0; i < 10; i++) {
+      await fetch('https://firstqstashmessage.requestcatcher.com/test', {
+        method: 'POST',
+        body: JSON.stringify(data),
+        headers: { 'Content-Type': 'application/json' }
+      });
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+
+    return Response.json({ success: true });
+  }
+
+  export const POST = verifySignatureAppRouter(handler);
+  ```
+</CodeGroup>
+
+Now, go ahead and try it out for yourself! Try using some of the other features of QStash, like
+[schedules](/qstash/features/schedules), [callbacks](/qstash/features/callbacks), and [topics](/qstash/features/topics).
