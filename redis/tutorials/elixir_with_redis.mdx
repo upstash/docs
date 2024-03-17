@@ -1,0 +1,388 @@
+---
+title: "Elixir with Redis"
+description: "Tutorial on Using Upstash Redis In Your Phoenix App and Deploying it on Fly."
+---
+
+This tutorial showcases how one can use [fly.io](https://fly.io) to deploy a Phoenix
+app using Upstash Redis to store results of external API calls.
+
+See [code](https://github.com/upstash/examples/tree/master/examples/elixir-with-redis) and
+[demo](https://elixir-redis.fly.dev/).
+
+### `1` Create a Elixir app with Phoenix
+
+To create an app, run the following command:
+
+```
+mix phx.new redix_demo --no-ecto 
+```
+
+Phoenix apps are initialized with a datastore. We pass `--no-ecto` flag to disable
+the datastore since we will only use Redis. See
+[Phoenix documentation](https://hexdocs.pm/phoenix/up_and_running.html) for more details.
+
+Navigate to the new directory by running
+
+```
+cd redix_demo
+```
+
+### `2` Add Redix
+
+To connect to the Upstash Redis, we will use the
+[Redix client](https://github.com/whatyouhide/redix.git) written for Elixir.
+
+To add Redix to our project, we will first update the dependencies of our project. Simply
+add the following two entries to the dependencies in the `mix.exs` file
+(See [Redix documentation](https://github.com/whatyouhide/redix.git)):
+
+```elixir
+defp deps do
+  [
+    {:redix, "~> 1.1"},
+    {:castore, ">= 0.0.0"}
+  ]
+end
+```
+
+Then, run `mix deps.get` to install the new dependencies.
+
+Next, we will add Redix to our app. In our case, we will add a single global Redix instance.
+Open the `application.ex` file and find the `children` list in the `start` function.
+
+First, add a method to read the connection parameters from the `REDIS_URL` environment variable.
+We choose this name for the environment variable because Fly will create a secret with this name
+when we launch the app with a Redis store. Use regex to extract the password, host and port
+information from the Redis URL:
+
+```elixir
+  def start(_type, _args) do
+    [_, password, host, port] = Regex.run(
+      ~r{(.+):(.+)@(.+):(\d+)},
+      System.get_env("REDIS_URL"),
+      capture: :all_but_first
+    )
+    port = elem(Integer.parse(port), 0)
+
+    # ...
+  end
+```
+
+Next, add the Redix client to the project by adding it to the `children` array.
+([See Redix Documentation for more details](https://hexdocs.pm/redix/real-world-usage.html#single-named-redix-instance))
+
+```elixir
+children = [
+  # ...
+  {
+    Redix,
+    name: :redix,
+    host: host,
+    port: port,
+    password: password,
+    socket_opts: [:inet6]
+  }
+]
+```
+
+Here, we would like to draw attention to the `socket_opts` parameter. If you wish to test
+your app locally by creating an Upstash Redis yourself without Fly, you must define Redix
+client **without the `socket_opts: [:inet6]` field**.
+
+### `3` Testing the Connection
+
+At this point, our app should now be able to communicate with Redix. To test if this
+connection works as expected, we will first add a status page to our app.
+
+To add this page, we will change the default landing page of our Phoenix app. Go to the
+`lib/redix_demo_web/controllers/page_html/home.html.heex` file. Replace the content of
+the file with:
+
+```html
+<.flash_group flash={@flash} />
+<div class="container mx-auto px-4">
+  <h1 class="text-3xl font-bold mb-4">Redix Demo</h1>
+
+  <form action="/" method="get" class="w-full flex items-center mb-4">
+    <input type="text" name="text" placeholder="Location" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:border-blue-500">
+    <button type="submit" class="ml-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">Submit</button>
+  </form>
+
+  <%= if @text do %>
+    <%= @text %>
+  <% end %>
+
+  <%= if @weather do %>
+    <div class=" text-lg bg-gray-100 rounded-lg p-4">
+
+      <%= if @location do %>
+        <strong>
+          Location:
+        </strong>
+        <%= @location %>
+      <% end %>
+
+      <p>
+        <strong>
+          Weather:
+        </strong>
+        <%= @weather %> °C
+      </p>
+
+    </div>
+  <% end %>
+</div>
+```
+
+This HTML will show different content depending on the parameters we
+pass it. It has a form at the top which is where the user will enter
+some location. Below, we will show the weather information.
+
+Next, open the `lib/redix_demo_web/router.ex` file. In this file,
+URL paths are defined with the `scope` keyword. Update the scope
+in the following way:
+
+```
+  scope "/", RedixDemoWeb do
+    pipe_through :browser
+
+    get "/status", PageController, :status
+
+    get "/", PageController, :home
+    get "/:text", PageController, :home
+  end
+```
+
+Our website will have a `/status` path, which will be rendered with the
+`status` method we will define. The website will also render the home
+page in `/` and in `/:text`. `/:text` will essentially match any route
+and the route will be available to our app as a parameter when rendering.
+
+Finally, we will define the status page in
+`lib/redix_demo_web/controllers/page_controller.ex`. We will define a struct
+`Payload` and a private method `render_home`. Then, we will define the home
+page and the status page:
+
+```elixir
+defmodule RedixDemoWeb.PageController do
+  use RedixDemoWeb, :controller
+
+  defmodule Payload do
+    defstruct text: nil, weather: nil, location: nil
+  end
+
+  def status(conn, _params) do
+    case Redix.command(:redix, ["PING"]) do
+      {:ok, response} ->
+        render_home(conn, %Payload{text: "Redis Connection Status: Success! Response to 'PING': '#{response}'"})
+      {:error, response} ->
+        render_home(conn, %Payload{text: "Redis Connection Status: Error. Reason: #{response.reason}"})
+      end
+  end
+
+  def home(conn, _params) do
+    render_home(conn, %Payload{text: "Enter a location above to get the weather info!"})
+  end
+
+  defp render_home(conn, %Payload{} = payload) do
+    render(conn, "home.html", text: payload.text, weather: payload.weather, location: payload.location)
+  end
+end
+```
+
+The home page simply renders our home page. The status page renders the same page, but
+shows the response of a `PING` request to our Redis server.
+
+We are now ready to deploy the app on Fly!
+
+### `4` Deploy on Fly
+
+To deploy the app on Fly, first
+[install Fly CLI](https://fly.io/docs/hands-on/install-flyctl/) and authenticate. Then,
+launch the app with:
+
+```
+fly launch
+```
+
+If you haven't set `REDIS_URL` environment variable in your environment, `fly launch` command will show
+an error when compiling the app but don't worry. You can still continue with launching the app.
+Fly will add this environment variable itself.
+
+
+Fly will at some point ask if we want to tweak the settings of the app. Choose yes (`y`):
+
+```
+>>> fly launch
+
+Detected a Phoenix app
+Creating app in /Users/examples/redix_demo
+We're about to launch your Phoenix app on Fly.io. Here's what you're getting:
+
+Organization: C. Arda                (fly launch defaults to the personal org)
+Name:         redix_demo             (derived from your directory name)
+Region:       Bucharest, Romania     (this is the fastest region for you)
+App Machines: shared-cpu-1x, 1GB RAM (most apps need about 1GB of RAM)
+Postgres:     <none>                 (not requested)
+Redis:        <none>                 (not requested)
+Sentry:       false                  (not requested)
+
+? Do you want to tweak these settings before proceeding? (y/N)
+```
+
+This will open the settings on the browser. Two settings are relevant to this guide:
+- Region: Upstash is not available in all regions. Choose Amsterdam.
+- Redis: Choose "Redis with Upstash"
+
+If you already have a Redis on Fly you want to use, you may want to not choose the
+"Redis with Upstash". Instead, you can get the `REDIS_URL` from [the Upstash Fly console](https://console.upstash.com/flyio/redis)
+and add it as a secret with `fly secrets set REDIS_URL=****`. Note that the `REDIS_URL`
+will be in `redis://default:****@fly-****.upstash.io:****` format.
+
+Once the app is launched, deploy it with:
+
+```
+fly deploy
+```
+
+The website will become avaiable after some time. Check the `/status` page to see that
+the redis connection is correctly done.
+
+In the rest of our tutorial, we will work on caching the responses from an external api.
+If you are only interested in how a Phoenix app with Redis can be deployed on Fly, you
+may not need to read the rest of the tutorial.
+
+### `5` Using Redix to Cache External API Responses
+
+Finally, we will now build our website to offer weather information. We will use the API
+of [WeatherAPI](https://www.weatherapi.com/) to get the weather information upon user
+request. We will cache the results of our calls in Upstash Redis to reduce the number
+of calls we make to the external API and to reduce the response time of our app.
+
+In the end, we will have a method `def home(conn, %{"text" => text})` in the 
+`lib/redix_demo_web/controllers/page_controller.ex` file. To see the final file, find the
+[`page_controller.ex` file Upstash examples repository](https://github.com/upstash/examples/blob/main/examples/elixir-with-redis/lib/redix_demo_web/controllers/page_controller.ex).
+
+First, we need to define some private methods to handle the request logic. We start off
+with a function to fetch the weather. The method gets the location string and replaces
+the empty characters with `%20`. Then it calls `fetch_weather_from_cache` method we will
+define. Depending on the result, it either returns the result from cache, or fetches the
+result from the api.
+
+```elixir
+  defp fetch_weather(location) do
+    location = String.replace(location, " ", "%20")
+    case fetch_weather_from_cache(location) do
+      {:ok, cached_weather} ->
+        {:ok, cached_weather}
+      {:error, :not_found} ->
+        fetch_weather_from_api(location)
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+```
+
+Now, we will define the `fetch_weather_from_cache` method. This method will use
+Redix to fetch the weather from the location. If it's not found, we will return
+`{:error, :not_found}`. If it's found, we will return after decoding it into a
+map.
+
+```elixir
+  defp fetch_weather_from_cache(location) do
+    case Redix.command(:redix, ["GET", "weather:#{location}"]) do
+      {:ok, nil} ->
+        {:error, :not_found}
+      {:ok, cached_weather_json} ->
+        {:ok, Jason.decode!(cached_weather_json)}
+      {:error, _reason} ->
+        {:error, "Failed to fetch weather data from cache."}
+    end
+  end
+```
+
+Next, we will define the `fetch_weather_from_api` method. This method
+requests the weather information from the external API. If the request
+is successfull, it also saves the result in the cache with the
+`cache_weather_response` method.
+
+```elixir
+  defp fetch_weather_from_api(location) do
+    weather_api_key = System.get_env("WEATHER_API_KEY")
+    url = "http://api.weatherapi.com/v1/current.json?key=#{weather_api_key}&q=#{location}&aqi=no"
+
+    case HTTPoison.get(url) do
+      {:ok, %{status_code: 200, body: body}} ->
+        weather_info = body
+                      |> Jason.decode!()
+                      |> get_weather_info()
+
+        # Cache the weather response in Redis for 8 hours
+        cache_weather_response(location, Jason.encode!(weather_info))
+
+        {:ok, weather_info}
+      {:ok, %{status_code: status_code, body: body}} ->
+        {:error, "#{body} (#{status_code})"}
+      {:error, _reason} ->
+        {:error, "Failed to fetch weather data."}
+    end
+  end
+```
+
+In the `cache_weather_response` method, we simply store the weather
+information in our Redis:
+
+```elixir
+  defp cache_weather_response(location, weather_data) do
+    case Redix.command(:redix, ["SET", "weather:#{location}", weather_data, "EX", 8 * 60 * 60]) do
+      {:ok, _} ->
+        :ok
+      {:error, _reason} ->
+        {:error, "Failed to cache weather data."}
+    end
+  end
+```
+
+Finally, we define the `get_weather_info` and `home` methods.
+
+```elixir
+  def home(conn, %{"text" => text}) do
+    case fetch_weather(text) do
+      {:ok, %{"location" => location, "temp" => temp_c, "condition" => condition_text}} ->
+        render_home(conn, %Payload{weather: "#{condition_text}, #{temp_c}", location: location})
+      {:error, reason} ->
+        render_home(conn, %Payload{text: reason})
+    end
+  end
+
+  defp get_weather_info(%{
+    "location" => %{
+      "name" => name,
+      "region" => region
+    },
+    "current" => %{
+      "temp_c" => temp_c,
+      "condition" => %{
+        "text" => condition_text
+      }
+    }
+  }) do
+    %{"location" => "#{name}, #{region}", "temp" => temp_c, "condition" => condition_text}
+  end
+```
+
+### `6` Re-deploying the App
+
+To deploy the app after adding the home page logic, only a few steps remain to deploy the
+finished app.
+
+First, add `{:httpoison, "~> 1.5"}` dependency to `mix.exs` file and run `mix deps.get`.
+
+Then, get an API key from [WeatherAPI](https://www.weatherapi.com/) and set it as secret in
+fly with:
+
+```
+fly secrets set WEATHER_API_KEY=****
+```
+
+Now, you can run `fly deploy` in your directory to deploy the completed app!
