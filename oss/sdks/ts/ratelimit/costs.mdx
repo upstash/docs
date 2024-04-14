@@ -1,0 +1,92 @@
+---
+title: Costs
+---
+
+This page details the cost of the Ratelimit algorithms in terms of the number of Redis commands. Note that these are calculated for Regional Ratelimits. For [Multi Region Ratelimit](https://upstash.com/docs/oss/sdks/ts/ratelimit/features#multi-region), costs will be higher. Additionally, if a Global Upstash Redis is used as the database, number of commands should be calculated as `(1+readRegionCount) * writeCommandCount + readCommandCount` and plus 1 if analytics is enabled.
+
+The Rate Limit SDK minimizes Redis calls to reduce latency overhead and cost. The count of commands executed by the Rate Limit algorithm depends on the chosen algorithm, as well as the state of the algorithm and the caching.
+
+#### Algorithm State
+
+By state of the algorithm, we refer to the entry in our Redis store regarding some identifier `ip1`. You can imagine that there is a state for every identifier. We name these states in the following manner for the purpose of attributing costs to each one:
+
+| State | Success | Explanation |
+| --------------- | ------- | ----------- |
+| First           | true    | First time the Ratelimit was called with identifier `ip1` |
+| Intermediate    | true    | Second or some other time the Ratelimit was called with identifier `ip1` |
+| Rate-Limited    | false   | Requests with identifier `ip1` which are rate limited. |
+
+For instance, first time we call the algorithm with `ip1`, `PEXPIRE` is called so that the key expires after some time. In the following calls, we still use the same script but don't call `PEXPIRE`. In the rate-limited state, we may avoid using Redis altogether if we can make use of the cache.
+
+#### Cache Result
+
+We distinguish the two cases when the identifier `ip1` is found in cache, resulting in a "hit" and the case when the identifier `ip1` is not found in the cache, resulting in a "miss". The cache only exists in the runtime environment and is independent of the Redis database. The state of the cache is especially relevant for serverless contexts, where the cache will usually be empty because of a cold start.
+
+| Result | Explanation |
+| ------ | ----------- |
+| Hit    | Case when identifier `ip1` is found in the runtime cache |
+| Miss   | The first time the rate limit method is called with identifier `ip1` during the same process |
+
+An identifier is saved in the cache only when a request is rate limited after a call to the Redis database. The request to Redis returns a timestamp for the time when such a request won't be rate limited anymore. We save this timestamp in the cache and this allows us to reject any request before this timestamp without having to consult the Redis database.
+
+See the [section on caching](https://upstash.com/docs/oss/sdks/ts/ratelimit/features) for more details.
+
+# Costs
+
+### `limit()`
+
+#### Fixed Window
+
+| Cache Result | Algorithm State | Command Count | Commands |
+| ------------ | --------------- | ------------- | -------- |
+| Hit/Miss     | First | 3 | EVAL, INCR, PEXPIRE |
+| Hit/Miss     | Intermediate | 2 | EVAL, INCR |
+| Miss         | Rate-Limited | 2 | EVAL, INCR |
+| Hit          | Rate-Limited | 0 | _utilized cache_ |
+
+#### Sliding Window
+
+| Cache Result | Algorithm State | Command Count | Commands |
+| ------------ | --------------- | ------------- | -------- |
+| Hit/Miss     | First | 5 | EVAL, GET, GET, INCR, PEXPIRE |
+| Hit/Miss     | Intermediate | 4 | EVAL, GET, GET, INCR |
+| Miss         | Rate-Limited | 3 | EVAL, GET, GET |
+| Hit          | Rate-Limited | 0 | _utilized cache_ |
+
+#### Token Bucket
+
+| Cache Result | Algorithm State | Command Count | Commands |
+| ------------ | --------------- | ------------- | -------- |
+| Hit/Miss     | First/Intermediate | 4 | EVAL, HMGET, HMSET, PEXPIRE |
+| Miss         | Rate-Limited | 2 | EVAL, HMGET |
+| Hit          | Rate-Limited | 0 | _utilized cache_ |
+
+### `getRemaining()`
+
+This method doesn't use the cache or it doesn't have a state it depends on. Therefore, every call
+results in the same number of commands in Redis.
+
+| Algorithm | Command Count | Commands |
+| --------- | ------------- | -------- |
+| Fixed Window | 2 | EVAL, GET |
+| Sliding Window | 3 | EVAL, GET, GET |
+| Token Bucket | 2 | EVAL, HMGET |
+
+
+### `resetUsedTokens()`
+
+This method starts with a `SCAN` command and deletes every key that matches with `DEL` commands:
+
+| Algorithm | Command Count | Commands |
+| --------- | ------------- | -------- |
+| Fixed Window | 3 | EVAL, SCAN, DEL |
+| Sliding Window | 4 | EVAL, SCAN, DEL, DEL |
+| Token Bucket | 3 | EVAL, SCAN, DEL |
+
+### `blockUntilReady()`
+
+Works the same as `limit()`.
+
+# Analytics
+
+If analytics is enabled, all calls of `limit` will result in 1 more command since `HINCRBY` will be called to update the analytics.
