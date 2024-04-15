@@ -1,0 +1,75 @@
+---
+title: Methods
+---
+
+This page contains information on what methods are available in Ratelimit and how they can be used. For information on the
+cost of these operations in term of number of Redis commands, refer to the [Costs page](https://upstash.com/docs/oss/sdks/ts/ratelimit/costs).
+
+## `limit`
+
+The `limit` method is the heart of the Ratelimit algorithm.
+
+```ts
+ratelimit.limit(
+  identifier: string,
+  req?: { geo?: Geo; rate?: number },
+): Promise<RatelimitResponse> 
+```
+
+It receives an identifier to rate limit. Additionally, it can be passed a `req` parameter which can contain either a
+`geo` or a `rate` field. `geo` field is passed to the analytics but is not in use currenlty. The `rate` field determines
+the amount of tokens/requests to subtract from the state of the algorithm with regards to the provided identifier.
+
+## `blockUntilReady`
+
+In case you don't want to reject a request immediately but wait until it can be
+processed, we also provide
+
+```ts
+ratelimit.blockUntilReady(
+  identifier: string,
+  timeout: number
+): Promise<RatelimitResponse>
+```
+
+It is very similar to the `limit` method and takes an identifier and returns the
+same response. However if the current limit has already been exceeded, it will
+automatically wait until the next window starts and will try again. Setting the
+timeout parameter (in milliseconds) will cause the returned Promise to resolve
+in a finite amount of time.
+
+```ts
+// Create a new ratelimiter, that allows 10 requests per 10 seconds
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(10, "10 s"),
+  analytics: true,
+});
+
+// `blockUntilReady` returns a promise that resolves as soon as the request is allowed to be processed, or after 30 seconds
+const { success } = await ratelimit.blockUntilReady("id", 30_000);
+
+if (!success) {
+  return "Unable to process, even after 30 seconds";
+}
+doExpensiveCalculation();
+return "Here you go!";
+```
+
+<Warning>In **Cloudflare**, `blockUntilReady` will not work as intended due to `Date.now()` not behaving the same as in Node environments.<br/><br/>**For more information, check**: <br/>https://developers.cloudflare.com/workers/runtime-apis/web-standards</Warning>
+
+## `resetUsedTokens`
+
+This method resets the state of the algorithm with respect to some identifier:
+
+```ts
+ratelimit.resetUsedTokens(identifier: string): Promise<void>
+```
+
+## `getRemaining`
+
+This method returns the remaining tokens/requests available for some identifier:
+
+```ts
+ratelimit.getRemaining(identifier: string): Promise<number>
+```

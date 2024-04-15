@@ -2,7 +2,41 @@
 title: Features
 ---
 
-### Timeout
+## Caching
+
+For extreme load or denial of service attacks, it might be too expensive to call
+redis for every incoming request, just to find out it should be blocked because
+they have exceeded the limit.
+
+You can use an ephemeral in memory cache by passing some variable of type
+`Map<string, number>` as the `ephemeralCache` option:
+
+```ts
+const cache = new Map(); // must be outside of your serverless function handler
+
+// ...
+
+const ratelimit = new Ratelimit({
+  // ...
+  ephemeralCache: cache,
+});
+```
+
+By default, `ephemeralCache` will be initialized with `new Map()` if no value is provided
+as the `ephemeralCache` parameter. To disable the cache, one must pass `ephemeralCache: false`.
+
+If enabled, the ratelimiter will keep track of the blocked identifiers and their
+reset timestamps. When a request is received with some identifier `ip1` before the reset time of
+`ip1`, the request will be denied without having to call Redis.
+
+In serverless environments this is only possible if you create the cache or ratelimiter
+instance outside of your handler function. While the function is still hot, the
+ratelimiter can block requests without having to request data from Redis, thus
+saving time and money.
+
+See the section on how caching impacts the cost in the [costs page](https://upstash.com/docs/oss/sdks/ts/ratelimit/costs#cache-result).
+
+## Timeout
 
 You can define an optional timeout in milliseconds, after which the request will
 be allowed to pass regardless of what the current limit is. This can be useful
@@ -17,68 +51,55 @@ const ratelimit = new Ratelimit({
 });
 ```
 
-### Block until ready
+Default value of the timeout is 5 seconds if no `timeout` is provided.
 
-In case you don't want to reject a request immediately but wait until it can be
-processed, we also provide
+## Analytics & Dashboard
 
-```ts
-ratelimit.blockUntilReady(identifier: string, timeout: number): Promise<RatelimitResponse>
-```
+Another feature of the rate limiting algorithm is to collect analytics.
 
-It is very similar to the `limit` method and takes an identifier and returns the
-same response. However if the current limit has already been exceeded, it will
-automatically wait until the next window starts and will try again. Setting the
-timeout parameter (in milliseconds) will cause the returned Promise to resolve
-in a finite amount of time.
+Bu default, analytics is disabled. To enable analytics, simply set the `analytics` parameter to `true`:
 
-```ts
-// Create a new ratelimiter, that allows 10 requests per 10 seconds
+```js
 const ratelimit = new Ratelimit({
-  redis: Redis.fromEnv(),
-  limiter: Ratelimit.slidingWindow(10, "10 s"),
+  redis,
   analytics: true,
-});
-
-// `blockUntilReady` returns a promise that resolves as soon as the request is allowed to be processed, or after 30 seconds
-const { success } = await ratelimit.blockUntilReady("id", 30_000);
-
-if (!success) {
-  return "Unable to process, even after 30 seconds";
-}
-doExpensiveCalculation();
-return "Here you go!";
+  limiter: Ratelimit.slidingWindow(60, "10s"),
+})
 ```
 
-<Warning>In **Cloudflare**, `blockUntilReady` will not work as intended due to `Date.now()` not behaving the same as in Node environments.<br/><br/>**For more information, check**: <br/>https://developers.cloudflare.com/workers/runtime-apis/web-standards</Warning>
+Everytime we call `ratelimit.limit()`, analytics will be sent to the Redis database
+([see costs page](https://upstash.com/docs/oss/sdks/ts/ratelimit/costs#analytics))
+and information about the hour, identifier and the number of rate limit success and
+failiures will be collected. This information can be viewed from the Upstash console.
 
-### Ephemeral Cache
+If you are using rate limiting in Cloudflare Workers, Vercel Edge or a similar environment,
+you need to make sure that the analytics request is delivered correctly to the Redis.
+Otherwise, you may observe lower numbers than the actual number of calls.
 
-For extreme load or denial of service attacks, it might be too expensive to call
-redis for every incoming request, just to find out it should be blocked because
-they have exceeded the limit.
+To make sure that the request completes, you can use the `pending` field returned by
+the `limit` method. See the 
+[Asynchronous synchronization between databases](https://upstash.com/docs/oss/sdks/ts/ratelimit/features#asynchronous-synchronization-between-databases)
+section to see how `pending` can be used.
 
-You can use an ephemeral in memory cache by passing the `ephemeralCache` option:
+### Dashboard
 
-```ts
-const cache = new Map(); // must be outside of your serverless function handler
+If the analytics is enabled, you can find information about how many requests were made
+with which identifiers and how many of the requests were blocked from the [Rate Limit
+dashboard in Upstash Console](https://console.upstash.com/ratelimit).
 
-// ...
+To find to the dashboard, simply click the three dots and choose the "Rate Limit Analytics" tab:
 
-const ratelimit = new Ratelimit({
-  // ...
-  ephemeralCache: cache,
-});
-```
+![navigate.png](/img/ratelimit/navigate.png)
 
-If enabled, the ratelimiter will keep a global cache of identifiers and their
-reset timestamps, that have exhausted their ratelimit. In serverless
-environments this is only possible if you create the cache or ratelimiter
-instance outside of your handler function. While the function is still hot, the
-ratelimiter can block requests without having to request data from redis, thus
-saving time and money.
+In the dashboard, you can find information on how many requests were accepted, how many were blocked
+and how many were received in total. Additionally, you can see requests over time, top allowed and
+blocked requests.
 
-## Using multiple limits
+![dashboard.png](/img/ratelimit/dashboard.png)
+
+If you are using a custom prefix, you need to use the same in the dashboard’s top right corner.
+
+## Using Multiple Limits
 
 Sometimes you might want to apply different limits to different users. For
 example you might want to allow 10 requests per 10 seconds for free users, but
@@ -112,7 +133,30 @@ await ratelimit.free.limit(ip);
 await ratelimit.paid.limit(userId);
 ```
 
-## MultiRegion replicated ratelimiting
+## Custom Rates
+
+When we call `limit`, it subtracts 1 from the number of calls/tokens available in
+the timeframe by default. But there are use cases where we may want to subtract different
+numbers depending on the request.
+
+Consider a case where we receive some input from the user either alone or in batches.
+If we want to rate limit based on the number of inputs the user can send, we need a way of
+specifying what value to subtract.
+
+This is possible thanks to the `rate` parameter. Simply call the `limit` method like the
+following:
+
+```ts
+const { success } = await ratelimit.limit("identifier", { rate: batchSize });
+```
+
+This way, the algorithm will subtract `batchSize` instead of 1.
+
+## Multi Region
+
+Let's assume you have customers in the US and Europe. In this case you can
+create 2 regional redis databases on [Upstash](https://console.upstash.com) and
+your users will enjoy the latency of whichever db is closest to them.
 
 Using a single redis instance has the downside of providing low latencies only
 to the part of your userbase closest to the deployed db. That's why we also
@@ -165,24 +209,9 @@ returning the current limit. This can lead to problems on Cloudflare Workers and
 therefore Vercel Edge functions, because dangling promises must be taken care
 of:
 
-**Vercel Edge:**
-[docs](https://nextjs.org/docs/api-reference/next/server#nextfetchevent)
-
 ```ts
-const { pending } = await ratelimit.limit("id");
-event.waitUntil(pending);
+const { pending } = await ratelimit.limit("id")
+context.waitUntil(pending)
 ```
 
-**Cloudflare Worker:**
-[docs](https://developers.cloudflare.com/workers/runtime-apis/fetch-event/#syntax-module-worker)
-
-```ts
-const { pending } = await ratelimit.limit("id");
-context.waitUntil(pending);
-```
-
-### Example
-
-Let's assume you have customers in the US and Europe. In this case you can
-create 2 regional redis databases on [Upstash](https://console.upstash.com) and
-your users will enjoy the latency of whichever db is closest to them.
+See `waitUntil` documentation in [Cloudflare](https://developers.cloudflare.com/workers/runtime-apis/handlers/fetch/#contextwaituntil) and [Vercel](https://vercel.com/docs/functions/edge-middleware/middleware-api#waituntil) for more details.
