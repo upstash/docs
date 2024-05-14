@@ -1,0 +1,103 @@
+---
+title: Auto-Pipelining
+---
+
+### Auto Pipelining
+
+Auto pipelining allows you to use the redis client as usual
+while in the background it tries to send requests in batches
+whenever possible.
+
+In a nutshell, the client will accumulate commands in a pipeline
+and wait for a short amount of time for more commands to arrive.
+When there are no more commands, it will execute them as a batch.
+
+To enable the feature, simply pass `enableAutoPipelining: true`
+when creating the redis client:
+
+<CodeGroup>
+
+```ts Redis
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv({
+  latencyLogging: false,
+  enableAutoPipelining: true
+});
+```
+
+```ts fromEnv
+import { Redis } from "@upstash/redis";
+
+const redis = new Redis({
+  url: <UPSTASH_REDIS_REST_URL>,
+  token: <UPSTASH_REDIS_REST_TOKEN>,
+  enableAutoPipelining: true
+})
+```
+</CodeGroup>
+
+This is especially useful in cases when we want to make async
+requests or when we want to make requests in batches.
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv({
+  latencyLogging: false,
+  enableAutoPipelining: true
+});
+
+// async call to redis. Not executed right away, instead
+// added to the pipeline
+redis.hincrby("Brooklyn", "visited", 1);
+
+// making requests in batches
+const brooklynInfo = await Promise.all([
+  redis.hget("Brooklyn", "coordinates"),
+  redis.hget("Brooklyn", "population")
+]);
+
+// when we call await, the three commands are executed
+// as a pipeline automatically. A single PIPELINE command
+// is executed instead of three requests and the results
+// are returned:
+const [ coordinates, population ] = await brooklynInfo;
+```
+
+The benefit of auto pipelining is that it reduces the number
+of HTTP requests made like pipelining and transaction while
+being extremely simple to enable and use.
+
+To learn more about how auto pipelining can be utilized in a
+project, see
+[the auto-pipeline example project under `upstash-redis` repository](https://github.com/upstash/upstash-redis/tree/main/examples/auto-pipeline)
+
+### How it Works
+
+For auto pipeline to work, the client keeps an active pipeline
+and adds incoming commands to this pipeline. After the command
+is added to the pipeline, execution of the pipeline is delayed.
+
+The pipeline executes in two conditions: No more commands are
+being added or at least one of the commands added is being
+'awaited'.
+
+This means that if you are awaiting every time you run a command,
+you won't benefit much from auto pipelining since each await will
+trigger a pipeline:
+
+```ts
+const foo = await redis.get("foo") // makes a PIPELINE call
+const bar = await redis.get("bar") // makes another PIPELINE call
+```
+
+In these cases, we suggest using `Promise.all`:
+
+```ts
+// makes a single PIPELINE call:
+const [ foo, bar ] = await Promise.all([
+  redis.get("foo"),
+  redis.get("bar")
+])
+```
