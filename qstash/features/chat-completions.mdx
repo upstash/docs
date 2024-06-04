@@ -1,0 +1,201 @@
+---
+title: "Chat Completions"
+---
+
+QStash can be used to generate textual responses to one or more
+chat messages with different roles, using state of the art open
+source large language models.
+
+Large language models are capable of performing wide variety
+of text based tasks such as
+- answering questions, optionally with history of responses
+- generating all kinds of texts such as blogs or documentation
+- writing and debugging code
+- doing translations between various languages
+
+and many more!
+
+QStash supports the following LLMs:
+
+- `meta-llama/Meta-Llama-3-8B-Instruct`
+- `mistralai/Mistral-7B-Instruct-v0.2`
+
+<CodeGroup>
+```shell curl
+curl "https://qstash.upstash.io/llm/v1/chat/completions" \
+    -X POST \
+    -H "Authorization: Bearer QSTASH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": "What is a large language model?"
+            }
+        ]
+    }'
+```
+</CodeGroup>
+
+It is also possible to simulate a chat session by passing the history
+of user and assistant messages to the request.
+
+<CodeGroup>
+```shell curl
+curl "https://qstash.upstash.io/llm/v1/chat/completions" \
+    -X POST \
+    -H "Authorization: Bearer QSTASH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": "What is a large language model?"
+            },
+            {
+                "role": "assistant",
+                "content": "A large language model (LLM) processes and generates human-like text."
+            },
+            {
+                "role": "user",
+                "content": "Give me a list of some open source LLM models."
+            }
+        ]
+    }'
+```
+</CodeGroup>
+
+Chat completion responses can also be delivered in chunk streams.
+
+<CodeGroup>
+```shell curl
+curl "https://qstash.upstash.io/llm/v1/chat/completions" \
+    -X POST \
+    -N \
+    -H "Authorization: Bearer QSTASH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": "What is a large language model?"
+            }
+        ],
+        "stream": true
+    }'
+```
+</CodeGroup>
+
+The chat completions endpoint is also compatible with the OpenAI REST API,
+so you can use wide variety of tools and libraries, including the official
+OpenAI Python client with it.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://qstash.upstash.io/llm/v1",
+    api_key="QSTASH_TOKEN",
+)
+
+chat_completion = client.chat.completions.create(
+    messages=[
+        {
+            "role": "user",
+            "content": "Test message from the OpenAI client",
+        }
+    ],
+    model="meta-llama/Meta-Llama-3-8B-Instruct",
+)
+
+print(chat_completion)
+```
+
+## Integrations with QStash APIs
+
+You can publish or enqueue a single or a batch of chat completion
+requests, using all of the existing QStash features natively.
+
+For that, the destination must be specified as `api/llm`, and the
+body of the published or enqueued message should contain a valid
+chat completion request.
+
+For these integrations, specifying the `Upstash-Callback` header is
+required. Also, streaming chat completions cannot be used with them.
+
+### Publishing a Chat Completion Request
+
+<CodeGroup>
+```shell curl
+curl "https://qstash.upstash.io/v2/publish/api/llm" \
+    -X POST \
+    -H "Authorization: Bearer QSTASH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -H "Upstash-Callback: https://your-callbak-url.com/" \
+    -d '{
+        "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Write the hello world program in Rust."
+            }
+        ]
+    }'
+```
+</CodeGroup>
+
+### Enqueueing a Chat Completion Request
+
+<CodeGroup>
+```shell curl
+curl "https://qstash.upstash.io/v2/enqueue/queue-name/api/llm" \
+    -X POST \
+    -H "Authorization: Bearer QSTASH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -H "Upstash-Callback: https://your-callbak-url.com/" \
+    -d '{
+        "model": "meta-llama/Meta-Llama-3-8B-Instruct",
+        "messages": [
+            {
+                "role": "user",
+                "content": "What is the first prime number?"
+            }
+        ]
+    }'
+```
+</CodeGroup>
+
+### Sending Chat Completion Requests in Batches
+
+<CodeGroup>
+```shell curl
+curl "https://qstash.upstash.io/v2/batch" \
+    -X POST \
+    -H "Authorization: Bearer QSTASH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '[
+        {
+            "destination": "api/llm",
+            "body": {...},
+            "headers": {...}
+        },
+        {
+            "destination": "api/llm",
+            "body": {...},
+            "headers": {...},
+            "queue": "queue-name"
+        },
+        ...
+    ]'
+```
+</CodeGroup>
+
+### Retrying After Rate Limit Resets
+
+When the rate limits are exceeded, QStash automatically schedules the retry of
+publish or enqueue of chat completion tasks depending on the reset time
+of the rate limits. That helps with not doing retries prematurely
+when it is definitely going to fail due to exceeding rate limits.
