@@ -27,14 +27,16 @@ as the `ephemeralCache` parameter. To disable the cache, one must pass `ephemera
 
 If enabled, the ratelimiter will keep track of the blocked identifiers and their
 reset timestamps. When a request is received with some identifier `ip1` before the reset time of
-`ip1`, the request will be denied without having to call Redis.
+`ip1`, the request will be denied without having to call Redis. [`reason` field of the
+limit response will be `cacheBlock`](https://upstash.com/docs/oss/sdks/ts/ratelimit/methods#limit)
 
 In serverless environments this is only possible if you create the cache or ratelimiter
 instance outside of your handler function. While the function is still hot, the
 ratelimiter can block requests without having to request data from Redis, thus
 saving time and money.
 
-See the section on how caching impacts the cost in the [costs page](https://upstash.com/docs/oss/sdks/ts/ratelimit/costs#cache-result).
+See the section on how caching impacts the cost in the
+[costs page](https://upstash.com/docs/oss/sdks/ts/ratelimit/costs#cache-result).
 
 ## Timeout
 
@@ -51,7 +53,66 @@ const ratelimit = new Ratelimit({
 });
 ```
 
-Default value of the timeout is 5 seconds if no `timeout` is provided.
+Default value of the timeout is 5 seconds if no `timeout` is provided. When response
+is success because of a timeout, this is shown in
+[the `reason` field of the limit method](https://upstash.com/docs/oss/sdks/ts/ratelimit/methods#limit).
+
+## Deny Lists
+
+Imagine that you want to block requests from certain countries or from some
+user agents. In this case, you can make use of deny lists.
+
+Deny lists allow you to block based on IP addresses, user agents, countries
+and [identifiers](http://localhost:3001/oss/sdks/ts/ratelimit/methods#limit).
+
+To enable checking the deny list in your Ratelimit client, simply pass
+`enableProtection` as `true`:
+
+```tsx
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(10, "10 s"),
+  enableProtection: true
+  analytics: true,
+});
+```
+
+When `limit` is called, the client will check whether any of these values
+are in the deny list and block the request if so.
+
+```tsx
+const { success, pending, reason, deniedValue } = ratelimit.limit(
+  "userId",
+  {
+    ip: "ip-address",
+    userAgent: "user-agent",
+    country: "country"
+  },
+);
+
+await pending; // await pending if you have analytics enabled
+
+console.log(success, reason, deniedValue)
+// prints: false, "denyList", "ip-address"
+```
+
+If a request fails because an value was in deny list, `reason` field will
+be `"denyList"`. `deniedValue` will contain the value in the deny list.
+See [limit method](https://upstash.com/docs/oss/sdks/ts/ratelimit/methods#limit)
+for more detailts.
+
+Client also keeps a **cache** of denied values. This means that if you add a
+new value to the deny list, it will immediately take affect but when you
+remove a value, it can take up to a minute for clients to start
+accepting the value. This can significantly reduce the number of calls to Redis.
+
+Contents of the deny lists are managed from the [Ratelimit Dashboard](http://localhost:3001/oss/sdks/ts/ratelimit/features#dashboard).
+You can use the dashboard to add items to the deny list or remove them.
+If you have analytics enabled, you can also view the number of denied
+requests per country/ip address/user agent/identifier on the dashboard.
+
+Note that we look for exact match when checking a value to see if it's in
+the deny lists. **Pattern matching is not supported**.
 
 ## Analytics & Dashboard
 
@@ -92,12 +153,12 @@ To find to the dashboard, simply click the three dots and choose the "Rate Limit
 ![navigate.png](/img/ratelimit/navigate.png)
 
 In the dashboard, you can find information on how many requests were accepted, how many were blocked
-and how many were received in total. Additionally, you can see requests over time, top allowed and
-blocked requests.
+and how many were received in total. Additionally, you can see requests over time; top allowed, rate limited
+and blocked requests.
 
 ![dashboard.png](/img/ratelimit/dashboard.png)
 
-If you are using a custom prefix, you need to use the same in the dashboard’s top right corner.
+If you are using a custom prefix, you need to use the same in the dashboard’s top left corner.
 
 ## Using Multiple Limits
 
