@@ -1,0 +1,106 @@
+---
+title: " AWS Lambda"
+---
+
+### Prerequisites
+
+- Complete all steps in [Getting started with the AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html)
+
+### Project Setup
+
+Create and navigate to a directory named `counter-cdk`. CDK CLI uses this directory name to name things in your CDK code, so if you decide to use a different name, don't forget to make the appropriate changes when applying this tutorial.
+
+```shell
+mkdir counter-cdk && cd counter-cdk
+```
+
+Initialize a new CDK project.
+
+```shell
+cdk init app --language typescript
+```
+
+Install `@upstash/redis`
+
+```shell
+npm install @upstash/redis
+```
+
+### Counter Function Setup
+
+Create `/api/counter.ts`.
+
+```ts /api/counter.ts
+import { Redis } from '@upstash/redis';
+
+const redis = Redis.fromEnv();
+
+export const handler = async function() {
+    const count = await redis.incr("counter");
+    return {
+        statusCode: 200,
+        body: JSON.stringify('Counter: ' + count),
+    };
+};
+```
+
+### Counter Stack Setup
+
+Update `/lib/counter-cdk-stack.ts`
+
+```ts /lib/counter-cdk-stack.ts
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+
+export class CounterCdkStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const counterFunction = new nodejs.NodejsFunction(this, 'CounterFunction', {
+      entry: 'api/counter.ts',
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      environment: {
+        UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || '',
+        UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+      },
+      bundling: {
+        format: nodejs.OutputFormat.ESM,
+        target: "node20",
+        nodeModules: ['@upstash/redis'],
+      },
+    });
+
+    const counterFunctionUrl = counterFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+    });
+
+    new cdk.CfnOutput(this, "counterFunctionUrlOutput", {
+      value: counterFunctionUrl.url,
+    })
+  }
+}
+```
+
+### Database Setup
+
+Create a Redis database using [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli) and export `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to your environment.
+
+```shell
+export UPSTASH_REDIS_REST_URL=<YOUR_URL>
+export UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+```
+
+### Deploy
+
+Run in the top folder:
+
+```shell
+cdk synth
+cdk bootstrap
+cdk deploy
+```
+
+Visit the output url.
