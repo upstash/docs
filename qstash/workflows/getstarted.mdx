@@ -8,55 +8,45 @@ serverless platforms.
 Workflows are an SDK for you built on top of existing Qstash API.
 List of our SDK's that supports Workflows. js sdk for now.
 
-A nice summary showed on top of code. 
-A nice example here.
 
 ```javascript
 import { serve } from "@upstash/qstash/workflow/nextjs";
-import { getUserIds, notifyUser, getNextHourTimestamp } from "./utils"
+import { sendEmail, reportFailure, getUserEmail, UserQuestionRequest } from "./utils"
 
-// a POST endpoint which expects to be called with a {userRequest: UserQuestionRequest} payload:
 export const POST = serve<{userRequest: UserQuestionRequest}>({async context => {
     const request = context.requestPayload.userRequest
+
     const emailPromise = context.run("retrieveEmail", async () => {
-        // lookup user email from your data store
         return await getUserEmail(request.userId)
     });
 
-    const ema  await context.call(
+    const openAIPromise = context.call(
       "call open ai",
       "https://api.openai.com/v1/chat/completions",
-      "POST", 
-       "Authorization: Bearer $OPENAI_API_KEY",
-      {
-        "model": "gpt-3.5-turbo-16k",
-        "messages": [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant."
-        },
-        {
-            "role": "user",
-            "content": "Hello!"
+      "POST",  "Authorization: Bearer $OPENAI_API_KEY",
+      {"model": "gpt-3.5-turbo-16k",
+        "messages": [{"role": "system", "content": "You are a helpful assistant." },
+                     {"role": "user","content": request.question}]}
+    )
+
+    email, response = await Promise.all(emailPromise, openAiPromise)
+
+    for (let i = 0; i < 3; i++) {
+        emailSendSuccess = await context.run("sendEmail", async() => {
+            const success = await sendEmail(email, response)
+            retrun success
+        })
+        if emailSendSuccess {
+            return 
         }
-        ]
-    },
-    )
 
-    // respond next day
-    await context.sleepUntil("sleep until next day", getNextHourTimestamp())
+        await context.sleep("sleep for email retry" , 1d)
+    }
 
-
-
-    // calling notifyUser for all users in parallel:
-    const notificationResult = await Promise.all(
-      userIds.map(userId => context.run("notify users", async () => {await notifyUser(userId)}))
-    )
-
+    await context.run("report a failure to internal system", async() => {
+        await reportFailure(request.userId)
+    })
   
   }
 })
 ```
-
-
-https://docs.restate.dev/concepts/durable_building_blocks
