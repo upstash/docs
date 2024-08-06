@@ -1,0 +1,623 @@
+---
+title: Methods
+---
+
+RAG Chat exposes several useful methods:
+
+| Method  | Description                                                                                                       |
+| ------- | ----------------------------------------------------------------------------------------------------------------- |
+| chat    | Allows you to interact with the LLM using Vector DB as your knowledge store and Redis (optional) for chat history |
+| context | Provides access to your Vector DB                                                                                 |
+| history | Enables access to your chat history                                                                               |
+
+## `chat`
+
+The `chat` method enables intelligent conversations with a Language Model (LLM) by using your knowledge store (Vector DB) and chat history.
+It offers extensive configurability to optimize the balance between context utilization and response accuracy.
+
+### Key Features:
+
+- Integrates with your Vector DB for context-aware responses
+- Configurable history length and context retrieval
+- Supports streaming for interactive applications
+- Customizable hooks for fine-grained control over the chat process
+- Option to disable RAG for custom pipeline implementations
+
+### Important Considerations:
+
+- Balancing information: Too much context can lead to inaccuracies
+- Use `historyLength` and `topK` options to manage the amount of data fed to the LLM
+- Adjust `similarityThreshold` to fine-tune result accuracy
+
+### Request
+
+<ParamField path="input" type="string" required>
+  Question you wanted to ask to your RAG Chat
+</ParamField>
+<ParamField path="options" type="ChatOptions">
+<Expandable title="properties">
+  <ParamField path="historyLength" type="number">
+    Length of the conversation history to include in your LLM query. Increasing this may lead to hallucinations. Retrieves the last N messages.
+  </ParamField>
+
+{" "}
+
+<ParamField path="historyTTL" type="number">
+  Configuration to retain chat history. After the specified time, the history
+  will be automatically cleared.
+</ParamField>
+
+{" "}
+
+<ParamField path="similarityThreshold" type="number">
+  Configuration to adjust the accuracy of results.
+</ParamField>
+
+{" "}
+
+<ParamField path="topK" type="number">
+  Amount of data points to include in your LLM query.
+</ParamField>
+
+{" "}
+
+<ParamField path="ratelimitDetails" type="function">
+  Details of applied rate limit.
+</ParamField>
+
+{" "}
+
+<ParamField path="onChunk" type="function">
+  Hook to modify or get data and details of each chunk. Can be used to alter
+  streamed content.
+</ParamField>
+
+{" "}
+
+<ParamField path="onContextFetched" type="function">
+  Hook to access the retrieved context and modify as you wish.
+</ParamField>
+
+{" "}
+
+<ParamField path="onChatHistoryFetched" type="function">
+  Hook to access the retrieved history and modify as you wish.
+</ParamField>
+
+{" "}
+
+<ParamField path="disableRAG" type="boolean">
+  Allows disabling RAG and use chat as LLM in combination with prompt. This will
+  give you the ability to build your own pipelines.
+</ParamField>
+
+{" "}
+
+<ParamField path="streaming" type="boolean">
+  Set to `true` if working with web apps and you want to be interactive without
+  stalling users.
+</ParamField>
+
+{" "}
+
+<ParamField path="sessionId" type="string">
+  Chat session ID of the user interacting with the application.
+</ParamField>
+
+{" "}
+
+<ParamField path="namespace" type="string">
+  Namespace of the index you wanted to query.
+</ParamField>
+
+{" "}
+
+<ParamField path="metadata" type="UpstashDict">
+  Metadata for your chat message. This could be used to store anything in the
+  chat history. By default, the RAG Chat SDK uses this to persist the used model
+  name in the history.
+</ParamField>
+
+{" "}
+
+<ParamField path="ratelimitSessionId" type="string">
+  Rate limit session ID of the user interacting with the application.
+</ParamField>
+
+  <ParamField path="promptFn" type="CustomPrompt">
+    If no Index name or instance is provided, falls back to the default.
+  </ParamField>
+</Expandable>
+</ParamField>
+
+### Response
+
+<ResponseField name="response" type="ChatReturnType">
+  <Expandable>
+    <ResponseField name="output" type="ReadableStream<string> | string">
+      The output of the LLM query. This can either be a readable stream or a
+      string.
+    </ResponseField>
+    <ResponseField name="isStream" type="boolean">
+      Indicates if the output is a stream.
+    </ResponseField>
+    <ResponseField name="metadata" type="Record<string, unknown>">
+      The metadata of the vector. This is used to make it easier to identify the
+      vector on queries.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Usage Tips:
+
+- Adjust `historyLength` based on the complexity of your conversations
+- Use `topK` to control the number of relevant context items retrieved
+- Enable `streaming` for responsive web applications
+- Utilize `onContextFetched` and `onChatHistoryFetched` hooks to inspect and modify data before it's sent to the LLM
+- Set `disableRAG` to true when building custom pipelines or for simple LLM interactions
+
+### Example:
+
+```javascript
+const chatResponse = await ragChat.chat({
+  input: "What are the key features of our latest product?",
+  options: {
+    historyLength: 5,
+    topK: 3,
+    streaming: true,
+    onContextFetched: (context) => {
+      console.log("Retrieved context:", context);
+      return context;
+    },
+    metadata: { source: "product_inquiry" },
+  },
+});
+
+if (chatResponse.isStream) {
+  for await (const chunk of chatResponse.output) {
+    console.log(chunk);
+  }
+} else {
+  console.log(chatResponse.output);
+}
+```
+
+## `context`
+
+Context allows you to manipulate your knowledge base by adding, deleting or updating your data.
+
+| Method              | Description                                                  |
+| ------------------- | ------------------------------------------------------------ |
+| add                 | Allows you to add various data types into a vector database. |
+| addMany             | Allows you to do many `add` calls at the same time.          |
+| delete              | Removes data using an Id of associated data                  |
+| deleteEntireContext | Wipes your entire namespace                                  |
+
+### `add`
+
+The `add` method is a versatile function for adding various types of context to your application. It supports multiple data formats and automatically handles text-splitting for certain types, simplifying the process of adding and managing context.
+
+#### Supported Data Types:
+
+- Plain text
+- Embeddings
+- PDF files
+- CSV files
+- Text files
+- HTML content (from files or URLs)
+
+#### Key Features:
+
+- Automatic text-splitting for PDF, CSV, and HTML inputs
+- Flexible configuration options for each data type
+- Support for both file and URL sources for HTML content
+- Optional ID assignment for easy context management
+
+This improved description provides a more comprehensive overview of the `add` method's capabilities, highlights its key features, and includes usage tips and an example to help users understand how to effectively use the method. Would you like me to explain or elaborate on any part of this improved description?
+
+#### Request
+
+<ParamField path="payload" type="AddContextPayload">
+  <Expandable>
+    <ParamField path="type" type="string" required>
+      Type of the context to add. Possible values: **"text"**, **"embedding"**,
+      **"pdf"**, **"csv"**, **"text-file"**, **"html"**.
+    </ParamField>
+    <ParamField path="data" type="string | number[]">
+      The actual data to add. This is required for types **"text"** and
+      **"embedding"**.
+    </ParamField>
+    <ParamField path="fileSource" type="FilePath | Blob">
+      The source of the file. This is required for types **"pdf"**, **"csv"**,
+      **"text-file"**, and "html" when the source is a file.
+    </ParamField>
+    <ParamField path="source" type="URL">
+      The URL source. This is required for type **"html"** when the source is a
+      URL.
+    </ParamField>
+    <ParamField path="options" type="AddContextOptions">
+      Additional options for adding context.
+    </ParamField>
+    <ParamField
+      path="config"
+      type="Partial<RecursiveCharacterTextSplitterParams>"
+    >
+      Configuration for text splitting. This is optional for types **"pdf"**,
+      **"text-file"**, and **"html"**.
+    </ParamField>
+    <ParamField
+      path="pdfConfig"
+      type="{ parsedItemSeparator?: string; splitPages?: boolean }"
+    >
+      Configuration specific to PDF parsing.
+    </ParamField>
+    <ParamField path="csvConfig" type="{ column?: string; separator?: string }">
+      Configuration specific to CSV parsing.
+    </ParamField>
+    <ParamField path="htmlConfig" type="WebBaseLoaderParams">
+      Configuration specific to HTML parsing.
+    </ParamField>
+    <ParamField path="id" type="string | number">
+      Optional ID for the context.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+#### Response
+
+<ResponseField name="response" type="SaveOperationResult">
+  <Expandable>
+    <ResponseField name="success" type="boolean">
+      Indicates if the operation was successful.
+    </ResponseField>
+    <Expandable condition="success === true">
+      <ResponseField name="ids" type="string[]">
+        The IDs of the saved items.
+      </ResponseField>
+    </Expandable>
+    <Expandable condition="success === false">
+      <ResponseField name="error" type="string">
+        The error message if the operation failed.
+      </ResponseField>
+    </Expandable>
+  </Expandable>
+</ResponseField>
+
+#### Usage Tips:
+
+- For large documents, consider using the PDF or text file options to use automatic text-splitting.
+- When adding CSV data, use the `csvConfig` to specify which column to use and customize the separator if needed.
+- For web content, you can either provide an HTML file or a URL using the appropriate configuration.
+- Utilize the `options` parameter to fine-tune how the context is added and processed.
+
+#### Example:
+
+```javascript
+const result = await context.add({
+  type: "pdf",
+  fileSource: "./document.pdf",
+  pdfConfig: { splitPages: true },
+  options: { metadata: { source: "company_report" } },
+});
+
+if (result.success) {
+  console.log(`Added ${result.ids.length} context items`);
+} else {
+  console.error(`Failed to add context: ${result.error}`);
+}
+```
+
+### `addMany`
+
+The `addMany` method is an efficient way to add multiple contexts to your application in a single operation.
+It extends the capabilities of the add method to handle batch processing, making it ideal for large-scale data ingestion.
+
+### `delete`
+
+The `delete` method allows you to remove one or more context items from your vector database. It provides a straightforward way to manage your knowledge store by deleting specific items or groups of items.
+
+#### Key Features:
+
+- Supports deletion of a single item or multiple items in one operation
+- Optional namespace specification for targeted deletions
+
+#### Request
+
+<ParamField path="payload" type="DeleteContextPayload">
+  <Expandable>
+    <ParamField path="id" type="string | string[]" required>
+      The ID or array of IDs of the context items to delete. If a single string
+      is provided, it will be wrapped in an array.
+    </ParamField>
+    <ParamField path="namespace" type="string">
+      Optional namespace to specify which index to delete from. If not provided,
+      the default namespace will be used.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+#### Response
+
+The method doesn't return a value, but it's asynchronous, so you should await its completion.
+
+#### Usage Tips:
+
+- Use a single ID string for deleting one item, or an array of ID strings for batch deletions
+- Specify a namespace when working with multiple indexes to ensure you're deleting from the correct one
+- Always await the delete operation to ensure it completes before proceeding with other operations
+
+#### Example:
+
+```javascript
+// Deleting a single item
+await context.delete({
+  id: "item_123",
+  namespace: "product_catalog",
+});
+
+// Deleting multiple items
+await context.delete({
+  id: ["item_456", "item_789", "item_101"],
+  namespace: "customer_data",
+});
+```
+
+### `deleteEntireContext`
+
+The `deleteEntireContext` method allows you to remove all context items from your vector database, essentially resetting it. This powerful operation can be applied to the entire database or a specific namespace, providing flexibility in managing your knowledge store.
+
+#### Key Features:
+
+- Deletes all context items in one operation
+- Optional namespace specification for targeted resets
+- Efficient way to clear out all data when needed
+
+#### Request
+
+<ParamField path="options" type="ResetOptions">
+  <Expandable>
+    <ParamField path="namespace" type="string">
+      Optional namespace to specify which index to reset. If not provided, the
+      entire vector database will be reset.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+#### Response
+
+The method doesn't return a value, but it's asynchronous, so you should await its completion.
+
+#### Usage Tips:
+
+- Use this method with caution, as it will permanently delete all context items
+- Specify a namespace when you want to reset only a specific portion of your database
+
+#### Example:
+
+```javascript
+// Resetting the entire vector database
+await context.deleteEntireContext();
+console.log("Entire context deleted successfully");
+
+// Resetting a specific namespace
+await context.deleteEntireContext({
+  namespace: "temporary_data",
+});
+```
+
+<Warning>
+  This operation is irreversible. Make sure you really want to delete all
+  context items before calling this method. It's recommended to use this method
+  only in controlled environments or when you're absolutely certain that you
+  want to clear all data.
+</Warning>
+
+## `history`
+
+The `history` feature allows you to manage your chat history effectively. It provides methods to add, retrieve, and delete messages, giving you full control over the conversation data stored in your application.
+
+<Info>
+    In typical usage, you won't need to manually manipulate your chat history. However, having the ability to directly access and modify it can be valuable in certain scenarios.
+</Info>
+
+
+### Key Features:
+- Add individual messages to the chat history
+- Retrieve messages from the chat history
+- Delete specific messages or entire conversations
+- Support for multiple chat sessions
+- Optional time-to-live (TTL) for automatic session expiration
+
+Thank you for providing the definition of `UpstashMessage`. This helps us give a more accurate and detailed description of the `addMessage` method. Let's update the description to reflect this information:
+
+### `addMessage`
+
+The `addMessage` method allows you to add a new message to the chat history for a specific session.
+
+#### Request
+
+<ParamField path="payload" type="HistoryAddMessage">
+  <Expandable>
+    <ParamField path="message" type="Omit<UpstashMessage, 'id'>" required>
+      The message object to be added to the chat history. It includes the following fields:
+      <Expandable>
+        <ParamField path="role" type="'assistant' | 'user'" required>
+          Specifies whether the message is from the assistant or the user.
+        </ParamField>
+        <ParamField path="content" type="string" required>
+          The actual content of the message.
+        </ParamField>
+        <ParamField path="metadata" type="TMetadata">
+          Optional metadata associated with the message. TMetadata extends UpstashDict.
+        </ParamField>
+        <ParamField path="usage_metadata" type="object">
+          Optional metadata about token usage:
+          <Expandable>
+            <ParamField path="input_tokens" type="number">
+              Number of input tokens used.
+            </ParamField>
+            <ParamField path="output_tokens" type="number">
+              Number of output tokens used.
+            </ParamField>
+            <ParamField path="total_tokens" type="number">
+              Total number of tokens used.
+            </ParamField>
+          </Expandable>
+        </ParamField>
+      </Expandable>
+      Note: The 'id' field is omitted as it's handled internally.
+    </ParamField>
+    <ParamField path="sessionId" type="string">
+      Optional identifier for the chat session. If not provided, a default session ID will be used.
+    </ParamField>
+    <ParamField path="sessionTTL" type="number">
+      Optional time-to-live (in seconds) for the chat session. If provided, the session will automatically expire after this duration.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+#### Response
+
+The method doesn't return a value, but it's asynchronous, so you should await its completion.
+
+#### Usage Tips:
+- Ensure the `role` is correctly set to either "assistant" or "user"
+- Include relevant metadata in the `metadata` field for additional context
+- Use the `usage_metadata` to track token usage if applicable to your use case
+- Use unique session IDs to manage multiple concurrent conversations
+- Set an appropriate TTL for sessions that should automatically expire
+
+#### Example:
+
+```javascript
+await history.addMessage({
+  message: {
+    role: "user",
+    content: "What's the weather like today?",
+    metadata: {
+      userLocation: "New York",
+      timestamp: Date.now()
+    },
+    usage_metadata: {
+      input_tokens: 6,
+      output_tokens: 0,
+      total_tokens: 6
+    }
+  },
+  sessionId: "user_456_weather_chat",
+  sessionTTL: 1800 // Session will expire after 30 minutes
+});
+```
+
+### `deleteMessages`
+
+The `deleteMessages` method allows you to remove all messages associated with a specific chat session.
+
+#### Request
+
+<ParamField path="payload" type="DeleteMessagesPayload">
+  <Expandable>
+    <ParamField path="sessionId" type="string" required>
+      The identifier of the chat session whose messages you want to delete.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+#### Response
+
+The method doesn't return a value, but it's asynchronous, so you should await its completion.
+
+#### Usage Tips:
+- Use this method to clear the entire history of a specific chat session
+- Be cautious when using this method, as it permanently deletes all messages in the session
+- Always double-check the `sessionId` to ensure you're deleting the correct session
+
+#### Example:
+
+```javascript
+const sessionIdToDelete = "user_789_support_chat";
+
+await history.deleteMessages({ sessionId: sessionIdToDelete });
+
+console.log(`All messages in session ${sessionIdToDelete} have been deleted`);
+```
+
+<Warning>
+This operation is irreversible. Once messages are deleted, they cannot be recovered. Use this method with caution and implement appropriate safeguards in your application to prevent accidental data loss.
+</Warning>
+
+### `getMessages`
+
+The `getMessages` method allows you to retrieve a specified number of messages from a chat session's history. It provides flexibility in selecting the range of messages to fetch and returns them in reverse chronological order (newest first).
+
+#### Request
+
+<ParamField path="options" type="GetMessagesOptions">
+  <Expandable>
+    <ParamField path="sessionId" type="string" default="DEFAULT_CHAT_SESSION_ID">
+      The identifier of the chat session from which to retrieve messages. If not provided, a default session ID will be used.
+    </ParamField>
+    <ParamField path="amount" type="number" default="DEFAULT_HISTORY_LENGTH">
+      The number of messages to retrieve. Defaults to a predefined constant.
+    </ParamField>
+    <ParamField path="startIndex" type="number" default="0">
+      The starting index from which to retrieve messages. Defaults to 0 (most recent message).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+#### Response
+
+<ResponseField name="messages" type="UpstashMessage[]">
+  An array of UpstashMessage objects, where each object contains:
+  <Expandable>
+    <ResponseField name="role" type="'assistant' | 'user'">
+      Indicates whether the message is from the assistant or the user.
+    </ResponseField>
+    <ResponseField name="content" type="string">
+      The actual content of the message.
+    </ResponseField>
+    <ResponseField name="metadata" type="TMetadata" optional>
+      Additional metadata associated with the message.
+    </ResponseField>
+    <ResponseField name="usage_metadata" type="object" optional>
+      Metadata about token usage:
+      <Expandable>
+        <ResponseField name="input_tokens" type="number">
+          Number of input tokens used.
+        </ResponseField>
+        <ResponseField name="output_tokens" type="number">
+          Number of output tokens used.
+        </ResponseField>
+        <ResponseField name="total_tokens" type="number">
+          Total number of tokens used.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="id" type="string">
+      A unique identifier for the message, generated based on its position in the history.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+#### Usage Tips:
+- Use the `sessionId` parameter to retrieve messages from specific conversations
+- Adjust the `amount` parameter to control how many messages you want to fetch
+- Use the `startIndex` parameter to paginate through the chat history or fetch older messages
+- The returned messages are in reverse chronological order (newest first)
+- Each message includes an `id` field, which is generated based on its position in the history
+
+#### Example:
+
+```javascript
+const messages = await history.getMessages({
+  sessionId: "user_123_support_chat",
+  amount: 10,
+  startIndex: 0
+});
+
+console.log(`Retrieved ${messages.length} messages:`);
+messages.forEach(msg => {
+  console.log(`${msg.role}: ${msg.content} (ID: ${msg.id})`);
+});
+```
