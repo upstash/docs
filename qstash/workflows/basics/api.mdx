@@ -1,0 +1,119 @@
+---
+title: "API"
+---
+
+# context.run
+
+`context.run` requires a step name and the code of the step as an async function. Each step can run for the full duration allowed by the platform. The result of each step is stored and remembered by Qstash, allowing it to continue from where it left off in case of failure (e.g., endpoint downtime).
+
+Here are a couple of examples to demonstrate its usage:
+
+<CodeGroup>
+```javascript serial
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+    const result1 = await context.run("step1", async () => {
+      return someWork(input);
+    });
+
+    await context.run("step2", async () => {
+      someOtherWork(result1);
+    });
+  },
+});
+```
+
+```javascript parallel
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+    const promise1 = context.run("step1", async () => {
+      return someWork(input);
+    });
+
+    const promise2 = context.run("step2", async () => {
+      return someOtherWork(input);
+    });
+
+    await Promise.all([promise1, promise2]);
+  },
+});
+```
+</CodeGroup>
+
+# context.sleep
+
+`context.sleep` postpones the execution of the code for a specified duration. The code will exit and not consume any function time. After the specified duration, the endpoint will be called again to resume execution.
+
+The sleep duration can be as long as a week or a year, depending on your [Qstash plan(Max Delay)](https://upstash.com/pricing/qstash).
+
+```javascript
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    const user = await context.run("signin", async () => {
+      const user = saveUserToDB(input);
+      return user;
+    });
+
+    await context.sleep("waitForWelcomeEmail", daysToSeconds(3));
+
+    await context.run("sendWelcomeEmail", async () => {
+      return sendEmail(user.name, user.email);
+    });
+  },
+});
+```
+
+# context.sleepUntil
+
+`context.sleepUntil` postpones the execution of the code until a specified date. The code will exit and not consume any function time. On the given date, the endpoint will be called again to resume execution.
+
+The sleepUntil duration can be as long as a week or a year, depending on your [Qstash plan(Max Delay)](https://upstash.com/pricing/qstash).
+
+```javascript
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    const user = await context.run("signin", async () => {
+      const user = saveUserToDB(input);
+      return user;
+    });
+
+    await context.sleepUntil("waitForWelcomeEmail", nextWeek());
+
+    await context.run("sendWelcomeEmail", async () => {
+      return sendEmail(user.name, user.email);
+    });
+  },
+});
+```
+
+# context.call
+
+`context.call` is used to call an HTTP endpoint as a step. While this can be done inside `context.run`, the key difference is that `context.call` does not wait for the endpoint to return. This allows you to bypass the time limitations of the platform. When the response is ready, the function will continue as if resuming from the return of the `context.call`.
+
+The endpoint can take up to 15 minutes or 2 hours to respond, depending on your [Qstash plan(Max HTTP Connection Timeout)](https://upstash.com/pricing/qstash)T.
+
+```javascript
+export const POST = serve<UserQuestionRequest>({  
+  routeFunction: async context => {
+    const request = context.requestPayload
+    const llmResponse = await context.call(
+      "call open ai",
+      "https://api.openai.com/v1/chat/completions",
+      "POST",  "Authorization: Bearer $OPENAI_API_KEY",
+      {"model": "gpt-3.5-turbo-16k",
+        "messages": [{"role": "system", "content": "You are a helpful assistant." },
+                     {"role": "user","content": request.question}]}
+    )
+
+     await context.run("sendEmail", async() => {
+      return sendEmail(request.email, llmResponse)
+    })
+  }
+})
+```

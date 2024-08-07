@@ -1,0 +1,101 @@
+---
+title: "Caveats"
+---
+
+Due to the unique guarantees provided by the `Workflow SDK`, there are some rules that need to be followed. In this section, we will outline what is not allowed.
+
+# Do the actual work in `context.run`
+
+The top-level `routeFunction` will be called multiple times during the life of a workflow run. This means the actual code needs to reside within the `context.run` function. The rest of the code serves to glue the steps together.
+
+```javascript
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+    const result1 = await context.run("step1", async () => {
+      return someWork(input);
+    });
+
+    console.log("This log will appear multiple times")
+
+    await context.run("step2", async () => {
+      console.log("Put logs inside of the `context.run` to see them once")
+      someOtherWork(result1);
+    });
+  },
+});
+```
+
+# Return a result from `context.run` if needed later 
+
+Always return the results of a step if they are needed by subsequent steps, as shown in the example above with `result1`.
+
+If you do something like following, it will not work as expected:
+
+```javascript
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    var result1;
+
+    const result1 = await context.run("step1", async () => {
+      result1 = await someWork(input);
+    });
+
+    await context.run("step2", async () => {
+      someOtherWork(result1);
+    });
+  },
+});
+```
+
+Since this endpoint is called multiple times, `result1` will be unitialized when the endpoint is called again to run `step2`.
+
+If you are curious about why it is called multiple times and want more details, see our  [how it works](/qstash/workflows/how) page.
+
+# Avoid nondeterministic/time-dependent code outside of the `context.run`
+
+Since the endpoint will be called multiple times, it is expected to work deterministically. This means it should run exactly the same steps on every call. Creating nondeterministic code is not easy, but here are two examples that should be avoided: one is time-dependent and the other utilizes randomness.
+
+<CodeGroup>
+```javascript timeDependent
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    if (Date.now() % 5  == 2) {
+      const result1 = await context.run("step1", async () => {
+        const output = someWork(input);
+        return output;
+      });
+    } else {
+      const result2 = await context.run("step2", async () => {
+        const output = someWork(result1);
+      });
+    }
+  },
+});
+```
+
+```javascript random
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    if (Math.floor(Math.random() * 10) % 5  == 2) {
+      const result1 = await context.run("step1", async () => {
+        const output = someWork(input);
+        return output;
+      });
+    } else {
+      const result2 = await context.run("step2", async () => {
+        const output = someWork(result1);
+      });
+    }
+  },
+});
+```
+
+</CodeGroup>
+    
