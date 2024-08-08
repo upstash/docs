@@ -2,4 +2,68 @@
 title: "Handle Failures"
 ---
 
-TODO
+
+Failures can occur during a workflow run for various reasons:
+
+-  A step in your workflow throws an exception due to an error in your code. This could be anything from a database error to a logical bug that causes your code to fail during execution.
+-  Qstash attempts to call your workflow URL, but the URL is not reachable. This might happen if your service is down resulting in a 404 error.
+-  Steps in your workflow might also fail if they exceed the [platform's time limitations](/qstash/workflows/platforms/platforms). When a step takes too long to execute, it can time out, causing the workflow to fail.
+
+In all of the cases above, Qstash will retry calling the step 3 times and give up only after then. Making this configurable is in our [roadmap](qstash/workflows/roadmap)
+
+When a workflow failed, a related event will be fired to [Dead Letter Queue](/qstash/howto/handling-failures#dead-letter-queue)
+
+From `DLQ` tab on the console, you can check all the failed messages. You can filter messages via `workflow url` and `workflow run id` to search for a particilar failure.
+
+TOOD SANCAR PUT A DLQ IMAGE HERE WITH WORKFLOW URL WORKFLOW ID FILTERS
+
+If you want to take an action(a cleanup/log), you can configure either `failureFunction` or a `failureUrl` on the `serve` method of your workflow.
+These options allow you to define custom logic or an external endpoint that will be triggered when a failure occurs. 
+
+
+### 1. Using `failureFunction`
+
+The `failureFunction` allows you to define custom logic for handling failures. 
+
+#### Example Configuration:
+
+```javascript
+export const POST = serve<string>({
+  failureFunction: async (context, failStatus, failResponse) => {
+    const input = context.requestPayload;
+    cleanupDB(input)
+  },
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    const user = await context.run("signin", async () => {
+      const user = saveUserToDB(input);
+      return user;
+    });
+
+    // Additional steps...
+  },
+});
+```
+
+### 2. Using `failureUrl`
+
+The `failureUrl` is designed for cases where the service hosting your workflow URL might not be reachable. By specifying a `failureUrl`, you ensure that even if your main service is down, the failure notification will still be sent to a different, reliable endpoint. This approach is ideal for covering scenarios where the primary workflow URL might return a 404 or other unreachable errors.
+
+#### Example Configuration:
+
+```javascript
+export const POST = serve<string>({
+  failureUrl: "https://someurl.com",
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    const user = await context.run("signin", async () => {
+      const user is saveUserToDB(input);
+      return user;
+    });
+
+    // Additional steps...
+  },
+});
+```
