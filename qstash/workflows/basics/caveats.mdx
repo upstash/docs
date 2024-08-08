@@ -2,7 +2,7 @@
 title: "Caveats"
 ---
 
-Due to the unique guarantees provided by the `Workflow SDK`, there are some rules that need to be followed. In this section, we will outline what is not allowed.
+Due to the unique guarantees provided by the `Workflow SDK`, there are some things that need to be avoided. In this section, we will highlight the practices to follow to have a correct workflow run.
 
 # Do the actual work in `context.run`
 
@@ -32,14 +32,16 @@ Always return the results of a step if they are needed by subsequent steps, as s
 
 If you do something like following, it will not work as expected:
 
-```javascript
+<CodeGroup>
+
+```javascript wrong
 export const POST = serve<string>({
   routeFunction: async (context) => {
     const input = context.requestPayload;
 
     var result1;
 
-    const result1 = await context.run("step1", async () => {
+    await context.run("step1", async () => {
       result1 = await someWork(input);
     });
 
@@ -50,13 +52,31 @@ export const POST = serve<string>({
 });
 ```
 
+```javascript correct
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    var result1 = await context.run("step1", async () => {
+      result1 = await someWork(input);
+    });
+
+    await context.run("step2", async () => {
+      someOtherWork(result1);
+    });
+  },
+});
+```
+</CodeGroup>
+
 Since this endpoint is called multiple times, `result1` will be unitialized when the endpoint is called again to run `step2`.
 
 If you are curious about why it is called multiple times and want more details, see our  [how it works](/qstash/workflows/how) page.
 
 # Avoid nondeterministic/time-dependent code outside of the `context.run`
 
-Since the endpoint will be called multiple times, it is expected to work deterministically. This means it should run exactly the same steps on every call. Creating nondeterministic code is not easy, but here are two examples that should be avoided: one is time-dependent and the other utilizes randomness.
+Since the endpoint will be called multiple times, it is expected to work deterministically. This means it should run exactly the same steps on every call.
+Here are two examples that should be avoided: one is time-dependent and the other utilizes randomness.
 
 <CodeGroup>
 ```javascript timeDependent
@@ -99,3 +119,56 @@ export const POST = serve<string>({
 
 </CodeGroup>
     
+
+Another example could be relying on a non-idempotent function outside of the `context.run`. 
+In the following example, `fetchData` will be called multiple times always during a workflow run.
+If with the same input it returns a different `data` in the second run, workflow will not run correctly.
+
+```javascript timeDependent
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    const data = fetchData(input); 
+
+    if data == "fooBar" {
+      const result1 = await context.run("step1", async () => {
+        const output = someWork(input);
+        return output;
+      });
+    } else {
+        const result2 = await context.run("step2", async () => {
+        const output = someOtherWork(result1);
+      });
+    }
+  },
+});
+```
+
+
+
+# Make the `context.run` idempotent
+
+Due to the nature of failures in distributed systems, the business logic needs to be idempotent as well. In other words, when it runs twice with the same input, the end result should be the same as if it were run only once.
+
+In the example below, the someWork function must be idempotent:
+
+```javascript
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+      
+    await context.run("step1", async () => {
+        const output = someWork(input);
+        return output;
+      });
+    } 
+});
+```
+
+An example scenario to show why it has to be idempotent, 
+
+Here’s an example scenario illustrating why idempotency is necessary and inherent:
+
+Imagine that someWork has executed and made a change to a database. However, before a response is returned to the caller, the connection is lost. The caller (in this case, Qstash) times out and has no idea whether the call was completed or even reached the server. In this situation, the caller has no choice but to retry the call, which could cause someWork to be run twice.
+If someWork is not idempotent, this could lead to unintended consequences, such as duplicating records or corrupting data. Therefore, ensuring idempotency is crucial to maintaining the integrity and reliability of the workflow.
