@@ -1,5 +1,70 @@
 ---
 title: "Secure Endpoints"
 ---
+To secure an endpoint, you can use two methods:
 
-And example showing that a custom header ass password works.
+- QStash [Security](/qstash/features/security) method using `QStash signing keys`
+- Custom header and custom authorization mechanism 
+
+### QStash Signing Keys 
+
+You can secure your endpoints by setting `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` as environment variables. You can obtain your signing keys from the [QStash console](https://console.upstash.com/qstash).
+
+<Frame>
+  <img src="/img/qstash/rest_token.png" />
+</Frame>
+Here's the revised version of the paragraph:
+
+---
+
+Note that when you do this, even the first request will be verified by the SDK, meaning that it needs to be called by QStash (or the `Upstash-Signature` needs to be populated by the caller, following the description [here](/qstash/features/security#the-upstash-signature-header)). The suggested approach in this case is to trigger the endpoint via QStash publish as follows:
+
+```bash
+curl -XPOST \
+    -H 'Authorization: Bearer <QSTASH_TOKEN>' \
+    -H "Content-type: application/json" \
+    -d '{ "hello": "world" }' \
+    'https://qstash.upstash.io/v2/publish/https://<your-app-url>/workflowPath'
+```
+
+Please check [platforms](/qstash/workflows/platforms/platforms) for specific instructions on how to configure these for your platform.
+
+For platforms that do not support this through environment variables, you can configure it explicitly as follows:
+
+```javascript
+import { Receiver } from "@upstash/qstash";
+
+export const POST = serve({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+    // steps...
+  },
+  options: {
+    receiver: new Receiver({
+      currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY,
+      nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY
+    })
+  }
+});
+```
+
+## Custom Authorization Method 
+
+Any custom authentication is possible. Even though the endpoint is called multiple times, we ensure that the initial headers and request passed by you will be available on subsequent calls as well. This ensures that an authentication code like the one below will work as expected.
+
+```javascript
+import { serve } from "@upstash/qstash/nextjs";
+
+export const POST = serve<string>({
+  routeFunction: async context => {
+    if (context.headers.get("authorization") !== "Bearer secretPassword") {
+      console.error("Authentication failed.");
+      return;
+    }
+    
+    const input = context.requestPayload;
+
+    // steps ...
+  }
+});
+```
