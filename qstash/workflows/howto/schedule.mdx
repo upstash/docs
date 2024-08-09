@@ -1,7 +1,140 @@
 ---
+
 title: "Schedule a Repeated Workflow"
+
 ---
 
-TODO
+You can schedule workflow endpoints to run periodically using a cron definition with the [QStash schedule](/qstash/features/schedules) feature.
 
-A couple of schedule examples. 
+To set this up, simply provide the URL of your workflow endpoint as the target URL.
+
+For more details, check out the [schedule documentation](/qstash/features/schedules).
+
+Here are two use cases that demonstrate how to use schedules with workflows:
+
+- [One endpoint to send a weekly newsletter to all users](/qstash/workflows/howto/schedule#1-one-endpoint-to-send-weekly-newsletter-to-all-users)
+- [Schedule per user signing](/qstash/workflows/howto/schedule#2-schedule-per-user-signing)
+
+### 1. One Endpoint to Send Weekly Newsletter to All Users
+
+Let's assume you have a workflow served from the following endpoint:
+
+`https://cool-app.vercel.app/weeklyNews`
+
+The code for this route might look like this:
+
+```javascript
+type Newsletter = {
+  title: string;
+  content: string;
+};
+
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    const newsletter = await context.run("generateNewsletter", async () => {
+      return generateNewsletter(input);
+    });
+
+    const emails = await context.run("fetchAllUserEmails", async () => {
+      return fetchAllUserEmailsFromDb();
+    });
+
+    await Promise.all(
+      emails.map(async (email) => {
+        return context.run("sendEmail", async () => {
+          return sendEmail(email, newsletter);
+        });
+      }),
+    );
+  },
+});
+```
+
+You can trigger this endpoint using the following commands:
+
+<CodeGroup>
+
+```shell cURL
+curl -XPOST \
+    -H 'Authorization: Bearer XXX' \
+    -H "Content-type: application/json" \
+    -H "Upstash-Cron: 0 12 * * 1" \
+    -d '{ "hello": "world" }' \
+    'https://qstash.upstash.io/v2/schedules/https://cool-app.vercel.app/weeklyNews'
+```
+
+```typescript Typescript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+const schedules = client.schedules();
+await schedules.create({
+  destination: "https://cool-app.vercel.app/weeklyNews",
+  cron: "0 12 * * 1",
+});
+```
+
+</CodeGroup>
+
+### 2. Schedule Per User Signing
+
+A schedule can also be triggered within the workflow itself. For example, you might want to trigger the sending of a weekly newsletter for each user after they sign up.
+
+For this scenario, you'll have two endpoints:
+- `https://cool-app.vercel.app/sendNewsletter`
+- `https://cool-app.vercel.app/signUpUser`
+
+In this case, instead of triggering the schedule externally, you would trigger it within the code of the `signUpUser` route. When creating the schedule, it's important to pass a unique `scheduleId` to ensure the operation is idempotent. (See [caveats](/qstash/workflows/basics/caveat) for more details on why this is important).
+
+The `sendNewsletter` route will generate the newsletter and send it to the email provided as input.
+
+<CodeGroup>
+
+```javascript signUpUser
+
+var client = new Client({
+  token: "YOUR_QSTASH_TOKEN",
+});
+
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const input = context.requestPayload;
+
+    const userSign = await context.run("registerUser", async () => {
+      return registerUser(input);
+    });
+
+    if (userSign.success) {
+      await context.run("triggerSchedule", async () => {
+        await client.schedules.create({
+          scheduleId: "newsSchedule:" + userSign.email,
+          destination: "https://cool-app.vercel.app/sendNewsletter",
+          body: userSign.email,
+          cron: "0 12 * * 1",
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+    }
+  },
+});
+```
+
+```javascript sendNewsletter
+export const POST = serve<string>({
+  routeFunction: async (context) => {
+    const email = context.requestPayload;
+
+    const newsletter = await context.run("generateNewsletter", async () => {
+      return generateNewsletter();
+    });
+
+    await context.run("sendEmail", async () => {
+      return sendEmail(email, newsletter);
+    });
+  },
+});
+```
+
+</CodeGroup>
