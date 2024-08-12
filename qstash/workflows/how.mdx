@@ -2,6 +2,33 @@
 title: "How It All Works" ?
 ---
 
-A slider similar to here could be good to explain how it works
+**Workflows** in **QStash** serve as a Durable Execution Engine that offers:
 
-https://docs.restate.dev/concepts/durable_execution
+- Freedom from platform time limitations
+- Recovery from partial runs when a workflow fails mid-execution
+- Automatic retries when your service is temporarily unavailable
+- Traceability to monitor and understand system activity
+
+The QStash server and SDK are designed to work together to deliver these features. Here’s a simplified breakdown of how the system operates:
+
+1. The user calls their endpoint, which serves a workflow via the QStash SDK.
+
+2. The SDK sends a request to QStash with an auto-generated Workflow Run ID, along with headers and the body.
+
+3. For each step (`context.run`, `context.sleep`, `context.call`), a call is made to QStash. This process serves two purposes:
+   - QStash keeps a copy of the workflow’s state.
+   - The SDK leverages QStash features like [Delay](/qstash/features/delay) for `context.sleep` and [Callbacks](/qstash/features/callbacks) for `context.call`.
+
+4. QStash calls the endpoint back with all previous step results to continue the workflow. If the user’s service is down, QStash retries later, mitigating temporary failures.
+
+5. When QStash calls the SDK with previous step results, the SDK processes the workflow as follows:
+   - It identifies already executed steps and skips them.
+   - It assigns the results of completed steps to their respective variables.
+   - Depending on the next step type, the SDK performs different actions:
+     - For `context.run`, it executes a single step, makes a call to QStash, and exits. This ensures that each step is only bound by the platform’s time limit, allowing the overall run to take longer.
+     - For `context.sleep` or `context.sleepUntil`, the SDK does not execute anything. Instead, it makes a call to QStash with a [Delay](/qstash/features/delay) header and exits. QStash then calls the endpoint back when the delay time has elapsed, allowing the SDK to conserve platform time. This sleep duration can be as long as a week or even a year, depending on your [QStash plan](https://upstash.com/pricing/qstash).
+     - For `context.call`, the SDK similarly does not execute anything immediately. It makes a call to QStash with a [Callbacks](/qstash/features/callbacks) header and exits. QStash waits for the callback response and then calls the workflow URL again when the response is ready. This approach ensures that the SDK does not consume platform time unnecessarily, and the endpoint can take up to 15 minutes or 2 hours to respond, depending on your [QStash plan](https://upstash.com/pricing/qstash).
+
+6. Once all steps have been executed, the SDK notifies QStash that the workflow run was successful. This triggers the cleanup of all intermediate data from the QStash server, ensuring efficient use of resources and providing traceability.
+
+By following these steps, **QStash Workflows** ensures that your workflows are durable, reliable, and optimized for performance, even in the face of potential failures or platform limitations.
