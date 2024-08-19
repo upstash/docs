@@ -1,0 +1,92 @@
+---
+title: "Sidekiq with Upstash Redis"
+sidebarTitle: "Sidekiq"
+---
+
+
+You can use Sidekiq with Upstash Redis. Sidekiq is a Ruby based queue library with a Redis-based queue storage so you can use with Upstash Redis.
+
+## Example Application
+
+```bash
+bundle init 
+bundle add sidekiq
+```
+
+
+```python
+require "sidekiq"
+require "sidekiq/api"
+ 
+connection_url = ENV['UPSTASH_REDIS_LINK']
+ 
+Sidekiq.configure_client do |config|
+    config.redis = {url: connection_url}
+end
+ 
+Sidekiq.configure_server do |config|
+    config.redis = {url: connection_url}
+end
+ 
+class EmailService
+    include Sidekiq::Worker
+    def perform(id, type)
+        # Logic goes here. Let's assume sending email by printing to console.
+        puts "Emailed to: " +  id + ": " + "'Congrats on " + type + " plan.'"
+    end
+end
+ 
+def updateEmail(id, newType)
+    jobFound = false
+ 
+    a = Sidekiq::ScheduledSet.new
+    a.each do |job|
+        if job.args[0] == id
+            job.delete
+            jobFound = true
+        end
+    end
+ 
+    if jobFound
+        EmailService.perform_async(id, ("starting using our service and upgrading it to " + newType))
+    else
+        EmailService.perform_async(id, ("upgrading to " + newType))
+    end
+end
+ 
+def sendEmail(id, type)
+    case type
+    when "free"
+        # if free, delay for 10 seconds.
+        EmailService.perform_in("10", id, "free")
+    when "paid"
+        # if paid, delay for 5 seconds.
+        EmailService.perform_in("5", id, "paid")
+    when "enterprise"
+        # if enterprise, immediately queue.
+        EmailService.perform_async(id, "enterprise")
+    when "enterprise10k"
+        EmailService.perform_async(id, "enterprise10k")
+    else
+        puts "Only plans are: `free`, `paid` and `enterprise`"
+    end
+end
+ 
+def clearSchedules()
+    Sidekiq::ScheduledSet.new.clear
+    Sidekiq::Queue.new.clear
+end
+```
+
+## Billing Optimization
+Sidekiq accesses Redis regularly, even when there is no queue activity. This incurs extra costs because Upstash charges per request. After receiving complaints from Sidekiq users, we revised our billing algorithm. We have decided to charge only for script calls instead of all requests. This special pricing is for Sidekiq users. If you use Sidekiq with Upstash Redis, you will only be charged for script calls, not regular requests. This will significantly reduce your costs. 
+
+Once your billing is in optimized mode, you will see a leaf icon in the console.
+
+
+
+
+
+
+
+
