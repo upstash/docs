@@ -6,38 +6,49 @@ This example demonstrates how to leverage the core features of the Workflow SDK 
 
 ```javascript 
 import { serve } from "@upstash/qstash/nextjs";
-import { sendEmail, reportFailure, getUserEmail, UserQuestionRequest } from "./utils"
+import { sendEmail, reportFailure, getUserEmail } from "./utils"
 
-export const POST = serve<{userRequest: UserQuestionRequest}>(async context => {
-    const request = context.requestPayload.userRequest;
+export const POST = serve<{ userId: string, question: string }>(async context => {
+  const request = context.requestPayload;
 
-    const retrieveEmailPromise = context.run("retrieveEmail", async () => {
-        return await getUserEmail(request.userId);
+  const retrieveEmailPromise = context.run("retrieveEmail", async () => {
+      return await getUserEmail(request.userId);
+  });
+
+  const openAIPromise = context.call(
+    "call open ai",
+    "https://api.openai.com/v1/chat/completions",
+    "POST", 
+    {
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: request.question }
+      ]
+    },
+    {
+      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    }
+  );
+
+  const [email, response] = await Promise.all([retrieveEmailPromise, openAIPromise]);
+
+  for (let i = 0; i < 3; i++) {
+    const emailSendSuccess = await context.run("sendEmail", async () => {
+      return await sendEmail(email, response);
     });
-
-    await openAIPromise = context.call("call open ai", "https://qstash.upstash.io/llm/v1/chat/completions", "POST", 
-      {"model": "gpt-3.5-turbo-instruct", "prompt": request.question},
-      {"Authorization": `Bearer $OPENAI_API_KEY`,  "Content-Type": "application/json"}
-    );
-
-    const [email, response] = await Promise.all([retrieveEmailPromise, openAIPromise]);
-
-    for (let i = 0; i < 3; i++) {
-        const emailSendSuccess = await context.run("sendEmail", async () => {
-            return await sendEmail(email, response);
-        });
-        if (emailSendSuccess) {
-            return;
-        }
-
-        await context.sleep("sleep for email retry", 24 * 60 * 60); // 1day
+    if (emailSendSuccess) {
+      return;
     }
 
-    await context.run("report a failure to internal system", async () => {
-        await reportFailure(request.userId);
-    });
+    // sleep for 1 hour
+    await context.sleep("sleep for email retry", 24 * 60 * 60);
   }
-);
+
+  await context.run("report a failure to internal system", async () => {
+    await reportFailure(request.userId);
+  });
+});
 ```
 
 ### Code Breakdown
@@ -51,9 +62,20 @@ const [email, response] = await Promise.all([retrieveEmailPromise, openAIPromise
 HTTP calls to third-party services are non-blocking and do not consume the endpoint's execution time when using `[context.call](/qstash/workflows/basics/api#context-call)`.
 
 ```javascript
-await openAIPromise = context.call("call open ai", "https://qstash.upstash.io/llm/v1/chat/completions", "POST", 
-  {"model": "gpt-3.5-turbo-instruct", "prompt": request.question},
-  {"Authorization": `Bearer $OPENAI_API_KEY`,  "Content-Type": "application/json"}
+const openAIPromise = context.call(
+  "call open ai",
+  "https://api.openai.com/v1/chat/completions",
+  "POST", 
+  {
+    model: "gpt-4o",
+    messages: [
+      { role: "system", content: "You are a helpful assistant." },
+      { role: "user", content: context.requestPayload.question }
+    ]
+  },
+  {
+    authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+  }
 );
 ```
 
@@ -61,14 +83,15 @@ You can implement control flow mechanisms like loops and conditional statements 
 
 ```javascript
 for (let i = 0; i < 3; i++) {
-    const emailSendSuccess = await context.run("sendEmail", async () => {
-        return await sendEmail(email, response);
-    });
-    if (emailSendSuccess) {
-        return;
-    }
+  const emailSendSuccess = await context.run("sendEmail", async () => {
+    return await sendEmail(email, response);
+  });
+  if (emailSendSuccess) {
+    return;
+  }
 
-    await context.sleep("sleep for email retry", 24 * 60 * 60); // 1day
+  // wait for an hour
+  await context.sleep("sleep for email retry", 24 * 60 * 60);
 }
 ```
 
