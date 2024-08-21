@@ -1,0 +1,269 @@
+---
+title: "Serve Method"
+---
+
+The `serve` method is the heart of the workflow endpoints. It allows you to define an endpoint which 'serves' a workflow.
+
+On this page, we focus on the options of the `serve` method.
+
+Here is how it looks in Nextjs:
+
+```javascript
+import { serve } from "@upstash/qstash/nextjs";
+
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+    const result1 = await context.run("step1", async () => {
+      return someWork(input);
+    });
+
+    await context.run("step2", async () => {
+      someOtherWork(result1);
+    });
+  }
+);
+```
+
+As parameter, it requires an async function refered to as "Route Function" which will accept a `WorkflowContext` object. [See the context documentation for more details](/qstash/workflows/basics/context).
+
+Route function is the heart of your workflow. It is where the steps & logic are defined.
+
+## Platform Support
+
+Currently, we have `serve` method implementation in a number of platforms. [See the platforms page for more details](/qstash/workflows/platforms/platforms).
+
+## Serve Options
+
+In addition to the route function, the serve method has several options to configure it's behavior:
+
+```javascript
+import { Client } from "@upstash/qstash";
+import { serve } from "@upstash/qstash/nextjs";
+
+export const POST = serve<string>(
+  async (context) => {
+    ...
+  },
+  // options:
+  {
+    qstashClient: new Client({ token: process.env.QSTASH_TOKEN })
+    ...
+  }
+);
+```
+
+### `qstashClient` Option
+
+`qstashClient` options allows you to pass a QStash Client explicitly.
+
+By default, a `qstashClient` is initialized as:
+
+```javascript
+new Client({
+  baseUrl: process.env.QSTASH_URL!,
+  token: process.env.QSTASH_TOKEN!,
+})
+```
+
+If you already initialize a QStash client or If you are using different environment variables for url or token, you can pass your own client explicitly.
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    ...
+  },
+  // options:
+  {
+    qstashClient: new Client({ token: process.env.QSTASH_TOKEN })
+  }
+);
+```
+
+### `receiver` Option
+
+You can pass a QStash Receiver to verify that **every** request received by the endpoint is coming from QStash.
+
+```javascript
+import { Receiver } from "@upstash/qstash";
+import { serve } from "@upstash/qstash/nextjs";
+
+export const POST = serve<string>(
+  async (context) => {
+    ...
+  },
+  // options:
+  {
+    receiver: new Receiver({
+      currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+      nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+    })
+  }
+);
+```
+
+By default, a receiver will be initialized if the `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` environment variables are set. If you want to disable the receiver, either remove these environment variables or pass `receiver: undefined` in the options.
+
+### `failureUrl` Option
+
+`failureUrl` allows you to make QStash call any URL when a workflow run exhausts all its [retries](/qstash/features/retry) and fails.
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    ...
+  },
+  // options:
+  {
+    failureUrl: "https://www.failure-handling-endpoint.com/api"
+  }
+);
+```
+
+The given `failureUrl` will be called with [the failure callback payload](qstash/features/callbacks#what-is-a-failure-callback). Error message will be available in the `body` field.
+
+Default value is undefined, no URL is called in case of failure.
+
+### `failureFunction` Option
+
+`failureUrl` allows you to define a function to be executed when your workflow exhausts all its [retries](/qstash/features/retry) and fails.
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    ...
+  },
+  // options:
+  {
+    failureFunction: async (
+      context,      // context during failure
+      failStatus,   // fail status
+      failResponse, // fail message
+      failHeaders   // fail headers
+    ) => {
+      // handle the failure
+    }
+  }
+);
+```
+
+If you provide both `failureUrl` and a `failureFunction`, value of `failureUrl` will be ignored.
+
+Note that if you are using a [Custom Authorization Method](/qstash/workflows/howto/security#custom-authorization-method), you should add authentication to `failureFunction` too.
+
+`failureFunction` is undefined by default. No action is taken on failure.
+
+### `verbose` Option
+
+If you want to peek into how the workflow operates under the hood, you can enable the verbose mode with:
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    ...
+  },
+  // options:
+  {
+    verbose: true
+  }
+);
+```
+
+Each log has the following structure:
+
+```
+{
+  timestamp: number,
+  workflowRunId: string,
+  logLevel: string,
+  eventType: string,
+  details: unknown,
+}
+```
+
+`eventType` can be:
+- `ENDPOINT_START` every time endpoint is called
+- `RUN_SINGLE` or `RUN_PARALLEL` when step(s) are being executed
+- `SUBMIT_STEP` when a single step executes
+- `SUBMIT_FIRST_INVOCATION` when a new workflow run starts
+- `SUBMIT_CLEANUP` when a workflow run finishes
+- `SUBMIT_THIRD_PARTY_RESULT` when a third party call result is received (see `context.call`)
+
+Verbose mode is disabled by default.
+
+### `initialPayloadParser` Option
+
+When you call the workflow endpoint to start a workflow run, the payload of your request is expected to either be empty, a string or a JSON by default.
+
+If you have a different kind of payload, you can use the `initialPayloadParser` option to process the initial paylaod however you want.
+
+You can also set the type of the payload through `serve`:
+
+```javascript
+type MyPayload = {
+  foo: string,
+  bar: number
+}
+
+// set the type of the initial payload to MyPayload:
+export const POST = serve<MyPayload>(
+  async (context) => {
+    // result of initialPayloadParser is available in `requestPayload` field:
+    const payload: MyPayload context.requestPayload; 
+  },
+  // options:
+  {
+    // parser which converts a string to MyPayload
+    initialPayloadParser: (initialPayload) => {
+      const myPayload: MyPayload = getMyPayload(initialPayload);
+      return myPayload;
+    }
+  }
+);
+```
+
+### `url` Option
+
+Since a workflow run will make several calls to the workflow endpoint during execution, `serve` method needs to know where the endpoint is hosted.
+
+In general, this is done by checking the `request.url` field.
+
+But if you are using a proxy or a local tunnel for local development, you may want to overwrite the URL infered from `request.url`.
+
+This is possible through the `url` option. It denotes where the workflow endpoint can be accessed by QStash:
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    ...
+  },
+  // options:
+  {
+    url: "https://www.workflow-endpoint.com/api/workflow"
+  }
+);
+```
+
+`url` is undefined by default. URL is infered from `request.url`.
+
+``` `baseUrl` Option
+
+An alternative to the `url` option is the `baseUrl` option. `baseUrl` also allows you to change the url infered from `request.url`, but instead of overwriting it, `baseUrl` allows you to only change the base of the URL:
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    ...
+  },
+  // options:
+  {
+    baseUrl: "https://www.workflow-endpoint.com"
+  }
+);
+```
+
+Default value of `baseUrl` is undefined.
+
+If you want to apply `baseUrl` to all of your application, you can set `UPSTASH_WORKFLOW_URL` environment variable.
+
+Here is an example use case: Imagine that you want to test your application at `localhost:3000` with QStash using a local tunnel which gives you some public URL `https://my-local-tunnel.com`. When you set `UPSTASH_WORKFLOW_URL` to `https://my-local-tunnel.com`, all your `serve` endpoints will convert `localhost:3000/api/endpoint` in the `request.url` with `https://my-local-tunnel.com/api/endpoint`, allowing QStash to talk to your dev environment through the local tunnel.
