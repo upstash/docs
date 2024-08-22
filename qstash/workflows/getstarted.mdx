@@ -2,86 +2,100 @@
 title: "Getting Started"
 ---
 
-**Workflows** is a Durable Execution Engine that is composed of **Qstash** Server and the SDK.
+Upstash Workflow is an execution engine that allows you to write **reliable serverless code** that retries on failure without managing infrastructure.
 
-- It allows to break **free of time limitations** of serverless platforms.
-- It enables **recovery from partial failures**, with the ability to continue a workflow run from an intermediate step.
-- It is designed to seamlessly integrate with **your existing infrastructure**. The application code will not be uploaded to QStash.
-- It provides **all the power of QStash** while abstracting away the complexities, allowing you to focus on implementing the **essential parts**.
+- **No more function timeouts** on serverless platforms
+- **Automatic error recovery**, continue a workflow run from any step
+- Integrates perfectly with your existing infrastructure, all code runs on your own servers
+- **Delivery guarantees**, batching, schedules and more
 
-Here is an example how an an endpoint might use our SDK:
+Getting started is as easy as creating a separate step for each piece of your business logic:
 
-```javascript 
+```typescript
 import { serve } from "@upstash/qstash/nextjs";
-import { sendEmail } from "./utils"
+import { sendEmail } from "./emailUtils";
 
-export const POST = serve<{ question: string }>(async context => {
-  await context.run("saveUser", async() => {
-    await saveUser(userRequest)
-  })
-  
-  await context.sleep("sleepDays" , 60 * 60 * 24 * 3) // 3 days
+// Type-safety for starting our workflow
+interface InitialData {
+  userId: string
+  email: string
+  name: string
+}
 
-  const response = await context.call(
-    "call open ai",
+export const POST = serve<InitialData>(async (context) => {
+  const { userId, email, name } = context.requestPayload;
+
+  // Step 1: Send welcome email
+  await context.run("send-welcome-email", async () => {
+    await sendEmail(email, "Welcome to our service!");
+  });
+
+  // Step 2: Wait for 3 days (in seconds)
+  await context.sleep("sleep-until-follow-up", 60 * 60 * 24 * 3);
+
+  // Step 3: Generate personalized follow-up message
+  const aiResponse = await context.call(
+    "generate-personalized-message",
     "https://api.openai.com/v1/chat/completions",
-    "POST", 
+    "POST",
     {
-      model: "gpt-4o",
+      model: "gpt-3.5-turbo",
       messages: [
-        { role: "system", content: "You are a helpful assistant." },
-        { role: "user", content: context.requestPayload.question }
+        { role: "system", content: "You are an assistant creating personalized follow-up messages." },
+        { role: "user", content: `Create a short, friendly follow-up message for ${name} who joined our service 3 days ago.` }
       ]
     },
-    {
-      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    }
+    { headers: { ... } }
   );
 
-  await context.run("sendEmail", async () => {
-    await sendEmail(userRequest, response)
-  })
-})
+  const personalizedMessage = aiResponse.choices[0].message.content;
+
+  // Step 4: Send personalized follow-up email
+  await context.run("send-follow-up-email", async () => {
+    await sendEmail(email, personalizedMessage);
+  });
+});
 ```
 
-This example is for Next.js, to check all other plaforms and usage examples see [Supported Platforms](/qstash/workflows/platforms/platforms)
+Each step is guaranteed to be executed, with automatic retry on failure. This example is for Next.js, but Upstash Workflow [supports many platforms](/qstash/workflows/platforms/platforms).
 
-You can also check our [All In One Example](/qstash/workflows/examples/allInOne) for more complex scenarios. 
+To trigger our durable onboarding workflow from the example above, call the API endpoint with the initial data.
 
-You will call the endpoint as your usual endpoint. The call will not execute all the code but it will just trigger it. 
-
-```bash 
-curl -XPOST https://cool-app.vercel.app/ask -d '{"userId": 42, "question" : "what is the meaning of life?" }'
+```bash
+curl -XPOST https://<YOUR-APP-URL>/api -d '{"userId": 123, "email": "john@example.com", "name": "John }'
 ```
 
-And in return it will return a `workflowRunId`. 
+This API call returns a `workflowRunId`:
 
 ```json
-{"workflowRunId":"wfr_TzazoUCuZmFGp2u9cdy5K"}
+{ "workflowRunId": "wfr_TzazoUCuZmFGp2u9cdy5K" }
 ```
 
-This run id can be used to see [the logs](/qstash/workflows/howto/monitor) of the workflow run in the console, 
-and also it can be used to [cancel](/qstash/workflows/howto/cancel) the workflow run.
+You can use this ID to [see the workflow status](/qstash/workflows/howto/monitor) in real-time via our dashboard or to [cancel the run](/qstash/workflows/howto/cancel) if needed.
 
-To get into more detail see our api desription here:
+---
+
+Here are more details about what the `context` object does:
+
 - [context.run](/qstash/workflows/basics/context#context-run)
 - [context.sleep](/qstash/workflows/basics/context#context-sleep)
 - [context.sleepUntil](/qstash/workflows/basics/context#context-sleepuntil)
 - [context.call](/qstash/workflows/basics/context#context-call)
 
-See [caveats](/qstash/workflows/basics/caveats) for more complex usages of the API and things to 
-be careful when using it.
+See [caveats](/qstash/workflows/basics/caveats) for more complex API usage and best-practices when using Upstash Workflow.
 
-And see following documentations about how to:
-- [cancel](/qstash/workflows/howto/cancel) a running workflow
-- monitor and handle [failed](/qstash/workflows/howto/failures) of a workflow run
-- [monitor](/qstash/workflows/howto/failures) all finished and in progress runs
-- [schedule](/qstash/workflows/howto/schedule) a workflow endpoint with cron definition
-- [secure](/qstash/workflows/howto/security) calls to a workflow endpoint
-- handle [workflow route code changes](/qstash/workflows/howto/changes) 
-- test your workflow app [locally on development phase](/qstash/workflows/howto/local-development)
+---
 
-If you are curious, you can checkout how we make sure each step is run seperatly and 
-how do we get away with platform specific timeouts [here](/qstash/workflows/how)
+Guides on common workflow topics:
 
-And lastly you can checkout our [roadmap](/qstash/workflows/roadmap) to see what is planned for the future.
+- [Cancel a running workflow](/qstash/workflows/howto/cancel)
+- [Handle failed workflow runs](/qstash/workflows/howto/failures)
+- [Monitor active workflows in real-time](/qstash/workflows/howto/failures)
+- [Schedule repeated workflow runs](/qstash/workflows/howto/schedule)
+- [Secure a workflow endpoint](/qstash/workflows/howto/security)
+- [Handle workflow route code changes](/qstash/workflows/howto/changes)
+- [Develop your workflows locally](/qstash/workflows/howto/local-development)
+
+If you're curious about the behind-the-scenes about how we ensure separate step execution or prevent serverless timeouts, we wrote about it [here](/qstash/workflows/how)! :)
+
+Here is our [Upstash Workflow roadmap](/qstash/workflows/roadmap) to see what we planned for the future.
