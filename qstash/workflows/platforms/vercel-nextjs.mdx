@@ -2,17 +2,165 @@
 title: Next.js
 ---
 
-To define a workflow endpoint in a Next.js project,
-you can define a POST endpoint like this:
+# Using Upstash QStash Workflows with Next.js
 
-```javascript
-import { serve } from "@upstash/qstash/nextjs";
+This guide provides detailed, step-by-step instructions on how to use and deploy Upstash Workflows with Next.js.
 
-export const POST = serve<string>(
-  async context => {
-    // ...
+## Prerequisites
+
+1. An Upstash QStash API key.
+2. Node.js and npm (another package manager) installed.
+
+If you haven't obtained your QStash API key yet, you can do so by [signing up](https://console.upstash.com/login) for an Upstash account and navigating to your QStash dashboard.
+
+## Step 1: Install the QStash SDK
+
+First, install the QStash SDK in your Next.js project:
+
+```bash
+npm install @upstash/qstash
+```
+
+## Step 2: Configure Environment Variables
+
+Create a .env.local file in your project root and add your QStash API Key. This key is used to authenticate your application with the QStash service.
+
+```bash
+touch .env.local
+```
+
+Edit the .env.local file and add your QStash API Key:
+
+```bash .env.local
+QSTASH_API_KEY=xxxxxxxxx
+```
+
+Replace `xxxxxxxxx` with your actual QStash API Key found here:
+
+<Frame>
+  <img src="/img/qstash-workflow/qstash_token.png" />
+</Frame>
+{/* 
+**Optional, but recommended**, is to also set your signing keys as environment variables. This allows QStash to verify the requests made to your workflow endpoints.
+
+```bash .env.local
+QSTASH_API_KEY=xxxxxxxxx
+
+# Recommended: add signing keys
+QSTASH_CURRENT_SIGNING_KEY=xxxxxxxxx
+QSTASH_NEXT_SIGNING_KEY=xxxxxxxxx
+```
+
+These keys can be found in the QStash dashboard, right next to your API key under the "Signing Keys" tab:
+
+<Frame>
+  <img src="/img/qstash-workflow/qstash_signing_keys.png" />
+</Frame> */}
+
+## Step 3: Create a Workflow Endpoint
+
+A workflow endpoint allows you to define a set of steps that, together, make up a workflow. Each step contains a piece of business logic that is automatically retried on failure, with easy monitoring via our visual workflow dashboard.
+
+To define a workflow endpoint in a Next.js project, navigate into the Next.js `app/api` directory and create a new folder, for example called `workflow`. Inside this folder, create a `route.ts` file that contains your workflow:
+
+```typescript app/api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+
+export const POST = serve(
+  async (context) => {
+    await context.run("initial-step", async () => {
+      console.log("initial step ran")
+    })
+
+    await context.run("second-step", async () => {
+      console.log("second step ran")
+    })
   },
+  {
+    // A live URL is required to run a workflow locally,
+    // see step 4 for details
+    baseUrl:
+      process.env.NODE_ENV === "development"
+        ? "https://<YOUR_NGROK_OR_TUNNEL_URL>/"
+        : undefined,
+  }
 )
 ```
 
-For more examples, see [the workflow Next.js example](https://github.com/upstash/qstash-js/tree/main/examples/workflow/nextjs). If you wish to run the example localy, you can refer to [the local development section](/qstash/workflows/howto/local-development) or [the README in the workflow examples directory](https://github.com/upstash/qstash-js/tree/main/examples/workflow).
+Currently, all workflow steps must be an asynchronous function. We are working on adding support for synchronous functions.
+
+## Step 4: Run the Workflow Endpoint
+
+For QStash, a tool that's used to run workflows under the hood, you need to provide a live URL for your workflow endpoint. Here's how to [set up your workflow endpoint for local development](qstash/workflows/howto/local-development). 
+
+In production, a workflows `baseUrl` is automatically set and can be omitted.
+
+Once you have a live URL for your local workflow endpoint, trigger your workflow by first starting your Next.js app:
+
+```bash
+npm run dev
+```
+
+and then making a POST request to your workflow endpoint:
+
+```bash
+curl -X POST https://<YOUR_NGROK_OR_TUNNEL_URL>/api/workflow
+```
+
+For each workflow run, a unique workflow run ID is returned:
+
+```bash
+{ workflowRunId: "wfr_xxxxxxxx" }
+```
+
+This ID can be used to track the workflow run and see its status in your QStash workflow dashboard. All steps are listed with their statuses, headers, and body for a detailed overview of your workflow from start to finish. Click on a step to see its detailed logs.
+
+<Frame>
+  <img src="/img/qstash-workflow/dashboard.png" />
+</Frame>
+
+## Step 5: Deploying to Production
+
+When deploying your Next.js application with Upstash Workflows to production, there are a few key points to keep in mind:
+
+1. **Environment Variables**: Make sure that all necessary environment variables are set in your Vercel project settings. For example, your `QSTASH_API_KEY` and any other configuration variables your workflow might need.
+
+2. **Remove Local Development Settings**: In your production code, you can remove or conditionally exclude any local development settings. For example, the `baseUrl` option in the `serve` function can be omitted in production:
+
+   ```typescript app/api/workflow/route.ts
+   export const POST = serve(
+     async (context) => {
+       // Your workflow steps
+     },
+     {
+       // Conditionally set in development, but not in production
+       // as the baseUrl is automatically set in production
+       baseUrl:
+         process.env.NODE_ENV === "development"
+           ? "https://<YOUR_NGROK_OR_TUNNEL_URL>/"
+           : undefined,
+     }
+   )
+   ```
+
+3. **Deployment**: Deploy your Next.js application to Vercel, AWS Amplify or other platforms as you normally would. These platforms will automatically detect and build your Next.js application.
+
+4. **Verify Workflow Endpoint**: After deployment, verify that your workflow endpoint is accessible by making a POST request to your production URL:
+
+   ```bash
+   curl -X POST https://<YOUR-PRODUCTION-URL>/api/workflow
+   ```
+
+5. **Monitor in QStash Dashboard**: Use the QStash dashboard to monitor your production workflows. You can track workflow runs, view step statuses, and access detailed logs.
+
+6. **Set Up Alerts**: Consider setting up alerts in Sentry or other monitoring tools to be notified of any workflow failures in production.
+
+## Next Steps
+
+1. Learn how to protect your workflow endpoint from unauthorized access by [securing your workflow endpoint](/qstash/workflows/howto/security).
+
+2. Explore our [workflow Next.js example](https://github.com/upstash/qstash-js/tree/main/examples/workflow/nextjs) for a detailed, end-to-end example and best practices.
+
+3. If you encounter any issues or need help, refer to our [troubleshooting guide](/qstash/workflows/troubleshooting) for common problems and their solutions.
+
+4. For setting up and testing your workflows in a local environment, check out our [local development guide](/qstash/workflows/howto/local-development).
