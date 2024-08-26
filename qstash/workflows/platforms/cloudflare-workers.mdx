@@ -2,105 +2,170 @@
 title: "Cloudflare Workers"
 ---
 
-On this page, we explain how to use Upstash Workflow with Cloudflare Workers.
+This guide provides detailed, step-by-step instructions on how to use and deploy Upstash Workflows with Cloudflare Workers. You can also explore our [Cloudflare Workers example](https://github.com/upstash/qstash-js/tree/main/examples/workflow/cloudflare-workers) or [Hono.js Cloudflare Workers example](https://github.com/upstash/qstash-js/tree/main/examples/workflow/cloudflare-workers-hono) for detailed, end-to-end examples and best practices.
 
-You can find [a complete Cloudflare Worker example in the sdk repository](https://github.com/upstash/qstash-js/tree/main/examples/workflow/cloudflare-workers). You can also find [a Cloudflare Worker example using Hono router](https://github.com/upstash/qstash-js/tree/main/examples/workflow/cloudflare-workers-hono) under our examples.
+## Prerequisites
 
-<Tip href="/qstash/workflows/platforms/hono" >
+1. An Upstash QStash API key.
+2. Node.js and npm (another package manager) installed.
 
-If you are using Cloudflare Workers with Hono router, you should use the [`serve` method for Hono](/qstash/workflows/platforms/hono).
+If you haven't obtained your QStash API key yet, you can do so by [signing up](https://console.upstash.com/login) for an Upstash account and navigating to your QStash dashboard.
 
-</Tip>
+## Step 1: Install the QStash SDK
 
-# 1. Setting up Your Project
+First, install the QStash SDK in your worker project:
 
-First, you should start a project. You can learn more about [starting a Cloudflare Worker project in Cloudflare documentation](https://developers.cloudflare.com/workers/get-started/guide/). When prompted, you can pick "Hello World example" and "Hello World Worker" as starting point.
-
-If you are prompted to pick a framework, you can pick `Bun`. If you wish to pick `Hono`, you can select `Hono` but please follow [the guide for Hono](/qstash/workflows/platforms/hono).
-
-Once you initialize the project, you should run the following command to install QStash:
-
-```
-npm i @upstash/qstash
+```bash
+npm install @upstash/qstash
 ```
 
-# 2. Local Development
+## Step 2: Configure Environment Variables
 
-To be able to run a workflow in a local project, you will need to start a local tunnel in order for QStash server to communicate with your application. [See the local development section to learn more](/qstash/workflows/howto/local-development).
+Create a `.dev.vars` file in your project root and add your QStash token. This key is used to authenticate your application with the QStash service.
 
-# 3. Environment Variables
-
-Until now, we have only set the `UPSTASH_WORKFLOW_URL` environment variable. Next, we should set the `UPSTASH_TOKEN` environment variable. You can get `UPSTASH_TOKEN` from [the Upstash Console](https://console.upstash.com/).
-
-Optionally, you can also set `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` environment variables. See ["Secure Endpoints" for more details](/qstash/workflows/howto/security).
-
-For Cloudflare to detect these environment variables locally you should create a `.dev.vars` file and write the variables there:
-
-```
-# creates .dev.vars file
+```bash
 touch .dev.vars
 ```
 
-Add the environment variables:
+Open the environment file and add your QStash token, as well as the environment you're running in:
 
+```bash .dev.vars
+QSTASH_TOKEN=xxxxxxxxx
+ENVIRONMENT=development
 ```
-UPSTASH_WORKFLOW_URL="*****"
-QSTASH_TOKEN="*****"
-```
 
-# 4. serve method
+Replace `xxxxxxxxx` with your actual QStash token found here:
 
-Next, we will define the `serve` method. Go to the `src/index.ts` file and add the workflow endpoint as:
+<Frame>
+  <img src="/img/qstash-workflow/qstash_token.png" />
+</Frame>
 
-```javascript
-// src/index.ts
-import { serve } from "@upstash/qstash/cloudflare";
+## Step 3: Create a Workflow Endpoint
+
+A workflow endpoint allows you to define a set of steps that, together, make up a workflow. Each step contains a piece of business logic that is automatically retried on failure, with easy monitoring via our visual workflow dashboard.
+
+To define a workflow endpoint with Cloudflare Workers, navigate into your workers entrypoint file (usually `src/index.ts`) and add the following code:
+
+```typescript src/index.ts
+import { serve } from "@upstash/qstash/cloudflare"
+
+interface Env {
+  ENVIRONMENT: "development" | "production"
+}
 
 export default {
-  fetch: serve<{text: string}>(async context => {
-    // ...
-  })
-};
+  fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    // 👇 For TypeScript users: define initial payload type
+    return serve<{ text: string }>(
+      async (context) => {
+        const initialPayload = context.requestPayload.text
+
+        const result = await context.run("initial-step", async () => {
+          console.log(`Step 1 running with payload: ${initialPayload}`)
+
+          return { text: "initial step ran" }
+        })
+
+        await context.run("second-step", async () => {
+          console.log(`Step 2 running with result from step 1: ${result.text}`)
+        })
+      },
+      {
+        // A live URL is required to run a workflow locally,
+        // see step 4 for details
+        baseUrl: env.ENVIRONMENT === "development" 
+          ? "https://<YOUR_NGROK_OR_TUNNEL_URL>/" 
+          : undefined,
+      }
+    )
+  },
+}
 ```
 
-See [the documentation of the `serve` method for more details](/qstash/workflows/basics/serve).
+## Step 4: Run the Workflow Endpoint
 
-# 5. Run Locally
+To start your worker locally, run the following command:
 
-Finally, we can run the project locally. Simply run:
-
-```
-npm run dev
+```bash
+npm run wrangler dev
 ```
 
-To trigger the endpoint, you can run:
+Executing this command prints a local URL to your workflow endpoint. By default, this URL is `http://localhost:8787`.
 
-```
-curl -X POST <DEV-URL> -d '{"text": "hello world!"}'
-```
+You can verify your correct environment variable setup by checking the wrangler output, which should now have access to your `QSTASH_TOKEN` binding and log your local URL:
 
-Note that if you set environment variables `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`; your curl request with fail since the endpoint only accepts requests coming from QStash. [See "Secure Endpoints" for how you can call these endpoints](/qstash/workflows/howto/security).
+<Frame>
+  <img src="/img/qstash-workflow/wrangler.png" />
+</Frame>
 
-# 6. deploy
+For QStash, a tool that's used to run workflows under the hood, we need to provide a publically accessible URL. You can easily forward your localhost URL to a live URL with one of the tools we outline in our guide about [setting up your workflow endpoint for local development](/qstash/workflows/howto/local-development).
 
-To deploy the application, you should first deploy the project with:
+In production, a workflows `baseUrl` is automatically set and can be omitted.
 
-```
-npm run deploy
-```
+Once you have a publically accessible URL for your locally running worker, trigger your workflow by sending a POST request:
 
-First time you deploy the app, it won't run since required env variables are missing.
-
-Next, [add environment variables to your project](https://developers.cloudflare.com/workers/configuration/environment-variables/). You should add all environment variables you added to `.dev.vars`, except `UPSTASH_WORKFLOW_URL`.
-
-You can run `npm run deploy` again to start your project with the environment variables.
-
-Once the app is deployed, you can call it similar to how we called the development project:
-
-```
-curl -X POST <DEPLOYMENT-URL> -d '{"text": "hello world!"}'
+```bash
+curl -X POST https://<YOUR_NGROK_OR_TUNNEL_URL>/ -D '{"text": "hello world!"}'
 ```
 
-Again, if you secured your endpoint with signing keys, you should refer to ["Secure Endpoints" page](/qstash/workflows/howto/security).
+For each workflow run, a unique workflow run ID is returned:
 
-You can check [the monitoring pag to learn more about how you can monitor your workflows](/qstash/workflows/howto/monitor).
+```bash
+{ workflowRunId: "wfr_xxxxxxxx" }
+```
+
+<Frame>
+  <img src="/img/qstash-workflow/workers_local_request.png" />
+</Frame>
+
+Use this ID to track the workflow run and see its status in your QStash workflow dashboard. All steps are listed with their statuses, headers, and body for a detailed overview of your workflow from start to finish. Click on a step to see its detailed logs.
+
+<Frame>
+  <img src="/img/qstash-workflow/dashboard.png" />
+</Frame>
+
+## Step 5: Deploying to Production
+
+When deploying your Cloudflare Worker with Upstash Workflows to production, there are a few key points to keep in mind:
+
+1. **Environment Variables**: Make sure that all necessary environment variables from your `.dev.vars` file are set in your Cloudflare Worker project settings. For example, your `QSTASH_TOKEN`, `ENVIRONMENT`, and any other configuration variables your workflow might need.
+
+2. **Remove Local Development Settings**: In your production code, you can remove or conditionally exclude any local development settings. For example, the `baseUrl` option in the `serve` function can be omitted in production:
+
+```typescript src/index.ts
+import { serve } from '@upstash/qstash/cloudflare'
+
+interface Env {
+  ENVIRONMENT: 'development' | 'production'
+}
+
+export default {
+  fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    return serve(
+      async (context) => { ... },
+      {
+        // This is automatically set in production
+        baseUrl: env.ENVIRONMENT === 'development' 
+          ? 'https://<YOUR_NGROK_OR_TUNNEL_URL>/' 
+          : undefined,
+      },
+    )
+  },
+}
+```
+
+3. **Deployment**: Deploy your Cloudflare Worker to production as you normally would, for example using the Cloudflare CLI:
+
+   ```bash
+   wrangler deploy
+   ```
+
+4. **Verify Workflow Endpoint**: After deployment, verify that your workflow endpoint is accessible by making a POST request to your production URL:
+
+   ```bash
+   curl -X POST https://<YOUR-PRODUCTION-URL>/ -D '{"text": "hello world!"}'
+   ```
+
+5. **Monitor in QStash Dashboard**: Use the QStash dashboard to monitor your production workflows. You can track workflow runs, view step statuses, and access detailed logs.
+
+6. **Set Up Alerts**: Consider setting up alerts in Sentry or other monitoring tools to be notified of any workflow failures in production.
