@@ -1,43 +1,47 @@
 ---
-title: "Secure Endpoints"
----
-To secure an endpoint, you can use two methods:
-
-- QStash [Security](/qstash/features/security) method using `QStash signing keys`
-- Custom header and custom authorization mechanism 
-
-### QStash Signing Keys 
-
-You can secure your endpoints by setting `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` as environment variables. You can obtain your signing keys from the [QStash console](https://console.upstash.com/qstash).
-
-<Frame>
-  <img src="/img/qstash/rest_token.png" />
-</Frame>
-
+title: "Secure an endpoint"
 ---
 
-Note that when you do this, even the first request will be verified by the SDK, meaning that it needs to be called by QStash (or the `Upstash-Signature` needs to be populated by the caller, following the description [here](/qstash/features/security#the-upstash-signature-header)). The suggested approach in this case is to trigger the endpoint via QStash publish as follows:
+To prevent _anyone_ from triggering your workflow endpoint, you can use two methods:
 
-```bash
-curl -XPOST \
-    -H 'Authorization: Bearer <QSTASH_TOKEN>' \
-    -H "Content-type: application/json" \
-    -d '{ "hello": "world" }' \
-    'https://qstash.upstash.io/v2/publish/https://<your-app-url>/workflowPath'
+- QStash's [built-in request verification](/qstash/features/security)
+- Custom header and custom authorization mechanism
+
+### Using QStash's built-in request verification (recommended)
+
+Use QStash's built-in request verification to allow only authorized clients to trigger your workflow. Set two environment variables in addition to your QStash API key:
+
+```bash .env
+QSTASH_CURRENT_SIGNING_KEY=xxxxxxxxx
+QSTASH_NEXT_SIGNING_KEY=xxxxxxxxx
 ```
 
-Please check [platforms](/qstash/workflows/platforms/platforms) for specific instructions on how to configure these for your platform.
+And replace `xxxxxxxxx` with your actual keys. Find both of these keys in your QStash dashboard under the **"Signing keys"** tab:
 
-For platforms that do not support this through environment variables, you can configure it explicitly as follows:
+<Frame>
+  <img src="/img/qstash-workflow/qstash_signing_keys.png" />
+</Frame>
 
-```javascript
+This will require **every request** to your workflow endpoint to include a valid signature, including the initial request that triggers a workflow. In other words: all requests need to come either from QStash (which automatically populates the `Upstash-Signature` header) or from a client that manually populates the `Upstash-Signature` header with your signing secret.
+
+We suggest using QStash's publish API to trigger your workflow:
+
+```bash Terminal
+curl -XPOST \
+    -H 'Authorization: Bearer <YOUR_QSTASH_TOKEN>' \
+    -H "Content-type: application/json" \
+    -d '{ "initialData": "hello world" }' \
+    'https://qstash.upstash.io/v2/publish/https://<your-app-url>/api/workflow'
+```
+
+For edge cases that do not support environment variables as outlined above, you can explicitly pass your signing keys to the `serve` function:
+
+```typescript api/workflow/route.ts
 import { Receiver } from "@upstash/qstash";
 import { serve } from "@upstash/qstash/workflow";
 
-export const POST = serve(
-  async (context) => {
-    const input = context.requestPayload;
-    // steps...
+export const POST = serve(async (context) => {
+    // Your workflow steps...
   },
   options: {
     receiver: new Receiver({
@@ -48,25 +52,38 @@ export const POST = serve(
 );
 ```
 
-## Custom Authorization Method 
+## Custom Authorization Method
 
-Any custom authentication is possible. Even though the endpoint is called multiple times, we ensure that the initial headers and request passed by you will be available on subsequent calls as well. This ensures that an authentication code like the one below will work as expected.
+You can use your own authorization mechanism with Upstash Workflow. We ensure that the initial headers and initial request body will be available on every call made to your workflow.
 
-```javascript
-import { serve } from "@upstash/qstash/nextjs";
+**Important:** When using your own auth mechanism and using a `failureFunction`, make sure to authenticate requests to the failure function as well. Otherwise, any client could trigger the failure function.
 
-export const POST = serve<string>(
-  async context => {
-    if (context.headers.get("authorization") !== "Bearer secretPassword") {
-      console.error("Authentication failed.");
-      return;
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+
+export const POST = serve(
+  async (context) => {
+    const authHeader = context.headers.get("authorization")
+    const bearerToken = authHeader?.split(" ")[1]
+
+    if (!isValid(bearerToken)) {
+      console.error("Authentication failed.")
+      return
     }
-    
-    const input = context.requestPayload;
 
-    // steps ...
+    // Your workflow steps..
+  },
+  {
+    failureFunction: async ({ headers }) => {
+      const authHeader = context.headers.get("authorization")
+      const bearerToken = authHeader?.split(" ")[1]
+
+      if (!isValid(bearerToken)) {
+        // ...
+      }
+    },
   }
-);
+)
 ```
 
 Note that if you are using a custom authorization method and want to define a [failureFunction](/qstash/workflows/basics/serve#failurefunction), you should also add authentication to `failureFunction`.
