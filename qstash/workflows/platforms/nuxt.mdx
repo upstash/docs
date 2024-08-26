@@ -2,61 +2,134 @@
 title: Nuxt
 ---
 
-On this page, we explain how to use Upstash Workflow with Nuxt.
+This guide provides detailed, step-by-step instructions on how to use and deploy Upstash Workflows with Nuxt.js. You can also explore our [Nuxt example](https://github.com/upstash/qstash-js/tree/main/examples/workflow/nuxt) for a detailed, end-to-end example and best practices.
 
-You can find [a complete Nuxt example in the sdk repository](https://github.com/upstash/qstash-js/tree/main/examples/workflow/nuxt).
+## Step 1: Installation
 
+First, install the QStash SDK in your Nuxt project:
 
-# 1. Setting up Your Project
-
-First, you should start a project. You can learn more about [starting a SolidJS project in SolidJS documentation](https://nuxt.com/docs/getting-started/installation).
-
-Once you initialize the project, you should run the following command to install QStash:
-
-```
-npm i @upstash/qstash
+```bash Terminal
+npm install @upstash/qstash
 ```
 
-# 2. Local Development
+## Step 2: Configure Environment Variables
 
-To be able to run a workflow in a local project, you will need to start a local tunnel in order for QStash server to communicate with your application. [See the local development section to learn more](/qstash/workflows/howto/local-development).
+Create a `.env.local` file in your project root and add your QStash token. This token is used to authenticate your application with the QStash service.
 
-# 3. Environment Variables
+```bash Terminal
+touch .env.local
+```
 
-Until now, we have only set the `UPSTASH_WORKFLOW_URL` environment variable. Next, we should set the `UPSTASH_TOKEN` environment variable. You can get `UPSTASH_TOKEN` from [the Upstash Console](https://console.upstash.com/).
+Open the environment file and add your QStash token:
 
-Optionally, you can also set `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` environment variables. See ["Secure Endpoints" for more details](/qstash/workflows/howto/security).
+```bash .env.local
+QSTASH_TOKEN=xxxxxxxxx
+```
 
-# 4. serve method
+Replace `xxxxxxxxx` with your actual QStash token found here:
 
-Next, we will define the `serve` method. Go to the `src/routes/workflow-endpoint.ts` file and add the workflow endpoint as:
+<Frame>
+  <img src="/img/qstash-workflow/qstash_token.png" />
+</Frame>
 
-```javascript
-import { serve } from "@upstash/qstash/h3";
+## Step 3: Create a Workflow Endpoint
 
-export default serve<string>(
-  async context => {
-    // ...
+A workflow endpoint allows you to define a set of steps that, together, make up a workflow. Each step contains a piece of business logic that is automatically retried on failure, with easy monitoring via our visual workflow dashboard.
+
+To define a workflow endpoint in a Nuxt.js project, navigate into the Nuxt.js `server/api` directory and create a new file, for example called `workflow.ts`. This file will contain your workflow:
+
+```typescript server/api/workflow.ts
+import { serve } from "@upstash/qstash/nuxt"
+
+export const POST = serve(
+  async (context) => {
+    await context.run("initial-step", () => {
+      console.log("initial step ran")
+    })
+
+    await context.run("second-step", () => {
+      console.log("second step ran")
+    })
   },
+  {
+    // A live URL is required to run a workflow locally,
+    // see step 4 for details
+    baseUrl: process.env.NODE_ENV === "development" ? "https://<YOUR_NGROK_OR_TUNNEL_URL>/" : undefined,
+  }
 )
 ```
 
-See [the documentation of the `serve` method for more details](/qstash/workflows/basics/serve).
+## Step 4: Run the Workflow Endpoint
 
-# 5. Run Locally
+For QStash, a tool that's used to run workflows under the hood, you need to provide a live URL for your workflow endpoint. Here's how to [set up your workflow endpoint for local development](qstash/workflows/howto/local-development).
 
-Finally, we can run the project locally. Simply run:
+In production, a workflows `baseUrl` is automatically set and can be omitted.
 
-```
+Once you have a live URL for your local workflow endpoint, trigger your workflow by first starting your Nuxt app:
+
+```bash Terminal
 npm run dev
 ```
 
-To trigger the endpoint, you can run:
+and then making a POST request to your workflow endpoint. For each workflow run, a unique workflow run ID is returned:
 
+```bash Terminal
+curl -X POST https://<YOUR_NGROK_OR_TUNNEL_URL>/api/workflow
+
+# result: {"workflowRunId":"wfr_xxxxxx"}
 ```
-curl -X POST <DEV-URL>/workflow-endpoint -d '{"text": "hello world!"}'
-```
 
-Note that if you set environment variables `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`; your curl request with fail since the endpoint only accepts requests coming from QStash. [See "Secure Endpoints" for how you can call these endpoints](/qstash/workflows/howto/security).
+<Frame>
+  {/* also works for nuxt */}
+  <img src="/img/qstash-workflow/nextjs_local_request.png" />
+</Frame>
 
-# 6. deploy
+Use this ID to track the workflow run and see its status in your QStash workflow dashboard. All steps are listed with their statuses, headers, and body for a detailed overview of your workflow from start to finish. Click on a step to see its detailed logs.
+
+<Frame>
+  <img src="/img/qstash-workflow/dashboard.png" />
+</Frame>
+
+## Step 5: Deploying to Production
+
+When deploying your Nuxt.js application with Upstash Workflows to production, there are a few key points to keep in mind:
+
+1. **Environment Variables**: Make sure that all necessary environment variables are set in your platforms project settings. For example, your `QSTASH_TOKEN` and any other configuration variables your workflow might need.
+
+2. **Remove Local Development Settings**: In your production code, you can remove or conditionally exclude any local development settings. For example, the `baseUrl` option in the `serve` function can be omitted in production:
+
+   ```typescript app/api/workflow/route.ts
+   export const POST = serve(
+     async (context) => {
+       // Your workflow steps
+     },
+     {
+       // Conditionally set in development, but not in production
+       // as the baseUrl is automatically set in production
+       baseUrl:
+         process.env.NODE_ENV === "development"
+           ? "https://<YOUR_NGROK_OR_TUNNEL_URL>/"
+           : undefined,
+     }
+   )
+   ```
+
+3. **Deployment**: Deploy your Nuxt application to Vercel, Cloudflare Pages or other platforms as you normally would. These platforms will automatically detect and build your Nuxt application.
+
+4. **Verify Workflow Endpoint**: After deployment, verify that your workflow endpoint is accessible by making a POST request to your production URL:
+
+   ```bash Terminal
+   curl -X POST https://<YOUR-PRODUCTION-URL>/api/workflow
+   ```
+
+5. **Monitor in QStash Dashboard**: Use the QStash dashboard to monitor your production workflows. You can track workflow runs, view step statuses, and access detailed logs.
+
+6. **Set Up Alerts**: Consider setting up alerts in Sentry or other monitoring tools to be notified of any workflow failures in production.
+
+## Next Steps
+
+1. Learn how to protect your workflow endpoint from unauthorized access by [securing your workflow endpoint](/qstash/workflows/howto/security).
+
+2. Explore our [Nuxt example](https://github.com/upstash/qstash-js/tree/main/examples/workflow/nuxt) for a detailed, end-to-end example and best practices.
+
+4. For setting up and testing your workflows in a local environment, check out our [local development guide](/qstash/workflows/howto/local-development).
