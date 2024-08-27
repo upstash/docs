@@ -1,66 +1,166 @@
 ---
-title: Svelte
+title: SvelteKit
 ---
-On this page, we explain how to use Upstash Workflow with Svelte.
 
-You can find [a complete Svelte example in the sdk repository](https://github.com/upstash/qstash-js/tree/main/examples/workflow/sveltekit).
+This guide provides detailed, step-by-step instructions on how to use and deploy Upstash Workflow with SvelteKit. You can also explore our [SvelteKit example](https://github.com/upstash/qstash-js/tree/main/examples/workflow/sveltekit) for a detailed, end-to-end example and best practices.
 
-# 1. Setting up Your Project
+## Prerequisites
 
-First, you should start a project. You can learn more about [starting a SolidJS project in SolidJS documentation](https://kit.svelte.dev/docs/creating-a-project).
+1. An Upstash QStash API key.
+2. Node.js and npm (another package manager) installed.
 
-Once you initialize the project, you should run the following command to install QStash:
+If you haven't obtained your QStash API key yet, you can do so by [signing up](https://console.upstash.com/login) for an Upstash account and navigating to your QStash dashboard.
 
+## Step 1: Installation
+
+First, install the QStash SDK in your SvelteKit project:
+
+```bash Terminal
+npm install @upstash/qstash
 ```
-npm i @upstash/qstash
+
+## Step 2: Configure Environment Variables
+
+Create a `.env.local` file in your project root and add your QStash token. This token is used to authenticate your application with the QStash service.
+
+```bash Terminal
+touch .env.local
 ```
 
-# 2. Local Development
+Open the environment file and add your QStash token:
 
-To be able to run a workflow in a local project, you will need to start a local tunnel in order for QStash server to communicate with your application. [See the local development section to learn more](/qstash/workflow/howto/local-development).
+```bash .env.local
+QSTASH_TOKEN=xxxxxxxxx
+```
 
-# 3. Environment Variables
+Replace `xxxxxxxxx` with your actual QStash token found here:
 
-Until now, we have only set the `UPSTASH_WORKFLOW_URL` environment variable. Next, we should set the `UPSTASH_TOKEN` environment variable. You can get `UPSTASH_TOKEN` from [the Upstash Console](https://console.upstash.com/).
+<Frame>
+  <img src="/img/qstash-workflow/qstash_token.png" />
+</Frame>
 
-Optionally, you can also set `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` environment variables. See ["Secure Endpoints" for more details](/qstash/workflow/howto/security).
+## Step 3: Create a Workflow Endpoint
 
-# 4. serve method
+A workflow endpoint allows you to define a set of steps that, together, make up a workflow. Each step contains a piece of business logic that is automatically retried on failure, with easy monitoring via our visual workflow dashboard.
 
-Next, we will define the `serve` method. Go to the `src/routes/workflow-endpoint/+server.ts` file and add the workflow endpoint as:
+To define a workflow endpoint, navigate into SvelteKit's `routes/api` directory and create a new folder, for example called `workflow`. Inside this folder, create a `+server.ts` file that contains your workflow:
 
-```javascript
-// src/routes/workflow-endpoint/+server.ts
+```typescript routes/api/workflow/+server.ts
+import { serve } from "@upstash/qstash/svelte"
+import { env } from "$env/dynamic/private"
+
+export const POST = serve(
+  async (context) => {
+    await context.run("initial-step", () => {
+      console.log("initial step ran")
+    })
+
+    await context.run("second-step", () => {
+      console.log("second step ran")
+    })
+  },
+  { env }
+)
+```
+
+## Step 4: Run the Workflow Endpoint
+
+For QStash, a tool that's used to run workflows under the hood, you need to provide a live URL for your workflow endpoint. Here's how to [set up your workflow endpoint for local development](qstash/workflow/howto/local-development).
+
+Once you have a live URL, proceeed with either one of the following steps:
+
+### Setting an enviroment variable (recommended)
+
+Set your publically accessible base URL (without extensions such as `/api/workflow`) as an environment variable. This variable is only needed for local development and doesn't need to be set in production:
+
+```bash .env.local
+UPSTASH_WORKFLOW_URL=https://<YOUR_NGROK_OR_TUNNEL_URL>/
+```
+
+### Using the `baseUrl` option
+
+As an alternative to setting an environment variable, you can also use the `baseUrl` option in the `serve` method. This option is only needed for local development and can be omitted in production:
+
+```typescript routes/api/workflow/+server.ts
 import { serve } from "@upstash/qstash/svelte";
 import { env } from '$env/dynamic/private'
 
-export const POST = serve<string>(
-  async context => {
-    // ...
-  },
-  // passing env is mandatory in the case of Svelte:
-  {
-    env
+export const POST = serve(
+  async (context) => { ... }, {
+    env,
+    // just the base URL, no `/api/workflow`
+    baseUrl: "https://<YOUR_NGROK_OR_TUNNEL_URL>/"
   }
 )
 ```
 
-See [the documentation of the `serve` method for more details](/qstash/workflow/basics/serve).
+### Triggering the workflow
 
-# 5. Run Locally
+After setting your live URL as the environment variable or `baseUrl` option, trigger your workflow by first starting your app:
 
-Finally, we can run the project locally. Simply run:
-
-```
+```bash Terminal
 npm run dev
 ```
 
-To trigger the endpoint, you can run:
+and then making a POST request to your workflow endpoint. For each workflow run, a unique workflow run ID is returned:
 
+```bash Terminal
+curl -X POST https://<YOUR_NGROK_OR_TUNNEL_URL>/api/workflow
+
+# result: {"workflowRunId":"wfr_xxxxxx"}
 ```
-curl -X POST <DEV-URL>/workflow-endpoint -d '{"text": "hello world!"}'
-```
 
-Note that if you set environment variables `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`; your curl request with fail since the endpoint only accepts requests coming from QStash. [See "Secure Endpoints" for how you can call these endpoints](/qstash/workflow/howto/security).
+<Frame>
+  {/* also works for sveltekit */}
+  <img src="/img/qstash-workflow/nextjs_local_request.png" />
+</Frame>
 
-# 6. deploy
+Use this ID to track the workflow run and see its status in your QStash workflow dashboard. All steps are listed with their statuses, headers, and body for a detailed overview of your workflow from start to finish. Click on a step to see its detailed logs.
+
+<Frame>
+  <img src="/img/qstash-workflow/dashboard.png" />
+</Frame>
+
+## Step 5: Deploying to Production
+
+When deploying your SvelteKit application with Upstash Workflow to production, there are a few key points to keep in mind:
+
+1. **Environment Variables**: Make sure that all necessary environment variables are set in your platforms project settings. For example, your `QSTASH_TOKEN` and any other configuration variables your workflow might need.
+
+2. **Remove Local Development Settings**: In your production code, you can remove or conditionally exclude any local development settings. For example, the `baseUrl` option in the `serve` function can be omitted in production:
+
+   ```typescript routes/api/workflow/+server.ts
+   export const POST = serve(
+     async (context) => {
+       // Your workflow steps
+     },
+     {
+       // Conditionally set in development, but not in production
+       // as the baseUrl is automatically set in production
+       baseUrl:
+         process.env.NODE_ENV === "development"
+           ? "https://<YOUR_NGROK_OR_TUNNEL_URL>/"
+           : undefined,
+     }
+   )
+   ```
+
+3. **Deployment**: Deploy your app to Vercel, Netlify or other platforms as you normally would. These platforms will automatically detect and build your SvelteKit application.
+
+4. **Verify Workflow Endpoint**: After deployment, verify that your workflow endpoint is accessible by making a POST request to your production URL:
+
+   ```bash Terminal
+   curl -X POST https://<YOUR-PRODUCTION-URL>/api/workflow
+   ```
+
+5. **Monitor in QStash Dashboard**: Use the QStash dashboard to monitor your production workflows. You can track workflow runs, view step statuses, and access detailed logs.
+
+6. **Set Up Alerts**: Consider setting up alerts in Sentry or other monitoring tools to be notified of any workflow failures in production.
+
+## Next Steps
+
+1. Learn how to protect your workflow endpoint from unauthorized access by [securing your workflow endpoint](/qstash/workflow/howto/security).
+
+2. Explore our [SvelteKit example](https://github.com/upstash/qstash-js/tree/main/examples/workflow/sveltekit) for a detailed, end-to-end example and best practices.
+
+3. For setting up and testing your workflows in a local environment, check out our [local development guide](/qstash/workflow/howto/local-development).
