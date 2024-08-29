@@ -2,74 +2,71 @@
 title: "Handle failed runs"
 ---
 
+This guide shows you how to **gracefully handle failed workflow runs**. This involves best practices on resolving runtime errors, logging and manually retrying runs that have failed multiple times.
 
-Failures can occur during a workflow run for various reasons:
+## Why a workflow might fail
 
--  A step in your workflow throws an exception due to an error in your code. This could be anything from a database error to a logical bug that causes your code to fail during execution.
--  QStash attempts to call your workflow URL, but the URL is not reachable. This might happen if your service is down resulting in a 404 error.
--  Steps in your workflow might also fail if they exceed the [platform's time limitations](/qstash/workflow/quickstarts/platforms). When a step takes too long to execute, it can time out, causing the workflow to fail.
+- A step in your workflow throws a database error that causes your code to fail at runtime.
+- QStash calls your workflow URL, but the URL is not reachable - for example, because of a temporary outage of your deployment platform.
+- A single step takes longer than your platform's function execution limit.
 
-In all of the cases above, QStash will retry calling the step 3 times and give up only after then. Making this configurable is in our [roadmap](qstash/workflow/roadmap)
+QStash automatically retries a failed step **three times with exponential backoff** to allow temporary outages to resolve.
 
-When a workflow fails, a related event will be fired to [Dead Letter Queue](/qstash/howto/handling-failures#dead-letter-queue)
+<Frame caption="A failed step is automatically retried three times">
+  <img src="/img/qstash-workflow/automatic_retry.png" />
+</Frame>
 
-From `DLQ` tab on the console, you can check all the failed messages. You can filter messages via `workflow url` and `workflow run id` to search for a particilar failure.
+If, even after all retries, your step does not succeed, we'll move the failed run into your [Dead Letter Queue (DLQ)](/qstash/howto/handling-failures#dead-letter-queue). That way, you can always manually retry it again and debug the issue.
 
-TOOD SANCAR PUT A DLQ IMAGE HERE WITH WORKFLOW URL WORKFLOW ID FILTERS
+<Frame caption="Manually retry from the Dead-Letter-Queue (DLQ)">
+  <img src="/img/qstash-workflow/workflow_dlq.png" />
+</Frame>
 
-If you want to take an action(a cleanup/log), you can configure either `failureFunction` or a `failureUrl` on the `serve` method of your workflow.
-These options allow you to define custom logic or an external endpoint that will be triggered when a failure occurs. 
+{/* To take certain action whenever a workflow fails (i.e. cleaning up your database or logging to Sentry), configure a `failureFunction` or a `failureUrl` for your workflow.  
 
+If you want to take an action (a cleanup/log), you can configure either `failureFunction` or a `failureUrl` on the `serve` method of your workflow.
+These options allow you to define custom logic or an external endpoint that will be triggered when a failure occurs. */}
 
-### 1. Using `failureFunction`
+## Using a `failureFunction` (recommended)
 
-The `failureFunction` allows you to define custom logic for handling failures. 
+The `serve` function you use to create a workflow endpoint accepts a `failureFunction` parameter - an easy way to gracefully handle errors (i.e. logging them to Sentry) or your custom handling logic.
 
-#### Example Configuration:
-
-```javascript
+```typescript api/workflow/route.ts
 export const POST = serve<string>(
   async (context) => {
-    const input = context.requestPayload;
-
-    const user = await context.run("signin", async () => {
-      const user = saveUserToDB(input);
-      return user;
-    });
-
-    // Additional steps...
+    // Your workflow logic...
   },
   {
     failureFunction: async (context, failStatus, failResponse, failHeaders) => {
-      const input = context.requestPayload;
-      cleanupDB(input)
+      // Handle error, i.e. log to Sentry
     },
   }
-);
+)
 ```
 
-Note that if you are using a [Custom Authorization Method](/qstash/workflow/howto/security#custom-authorization-method), you should add authentication to `failureFunction` too.
+Note: If you use a custom authorization method to secure your workflow endpoint, add authorization to the `failureFunction` too. Otherwise, anyone could invoke your failure function. Read more here: [securing your workflow endpoint](/qstash/workflow/howto/security).
 
-### 2. Using `failureUrl`
+## Using a `failureUrl`
 
-The `failureUrl` is designed for cases where the service hosting your workflow URL might not be reachable. By specifying a `failureUrl`, you ensure that even if your main service is down, the failure notification will still be sent to a different, reliable endpoint. This approach is ideal for covering scenarios where the primary workflow URL might return a 404 or other unreachable errors.
+The `failureUrl` handles cases where the service hosting your workflow URL is unavailable. In this case, a workflow failure notification is sent to another reachable endpoint.
 
-#### Example Configuration:
-
-```javascript
+```typescript
 export const POST = serve<string>(
   async (context) => {
-    const input = context.requestPayload;
-
-    const user = await context.run("signin", async () => {
-      const user is saveUserToDB(input);
-      return user;
-    });
-
-    // Additional steps...
+    // Your workflow logic...
   },
   {
-    failureUrl: "https://someurl.com",
+    failureUrl: "https://<YOUR_FAILURE_URL>/workflow-failure",
   }
-);
+)
 ```
+
+## Debugging failed runs
+
+In your DLQ, filter messages via the `Workflow URL` or `Workflow Run ID` to search for a particular failure. We include all request and response headers and bodies to simplify debugging failed runs. 
+
+For example, let's debug the following failed run. Judging by the status code `404`, the `Ngrok-Error-Code` header of `ERR_NGROK_3200` and the returned HTML body, we know that the URL our workflow called does not exist. 
+
+<Frame>
+  <img src="/img/qstash-workflow/workflow_dlq_debug.png" />
+</Frame>
