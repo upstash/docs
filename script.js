@@ -59,7 +59,7 @@ posthog.init("phc_REEB8lxnnRCjaU8v7USsg8LMSbHB3JB64lhlv0xye8J", {
   capture_pageview: true,
   cross_subdomain_cookie: true,
   capture_pageleave: true,
-  autocapture: true,
+  autocapture: false,
   persistence: "cookie",
   rate_limiting: {
     events_burst_limit: 1000,
