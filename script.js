@@ -53,7 +53,7 @@ function removeTrailingSlash(url) {
     }),
     (e.__SV = 1));
 })(document, window.posthog || []);
-posthog.init("phc_REEB8lxnnRCjaU8v7USsg8LMSbHB3JB64lhlv0xye8J", {
+posthog.init("phc_hT8RJLWZ74BfzZwduj8jrZNePw8bzC7ByQnUlVNEnR8", {
   api_host: "https://us.i.posthog.com",
   person_profiles: "identified_only",
   capture_pageview: true,
