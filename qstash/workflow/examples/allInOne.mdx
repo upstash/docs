@@ -1,105 +1,174 @@
 ---
-title: "All In One Example"
+title: "AI Generation"
 ---
 
-This example demonstrates how to leverage the core features of the Workflow SDK using a practical use case. We'll walk through the code, highlighting key aspects to help you understand how everything fits together.
+## Introduction
 
-```javascript 
-import { serve } from "@upstash/qstash/nextjs";
-import { sendEmail, reportFailure, getUserEmail } from "./utils"
+This example demonstrates advanced AI data processing using Upstash Workflow. The following example workflow downloads a large dataset, processes it in chunks using OpenAI's GPT-4 model, aggregates the results and generates a report.
 
-export const POST = serve<{ userId: string, question: string }>(async context => {
-  const request = context.requestPayload;
+## Use Case
 
-  const retrieveEmailPromise = context.run("retrieveEmail", async () => {
-      return await getUserEmail(request.userId);
-  });
+Our workflow will:
 
-  const openAIPromise = context.call(
-    "call open ai",
+1. Receive a request to process a dataset
+2. Download the dataset from a remote source
+3. Process the data in chunks using OpenAI
+4. Aggregate results
+5. Generate and send a final report
+
+## Code Example
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+import {
+  downloadData,
+  aggregateResults,
+  generateReport,
+  sendReport,
+  getDatasetUrl,
+  splitIntoChunks,
+} from "./utils"
+
+export const POST = serve<{ datasetId: string; userId: string }>(
+  async (context) => {
+    const request = context.requestPayload
+
+    // Step 1: Download the dataset
+    const datasetUrl = await context.run("get-dataset-url", async () => {
+      return await getDatasetUrl(request.datasetId)
+    })
+
+    // HTTP request with much longer timeout (2hrs)
+    const dataset = await context.call("download-dataset", datasetUrl, "GET")
+
+    // Step 2: Process data in chunks using OpenAI
+    const chunkSize = 1000
+    const chunks = splitIntoChunks(dataset, chunkSize)
+    const processedChunks: string[] = []
+
+    for (let i = 0; i < chunks.length; i++) {
+      const processedChunk = await context.call(
+        `process-chunk-${i}`,
+        "https://api.openai.com/v1/chat/completions",
+        "POST",
+        {
+          model: "gpt-4",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data.",
+            },
+            {
+              role: "user",
+              content: `Analyze this data chunk: ${JSON.stringify(chunks[i])}`,
+            },
+          ],
+          max_tokens: 150,
+        },
+        { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+      )
+
+      processedChunks.push(processedChunk.choices[0].message.content)
+
+      // Every 10 chunks, we'll aggregate intermediate results
+      if (i % 10 === 9 || i === chunks.length - 1) {
+        await context.run(`aggregate-results${i}`, async () => {
+          await aggregateResults(processedChunks)
+          processedChunks.length = 0
+        })
+      }
+    }
+
+    // Step 3: Generate and send data report
+    const report = await context.run("generate-report", async () => {
+      return await generateReport(request.datasetId)
+    })
+
+    await context.run("send-report", async () => {
+      await sendReport(report, request.userId)
+    })
+  }
+)
+```
+
+## Code Breakdown
+
+### 1. Preparing our data
+
+We start by retrieving the dataset URL and then downloading the dataset:
+
+```typescript api/workflow/route.ts
+const datasetUrl = await context.run("get-dataset-url", async () => {
+  return await getDatasetUrl(request.datasetId)
+})
+
+const dataset = await context.call("download-dataset", datasetUrl, "GET")
+```
+
+Note that we use `context-call` for the download, a way to make HTTP requests that run for much longer than your serverless execution limit would normally allow.
+
+### 2. Processing our data
+
+We split the dataset into chunks and process each one using OpenAI's GPT-4 model:
+
+```typescript api/workflow/route.ts
+for (let i = 0; i < chunks.length; i++) {
+  const processedChunk = await context.call(
+    `process-chunk-${i}`,
     "https://api.openai.com/v1/chat/completions",
-    "POST", 
+    "POST",
     {
-      model: "gpt-4o",
+      model: "gpt-4",
       messages: [
-        { role: "system", content: "You are a helpful assistant." },
-        { role: "user", content: request.question }
-      ]
+        {
+          role: "system",
+          content:
+            "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data.",
+        },
+        {
+          role: "user",
+          content: `Analyze this data chunk: ${JSON.stringify(chunks[i])}`,
+        },
+      ],
+      max_tokens: 150,
     },
-    {
-      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    }
-  );
+    { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+  )
 
-  const [email, response] = await Promise.all([retrieveEmailPromise, openAIPromise]);
-
-  for (let i = 0; i < 3; i++) {
-    const emailSendSuccess = await context.run("sendEmail", async () => {
-      return await sendEmail(email, response);
-    });
-    if (emailSendSuccess) {
-      return;
-    }
-
-    // sleep for 1 hour
-    await context.sleep("sleep for email retry", 24 * 60 * 60);
-  }
-
-  await context.run("report a failure to internal system", async () => {
-    await reportFailure(request.userId);
-  });
-});
-```
-
-### Code Breakdown
-
-In this example, we perform two remote operations—one to a database and another to a third-party service—in parallel, and wait for both to complete simultaneously.
-
-```javascript
-const [email, response] = await Promise.all([retrieveEmailPromise, openAIPromise]);
-```
-
-HTTP calls to third-party services are non-blocking and do not consume the endpoint's execution time when using [context.call](/qstash/workflow/basics/context#context-call).
-
-```javascript
-const openAIPromise = context.call(
-  "call open ai",
-  "https://api.openai.com/v1/chat/completions",
-  "POST", 
-  {
-    model: "gpt-4o",
-    messages: [
-      { role: "system", content: "You are a helpful assistant." },
-      { role: "user", content: context.requestPayload.question }
-    ]
-  },
-  {
-    authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-  }
-);
-```
-
-You can implement control flow mechanisms like loops and conditional statements within your workflow. In this case, a custom retry mechanism is used to send an email.
-
-```javascript
-for (let i = 0; i < 3; i++) {
-  const emailSendSuccess = await context.run("sendEmail", async () => {
-    return await sendEmail(email, response);
-  });
-  if (emailSendSuccess) {
-    return;
-  }
-
-  // wait for an hour
-  await context.sleep("sleep for email retry", 24 * 60 * 60);
+  processedChunks.push(processedChunk.choices[0].message.content)
 }
 ```
 
-[Sleeps](/qstash/workflow/basics/context#context-sleep) also do not consume the endpoint's execution time, allowing you to efficiently manage delays.
+### 3. Aggregating our data
 
-```javascript
-await context.sleep("sleep for email retry", 24 * 60 * 60); // 1day
+After processing our data in smaller chunks to avoid any function timeouts, we aggregate results every 10 chunks:
+
+```typescript api/workflow/route.ts
+if (i % 10 === 9 || i === chunks.length - 1) {
+  await context.run(`aggregate-results${i}`, async () => {
+    await aggregateResults(processedChunks)
+    processedChunks.length = 0
+  })
+}
 ```
 
-This example illustrates how to effectively utilize the Workflow SDK's features to handle asynchronous operations, retries, and delays without consuming platform time.
-By combining these techniques, you can build workflows that can handle complex scenarios.
+### 4. Sending a report
+
+Finally, we generate a report based on the aggregated results and send it to the user:
+
+```typescript api/workflow/route.ts
+const report = await context.run("generate-report", async () => {
+  return await generateReport(request.datasetId)
+})
+
+await context.run("send-report", async () => {
+  await sendReport(report, request.userId)
+})
+```
+
+## Key Features
+
+1. **Non-blocking HTTP Calls**: We use `context.call` for API requests so they don't consume the endpoint's execution time (great for optimizing serverless cost).
+
+2. **Long-running tasks**: The dataset download can take up to 2 hours, though is realistically limited by function memory.

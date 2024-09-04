@@ -2,85 +2,114 @@
 title: "Customer Onboarding"
 ---
 
-This example demonstrates how to use the Workflow SDK to implement a customer onboarding process. We'll walk through the code, highlighting key aspects to help you understand how everything fits together.
+This example demonstrates a customer onboarding process using Upstash Workflow. The following example workflow registers a new user, sends welcome emails, and periodically checks and responds to the user's activity state.
 
-## Code
+## Use Case
 
-```javascript
+Our workflow will:
 
-import { serve } from "@upstash/qstash/nextjs";
+1. Register a new user to our service
+2. Send them a welcome email
+3. Wait for a certain time
+4. Periodically check the user's state
+5. Send appropriate emails based on the user's activity
 
-export const POST = serve(
-  async (context) => {
+## Code Example
 
-    const input  = context.requestPayload;
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
 
-    const email = (input as { email: string }).email;
-
-    await context.run("new-signup", async () => {
-      console.log("new user registered");
-      await sendEmail("Welcome to the platform", email);
-    });
-
-    await context.sleep("waitFor3days", 3*24*60*60);
-
-    while (true) {
-      const state = await context.run("check-state", async () => {
-        return await getUserState();
-      });
-
-      if(state === "non-active") {
-        await context.run("send-email-non-active", async () => {
-          await sendEmail("Email to non-active users", email);
-        });
-      }
-      else if(state === "active") {
-        await context.run("send-email-active", async () => {
-          await sendEmail("Send newsletter to active users", email);
-        });
-      }
-      console.log("waiting 1 month");
-      await context.sleep("wait1Month", 30*24*60*60);
-    }
-  },
-  {
-    // A live URL is required to run a workflow locally,
-    baseUrl:
-      process.env.NODE_ENV === "development"
-        ? "YOUR_NGROK_URL"
-        : undefined,
-  }
-);
-
-
-async function sendEmail(message: string, recipient: string) {
-  // Implement email sending logic here
-  console.log(`Sending ${message} email to ${recipient}`);
+type InitialData = {
+  email: string
 }
 
+export const POST = serve<InitialData>(async (context) => {
+  const { email } = context.requestPayload
 
-type UserState =
-  | "non-active"
-  | "active";
+  await context.run("new-signup", async () => {
+    await sendEmail("Welcome to the platform", email)
+  })
+
+  await context.sleep("wait-for-3-days", 60 * 60 * 24 * 3)
+
+  while (true) {
+    const state = await context.run("check-user-state", async () => {
+      return await getUserState()
+    })
+
+    if (state === "non-active") {
+      await context.run("send-email-non-active", async () => {
+        await sendEmail("Email to non-active users", email)
+      })
+    } else if (state === "active") {
+      await context.run("send-email-active", async () => {
+        await sendEmail("Send newsletter to active users", email)
+      })
+    }
+
+    await context.sleep("wait-for-1-month", 60 * 60 * 24 * 30)
+  }
+})
+
+async function sendEmail(message: string, email: string) {
+  // Implement email sending logic here
+  console.log(`Sending ${message} email to ${email}`)
+}
+
+type UserState = "non-active" | "active"
 
 const getUserState = async (): Promise<UserState> => {
-  // Implement user state retrieval logic here
-  return "non-active";
-};
+  // Implement user state logic here
+  return "non-active"
+}
 ```
 
-## Explanation
+## Code Breakdown
 
-This example showcases a straightforward customer onboarding process that sends emails to users based on their activity state. The workflow is designed to run continuously, with each step executed sequentially.
+### 1. New User Signup
 
-1. **New User Registration**: When a new user signs up, the `new-signup` step is triggered. This step logs a message to the console and sends a welcome email to the user.
+We start by sending a newly signed-up user a welcome email:
 
-2. **Initial Waiting Period**: After registration, the workflow pauses for 3 days using the `context.sleep` function.
+```typescript api/workflow/route.ts
+await context.run("new-signup", async () => {
+  await sendEmail("Welcome to the platform", email)
+})
+```
 
-3. **User State Check**: The workflow then enters a loop where it periodically checks the user's state using the `context.run` function.
+### 2. Initial Waiting Period
 
-4. **State-Based Email Sending**: Depending on the user's state (active or non-active), the workflow sends an appropriate email. This action is also performed within a `context.run` function.
+To leave time for the user to interact with our platform, we use `context.sleep` to pause our workflow for 3 days:
 
-Functions called inside `context.run` are executed by the QStash engine, ensuring retry attempts in case of failures. If failures persist, the task is moved to the Dead Letter Queue (DLQ).
+```typescript api/workflow/route.ts
+await context.sleep("wait-for-3-days", 60 * 60 * 24 * 3)
+```
 
-It's important to note that [context.sleep](/qstash/workflow/basics/context#context-sleep) doesn't consume the endpoint's execution time. This is important for optimizing costs on serverless platforms.
+### 3. Periodic State Check
+
+We enter an infinite loop to periodically (every month) check the user's engagement level with our platform and send appropriate emails:
+
+```typescript api/workflow/route.ts
+while (true) {
+  const state = await context.run("check-user-state", async () => {
+    return await getUserState()
+  })
+
+  if (state === "non-active") {
+    await context.run("send-email-non-active", async () => {
+      await sendEmail("Email to non-active users", email)
+    })
+  } else if (state === "active") {
+    await context.run("send-email-active", async () => {
+      await sendEmail("Send newsletter to active users", email)
+    })
+  }
+
+  await context.sleep("wait-for-1-month", 60 * 60 * 24 * 30)
+}
+```
+
+## Key Features
+
+1. **Non-blocking sleep**: We use `context.sleep` for pausing the workflow without consuming execution time (great for optimizing serverless cost).
+
+2. **Long-running task**: This workflow runs indefinitely, checking and responding to a users engagement state every month.
