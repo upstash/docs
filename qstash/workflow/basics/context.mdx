@@ -1,82 +1,77 @@
 ---
-title: "Workflow Context"
+title: "Workflow context"
 ---
 
-In the [serve](/qstash/workflow/basics/serve) method, you define a **Route Function** where the steps of the workflow are outlined.
+A workflow's context is a JavaScript object provided by the serve function and is used to define your workflow endpoint. This context object offers utility methods for creating workflow steps, managing delays, and performing timeout-resistant HTTP calls.
 
-These steps are created using the `WorkflowContext` object. Along with defining steps, `context` allows access to information such as the initial request payload, headers, and the current workflow run ID.
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
 
-```javascript
-import { serve } from "@upstash/qstash/nextjs";
-
-export const POST = serve<string>(
-  // The route function receives a WorkflowContext as a parameter:
+export const POST = serve(
+  // 👇 the workflow context
   async (context) => {
-    const input = context.requestPayload;
-    const result1 = await context.run("step1", async () => {
-      return someWork(input);
-    });
-    
-    ...
+    // ...
   }
-);
+)
 ```
 
-This page documents the fields and methods available in `WorkflowContext`.
+This context object provides utility methods to create workflow steps, wait for certain periods of time or perform timeout-resistant HTTP calls.
 
-## Fields
+Further, the context object provides all request headers, the incoming request payload and current workflow ID.
 
-**context.qstashClient**: Provides access to a QStash client, which is also used by the serve method. This can be overridden by passing the [qstashClient](/qstash/workflow/basics/serve#qstashclient) parameter in serve.
+## Context Object Properties
 
-**context.workflowRunId**: The run ID of the current workflow.
+- `qstashClient`: QStash client used by the serve method
 
-**context.url**: The URL where the workflow endpoint is hosted. This can be overridden with the [url](/qstash/workflow/basics/serve#url) parameter or updated with the [baseUrl](/qstash/workflow/basics/serve#baseUrl) parameter.
+- `workflowRunId`: Current workflow run ID
 
-**context.failureUrl**: The URL to be called in case of workflow failure. This can be configured through the [failureUrl](/qstash/workflow/basics/serve#failureurl) or [failureFunction](/qstash/workflow/basics/serve#failurefunction) parameters.
+- `url`: Publically accessible workflow endpoint URL
 
-**context.requestPayload**: The payload received in the request that initiated the workflow run. Its type can be set through [serve](/qstash/workflow/basics/serve).
+- `failureUrl`: URL for workflow failure notifications.
 
-**context.rawInitialPayload**: The payload received in the request that initiated the workflow run, provided as a string.
+- `requestPayload`: Incoming request payload
 
-**context.headers**: The headers received in the request that initiated the workflow run, provided as a `Headers` object.
+- `rawInitialPayload`: String version of the initial payload
 
-**context.env**: Environment variables from `process.env` if it exists. Can be overwritten with [env](/qstash/workflow/basics/serve#env) option in serve.
+- `headers`: Request headers
 
-## Methods
+- `env`: Environment variables
 
-Each context method allows you to define a workflow step. Each should be awaited.
+## Core Workflow Methods
 
-### `context.run`
+### context.run
 
-`context.run` requires a step name and the code of the step as an async function. Each step can run for the full duration allowed by the platform. The result of each step is stored and remembered by QStash, allowing it to continue from where it left off in case of failure (e.g., endpoint downtime).
-
-Here are a couple of examples to demonstrate its usage:
+Defines and executes a workflow step.
 
 <CodeGroup>
-```javascript serial
-export const POST = serve<string>(
-  async (context) => {
-    const input = context.requestPayload;
-    const result1 = await context.run("step1", async () => {
-      return someWork(input);
-    });
+```typescript Serial execution
+import { serve } from "@upstash/qstash/nextjs"
 
-    await context.run("step2", async () => {
-      someOtherWork(result1);
-    });
-  },
-);
+export const POST = serve<string>(async (context) => {
+  const input = context.requestPayload
+
+  const result1 = await context.run("step-1", async () => {
+    return someWork(input)
+  })
+
+  await context.run("step-2", async () => {
+    someOtherWork(result1)
+  })
+})
 ```
 
-```javascript parallel
+```typescript Parallel execution
+import { serve } from "@upstash/qstash/nextjs"
+
 export const POST = serve<string>(
   async (context) => {
     const input = context.requestPayload;
-    const promise1 = context.run("step1", async () => {
+
+    const promise1 = context.run("step-1", async () => {
       return someWork(input);
     });
 
-    const promise2 = context.run("step2", async () => {
+    const promise2 = context.run("step-2", async () => {
       return someOtherWork(input);
     });
 
@@ -86,97 +81,110 @@ export const POST = serve<string>(
 ```
 </CodeGroup>
 
-If `context.run` throws an exception, the SDK automatically handles it by retrying the `context.run` operation three times with exponentially increasing delays, as [explained here](/qstash/features/retry). This behavior will be configurable in [upcoming releases](/qstash/workflow/roadmap).
+### context.sleep
 
-### `context.sleep`
+Pauses workflow execution for a specified duration.
 
-`context.sleep` postpones the execution of the code for a specified duration (in seconds). The code will exit and not consume any function time. After the specified duration, the endpoint will be called again to resume execution.
+<Tip>
+  Always `await` a `sleep` action to properly pause execution.
+</Tip>
 
-The sleep duration can be as long as a week or a year, depending on your [QStash plan (Max Delay)](https://upstash.com/pricing/qstash).
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+import { signIn, sendEmail } from "@/utils/onboarding-utils"
 
-<Warning>
-Always use `sleep` with `await` in front, or it will not block the execution as expected.
-</Warning>
-
-```javascript
-export const POST = serve<string>(
+export const POST = serve<User>(
   async (context) => {
-    const input = context.requestPayload;
+    const userData = context.requestPayload;
 
-    const user = await context.run("signin", async () => {
-      const user = saveUserToDB(input);
-      return user;
+    const user = await context.run("sign-in", async () => {
+      const signedInUser = await signIn(userData);
+      return signedInUser;
     });
 
-    await context.sleep("waitForWelcomeEmail", daysToSeconds(3));
+    // 👇 Wait for one day (in seconds)
+    await context.sleep("wait-until-welcome-email", 60 * 60 * 24);
 
-    await context.run("sendWelcomeEmail", async () => {
+    await context.run("send-welcome-email", async () => {
       return sendEmail(user.name, user.email);
     });
   },
 );
 ```
 
-### `context.sleepUntil`
+### context.sleepUntil
 
-`context.sleepUntil` postpones the execution of the code until a specified timestamp. The code will exit and not consume any function time. On the given timestamp, the endpoint will be called again to resume execution.
+Pauses workflow execution until a specific timestamp.
 
-The sleepUntil duration can be as long as a week or a year, depending on your [QStash plan (Max Delay)](https://upstash.com/pricing/qstash).
+<Tip>
+  Always await a `sleepUntil` action to properly pause execution.
+</Tip>
 
-<Warning>
-Always use `sleepUntil` with `await` in front, or it will not block the execution as expected. 
-</Warning>
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+import { signIn, sendEmail } from "@/utils/onboarding-utils"
 
-```javascript
-export const POST = serve<string>(
-  async (context) => {
-    const input = context.requestPayload;
+export const POST = serve<User>(async (context) => {
+  const userData = context.requestPayload
 
-    const user = await context.run("signin", async () => {
-      const user = saveUserToDB(input);
-      return user;
-    });
+  const user = await context.run("sign-in", async () => {
+    return signIn(userData)
+  })
 
-    await context.sleepUntil("waitForWelcomeEmail", nextWeek());
+  // 👇 Calculate the date for one week from now
+  const oneWeekFromNow = new Date()
+  oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7)
 
-    await context.run("sendWelcomeEmail", async () => {
-      return sendEmail(user.name, user.email);
-    });
-  },
-);
+  // 👇 Wait until the calculated date
+  await context.sleepUntil("wait-for-one-week", oneWeekFromNow)
+
+  await context.run("send-welcome-email", async () => {
+    return sendEmail(user.name, user.email)
+  })
+})
 ```
 
-### `context.call`
+### context.call
 
-`context.call` is used to call an HTTP endpoint as a step. While this can be done inside `context.run`, the key difference is that `context.call` does not wait for the called endpoint to return. This allows you to bypass the time limitations of the platform. When the response is ready, the function will continue as if resuming from the return of the `context.call`.
+Performs an HTTP call as a workflow step, allowing for longer response times.
 
-The endpoint can take up to 15 minutes or 2 hours to respond, depending on your [QStash plan (Max HTTP Connection Timeout)](https://upstash.com/pricing/qstash).
+Can take up to 15 minutes or 2 hours, depending on your [QStash plans](https://upstash.com/pricing/qstash) max HTTP connection timeout.
 
 ```javascript
-export const POST = serve<{ question: string, email: string }>(
-  async context => {
-    const request = context.requestPayload
-    const llmResponse = await context.call(
-      "call open ai",
-      "https://api.openai.com/v1/chat/completions",
-      "POST", 
-      {
-        model: "gpt-4o",
-        messages: [
-          { role: "system", content: "You are a helpful assistant." },
-          { role: "user", content: request.question }
-        ]
-      },
-      {
-        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      }
-    );
+import { serve } from "@upstash/qstash/nextjs"
 
-     await context.run("sendEmail", async () => {
-      return sendEmail(request.email, llmResponse)
-    })
-  }
-)
+export const POST = serve<{ topic: string }>(async (context) => {
+  const request = context.requestPayload
+
+  const longEssayResponse = await context.call(
+    "generate-long-essay", // Step name
+    "https://api.openai.com/v1/chat/completions", // Endpoint URL
+    "POST", // HTTP method
+    { // Request body
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
+        },
+        { role: "user", content: request.topic },
+      ],
+    },
+    {
+      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    }
+  )
+})
 ```
 
-If `context.call` returns a non-success status code (anything other than 2xx), the SDK automatically retries the call three times with exponentially increasing delays, as [explained here](/qstash/features/retry). This behavior will be configurable in [upcoming releases](/qstash/workflow/roadmap).
+## Error handling and retries
+
+- context.run and context.call automatically retry on failures.
+- Default: 3 retries with exponential backoff.
+- Future releases will allow configuration of retry behavior.
+
+## Limitations and Plan-Specific-Features
+
+- Sleep durations and HTTP timeouts vary based on your QStash plan.
+- See your plan's "Max Delay" and "Max HTTP Connection Timeout" for specific limits.
