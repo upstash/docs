@@ -1,0 +1,190 @@
+---
+title: "Workflow context"
+---
+
+A workflow's context is a JavaScript object provided by the serve function and is used to define your workflow endpoint. This context object offers utility methods for creating workflow steps, managing delays, and performing timeout-resistant HTTP calls.
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+
+export const POST = serve(
+  // 👇 the workflow context
+  async (context) => {
+    // ...
+  }
+)
+```
+
+This context object provides utility methods to create workflow steps, wait for certain periods of time or perform timeout-resistant HTTP calls.
+
+Further, the context object provides all request headers, the incoming request payload and current workflow ID.
+
+## Context Object Properties
+
+- `qstashClient`: QStash client used by the serve method
+
+- `workflowRunId`: Current workflow run ID
+
+- `url`: Publically accessible workflow endpoint URL
+
+- `failureUrl`: URL for workflow failure notifications.
+
+- `requestPayload`: Incoming request payload
+
+- `rawInitialPayload`: String version of the initial payload
+
+- `headers`: Request headers
+
+- `env`: Environment variables
+
+## Core Workflow Methods
+
+### context.run
+
+Defines and executes a workflow step.
+
+<CodeGroup>
+```typescript Serial execution
+import { serve } from "@upstash/qstash/nextjs"
+
+export const POST = serve<string>(async (context) => {
+  const input = context.requestPayload
+
+  const result1 = await context.run("step-1", async () => {
+    return someWork(input)
+  })
+
+  await context.run("step-2", async () => {
+    someOtherWork(result1)
+  })
+})
+```
+
+```typescript Parallel execution
+import { serve } from "@upstash/qstash/nextjs"
+
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+
+    const promise1 = context.run("step-1", async () => {
+      return someWork(input);
+    });
+
+    const promise2 = context.run("step-2", async () => {
+      return someOtherWork(input);
+    });
+
+    await Promise.all([promise1, promise2]);
+  },
+);
+```
+</CodeGroup>
+
+### context.sleep
+
+Pauses workflow execution for a specified duration.
+
+<Tip>
+  Always `await` a `sleep` action to properly pause execution.
+</Tip>
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+import { signIn, sendEmail } from "@/utils/onboarding-utils"
+
+export const POST = serve<User>(
+  async (context) => {
+    const userData = context.requestPayload;
+
+    const user = await context.run("sign-in", async () => {
+      const signedInUser = await signIn(userData);
+      return signedInUser;
+    });
+
+    // 👇 Wait for one day (in seconds)
+    await context.sleep("wait-until-welcome-email", 60 * 60 * 24);
+
+    await context.run("send-welcome-email", async () => {
+      return sendEmail(user.name, user.email);
+    });
+  },
+);
+```
+
+### context.sleepUntil
+
+Pauses workflow execution until a specific timestamp.
+
+<Tip>
+  Always await a `sleepUntil` action to properly pause execution.
+</Tip>
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+import { signIn, sendEmail } from "@/utils/onboarding-utils"
+
+export const POST = serve<User>(async (context) => {
+  const userData = context.requestPayload
+
+  const user = await context.run("sign-in", async () => {
+    return signIn(userData)
+  })
+
+  // 👇 Calculate the date for one week from now
+  const oneWeekFromNow = new Date()
+  oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7)
+
+  // 👇 Wait until the calculated date
+  await context.sleepUntil("wait-for-one-week", oneWeekFromNow)
+
+  await context.run("send-welcome-email", async () => {
+    return sendEmail(user.name, user.email)
+  })
+})
+```
+
+### context.call
+
+Performs an HTTP call as a workflow step, allowing for longer response times.
+
+Can take up to 15 minutes or 2 hours, depending on your [QStash plans](https://upstash.com/pricing/qstash) max HTTP connection timeout.
+
+```javascript
+import { serve } from "@upstash/qstash/nextjs"
+
+export const POST = serve<{ topic: string }>(async (context) => {
+  const request = context.requestPayload
+
+  const longEssayResponse = await context.call(
+    "generate-long-essay", // Step name
+    "https://api.openai.com/v1/chat/completions", // Endpoint URL
+    "POST", // HTTP method
+    { // Request body
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
+        },
+        { role: "user", content: request.topic },
+      ],
+    },
+    {
+      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    }
+  )
+})
+```
+
+## Error handling and retries
+
+- context.run and context.call automatically retry on failures.
+- Default: 3 retries with exponential backoff.
+- Future releases will allow configuration of retry behavior.
+
+## Limitations and Plan-Specific-Features
+
+- Sleep durations and HTTP timeouts vary based on your QStash plan.
+- See your plan's "Max Delay" and "Max HTTP Connection Timeout" for specific limits.

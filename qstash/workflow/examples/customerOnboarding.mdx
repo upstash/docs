@@ -1,0 +1,86 @@
+---
+title: "Customer Onboarding"
+---
+
+This example demonstrates how to use the Workflow SDK to implement a customer onboarding process. We'll walk through the code, highlighting key aspects to help you understand how everything fits together.
+
+## Code
+
+```javascript
+
+import { serve } from "@upstash/qstash/nextjs";
+
+export const POST = serve(
+  async (context) => {
+
+    const input  = context.requestPayload;
+
+    const email = (input as { email: string }).email;
+
+    await context.run("new-signup", async () => {
+      console.log("new user registered");
+      await sendEmail("Welcome to the platform", email);
+    });
+
+    await context.sleep("waitFor3days", 3*24*60*60);
+
+    while (true) {
+      const state = await context.run("check-state", async () => {
+        return await getUserState();
+      });
+
+      if(state === "non-active") {
+        await context.run("send-email-non-active", async () => {
+          await sendEmail("Email to non-active users", email);
+        });
+      }
+      else if(state === "active") {
+        await context.run("send-email-active", async () => {
+          await sendEmail("Send newsletter to active users", email);
+        });
+      }
+      console.log("waiting 1 month");
+      await context.sleep("wait1Month", 30*24*60*60);
+    }
+  },
+  {
+    // A live URL is required to run a workflow locally,
+    baseUrl:
+      process.env.NODE_ENV === "development"
+        ? "YOUR_NGROK_URL"
+        : undefined,
+  }
+);
+
+
+async function sendEmail(message: string, recipient: string) {
+  // Implement email sending logic here
+  console.log(`Sending ${message} email to ${recipient}`);
+}
+
+
+type UserState =
+  | "non-active"
+  | "active";
+
+const getUserState = async (): Promise<UserState> => {
+  // Implement user state retrieval logic here
+  return "non-active";
+};
+```
+
+## Explanation
+
+This example showcases a straightforward customer onboarding process that sends emails to users based on their activity state. The workflow is designed to run continuously, with each step executed sequentially.
+
+1. **New User Registration**: When a new user signs up, the `new-signup` step is triggered. This step logs a message to the console and sends a welcome email to the user.
+
+2. **Initial Waiting Period**: After registration, the workflow pauses for 3 days using the `context.sleep` function.
+
+3. **User State Check**: The workflow then enters a loop where it periodically checks the user's state using the `context.run` function.
+
+4. **State-Based Email Sending**: Depending on the user's state (active or non-active), the workflow sends an appropriate email. This action is also performed within a `context.run` function.
+
+Functions called inside `context.run` are executed by the QStash engine, ensuring retry attempts in case of failures. If failures persist, the task is moved to the Dead Letter Queue (DLQ).
+
+It's important to note that [context.sleep](/qstash/workflow/basics/context#context-sleep) doesn't consume the endpoint's execution time. This is important for optimizing costs on serverless platforms.

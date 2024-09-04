@@ -1,0 +1,105 @@
+---
+title: "All In One Example"
+---
+
+This example demonstrates how to leverage the core features of the Workflow SDK using a practical use case. We'll walk through the code, highlighting key aspects to help you understand how everything fits together.
+
+```javascript 
+import { serve } from "@upstash/qstash/nextjs";
+import { sendEmail, reportFailure, getUserEmail } from "./utils"
+
+export const POST = serve<{ userId: string, question: string }>(async context => {
+  const request = context.requestPayload;
+
+  const retrieveEmailPromise = context.run("retrieveEmail", async () => {
+      return await getUserEmail(request.userId);
+  });
+
+  const openAIPromise = context.call(
+    "call open ai",
+    "https://api.openai.com/v1/chat/completions",
+    "POST", 
+    {
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: request.question }
+      ]
+    },
+    {
+      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    }
+  );
+
+  const [email, response] = await Promise.all([retrieveEmailPromise, openAIPromise]);
+
+  for (let i = 0; i < 3; i++) {
+    const emailSendSuccess = await context.run("sendEmail", async () => {
+      return await sendEmail(email, response);
+    });
+    if (emailSendSuccess) {
+      return;
+    }
+
+    // sleep for 1 hour
+    await context.sleep("sleep for email retry", 24 * 60 * 60);
+  }
+
+  await context.run("report a failure to internal system", async () => {
+    await reportFailure(request.userId);
+  });
+});
+```
+
+### Code Breakdown
+
+In this example, we perform two remote operations—one to a database and another to a third-party service—in parallel, and wait for both to complete simultaneously.
+
+```javascript
+const [email, response] = await Promise.all([retrieveEmailPromise, openAIPromise]);
+```
+
+HTTP calls to third-party services are non-blocking and do not consume the endpoint's execution time when using [context.call](/qstash/workflow/basics/context#context-call).
+
+```javascript
+const openAIPromise = context.call(
+  "call open ai",
+  "https://api.openai.com/v1/chat/completions",
+  "POST", 
+  {
+    model: "gpt-4o",
+    messages: [
+      { role: "system", content: "You are a helpful assistant." },
+      { role: "user", content: context.requestPayload.question }
+    ]
+  },
+  {
+    authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+  }
+);
+```
+
+You can implement control flow mechanisms like loops and conditional statements within your workflow. In this case, a custom retry mechanism is used to send an email.
+
+```javascript
+for (let i = 0; i < 3; i++) {
+  const emailSendSuccess = await context.run("sendEmail", async () => {
+    return await sendEmail(email, response);
+  });
+  if (emailSendSuccess) {
+    return;
+  }
+
+  // wait for an hour
+  await context.sleep("sleep for email retry", 24 * 60 * 60);
+}
+```
+
+[Sleeps](/qstash/workflow/basics/context#context-sleep) also do not consume the endpoint's execution time, allowing you to efficiently manage delays.
+
+```javascript
+await context.sleep("sleep for email retry", 24 * 60 * 60); // 1day
+```
+
+This example illustrates how to effectively utilize the Workflow SDK's features to handle asynchronous operations, retries, and delays without consuming platform time.
+By combining these techniques, you can build workflows that can handle complex scenarios.

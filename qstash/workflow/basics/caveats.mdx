@@ -1,0 +1,194 @@
+---
+title: "Caveats"
+---
+
+Due to the unique guarantees provided by the `Workflow SDK`, there are some things that need to be avoided. In this section, we will highlight the practices to follow to have a correct workflow run.
+
+# Do the actual work in `context.run`
+
+The top-level `routeFunction` will be called multiple times during the life of a workflow run. This means the actual code needs to reside within the `context.run` function. The rest of the code serves to glue the steps together.
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+    const result1 = await context.run("step1", async () => {
+      return someWork(input);
+    });
+
+    console.log("This log will appear multiple times")
+
+    await context.run("step2", async () => {
+      console.log("Put logs inside of the `context.run` to see them once")
+      someOtherWork(result1);
+    });
+  },
+);
+```
+
+# Return a result from `context.run` if needed later 
+
+Always return the results of a step if they are needed by subsequent steps, as shown in the example above with `result1`.
+
+If you do something like following, it will not work as expected:
+
+<CodeGroup>
+
+```javascript wrong
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+
+    var result1;
+
+    await context.run("step1", async () => {
+      result1 = await someWork(input);
+    });
+
+    await context.run("step2", async () => {
+      someOtherWork(result1);
+    });
+  },
+);
+```
+
+```javascript correct
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+
+    const result1 = await context.run("step1", async () => {
+      return await someWork(input);
+    });
+
+    await context.run("step2", async () => {
+      someOtherWork(result1);
+    });
+  },
+);
+```
+</CodeGroup>
+
+Since this endpoint is called multiple times, `result1` will be unitialized when the endpoint is called again to run `step2`.
+
+If you are curious about why it is called multiple times and want more details, see our  [how it works](/qstash/workflow/how) page.
+
+# Avoid nondeterministic/time-dependent code outside of the `context.run`
+
+Since the endpoint will be called multiple times, it is expected to work deterministically. This means it should run exactly the same steps on every call.
+Here are two examples that should be avoided: one is time-dependent and the other utilizes randomness.
+
+<CodeGroup>
+```javascript timeDependent
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+
+    if (Date.now() % 5  == 2) {
+      const result1 = await context.run("step1", async () => {
+        const output = someWork(input);
+        return output;
+      });
+    } else {
+      const result2 = await context.run("step2", async () => {
+        const output = someWork(result1);
+        return output;
+      });
+    }
+  },
+);
+```
+
+```javascript random
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+
+    if (Math.floor(Math.random() * 10) % 5  == 2) {
+      const result1 = await context.run("step1", async () => {
+        const output = someWork(input);
+        return output;
+      });
+    } else {
+      const result2 = await context.run("step2", async () => {
+        const output = someWork(result1);
+        return output;
+      });
+    }
+  },
+);
+```
+
+</CodeGroup>
+    
+
+Another example could be relying on a non-idempotent function outside of the `context.run`. 
+In the following example, `fetchData` will be called multiple times always during a workflow run.
+If with the same input it returns a different `data` in the second run, workflow will not run correctly.
+
+```javascript timeDependent
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+
+    const data = await fetchData(input); 
+
+    if data === "fooBar" {
+      const result1 = await context.run("step1", async () => {
+        const output = someWork(input);
+        return output;
+      });
+    } else {
+        const result2 = await context.run("step2", async () => {
+        const output = someOtherWork(result1);
+      });
+    }
+  },
+);
+```
+
+
+
+# Make the `context.run` idempotent
+
+Due to the nature of failures in distributed systems, the business logic needs to be idempotent as well. In other words, when it runs twice with the same input, the end result should be the same as if it were run only once.
+
+In the example below, the someWork function must be idempotent:
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+      
+    await context.run("step1", async () => {
+      const output = someWork(input);
+      return output;
+    });
+  } 
+);
+```
+
+An example scenario to show why it has to be idempotent, 
+
+Here’s an example scenario illustrating why idempotency is necessary and inherent:
+
+Imagine that someWork has executed and made a change to a database. However, before a response is returned to the caller, the connection is lost. The caller (in this case, QStash) times out and has no idea whether the call was completed or even reached the server. In this situation, the caller has no choice but to retry the call, which could cause someWork to be run twice.
+If someWork is not idempotent, this could lead to unintended consequences, such as duplicating records or corrupting data. Therefore, ensuring idempotency is crucial to maintaining the integrity and reliability of the workflow.
+
+# Don't call context.call/sleep/run under context.run 
+
+It is not allowed to call any of the `context` methods (such as `call`, `sleep`, `sleepFor`, or `run`) within the function passed to `context.run`. Doing so results in an error.
+
+```javascript
+export const POST = serve<string>(
+  async (context) => {
+    const input = context.requestPayload;
+      
+    await context.run("step1", async () => {
+      await context.sleep("sleepSome", 100) // ❌ INCORRECT
+      await context.run("anotherStep",  async () => {...}) // ❌ INCORRECT
+      await context.call("anotherCall",  ...) // ❌ INCORRECT
+    });
+  }
+);
+```
