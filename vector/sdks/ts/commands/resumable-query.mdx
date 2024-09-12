@@ -1,0 +1,184 @@
+---
+title: Resumable Query
+---
+
+The resumableQuery method allows you to perform queries that can be resumed to fetch additional results. This is particularly useful for large result sets or when implementing pagination.
+
+<Note>
+  The dimension of the query vector must match the dimension of your index.
+</Note>
+
+<Note>
+  The score returned from query requests is a normalized value between 0 and 1,
+  where 1 indicates the highest similarity and 0 the lowest regardless of the
+  similarity function used.
+</Note>
+
+## Arguments
+
+<ResponseField name="Payload" type="ResumableQueryOptions" required>
+  <Expandable defaultOpen="true">
+    <ResponseField name="vector | data" type="number[] | string" required>
+      <Note>
+        There are two ways to use the resumableQuery method. You can either create the vectors on your own and pass directly the `vector` field. Or you can pass the `data` field and create the embeddings using Upstash Embedding. 
+      </Note>
+      The query data/vector that you want to search for in the index.
+    </ResponseField>
+    <ResponseField name="topK" type="number" required>
+      The initial number of vectors to retrieve in the query result. The response will be sorted based on the distance metric score.
+    </ResponseField>
+    <ResponseField name="includeMetadata" type="boolean">
+      Whether to include the metadata of the vectors in the response. Setting
+      this `true` would be the best practice, since it will make it easier to
+      identify the vectors.
+    </ResponseField>
+    <ResponseField name="includeVectors" type="boolean">
+      Whether to include the vector values in the response.
+    </ResponseField>
+    <ResponseField name="includeData" type="boolean">
+      Whether to include [the data field](/vector/features/metadata#data) in the response.
+    </ResponseField>
+    <ResponseField name="filter" type="string">
+      The metadata filtering of the vector. This is used to query your data based on the filters and narrow down the query results.
+
+      If you want to learn more about filtering check: [Metadata Filtering](https://upstash.com/docs/vector/features/filtering)
+    </ResponseField>
+    <ResponseField name="maxIdle" type="number">
+      Maximum idle time for the resumable query in seconds.
+    </ResponseField>
+
+  </Expandable>
+</ResponseField>
+
+## Response
+
+<ResponseField name="ResumableQueryResponse" type="Object" required>
+  <Expandable defaultOpen="true">
+    <ResponseField name="result" type="Vector[]" required>
+      The initial query results.
+    </ResponseField>
+    <ResponseField
+      name="fetchNext"
+      type="(additionalK: number) => Promise<Vector[]>"
+      required
+    >
+      A function to fetch the next batch of results.
+    </ResponseField>
+    <ResponseField name="stop" type="() => Promise<string>" required>
+      A function to stop the resumable query and release resources.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="Vector" type="Object">
+  <Expandable defaultOpen="true">
+    <ResponseField name="id" type="string | number" required>
+      The ID of the resulting vector.
+    </ResponseField>
+    <ResponseField name="score" type="number" required>
+      The score of the vector data, calculated based on the distance metric of
+      your index.
+    </ResponseField>
+    <ResponseField name="vector" type="number[]">
+      The vector value (if includeVectors is true).
+    </ResponseField>
+    <ResponseField name="metadata" type="Record<string, unknown>">
+      The metadata of the vector. This is used to make it easier to identify the
+      vector on queries (if includeMetadata is true).
+    </ResponseField>
+    <ResponseField name="data" type="string">
+      The data field (if includeData is true).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<RequestExample>
+
+```typescript with Vector
+const { result, fetchNext, stop } = await index.resumableQuery({
+  maxIdle: 3600,
+  topK: 50,
+  vector: [0, 1, 2, ..., 383], // 384-dimensional vector
+  includeMetadata: true,
+  includeVectors: true,
+});
+
+console.log(result);
+/*
+[
+  {
+    id: '6345',
+    score: 1.00000012,
+    vector: [0, 1, 2, ..., 383],
+    metadata: {
+      sentence: "Upstash is great."
+    }
+  },
+  // ... more results
+]
+*/
+
+const nextBatch = await fetchNext(5); // Fetch next 5 results
+console.log(nextBatch);
+
+await stop(); // Stop the resumable query
+```
+
+```typescript with Data
+const { result, fetchNext, stop } = await index.resumableQuery({
+  maxIdle: 3600,
+  topK: 50,
+  data: "lord of the rings"
+  includeMetadata: true,
+  includeData: true,
+});
+
+console.log(result);
+/*
+[
+  {
+    id: '6345',
+    score: 1.00000012,
+    data: "hobbit",
+    metadata: {
+      sentence: "Upstash is great."
+    }
+  },
+  // ... more results
+]
+*/
+
+const nextBatch = await fetchNext(5); // Fetch next 5 results
+console.log(nextBatch);
+
+await stop(); // Stop the resumable query
+```
+
+```typescript with Metadata Type
+type Metadata = {
+  title: string,
+  genre: 'sci-fi' | 'fantasy' | 'horror' | 'action'
+}
+
+const { result, fetchNext, stop } = await index.resumableQuery<Metadata>({
+  vector: [
+    ... // query embedding
+  ],
+  includeMetadata: true,
+  topK: 1,
+  filter: "genre = 'fantasy' and title = 'Lord of the Rings'",
+  maxIdle: 3600,
+})
+
+if (result[0].metadata) {
+  // Since we passed the Metadata type parameter above,
+  // we can interact with metadata fields without having to
+  // do any typecasting.
+  const { title, genre } = result[0].metadata;
+  console.log(`The best match in fantasy was ${title}`)
+}
+
+await stop();
+```
+
+</RequestExample>
