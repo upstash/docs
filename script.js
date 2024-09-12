@@ -54,7 +54,7 @@ function removeTrailingSlash(url) {
     (e.__SV = 1));
 })(document, window.posthog || []);
 posthog.init("phc_hT8RJLWZ74BfzZwduj8jrZNePw8bzC7ByQnUlVNEnR8", {
-  api_host: "https://us.i.posthog.com",
+  api_host: "https://stats.upstash.com",
   person_profiles: "identified_only",
   capture_pageview: true,
   cross_subdomain_cookie: true,
