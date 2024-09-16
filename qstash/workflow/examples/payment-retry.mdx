@@ -1,0 +1,229 @@
+---
+title: "Payment Retries"
+---
+
+This example demonstrates a payment retry process using Upstash Workflow.
+The following example handles retrying a payment, sending emails, and suspending accounts.
+
+## Use Case
+
+Our workflow will:
+
+1. Attempt to process a payment
+2. Retry the payment if it fails with a 24-hour delay
+3. If the payment succeeds:
+    - Unsuspend the user's account if it was suspended
+    - Send an invoice email
+4. If the payment fails after 3 retries:
+    - Suspend the user's account
+
+## Code Example
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs";
+
+type ChargeUserPayload = {
+  email: string;
+};
+
+export const POST = serve<ChargeUserPayload>(async (context) => {
+  const { email } = context.requestPayload;
+
+  for (let i = 0; i < 3; i++) {
+    const result = await context.run("charge customer", async () => {
+      try {
+        return {
+          success: true,
+          res: await chargeCustomer(i + 1),
+        } as const;
+      } catch (e) {
+        console.error(e);
+        return {
+          success: false,
+        } as const;
+      }
+    });
+
+    if (result.success) {
+      const isSuspended = await context.run("check suspension", async () => {
+        return await checkSuspension(email);
+      });
+      if (isSuspended) {
+        await context.run("unsuspend user", async () => {
+          await unsuspendUser(email);
+        });
+      }
+
+      await context.run("send invoice email", async () => {
+        await sendEmail(
+          context.requestPayload.email,
+          `Payment successfull. Incoice: ${result.res.invoiceId}, Total cost: $${result.res.totalCost}`
+        );
+      });
+
+      return;
+    }
+
+    // Wait for a day
+    await context.sleep("wait for retry", 24 * 60 * 60);
+  }
+
+  const isSuspended = await context.run("check suspension", async () => {
+    return await checkSuspension(email);
+  });
+
+  if (!isSuspended) {
+    await context.run("suspend user", async () => {
+      await suspendUser(email);
+    });
+
+    await context.run("send suspended email", async () => {
+      await sendEmail(
+        context.requestPayload.email,
+        "Your account has been suspended due to payment failure. Please update your payment method."
+      );
+    });
+  }
+});
+
+async function sendEmail(email: string, content: string) {
+  // Implement the logic to send an email
+  console.log("Sending email to", email, "with content:", content);
+}
+
+async function checkSuspension(email: string) {
+  // Implement the logic to check if the user is suspended
+  console.log("Checking suspension status for", email);
+  return true;
+}
+
+async function suspendUser(email: string) {
+  // Implement the logic to suspend the user
+  console.log("Suspending the user", email);
+}
+
+async function unsuspendUser(email: string) {
+  // Implement the logic to unsuspend the user
+  console.log("Unsuspending the user", email);
+}
+
+async function chargeCustomer(attempt: number) {
+  // Implement the logic to charge the customer
+  console.log("Charging the customer");
+
+  if (attempt <= 2) {
+    throw new Error("Payment failed");
+  }
+
+  return {
+    invoiceId: "INV123",
+    totalCost: 100,
+  } as const;
+}
+```
+
+## Code Breakdown
+
+### 1. Charge Customer
+We attempt to charge the customer:
+
+```typescript 
+const result = await context.run("charge customer", async () => {
+  try {
+    return {
+      success: true,
+      res: await chargeCustomer(i + 1),
+    } as const;
+  } catch (e) {
+    console.error(e);
+    return {
+      success: false,
+    } as const;
+  }
+});
+```
+<Note>
+If we haven't put a try-catch block here, the workflow would still have retried the step.
+Hovewer, because we want to run custom logic when the payment fails, we catch the error here.
+</Note>
+
+### 2. Retry Payment
+
+We try to charge the customer 3 times with a 24-hour delay between each attempt:
+
+```typescript 
+for (let i = 0; i < 3; i++) {
+  // attempt to charge the customer
+
+  if (result.success) {
+    // Payment succeeded
+    // Unsuspend user, send invoice email
+    return;
+  }
+
+  // Wait for a day
+  await context.sleep("wait for retry", 24 * 60 * 60);
+}
+```
+
+
+### 3. If Payment Succeeds
+
+#### 3.1. Unsuspend User
+
+We check if the user is suspended and unsuspend them if they are:
+
+```typescript 
+const isSuspended = await context.run("check suspension", async () => {
+  return await checkSuspension(email);
+});
+if (isSuspended) {
+  await context.run("unsuspend user", async () => {
+    await unsuspendUser(email);
+  });
+}
+```
+
+#### 3.2. Send Invoice Email
+
+We send an invoice we got from the payment step to the user:
+
+
+```typescript 
+await context.run("send invoice email", async () => {
+  await sendEmail(
+    context.requestPayload.email,
+    `Payment successfull. Incoice: ${result.res.invoiceId}, Total cost: $${result.res.totalCost}`
+  );
+});
+```
+
+<Tip>
+One of the biggest advantages of using Upstash Workflow is that you have access to the result of the previous steps.
+This allows you to pass data between steps without having to store it in a database.
+</Tip>
+
+### 4. If Payment Fails After 3 Retries
+
+#### 4.1. Suspend User
+
+If the payment fails after 3 retries, we suspend the user and send them an email to notify them:
+
+```typescript 
+const isSuspended = await context.run("check suspension", async () => {
+  return await checkSuspension(email);
+});
+
+if (!isSuspended) {
+  await context.run("suspend user", async () => {
+    await suspendUser(email);
+  });
+
+  await context.run("send suspended email", async () => {
+    await sendEmail(
+      context.requestPayload.email,
+      "Your account has been suspended due to payment failure. Please update your payment method."
+    );
+  });
+}
+```
