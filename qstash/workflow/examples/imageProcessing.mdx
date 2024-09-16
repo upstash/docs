@@ -1,0 +1,166 @@
+---
+title: "Image Processing"
+---
+
+## Introduction
+
+This example demonstrates how to process images using Upstash Workflow. The following workflow will upload an image, resize it into multiple resolutions, apply filters, and store the processed versions for later retrieval.
+
+## Use Case
+
+Our workflow will:
+
+1. Receive an image upload request
+2. Resize the image into different resolutions
+3. Apply various filters to the resized images
+4. Store the processed images in a cloud storage
+
+## Code Example
+
+```typescript
+import { serve } from "@upstash/qstash/nextjs"
+import {
+  resizeImage,
+  applyFilters,
+  storeImage,
+  getImageUrl,
+} from "./utils"
+
+export const POST = serve<{ imageId: string; userId: string }>(
+  async (context) => {
+    const { imageId, userId } = context.requestPayload
+
+    // Step 1: Retrieve the uploaded image
+    const imageUrl = await context.run("get-image-url", async () => {
+      return await getImageUrl(imageId)
+    })
+
+    // Step 2: Resize the image to multiple resolutions
+    const resolutions = [640, 1280, 1920]
+    const resizedImages: string[] = []
+
+    const resizedImages = await Promise.all(resolutions.map(
+      resolution => context.call(
+        `resize-image-${resolution}`,
+        "https://image-processing-service.com/resize",
+        "POST",
+        {
+          imageUrl,
+          width: resolution,
+        }
+      )
+    ))
+
+    // Step 3: Apply filters to each resized image
+    const filters = ["grayscale", "sepia", "contrast"]
+    const processedImagePromises: Promise<string>[] = []
+
+    for (const resizedImage of resizedImages) {
+      for (const filter of filters) {
+        const processedImagePromise = context.call(
+          `apply-filter-${filter}`,
+          "https://image-processing-service.com/filter",
+          "POST",
+          {
+            imageUrl: resizedImage,
+            filter,
+          }
+        )
+        processedImagePromises.push(processedImagePromise)
+      }
+    }
+    const processedImages: string[] = await Promise.all(processedImagePromises)
+
+    // Step 4: Store processed images in cloud storage
+    const storedImageUrls: string[] = await Promise.all(
+      processedImages.map(
+        processedImage => context.run(`store-image`, async () => {
+          return await storeImage(processedImage)
+        })
+      )
+    )
+  }
+)
+```
+
+## Code Breakdown
+
+### 1. Retrieving the Image
+
+We begin by getting the URL of the uploaded image based on its ID:
+
+```typescript
+const imageUrl = await context.run("get-image-url", async () => {
+  return await getImageUrl(imageId)
+})
+```
+
+### 2. Resizing the Image
+
+We resize the image into three different resolutions (640, 1280, 1920) using an external image processing service.
+
+We call `context.call` for each resolution and use `Promise.all` to run them parallel:
+
+```typescript
+const resolutions = [640, 1280, 1920]
+const resizedImages: string[] = []
+
+const resizedImages = await Promise.all(resolutions.map(
+  resolution => context.call(
+    `resize-image-${resolution}`,
+    "https://image-processing-service.com/resize",
+    "POST",
+    {
+      imageUrl,
+      width: resolution,
+    }
+  )
+))
+```
+
+### 3. Applying Filters
+
+After resizing, we apply filters such as grayscale, sepia, and contrast to the resized images.
+
+Again, we call `context.call` for each filter & image pair. We collect the promises of these requests in an array `processedImagePromise`. Then, we call `Promise.all` again to run them all parallel.
+
+```typescript
+const filters = ["grayscale", "sepia", "contrast"]
+const processedImagePromises: Promise<string>[] = []
+
+for (const resizedImage of resizedImages) {
+  for (const filter of filters) {
+    const processedImagePromise = context.call(
+      `apply-filter-${filter}`,
+      "https://image-processing-service.com/filter",
+      "POST",
+      {
+        imageUrl: resizedImage,
+        filter,
+      }
+    )
+    processedImagePromises.push(processedImagePromise)
+  }
+}
+const processedImages: string[] = await Promise.all(processedImagePromises)
+```
+
+### 4. Storing the Processed Images
+
+We store each processed image in cloud storage and return the URLs of the stored images:
+
+```typescript
+const storedImageUrls: string[] = await Promise.all(
+  processedImages.map(
+    processedImage => context.run(`store-image`, async () => {
+      return await storeImage(processedImage)
+    })
+  )
+)
+```
+
+## Key Features
+
+1. **Batch Processing**: This workflow handles batch resizing and filtering of images in parallel to minimize processing time.
+2. **Scalability**: Image resizing and filtering are handled through external services, making it easy to scale. Also, the requests to these services are handled by QStash, not by the compute where the workflow is hosted.
+3. **Storage Integration**: The workflow integrates with cloud storage to persist processed images for future access.
