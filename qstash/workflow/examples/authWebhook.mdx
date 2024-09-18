@@ -22,6 +22,7 @@ Our workflow will:
 
 ```typescript api/workflow/route.ts
 import { serve } from "@upstash/qstash/nextjs";
+import { WorkflowContext } from '@upstash/qstash/workflow'
 
 /**
  * This can be the payload of the user created webhook event coming from your
@@ -56,33 +57,20 @@ export const POST = serve<UserCreatedPayload>(async (context) => {
 
   await context.sleep("wait", 7 * 24 * 60 * 60);
 
+  // get user stats and send email with them
   const stats = await context.run("get user stats", async () => {
     return await getUserStats(userid);
   });
+  await sendProblemSolvedEmail({context, email, stats});
 
-  // Move these inside a function
-  if (stats.totalProblemsSolved === 0) {
-    await context.run("send no answers email", async () => {
-      await sendEmail(
-        email,
-        "Hey, you haven't solved any questions in the last 7 days..."
-      );
-    });
-  } else {
-    await context.run("send stats email", async () => {
-      await sendEmail(
-        email,
-        `You have solved ${stats.totalProblemsSolved} problems in the last 7 days. Keep it up!`
-      );
-    });
-  }
-
+  // wait until there are two days to the end of trial period
+  // and check upgrade status
   await context.sleep("wait for trial warning", 5 * 24 * 60 * 60);
-
   const isUpgraded = await context.run("check upgraded plan", async () => {
     return await checkUpgradedPlan(email);
   });
 
+  // end the workflow if upgraded
   if (isUpgraded) return;
 
   await context.run("send trial warning email", async () => {
@@ -101,6 +89,28 @@ export const POST = serve<UserCreatedPayload>(async (context) => {
     );
   });
 });
+
+async function sendProblemSolvedEmail({
+  context: WorkflowContext<UserCreatedPayload>
+  email: string,
+  stats: { totalProblemsSolved: number }
+}) {
+  if (stats.totalProblemsSolved === 0) {
+    await context.run("send no answers email", async () => {
+      await sendEmail(
+        email,
+        "Hey, you haven't solved any questions in the last 7 days..."
+      );
+    });
+  } else {
+    await context.run("send stats email", async () => {
+      await sendEmail(
+        email,
+        `You have solved ${stats.totalProblemsSolved} problems in the last 7 days. Keep it up!`
+      );
+    });
+  }
+}
 
 async function createUserInDatabase({
   name,
@@ -199,21 +209,32 @@ await context.sleep("wait", 7 * 24 * 60 * 60);
 const stats = await context.run("get user stats", async () => {
   return await getUserStats(userid);
 });
+await sendProblemSolvedEmail({context, email, stats});
+```
 
-if (stats.totalProblemsSolved === 0) {
-  await context.run("send no answers email", async () => {
-    await sendEmail(
-      email,
-      "Hey, you haven't solved any questions in the last 7 days..."
-    );
-  });
-} else {
-  await context.run("send stats email", async () => {
-    await sendEmail(
-      email,
-      `You have solved ${stats.totalProblemsSolved} problems in the last 7 days. Keep it up!`
-    );
-  });
+The `sendProblemSolvedEmail` method:
+
+```typescript
+async function sendProblemSolvedEmail({
+  context: WorkflowContext<UserCreatedPayload>
+  email: string,
+  stats: { totalProblemsSolved: number }
+}) {
+  if (stats.totalProblemsSolved === 0) {
+    await context.run("send no answers email", async () => {
+      await sendEmail(
+        email,
+        "Hey, you haven't solved any questions in the last 7 days..."
+      );
+    });
+  } else {
+    await context.run("send stats email", async () => {
+      await sendEmail(
+        email,
+        `You have solved ${stats.totalProblemsSolved} problems in the last 7 days. Keep it up!`
+      );
+    });
+  }
 }
 ```
 
@@ -237,6 +258,8 @@ await context.run("send trial warning email", async () => {
   );
 });
 ```
+
+If they upgraded, we end the workflow by returning.
 
 ### 7. Send Trial Ended Email
 

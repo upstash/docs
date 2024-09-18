@@ -30,6 +30,7 @@ export const POST = serve<ChargeUserPayload>(async (context) => {
   const { email } = context.requestPayload;
 
   for (let i = 0; i < 3; i++) {
+    // attempt to charge the user
     const result = await context.run("charge customer", async () => {
       try {
         return await chargeCustomer(i + 1),
@@ -39,7 +40,11 @@ export const POST = serve<ChargeUserPayload>(async (context) => {
       }
     });
 
-    if (result) {
+    if (!result) {
+      // Wait for a day
+      await context.sleep("wait for retry", 24 * 60 * 60);
+    } else {
+      // Unsuspend User
       const isSuspended = await context.run("check suspension", async () => {
         return await checkSuspension(email);
       });
@@ -49,20 +54,20 @@ export const POST = serve<ChargeUserPayload>(async (context) => {
         });
       }
 
+      // send invoice email
       await context.run("send invoice email", async () => {
         await sendEmail(
-          context.requestPayload.email,
+          email,
           `Payment successfull. Incoice: ${result.invoiceId}, Total cost: $${result.totalCost}`
         );
       });
 
+      // by retuning, we end the workflow run
       return;
     }
-
-    // Wait for a day
-    await context.sleep("wait for retry", 24 * 60 * 60);
   }
 
+  // suspend user if the user isn't suspended
   const isSuspended = await context.run("check suspension", async () => {
     return await checkSuspension(email);
   });
@@ -74,7 +79,7 @@ export const POST = serve<ChargeUserPayload>(async (context) => {
 
     await context.run("send suspended email", async () => {
       await sendEmail(
-        context.requestPayload.email,
+        email,
         "Your account has been suspended due to payment failure. Please update your payment method."
       );
     });
@@ -125,18 +130,14 @@ We attempt to charge the customer:
 ```typescript 
 const result = await context.run("charge customer", async () => {
   try {
-    return {
-      success: true,
-      res: await chargeCustomer(i + 1),
-    } as const;
+    return await chargeCustomer(i + 1),
   } catch (e) {
     console.error(e);
-    return {
-      success: false,
-    } as const;
+    return
   }
 });
 ```
+
 <Note>
 If we haven't put a try-catch block here, the workflow would still have retried the step.
 Hovewer, because we want to run custom logic when the payment fails, we catch the error here.
@@ -150,14 +151,15 @@ We try to charge the customer 3 times with a 24-hour delay between each attempt:
 for (let i = 0; i < 3; i++) {
   // attempt to charge the customer
 
-  if (result) {
+  if (!result) {
+    // Wait for a day
+    await context.sleep("wait for retry", 24 * 60 * 60);  
+  } else {
     // Payment succeeded
     // Unsuspend user, send invoice email
+    // end the workflow:
     return;
   }
-
-  // Wait for a day
-  await context.sleep("wait for retry", 24 * 60 * 60);
 }
 ```
 
@@ -187,7 +189,7 @@ We send an invoice we got from the payment step to the user:
 ```typescript 
 await context.run("send invoice email", async () => {
   await sendEmail(
-    context.requestPayload.email,
+    email,
     `Payment successfull. Incoice: ${result.invoiceId}, Total cost: $${result.totalCost}`
   );
 });
