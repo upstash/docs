@@ -1,0 +1,138 @@
+---
+title: "E-commerce Order Fulfillment"
+---
+
+## Introduction
+
+This example demonstrates an automated e-commerce order fulfillment process using Upstash Workflow. The workflow takes an order, verifies the stock, processes the payment, and handles order dispatch and customer notifications.
+
+## Use Case
+
+Our workflow will:
+
+1. Receive an order request
+2. Verify the availability of the items in stock
+3. Process the payment
+4. Initiate the dispatch of the order
+5. Send confirmation and delivery notifications to the customer
+
+## Code Example
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs"
+import {
+  createOrderId,
+  checkStockAvailability,
+  processPayment,
+  dispatchOrder,
+  sendOrderConfirmation,
+  sendDispatchNotification,
+} from "./utils"
+
+type OrderPayload = {
+  userId: string
+  items: { productId: string, quantity: number }[]
+}
+
+export const POST = serve<OrderPayload>(async (context) => {
+  const { userId, items } = context.requestPayload;
+
+  // Step 1: Create Order Id
+  const orderId = await context.run("create-order-id", async () => {
+    return await createOrderId(userId);
+  });
+
+  // Step 2: Verify stock availability
+  const stockAvailable = await context.run("check-stock", async () => {
+    return await checkStockAvailability(items);
+  });
+
+  if (!stockAvailable) {
+    console.warn("Some items are out of stock");
+    return;
+  };
+
+  // Step 3: Process payment
+  await context.run("process-payment", async () => {
+    return await processPayment(orderId)
+  })
+
+  // Step 4: Dispatch the order
+  await context.run("dispatch-order", async () => {
+    return await dispatchOrder(orderId, items)
+  })
+
+  // Step 5: Send order confirmation email
+  await context.run("send-confirmation", async () => {
+    return await sendOrderConfirmation(userId, orderId)
+  })
+
+  // Step 6: Send dispatch notification
+  await context.run("send-dispatch-notification", async () => {
+    return await sendDispatchNotification(userId, orderId)
+  })
+})
+```
+
+## Code Breakdown
+
+### 1. Verifying Stock Availability
+
+We start by creating an order id and verifying if the items in the order are available in stock. If not, we throw an error to halt the process:
+
+```typescript api/workflow/route.ts
+const orderId = await context.run("create-order-id", async () => {
+  return await createOrderId(userId);
+});
+
+const stockAvailable = await context.run("check-stock", async () => {
+  return await checkStockAvailability(items)
+})
+
+if (!stockAvailable) {
+  console.warn("Some items are out of stock")
+  return;
+}
+```
+
+### 2. Processing Payment
+
+Once the stock is verified, the workflow processes the payment for the order:
+
+```typescript api/workflow/route.ts
+await context.run("process-payment", async () => {
+  return await processPayment(orderId)
+})
+```
+
+### 3. Dispatching the Order
+
+After payment confirmation, we dispatch the order for delivery:
+
+```typescript api/workflow/route.ts
+await context.run("dispatch-order", async () => {
+  return await dispatchOrder(orderId, items)
+})
+```
+
+### 4. Sending Confirmation and Notification Emails
+
+Lastly, we send an order confirmation email to the customer and notify them when the order is dispatched:
+
+```typescript api/workflow/route.ts
+await context.run("send-confirmation", async () => {
+  return await sendOrderConfirmation(userId, orderId)
+})
+
+await context.run("send-dispatch-notification", async () => {
+  return await sendDispatchNotification(userId, orderId)
+})
+```
+
+## Key Features
+
+1. **Stock Verification**: Ensures items are available in stock before processing the payment, avoiding issues with unavailable products.
+  
+2. **Payment Processing**: Handles payment securely and only proceeds to dispatch if successful.
+  
+3. **Customer Notifications**: Keeps the customer informed at each step of the order process, improving user experience.
