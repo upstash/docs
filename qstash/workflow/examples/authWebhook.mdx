@@ -1,0 +1,277 @@
+---
+title: "Auth Provider Webhook"
+---
+
+This example demonstrates an authentication provider webhook process using Upstash Workflow. 
+The workflow handles the user creation, trial management, email reminders and notifications.
+
+## Use Case
+
+Our workflow will:
+
+1. Receive a webhook event from an authentication provider (e.g. Firebase, Auth0, Clerk etc.)
+2. Create a new user in our database
+3. Create a new user in Stripe
+4. Start a trial in Stripe
+5. Send a welcome email
+6. Send a reminder email if the user hasn't solved any questions in the last 7 days
+7. Send a trial warning email if the user hasn't upgraded 2 days before the trial ends
+8. Send a trial ended email if the user hasn't upgraded
+
+## Code Example
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/qstash/nextjs";
+import { WorkflowContext } from '@upstash/qstash/workflow'
+
+/**
+ * This can be the payload of the user created webhook event coming from your
+ * auth provider (e.g. Firebase, Auth0, Clerk etc.)
+ */
+type UserCreatedPayload = {
+  name: string;
+  email: string;
+};
+
+export const POST = serve<UserCreatedPayload>(async (context) => {
+  const { name, email } = context.requestPayload;
+
+  const { userid } = await context.run("sync user", async () => {
+    return await createUserInDatabase({ name, email });
+  });
+
+  await context.run("create new user in stripe", async () => {
+    await createNewUserInStripe(email);
+  });
+
+  await context.run("start trial in Stripe", async () => {
+    await startTrialInStripe(email);
+  });
+
+  await context.run("send welcome email", async () => {
+    await sendEmail(
+      email,
+      "Welcome to our platform!, You have 14 days of free trial."
+    );
+  });
+
+  await context.sleep("wait", 7 * 24 * 60 * 60);
+
+  // get user stats and send email with them
+  const stats = await context.run("get user stats", async () => {
+    return await getUserStats(userid);
+  });
+  await sendProblemSolvedEmail({context, email, stats});
+
+  // wait until there are two days to the end of trial period
+  // and check upgrade status
+  await context.sleep("wait for trial warning", 5 * 24 * 60 * 60);
+  const isUpgraded = await context.run("check upgraded plan", async () => {
+    return await checkUpgradedPlan(email);
+  });
+
+  // end the workflow if upgraded
+  if (isUpgraded) return;
+
+  await context.run("send trial warning email", async () => {
+    await sendEmail(
+      email,
+      "Your trial is about to end in 2 days. Please upgrade your plan to keep using our platform."
+    );
+  });
+
+  await context.sleep("wait for trial end", 2 * 24 * 60 * 60);
+
+  await context.run("send trial end email", async () => {
+    await sendEmail(
+      email,
+      "Your trial has ended. Please upgrade your plan to keep using our platform."
+    );
+  });
+});
+
+async function sendProblemSolvedEmail({
+  context: WorkflowContext<UserCreatedPayload>
+  email: string,
+  stats: { totalProblemsSolved: number }
+}) {
+  if (stats.totalProblemsSolved === 0) {
+    await context.run("send no answers email", async () => {
+      await sendEmail(
+        email,
+        "Hey, you haven't solved any questions in the last 7 days..."
+      );
+    });
+  } else {
+    await context.run("send stats email", async () => {
+      await sendEmail(
+        email,
+        `You have solved ${stats.totalProblemsSolved} problems in the last 7 days. Keep it up!`
+      );
+    });
+  }
+}
+
+async function createUserInDatabase({
+  name,
+  email,
+}: {
+  name: string;
+  email: string;
+}) {
+  console.log("Creating a user in the database:", name, email);
+  return { userid: "12345" };
+}
+
+async function createNewUserInStripe(email: string) {
+  // Implement logic to create a new user in Stripe
+  console.log("Creating a user in Stripe for", email);
+}
+
+async function startTrialInStripe(email: string) {
+  // Implement logic to start a trial in Stripe
+  console.log("Starting a trial of 14 days in Stripe for", email);
+}
+
+async function getUserStats(userid: string) {
+  // Implement logic to get user stats
+  console.log("Getting user stats for", userid);
+  return {
+    totalProblemsSolved: 10_000,
+    mostInterestedTopic: "JavaScript",
+  };
+}
+
+async function checkUpgradedPlan(email: string) {
+  // Implement logic to check if the user has upgraded the plan
+  console.log("Checking if the user has upgraded the plan", email);
+  return false;
+}
+
+async function sendEmail(email: string, content: string) {
+  // Implement logic to send an email
+  console.log("Sending email to", email, content);
+}
+```
+
+## Code Breakdown
+
+### 1. Sync User
+
+We start by creating a new user in our database:
+
+```typescript 
+const { userid } = await context.run("sync user", async () => {
+  return await createUserInDatabase({ name, email });
+});
+```
+
+### 2. Create New User in Stripe
+
+Next, we create a new user in Stripe:
+
+```typescript 
+await context.run("create new user in stripe", async () => {
+  await createNewUserInStripe(email);
+});
+```
+
+### 3. Start Trial in Stripe
+
+We start a trial in Stripe:
+
+```typescript 
+await context.run("start trial in Stripe", async () => {
+  await startTrialInStripe(email);
+});
+```
+
+### 4. Send Welcome Email
+
+We send a welcome email to the user:
+
+```typescript 
+await context.run("send welcome email", async () => {
+  await sendEmail(
+    email,
+    "Welcome to our platform!, You have 14 days of free trial."
+  );
+});
+```
+
+### 5. Send Reminder Email
+
+After 7 days, we check if the user has solved any questions. If not, we send a reminder email:
+
+```typescript 
+await context.sleep("wait", 7 * 24 * 60 * 60);
+
+const stats = await context.run("get user stats", async () => {
+  return await getUserStats(userid);
+});
+await sendProblemSolvedEmail({context, email, stats});
+```
+
+The `sendProblemSolvedEmail` method:
+
+```typescript
+async function sendProblemSolvedEmail({
+  context: WorkflowContext<UserCreatedPayload>
+  email: string,
+  stats: { totalProblemsSolved: number }
+}) {
+  if (stats.totalProblemsSolved === 0) {
+    await context.run("send no answers email", async () => {
+      await sendEmail(
+        email,
+        "Hey, you haven't solved any questions in the last 7 days..."
+      );
+    });
+  } else {
+    await context.run("send stats email", async () => {
+      await sendEmail(
+        email,
+        `You have solved ${stats.totalProblemsSolved} problems in the last 7 days. Keep it up!`
+      );
+    });
+  }
+}
+```
+
+### 6. Send Trial Warning Email
+
+If the user hasn't upgraded 2 days before the trial ends, we send a trial warning email:
+
+```typescript 
+await context.sleep("wait for trial warning", 5 * 24 * 60 * 60);
+
+const isUpgraded = await context.run("check upgraded plan", async () => {
+  return await checkUpgradedPlan(email);
+});
+
+if (isUpgraded) return;
+
+await context.run("send trial warning email", async () => {
+  await sendEmail(
+    email,
+    "Your trial is about to end in 2 days. Please upgrade your plan to keep using our platform."
+  );
+});
+```
+
+If they upgraded, we end the workflow by returning.
+
+### 7. Send Trial Ended Email
+
+If the user hasn't upgraded after the trial ends, we send a trial ended email:
+
+```typescript 
+await context.sleep("wait for trial end", 2 * 24 * 60 * 60);
+
+await context.run("send trial end email", async () => {
+  await sendEmail(
+    email,
+    "Your trial has ended. Please upgrade your plan to keep using our platform."
+  );
+});
+```
