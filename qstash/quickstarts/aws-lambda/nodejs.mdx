@@ -1,68 +1,90 @@
 ---
-title: "Node.js"
+title: "AWS Lambda (Node)"
 ---
 
-[Source Code](https://github.com/upstash/qstash-examples/tree/main/aws-lambda)
+## Setting up a Lambda
 
-This is a step by step guide on how to receive webhooks from QStash in your
-Lambda function on AWS.
+The [AWS CDK](https://aws.amazon.com/cdk/) is the most convenient way to create a new project on AWS Lambda. For example, it lets you directly define integrations such as APIGateway, a tool to make our lambda publicly available as an API, in your code.
 
-### 1. Create a new project
-
-Let's create a new folder called `aws-lambda` and initialize a new project with
-your favourite package manager. This example uses `npm` because everyone will
-have it installed with node already.
-
-```bash
-mkdir aws-lambda
-cd aws-lambda
-npm init -y
+```bash Terminal
+mkdir my-app
+cd my-app
+cdk init app -l typescript
+npm i esbuild @upstash/qstash
+mkdir lambda
+touch lambda/index.ts
 ```
 
-### 2. Install Dependencies
+## Webhook verification
 
-Using typescript requires installing a few dependencies. Here we are using
-`esbuild` to bundle our code, so we can upload it to AWS later.
+### Using the SDK (recommended)
 
-```bash
-npm install -D @types/aws-lambda @types/node esbuild
+Edit `lambda/index.ts`, the file containing our core lambda logic:
+
+```ts lambda/index.ts
+import { Receiver } from "@upstash/qstash"
+import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda"
+
+const receiver = new Receiver({
+  currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY ?? "",
+  nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY ?? "",
+})
+
+export const handler = async (
+  event: APIGatewayProxyEvent
+): Promise<APIGatewayProxyResult> => {
+  const signature = event.headers["upstash-signature"]
+  const lambdaFunctionUrl = `https://${event.requestContext.domainName}`
+
+  if (!signature) {
+    return {
+      statusCode: 401,
+      body: JSON.stringify({ message: "Missing signature" }),
+    }
+  }
+
+  try {
+    await receiver.verify({
+      signature: signature,
+      body: event.body ?? "",
+      url: lambdaFunctionUrl,
+    })
+  } catch (err) {
+    return {
+      statusCode: 401,
+      body: JSON.stringify({ message: "Invalid signature" }),
+    }
+  }
+
+  // Request is valid, perform business logic
+
+  return {
+    statusCode: 200,
+    body: JSON.stringify({ message: "Request processed successfully" }),
+  }
+}
 ```
 
-### 3. Creating the handler function
+We'll set the `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` environment variables together when deploying our Lambda.
 
-In this example we will show how to receive a webhook from QStash and verify the
-signature without any additional dependencies.
+### Manual Verification
 
-First, let's import everything we need:
+In this section, we'll manually verify our incoming QStash requests without additional packages. Also see our [manual verification example](https://github.com/upstash/qstash-examples/tree/main/aws-lambda). 
 
-```ts
-import type {
-  APIGatewayEvent,
-  APIGatewayProxyResult,
-  Context,
-} from "aws-lambda";
-import { createHash, createHmac } from "node:crypto";
-```
+1. Implement the handler function
 
-As you can see, we only need the type definitions from AWS and some crypto
-functions from the node standard library.
+```ts lambda/index.ts
+import type { APIGatewayEvent, APIGatewayProxyResult } from "aws-lambda"
+import { createHash, createHmac } from "node:crypto"
 
-Next we create the handler function. Ignore the `verify` function for now. We
-will add that next. In the handler we will prepare all necessary variables that
-we need for verification. This includes the signature, the signing keys and the
-url of the lambda function. Then we try to verify the request using the current
-signing key and if that fails we will try the next one. If the signature could
-be verified, we can start processing the request.
-
-```ts
 export const handler = async (
   event: APIGatewayEvent,
-  context: Context
 ): Promise<APIGatewayProxyResult> => {
-  const signature = event.headers["upstash-signature"]!;
-  const currentSigningKey = process.env["QSTASH_CURRENT_SIGNING_KEY"];
-  const nextSigningKey = process.env["QSTASH_NEXT_SIGNING_KEY"];
-  const url = `https://${event.requestContext.domainName}`;
+  const signature = event.headers["upstash-signature"] ?? ""
+  const currentSigningKey = process.env.QSTASH_CURRENT_SIGNING_KEY ?? ""
+  const nextSigningKey = process.env.QSTASH_NEXT_SIGNING_KEY ?? ""
+
+  const url = `https://${event.requestContext.domainName}`
 
   try {
     // Try to verify the signature with the current signing key and if that fails, try the next signing key
@@ -70,32 +92,33 @@ export const handler = async (
     await verify(signature, currentSigningKey, event.body, url).catch((err) => {
       console.error(
         `Failed to verify signature with current signing key: ${err}`
-      );
-      return verify(signature, nextSigningKey, event.body, url);
-    });
+      )
+
+      return verify(signature, nextSigningKey, event.body, url)
+    })
   } catch (err) {
+    const message = err instanceof Error ? err.toString() : err
+
     return {
       statusCode: 400,
-      body: err instanceof Error ? err.toString() : err,
-    };
+      body: JSON.stringify({ error: message }),
+    }
   }
 
   // Add your business logic here
 
   return {
     statusCode: 200,
-    body: "OK",
-  };
-};
+    body: JSON.stringify({ message: "Request processed successfully" }),
+  }
+}
 ```
 
-The `verify` function will handle the actual verification of the signature. The
-signature itself is actually a [JWT](https://jwt.io) and includes claims about
-the request. See [here](/qstash/features/security#claims).
+2. Implement the `verify` function:
 
-```ts
+```ts lambda/index.ts
 /**
- * @param jwt - The content of the `upstash-signature` header
+ * @param jwt - The content of the `upstash-signature` header (JWT)
  * @param signingKey - The signing key to use to verify the signature (Get it from Upstash Console)
  * @param body - The raw body of the request
  * @param url - The public URL of the lambda function
@@ -106,11 +129,11 @@ async function verify(
   body: string | null,
   url: string
 ): Promise<void> {
-  const split = jwt.split(".");
+  const split = jwt.split(".")
   if (split.length != 3) {
-    throw new Error("Invalid JWT");
+    throw new Error("Invalid JWT")
   }
-  const [header, payload, signature] = split;
+  const [header, payload, signature] = split
 
   if (
     signature !=
@@ -118,31 +141,31 @@ async function verify(
       .update(`${header}.${payload}`)
       .digest("base64url")
   ) {
-    throw new Error("Invalid JWT signature");
+    throw new Error("Invalid JWT signature")
   }
 
-  // Now the jwt is verified and we can start looking at the claims in the payload
+  // JWT is verified, start looking at payload claims
   const p: {
-    sub: string;
-    iss: string;
-    exp: number;
-    nbf: number;
-    body: string;
-  } = JSON.parse(Buffer.from(payload, "base64url").toString());
+    sub: string
+    iss: string
+    exp: number
+    nbf: number
+    body: string
+  } = JSON.parse(Buffer.from(payload, "base64url").toString())
 
   if (p.iss !== "Upstash") {
-    throw new Error(`invalid issuer: ${p.iss}, expected "Upstash"`);
+    throw new Error(`invalid issuer: ${p.iss}, expected "Upstash"`)
   }
   if (p.sub !== url) {
-    throw new Error(`invalid subject: ${p.sub}, expected "${url}"`);
+    throw new Error(`invalid subject: ${p.sub}, expected "${url}"`)
   }
 
-  const now = Math.floor(Date.now() / 1000);
+  const now = Math.floor(Date.now() / 1000)
   if (now > p.exp) {
-    throw new Error("token has expired");
+    throw new Error("token has expired")
   }
   if (now < p.nbf) {
-    throw new Error("token is not yet valid");
+    throw new Error("token is not yet valid")
   }
 
   if (body != null) {
@@ -150,51 +173,125 @@ async function verify(
       p.body.replace(/=+$/, "") !=
       createHash("sha256").update(body).digest("base64url")
     ) {
-      throw new Error("body hash does not match");
+      throw new Error("body hash does not match")
     }
   }
 }
 ```
 
-You can find the complete file
+You can find the complete example
 [here](https://github.com/upstash/qstash-examples/blob/main/aws-lambda/typescript-example/index.ts).
 
-That's it, now we can create the function on AWS and test it.
 
-### 4. Create a Lambda function on AWS
+## Deploying a Lambda
+### Using the AWS CDK (recommended)
 
-Create a new Lambda function from scratch by going to the
-[AWS console](https://us-east-1.console.aws.amazon.com/lambda/home?region=us-east-1#/create/function).
-(Make sure you select your desired region)
+Because we used the AWS CDK to initialize our project, deployment is straightforward. Edit the `lib/<your-stack-name>.ts` file the CDK created when bootstrapping the project. For example, if our lambda webhook does video processing, it could look like this:
 
-Give it a name and select `Node.js 16.x` as runtime, then create the function.
-![](/img/qstash/aws/create_lambda.png)
+```ts lib/<your-stack-name>.ts
+import * as cdk from "aws-cdk-lib";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import { Construct } from "constructs";
+import path from "path";
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 
-Afterwards we will add a public URL to this lambda by going to the
-`Configuration` tab:
+export class VideoProcessingStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props)
 
-![](/img/qstash/aws/create_url.png)
+    // Create the Lambda function
+    const videoProcessingLambda = new NodejsFunction(this, 'VideoProcessingLambda', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'handler',
+      entry: path.join(__dirname, '../lambda/index.ts'),
+    });
 
-Select `Auth Type = NONE` because we are handling authentication ourselves.
+    // Create the API Gateway
+    const api = new apigateway.RestApi(this, 'VideoProcessingApi', {
+      restApiName: 'Video Processing Service',
+      description: 'This service handles video processing.',
+      defaultMethodOptions: {
+        authorizationType: apigateway.AuthorizationType.NONE,
+      },
+    });
 
-After creating the url, you should see it on the right side of the overview of
-your function: ![](/img/qstash/aws/overview.png)
+    api.root.addMethod('POST', new apigateway.LambdaIntegration(videoProcessingLambda));
+  }
+}
+```
 
-### 5. Set Environment Variables
+Every time we now run the following deployment command in our terminal, our changes are going to be deployed right to a publicly available API, authorized by our QStash webhook logic from before.
 
-Get your current and next signing key from the
-[Upstash Console](https://console.upstash.com/qstash)
+```bash Terminal
+cdk deploy
+```
 
-On the same `Configuration` tab from earlier, we will now set the required
-environment variables: ![](/img/qstash/aws/environment.png)
+You may be prompted to confirm the necessary AWS permissions during this process, for example allowing APIGateway to invoke your lambda function. 
 
-### 6. Deploy your Lambda function
+Once your code has been deployed to Lambda, you'll receive a live URL to your endpoint via the CLI and can see the new APIGateway connection in your AWS dashboard:
 
-We need to bundle our code and zip it to deploy it to AWS.
+<Frame>
+<img src="/img/qstash/aws/api-gateway.png" />
+</Frame>
 
-Add the following script to your `package.json` file:
+The URL you use to invoke your function typically follows this format, especially if you follow the same stack configuration as shown above:
 
-```json
+`https://<API-GATEWAY-ID>.execute-api.<API-REGION>.amazonaws.com/prod/`
+
+To provide our `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` environment variables, navigate to your QStash dashboard:
+
+<Frame>
+  <img src="/img/qstash-workflow/qstash_signing_keys.png" />
+</Frame>
+
+and make these two variables available to your Lambda in your function configuration:
+
+<Frame>
+<img src="/img/qstash/aws/environment.png" />
+</Frame>
+
+Tada, we just deployed a live Lambda with the AWS CDK! 🎉
+
+### Manual Deployment
+
+1. Create a new Lambda function by going to the [AWS dashboard](https://us-east-1.console.aws.amazon.com/lambda/home?region=us-east-1#/create/function) for your desired lambda region. Give your new function a name and select `Node.js 20.x` as runtime, then create the function.
+
+<Frame>
+<img src="/img/qstash/aws/create_lambda.png" />
+</Frame>
+
+2. To make this Lambda available under a public URL, navigate to the `Configuration` tab and click `Function URL`:
+
+<Frame>
+<img src="/img/qstash/aws/create_url.png" />
+</Frame>
+
+3. In the following dialog, you'll be asked to select one of two authentication types. Select `NONE`, because we are handling authentication ourselves. Then, click `Save`.
+
+    You'll see the function URL on the right side of your function overview:
+
+<Frame>
+<img src="/img/qstash/aws/overview.png" />
+</Frame>
+
+4. Get your current and next signing key from the
+[Upstash Console](https://console.upstash.com/qstash).
+
+<Frame>
+  <img src="/img/qstash-workflow/qstash_signing_keys.png" />
+</Frame>
+
+5. Still under the `Configuration` tab, set the `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`
+environment variables:
+
+<Frame>
+<img src="/img/qstash/aws/environment.png" />
+</Frame>
+
+6. Add the following script to your `package.json` file to build and zip your code:
+
+```json package.json
 {
   "scripts": {
     "build": "rm -rf ./dist; esbuild index.ts --bundle --minify --sourcemap --platform=node --target=es2020 --outfile=dist/index.js && cd dist && zip -r index.zip index.js*"
@@ -202,47 +299,28 @@ Add the following script to your `package.json` file:
 }
 ```
 
-When calling `npm run build` this will build and zip the code.
+7. Click the `Upload from` button for your Lambda and
+deploy the code to AWS. Select `./dist/index.zip` as the upload file.
 
-Afterwards we can click the `Upload from` button in the lower right corner and
-deploy the code to AWS. Select `./dist/index.zip` as upload file.
-![](/img/qstash/aws/upload.png)
+<Frame>
+<img src="/img/qstash/aws/upload.png" />
+</Frame>
 
-### 7. Publish a message
+Tada, you've manually deployed a zip file to AWS Lambda! 🎉
 
-Open a different terminal and publish a message to QStash. Note the destination
-url is the URL from step 4.
+## Testing the Integration
 
-```bash
-curl --request POST "https://qstash.upstash.io/v2/publish/https://aacn3pedteibt5gg72xr77wnma0poteq.lambda-url.us-east-1.on.aws" \
-     -H "Authorization: Bearer <QSTASH_TOKEN>" \
-     -H "Content-Type: application/json" \
-     -d "{ \"hello\": \"world\"}"
-```
+To make sure everything works as expected, navigate to your QStash request builder and send a request to your freshly deployed Lambda function:
 
-## Next Steps
+<Frame>
+<img src="/img/qstash/aws/verify-integration.png" />
+</Frame>
 
-That's it, you have successfully created a secure AWS lambda function, that
-receives and verifies incoming webhooks from qstash.
+Alternatively, you can also send a request via CURL:
 
-Learn more about publishing a message to qstash [here](/qstash/howto/publishing)
-
-## QStash SDK
-
-[Our Typescript Sdk](https://github.com/upstash/sdk-qstash-ts) will handle
-verification automatically if you want to use it.
-
-```ts
-import { Receiver } from "@upstash/qstash";
-
-const r = new Receiver({
-  currentSigningKey: process.env["QSTASH_CURRENT_SIGNING_KEY"],
-  nextSigningKey: process.env["QSTASH_NEXT_SIGNING_KEY"],
-});
-
-await r.verify({
-  signature: event.headers["upstash-signature"],
-  body: event.body,
-  url: `https://${event.requestContext.domainName}`,
-});
+```bash Terminal
+curl --request POST "https://qstash.upstash.io/v2/publish/<YOUR-LAMBDA-URL>" \
+-H "Authorization: Bearer <QSTASH_TOKEN>" \
+-H "Content-Type: application/json" \
+-d "{ \"hello\": \"world\"}"
 ```
