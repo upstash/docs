@@ -1,0 +1,79 @@
+---
+title: Read Your Writes
+---
+
+The "Read Your Writes" feature in Upstash Redis ensures that write operations are completed before subsequent read operations occur, maintaining data consistency in your application.
+
+### How It Works
+
+All write operations happen on the primary member and take time to propagate to the read replicas. Imagine that a client attempts to read an item immediately after it’s written. The read may go to a replica that hasn’t synced with the primary yet, resulting in stale data being returned.
+
+RYW consistency solves this by returning a **sync token** after each request, which indicates the primary member’s state. In the next request, this sync token ensures the read replica syncs up to that token before serving the read.
+
+So, the sync token acts as a checkpoint, ensuring that any read operations following a write reflect the most recent changes, even if they are served by a read replica.
+
+Management of the sync token is handled automatically by the official [Typescript (version 1.34.0 and later)](/redis/sdks/ts/overview) and [Python (version 1.2.0 and later)](/redis/sdks/py/overview) SDKs of Upstash. When you initialize a Redis client with these SDKs, the writes made by that client will be respected during subsequent reads from the same client.
+
+For REST users, you can achieve similar behavior by using the `upstash-sync-token` header. Each time you make a request, save the value of the `upstash-sync-token` header from the response and pass it in the `upstash-sync-token` header of your next request. This ensures that subsequent reads reflect the writes.
+
+### Cross-Client Synchronization
+
+Imagine that you are writing some key to Redis and then you read the same key from a different Redis client instance. In this case, the second client’s read request may not reflect the write made by the first client, as the sync tokens are updated independently in the two clients.
+
+Consider these two example functions, each representing separate API endpoints:
+
+```ts
+export const writeRequest = async () => {
+  const redis = Redis.fromEnv();
+  const randomKey = nanoid();
+  await redis.set(randomKey, "value");
+  return randomKey;
+};
+
+export const readRequest = async (randomKey: string) => {
+  const redis = Redis.fromEnv();
+  const value = await redis.get(randomKey);
+  return value;
+};
+```
+
+If these functions are called in sequence, they will create two separate clients:
+
+```ts
+const randomKey = await writeRequest();
+await readRequest(randomKey);
+```
+
+As explained above, in rare cases, one of your [read replicas](/redis/features/globaldatabase#primary-region-and-read-regions) can serve the `read` request before it receives the `write` update from the primary replica. To avoid this, if you are using `@upstash/redis` version 1.34.1 or later, you can pass the `readYourWritesSyncToken` from the first client to the second:
+
+```ts
+export const writeRequest = async () => {
+  const redis = Redis.fromEnv();
+  const randomKey = nanoid();
+  await redis.set(randomKey, "value");
+
+  // Get the token **after** making the write
+  const token = redis.readYourWritesSyncToken;
+  return { randomKey, token };
+};
+
+export const readRequest = async (
+  randomKey: string,
+  token: string | undefined
+) => {
+  const redis = Redis.fromEnv();
+
+  // Set the token **before** making the read
+  redis.readYourWritesSyncToken = token;
+
+  const value = await redis.get(randomKey);
+  return value;
+};
+
+const { randomKey, token } = await writeRequest();
+await readRequest(randomKey, token);
+```
+
+Remember to get the sync token after the write request is completed, as the session token changes with each request.
+
+For REST users or the Upstash Python SDK, a similar approach can be used. In Python, use `Redis._sync_token` instead of `readYourWritesSyncToken`.
