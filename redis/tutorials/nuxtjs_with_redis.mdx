@@ -1,10 +1,10 @@
 ---
-title: "Nuxt.js with Redis"
-description: "This tutorial shows how to use Upstash inside your NuxtJS application."
+title: "Nuxt with Redis"
+description: "This tutorial shows how to use Upstash inside your Nuxt application."
 ---
 
-This tutorial uses Redis as state store for a Nuxt.js application. We simply
-increment a counter that pulls the data from Redis.
+This tutorial uses Redis as state store for a Nuxt application. In it, we will build an application
+which simply increments a counter and saves & fetches the last increment time.
 
 See [code](https://github.com/upstash/examples/tree/master/examples/nuxt-with-redis) and
 [demo](https://nuxt-with-redis.vercel.app)
@@ -14,57 +14,107 @@ See [code](https://github.com/upstash/examples/tree/master/examples/nuxt-with-re
 Run this in terminal
 
 ```bash
-yarn create nuxt-app nuxtjs-with-redis
+npx nuxi@latest init nuxtjs-with-redis
 ```
 
-### `2` Set up environment variables
+Go to the new directory `nuxtjs-with-redis` and install `@upstash/redis`:
+
+```
+npm install @upstash/redis
+```
+
+### `2` Create a Upstash Redis database
+
+Next, you will need an Upstash Redis database. You can follow
+[our guide for creating a new database](https://upstash.com/docs/redis/overall/getstarted).
+
+### `3` Set up environment variables
 
 Copy the `.env.example` file in this directory to `.env`
 
 ```bash
-cp .env.local.example .env.local
+cp .env.example .env
 ```
 
-- `REDIS_URL`: Copy the url in the database page of the Upstash console
+Then, set the following environment variables:
 
-<Snippet file="redis/ioredisnote.mdx" />
-
-### `3` Server Middleware
-
-We will write a Nuxt middleware which increments a counter in Redis and returns
-its new value.
-
-```javascript title="api/count.js"
-import Redis from "ioredis";
-
-export default async function (req, res) {
-  const redis = new Redis(process.env.REDIS_URL);
-  const count = await redis.incr("counter");
-  redis.quit();
-
-  res.setHeader("Content-Type", "application/json");
-  res.write(JSON.stringify({ count }));
-  res.end();
-}
+```
+UPSTASH_REDIS_REST_URL=""
+UPSTASH_REDIS_REST_TOKEN=""
 ```
 
-Now we will configure the middleware in nuxt.config.js
+You can get the values of these env variables on the page of your Redis database.
 
-```javascript {4} title="nuxt.config.js"
-export default {
-  head: { title: "nuxt-with-redis" },
-  buildModules: ["@nuxtjs/tailwindcss"],
-  serverMiddleware: [{ path: "/api/count", handler: "~/api/count.js" }],
-};
+### `4` Define the endpoint
+
+Next, we will define the endpoint which will call Redis:
+
+```javascript title="server/api/increment.ts"
+import { defineEventHandler } from "h3";
+import { Redis } from "@upstash/redis";
+
+// Initialize Redis
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL || "",
+  token: process.env.UPSTASH_REDIS_REST_TOKEN || ""
+});
+
+export default defineEventHandler(async () => {
+  const identifier = "api_call_counter";
+
+  try {
+    // Increment the API call counter and get the updated value
+    const count = await redis.incr(identifier);
+
+    // Optionally, you can also retrieve other information like the last time it was called
+    const lastCalled = await redis.get("last_called");
+    const lastCalledAt = lastCalled || "Never";
+
+    // Store the current timestamp as the last called time
+    await redis.set("last_called", new Date().toISOString());
+
+    // Return the count and last called time
+    return {
+      success: true,
+      count: count,
+      lastCalled: lastCalledAt,
+    };
+  } catch (error) {
+    console.error("Redis error:", error);
+    return {
+      success: false,
+      message: "Error interacting with Redis",
+    };
+  }
+});
 ```
 
-### `4` Run
+### `5` Run
+
+Finally, we can run the application and call our endpoint:
 
 ```bash
-yarn dev
+npm run dev
 ```
 
-Go to [http://localhost:3000/](http://localhost:3000)
+If you are using [our example app](https://github.com/upstash/examples/tree/master/examples/nuxt-with-redis),
+you can simply click the `Increment` button to run the endpoint we defined.
+
+Otherwise, you can simply make a curl request:
+
+```
+curl http://localhost:3000/api/increment
+```
+
+When you make the request, you should see something like this:
+
+```
+{
+  "success": true,
+  "count": 166,
+  "lastCalled": "2024-10-10T07:04:42.381Z"
+}
+```
 
 ### Notes:
 
