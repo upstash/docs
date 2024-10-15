@@ -1,0 +1,98 @@
+---
+title: "Redis as a Cache for Your FastAPI App"
+---
+
+### Introduction
+
+In this tutorial, we’ll learn how to use Redis to add caching to a FastAPI application. By caching API responses in Redis, we can reduce database queries, improve response times, and ensure that frequently requested data is delivered quickly.
+
+We’ll create a simple FastAPI app that fetches weather data from an external API. The app will store the results in Redis, so the next time someone requests the same data, it can be returned from the cache instead of making a new API request. Let’s get started!
+
+### Environment Setup
+
+First, install FastAPI, the Upstash Redis client, and an ASGI server:
+
+```shell
+pip install fastapi
+pip install upstash-redis
+pip install uvicorn[standard]
+```
+
+### Database Setup
+
+Create a Redis database using the [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli), and export the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REST_TOKEN` to your environment:
+
+```shell
+export UPSTASH_REDIS_REST_URL=<YOUR_URL>
+export UPSTASH_REST_TOKEN=<YOUR_TOKEN>
+```
+
+We'll also need to generate a `WEATHER_API_KEY` from [Weather API Website](https://www.weatherapi.com) for free and we will export it.
+
+```shell
+export WEATHER_API_KEY=<YOUR_KEY>
+```
+
+You can also use `python-dotenv` to load environment variables from your `.env` file.
+
+### Application Setup
+
+In this example, we will build an API that fetches weather data and caches it in Redis. 
+
+Create `main.py`:
+
+```python main.py
+from fastapi import FastAPI
+from upstash_redis import Redis
+import requests
+import os
+
+app = FastAPI()
+
+# Connect to Redis using environment variables
+redis = Redis.from_env()
+
+# Mock API endpoint for weather data
+WEATHER_API_URL = "https://api.weatherapi.com/v1/current.json"
+API_KEY = os.getenv("WEATHER_API_KEY")
+
+@app.get("/weather/{city}")
+def get_weather(city: str):
+    cache_key = f"weather:{city}"
+    
+    # Check if the data exists in cache
+    cached_data = redis.get(cache_key)
+    if cached_data:
+        return {"source": "cache", "data": cached_data}
+    
+    # Fetch data from external API
+    response = requests.get(f"{WEATHER_API_URL}?key={API_KEY}&q={city}")
+    weather_data = response.json()
+    
+    # Store the data in Redis cache with a 10-minute expiration
+    redis.setex(cache_key, 600, weather_data)
+    
+    return {"source": "api", "data": weather_data}
+```
+
+### Running the Application
+
+Run the FastAPI app with Uvicorn:
+
+```shell
+uvicorn main:app --reload
+```
+
+To test the application you can visit `http://127.0.0.1:8000/weather/istanbul` in your browser or use curl to get the weather data for Istanbul. The first request will fetch the data from the weather API and cache it, and subsequent requests will return the cached data until the cache expires after 10 minutes.
+
+To monitor your data in Redis, you can use the [Upstash Console](https://console.upstash.com) and check out the Data Browser tab.
+
+### Code Breakdown
+
+1. **Redis Setup**: We use `Redis.from_env()` to initialize the Redis connection using the environment variables. Redis will store the weather data with city names as cache keys.
+   
+2. **Cache Lookup**: When a request is made to the `/weather/{city}` endpoint, we check if the weather data is already cached by looking up the `weather:{city}` key in Redis. If the data is found in cache, it's returned immediately.
+
+3. **Fetching External Data**: If the data is not in cache, the app sends a request to the external weather API to fetch the latest data. The response is then cached using `redis.setex()`, which stores the data with a 10-minute expiration.
+
+4. **Cache Expiration**: We use a 10-minute TTL (time-to-live) for the cached weather data to ensure it's periodically refreshed. After the TTL expires, the next request will fetch fresh data from the external API and store it in cache again.

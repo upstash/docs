@@ -1,0 +1,124 @@
+---
+title: "Building a URL Shortener with Redis"
+---
+
+### Introduction
+
+In this tutorial, we’ll build a simple URL shortener using Redis and Python. The short URL service will generate a random short code for each URL, store it in Redis, and allow users to retrieve the original URL using the short code. We’ll also implement an expiration time for each shortened URL, making it expire after a specified period.
+
+### Environment Setup
+
+First, install the necessary dependencies, including Upstash Redis and `python-dotenv` for environment variables:
+
+```shell
+pip install upstash-redis
+```
+
+### Database Setup
+
+Create a Redis database using the [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli), and export the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REST_TOKEN` to your environment:
+
+```shell
+export UPSTASH_REDIS_REST_URL=<YOUR_URL>
+export UPSTASH_REST_TOKEN=<YOUR_TOKEN>
+```
+
+You can also use `python-dotenv` to load environment variables from a `.env` file:
+
+```text .env
+UPSTASH_REDIS_REST_URL=<YOUR_URL>
+UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+```
+
+### Application Setup
+
+In this example, we will build a URL shortener where each short URL will be stored in Redis with an expiration time.
+
+Create `url_shortener.py`:
+
+```py url_shortener.py
+import string
+import random
+from upstash_redis import Redis
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
+
+# Redis connection
+redis = Redis.from_env()
+
+# Characters to generate the short URL from
+CHARS = string.ascii_letters + string.digits
+BASE_URL = "https://short.url/"
+
+# Function to generate a random string for the short URL
+def generate_short_code(length=6):
+    return ''.join(random.choices(CHARS, k=length))
+
+# Function to shorten the URL with an expiration time
+def shorten_url(url, expiration=3600):
+    # Generate a random short code
+    short_code = generate_short_code()
+    # Save the short code in Redis
+    redis.set(short_code, url, ex=expiration)
+    return BASE_URL + short_code
+
+# Function to get the original URL from the short URL
+def get_original_url(short_code):
+    return redis.get(short_code)
+
+# Example usage
+if __name__ == "__main__":
+    original_url = "https://example.com/my-very-long-url"
+
+    # Shorten the URL
+    short_url = shorten_url(original_url, expiration=600)
+    print(f"Shortened URL: {short_url}")
+
+    # Get the original URL
+    original_url = get_original_url(short_url.split("/")[-1])
+
+    if original_url:
+        print(f"Original URL: {original_url}")
+    else:
+        print("Short URL expired or not found")
+```
+
+### Running the Application
+
+Simply run the Python script:
+
+```shell
+python url_shortener.py
+```
+
+This script will shorten a long URL, store the mapping in Redis, and print the shortened URL. It will then attempt to retrieve the original URL using the short code.
+
+Here is an example output:
+
+```shell
+Shortened URL: https://short.url/0lSLFI
+Original URL: https://example.com/my-very-long-url
+```
+
+To monitor your data in Redis, you can use the [Upstash Console](https://console.upstash.com) and check out the Data Browser tab.
+
+### How to Use the URL Shortener for Web Applications
+
+1.	Extract the short code from the shortened URL (e.g., `0lSLFI`).
+
+2.	Look up the original URL in Redis using that code.
+
+3.	Redirect the user to the original URL.
+
+### Code Breakdown
+
+1. **Random Short Code Generation**: The `generate_short_code` function creates a random string of characters (letters and digits) that will serve as the short code for the URL.
+
+2. **Storing in Redis**: The `shorten_url` function takes the original URL and stores it in Redis using the randomly generated short code as the key. The `ex` parameter sets an expiration time (in seconds) for how long the shortened URL will be valid.
+
+3. **Retrieving the Original URL**: The `get_original_url` function takes the short code and looks it up in Redis to retrieve the original URL. If the short code doesn't exist (due to expiration or other reasons), it returns `None`.
+
+4. **Expiration Handling**: If the short code has expired, Redis automatically removes the entry, and the script will print a message indicating that the URL has expired or cannot be found.
