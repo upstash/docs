@@ -1,13 +1,13 @@
 ---
-title: "Workflow context"
+title: "Workflow Context"
 ---
 
 A workflow's context is a JavaScript object provided by the serve function and is used to define your workflow endpoint. This context object offers utility methods for creating workflow steps, managing delays, and performing timeout-resistant HTTP calls.
 
 ```typescript api/workflow/route.ts
-import { serve } from "@upstash/qstash/nextjs"
+import { serve } from "@upstash/workflow/nextjs"
 
-export const POST = serve(
+export const { POST } = serve(
   // 👇 the workflow context
   async (context) => {
     // ...
@@ -45,9 +45,9 @@ Defines and executes a workflow step.
 
 <CodeGroup>
 ```typescript Serial execution
-import { serve } from "@upstash/qstash/nextjs"
+import { serve } from "@upstash/workflow/nextjs"
 
-export const POST = serve<string>(async (context) => {
+export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
 
   const result1 = await context.run("step-1", async () => {
@@ -61,9 +61,9 @@ export const POST = serve<string>(async (context) => {
 ```
 
 ```typescript Parallel execution
-import { serve } from "@upstash/qstash/nextjs"
+import { serve } from "@upstash/workflow/nextjs"
 
-export const POST = serve<string>(
+export const { POST } = serve<string>(
   async (context) => {
     const input = context.requestPayload;
 
@@ -90,10 +90,10 @@ Pauses workflow execution for a specified duration.
 </Tip>
 
 ```typescript api/workflow/route.ts
-import { serve } from "@upstash/qstash/nextjs"
+import { serve } from "@upstash/workflow/nextjs"
 import { signIn, sendEmail } from "@/utils/onboarding-utils"
 
-export const POST = serve<User>(
+export const { POST } = serve<User>(
   async (context) => {
     const userData = context.requestPayload;
 
@@ -121,10 +121,10 @@ Pauses workflow execution until a specific timestamp.
 </Tip>
 
 ```typescript api/workflow/route.ts
-import { serve } from "@upstash/qstash/nextjs"
+import { serve } from "@upstash/workflow/nextjs"
 import { signIn, sendEmail } from "@/utils/onboarding-utils"
 
-export const POST = serve<User>(async (context) => {
+export const { POST } = serve<User>(async (context) => {
   const userData = context.requestPayload
 
   const user = await context.run("sign-in", async () => {
@@ -151,28 +151,34 @@ Performs an HTTP call as a workflow step, allowing for longer response times.
 Can take up to 15 minutes or 2 hours, depending on your [QStash plans](https://upstash.com/pricing/qstash) max HTTP connection timeout.
 
 ```javascript
-import { serve } from "@upstash/qstash/nextjs"
+import { serve } from "@upstash/workflow/nextjs"
 
-export const POST = serve<{ topic: string }>(async (context) => {
+export const { POST } = serve<{ topic: string }>(async (context) => {
   const request = context.requestPayload
 
-  const longEssayResponse = await context.call(
+  const {
+    status, // response status
+    headers, // response headers
+    body // response body
+  } = await context.call(
     "generate-long-essay", // Step name
-    "https://api.openai.com/v1/chat/completions", // Endpoint URL
-    "POST", // HTTP method
-    { // Request body
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
-        },
-        { role: "user", content: request.topic },
-      ],
-    },
     {
-      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      url: "https://api.openai.com/v1/chat/completions", // Endpoint URL
+      method: "POST",
+      body: { // Request body
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
+          },
+          { role: "user", content: request.topic },
+        ],
+      },
+      headers: { // request headers
+        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      }
     }
   )
 })
@@ -190,6 +196,67 @@ type ResultType = {
 
 const result = await context.call<ResultType>( ... ); 
 ```
+
+By default, `context.call` only retries once if its request to the given URL fails.
+
+### context.waitForEvent
+
+Stops the workflow run until it is notified externally to continue.
+
+There is also a timeout setting which makes the workflow continue if it's not notified within the time frame.
+
+```javascript
+import { serve } from "@upstash/workflow/nextjs"
+
+export const { POST } = serve<{ topic: string }>(async (context) => {
+  const request = context.requestPayload
+
+  const {
+    eventData, // data passed in notify
+    timeout    // boolean denoting whether the step was notified or timed out
+  } = await context.waitForEvent(
+    "wait for some event",
+    "my-event-id",
+    1000 // 1000 second timeout
+  );
+})
+```
+
+A workflow run waiting for event can be notified in two ways:
+- `context.notify`: [Notify step explained below](/qstash/workflow/basics/context#context-notify)
+- `client.notify`: [Notify method of the Workflow Client](/qstash/workflow/basics/client#notify-waiting-workflow).
+
+### context.notify
+
+Notifies workflows waiting for an event with some payload.
+
+```javascript
+import { serve } from "@upstash/workflow/nextjs"
+
+export const { POST } = serve<{ topic: string }>(async (context) => {
+  const payload = context.requestPayload
+
+  const {
+    notifyResponse // result of notify, which is a list of notified waiters
+  } = await context.notify("notify step", "my-event-Id", payload);
+})
+```
+
+`notifyResponse` is a list of `NotifyResponse` objects:
+
+```typescript
+export type NotifyResponse = {
+  waiter: Waiter;
+  messageId: string;
+  error: string;
+};
+```
+
+More details about the `Waiter` object:
+
+<Snippet file="qstash/waiter.mdx" />
+
+
 
 ## Error handling and retries
 
