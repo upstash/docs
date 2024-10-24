@@ -1,0 +1,138 @@
+---
+title: "Waiting for Events"
+---
+
+## Introduction
+
+This example demonstrates how to handle order processing using Upstash Workflow. The workflow waits for an external system to process an order and resumes once it is 'notified'.
+
+## Use Case
+
+Our workflow will:
+
+1. Receive an order request.
+2. Wait for an external event that indicates the order has been processed.
+3. Process the order upon receiving the event.
+4. Send a confirmation email to the user.
+5. Handle timeout scenarios if the event is not received in time.
+6. Demonstrate how to notify the workflow.
+
+## Code Example
+
+```typescript
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve(async (context) => {
+  const { orderId, userEmail } = context.requestPayload;
+
+  // Step 1: Wait for the order to be processed
+  const { eventData, timeout } = await context.waitForEvent(
+    "wait for order processing",
+    `order-${orderId}`,
+    600 // 10 minutes timeout
+  );
+
+  if (timeout) {
+    // end workflow in case of timeout
+    return;
+  }
+
+  const processedData = eventData;
+
+  // Step 2: Log the processed order
+  await context.run("process-order", async () => {
+    console.log(`Order ${orderId} processed:`, processedData);
+  });
+
+  // Step 3: Send a confirmation email
+  await context.run("send-confirmation-email", async () => {
+    await sendEmail(
+      userEmail,
+      "Your order has been processed!",
+      processedData
+    );
+  });
+});
+```
+
+Code for notifying the worklfow:
+
+```typescript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" })
+const orderId = "1324"
+
+await client.notify({
+  eventId: `order-${orderId}`,
+  eventData: { deliveryTime: "2 days" }
+});
+```
+
+## Code Breakdown
+
+### 1. Waiting for the Event
+
+The workflow first waits for the order to be processed. It uses [the `waitForEvent` method](/workflow/basics/context#context-waitforevent) to pause execution and listen for the event. A timeout of 10 minutes (600 seconds) is applied to avoid indefinite waiting.
+
+```typescript
+const { eventData, timeout } = await context.waitForEvent(
+  "wait for order processing",
+  `order-${orderId}`,
+  600 // 10 minutes timeout
+);
+
+if (timeout) {
+  // end workflow in case of timeout
+  return;
+}
+```
+
+The workflow listens for the event with the ID `order-${orderId}`. When the external service notifies the workflow with this ID, the workflow resumes. If no event is received in time, the timeout block ensures the workflow doesn't hang.
+
+### 2. Processing the Order
+
+Once the workflow resumes, the order data (`eventData`) is logged and processed. This step could include updates to the database, inventory adjustments, or other backend operations specific to order processing.
+
+```typescript
+await context.run("process-order", async () => {
+  console.log(`Order ${orderId} processed:`, processedData);
+});
+```
+
+### 3. Sending a Confirmation Email
+
+Once the order is processed, the workflow sends a confirmation email to the user.
+
+```typescript
+await context.run("send-confirmation-email", async () => {
+  await sendEmail(
+    userEmail,
+    "Your order has been processed!",
+    processedData
+  );
+});
+```
+
+## External Event Notification
+
+To notify the workflow that the order has been processed, the external system sends a notification to the workflow with relevant data using the [`notify` method from the `Client`](/workflow/basics/client#notify-waiting-workflow). Alternatively, you can use [`context.notify` method](/workflow/basics/context#context-notify).
+
+```typescript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+const orderId = "1324";
+
+await client.notify({
+  eventId: `order-${orderId}`,
+  eventData: { deliveryTime: "2 days" }
+});
+```
+
+## Key Features
+
+1. **Asynchronous Event Handling**: The workflow waits for an external event (order processing) to occur and only resumes once the event is received.
+2. **Timeout Control**: A timeout mechanism ensures that the workflow doesn't hang if the event isn't received within the expected time.
+3. **Order Processing**: Once notified, the workflow handles order processing and sends a confirmation email to the customer.
+4. **External Event Notifications**: The external system can notify the workflow, providing the necessary data to resume execution and complete the process.
