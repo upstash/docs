@@ -4,18 +4,17 @@ title: "Waiting for Events"
 
 ## Introduction
 
-This example demonstrates how to handle order processing using Upstash Workflow. The workflow waits for an external system to process an order and resumes once it is 'notified'.
+This example demonstrates how to handle order processing using Upstash Workflow. The workflow will wait for an external system to process an order and resume once it is 'notified'. See our documentation [for more details about events](/workflow/howto/events).
 
 ## Use Case
 
-Our workflow will:
+Our workflow will be:
 
 1. Receive an order request.
-2. Wait for an external event that indicates the order has been processed.
-3. Process the order upon receiving the event.
-4. Send a confirmation email to the user.
-5. Handle timeout scenarios if the event is not received in time.
-6. Demonstrate how to notify the workflow.
+2. Send an email to request order processing.
+3. Wait for an external event that indicates the order has been processed.
+4. Handle timeout scenarios if the event is not received in time.
+5. Save the results
 
 ## Code Example
 
@@ -25,7 +24,12 @@ import { serve } from "@upstash/workflow/nextjs";
 export const { POST } = serve(async (context) => {
   const { orderId, userEmail } = context.requestPayload;
 
-  // Step 1: Wait for the order to be processed
+  // Step 1: request order processing
+  await context.run("request order processing", async () => {
+    await requestProcessing(orderId)
+  })
+
+  // Step 2: Wait for the order to be processed
   const { eventData, timeout } = await context.waitForEvent(
     "wait for order processing",
     `order-${orderId}`,
@@ -39,12 +43,12 @@ export const { POST } = serve(async (context) => {
 
   const processedData = eventData;
 
-  // Step 2: Log the processed order
+  // Step 3: Log the processed order
   await context.run("process-order", async () => {
     console.log(`Order ${orderId} processed:`, processedData);
   });
 
-  // Step 3: Send a confirmation email
+  // Step 4: Send a confirmation email
   await context.run("send-confirmation-email", async () => {
     await sendEmail(
       userEmail,
@@ -71,9 +75,25 @@ await client.notify({
 
 ## Code Breakdown
 
-### 1. Waiting for the Event
+### 1. Requesting Order Processing
 
-The workflow first waits for the order to be processed. It uses [the `waitForEvent` method](/workflow/basics/context#context-waitforevent) to pause execution and listen for the event. A timeout of 10 minutes (600 seconds) is applied to avoid indefinite waiting.
+In its first step, we call a method to request processing of the order in the request payload:
+
+```typescript
+await context.run("request order processing", async () => {
+  await requestProcessing(orderId)
+})
+```
+
+You can imagine that this step sends an email to the company responsible for the delivery.
+
+### 2. Waiting for the Event
+
+<Frame>
+  <img src="/img/qstash-workflow/events/wait.png" />
+</Frame>
+
+Next, the workflow waits for the order to be processed. It uses [the `waitForEvent` method](/workflow/basics/context#context-waitforevent) to pause execution and listen for the event. A timeout of 10 minutes (600 seconds) is applied to avoid indefinite waiting.
 
 ```typescript
 const { eventData, timeout } = await context.waitForEvent(
@@ -88,11 +108,15 @@ if (timeout) {
 }
 ```
 
-The workflow listens for the event with the ID `order-${orderId}`. When the external service notifies the workflow with this ID, the workflow resumes. If no event is received in time, the timeout block ensures the workflow doesn't hang.
+The workflow listens for the event with the ID `order-${orderId}`. When the external service notifies the workflow with this ID, the workflow resumes. If no event is received in time, the timeout ensures the workflow doesn't hang.
 
-### 2. Processing the Order
+### 3. Processing the Order
 
-Once the workflow resumes, the order data (`eventData`) is logged and processed. This step could include updates to the database, inventory adjustments, or other backend operations specific to order processing.
+<Frame>
+  <img src="/img/qstash-workflow/events/resume.png" />
+</Frame>
+
+Once the workflow resumes, the order data (`eventData`) is logged. This step could include updates to the database, inventory adjustments, or other backend operations specific to order processing.
 
 ```typescript
 await context.run("process-order", async () => {
@@ -100,7 +124,7 @@ await context.run("process-order", async () => {
 });
 ```
 
-### 3. Sending a Confirmation Email
+### 4. Sending a Confirmation Email
 
 Once the order is processed, the workflow sends a confirmation email to the user.
 
