@@ -1,96 +1,120 @@
 ---
 title: Serverless Python API with Redis
 ---
+<Card title="GitHub Repository" icon="github" href="https://github.com/upstash/redis-js/tree/main/examples/aws-cdk-python" horizontal>
+  You can find the project source code on GitHub.
+</Card>
 
 This tutorial shows how to build a serverless API for Page View Counter with
 Python and Redis. The API will the count page views and show it in JSON format.
 
-### The Stack
+### Prerequisites
 
-- Serverless compute: AWS Lambda (Python)
-- Serverless data store: Redis via Upstash
-- Deployment tool: AWS SAM
+- Complete all steps in [Getting started with the AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html)
 
-### Prerequisites:
+### Project Setup
 
-- An AWS account for AWS Lambda functions.
-- Install AWS SAM CLI tool as described here to create and deploy the project.
-- An Upstash account for serverless Redis.
+Create and navigate to a directory named `counter-cdk`. CDK CLI uses this directory name to name things in your CDK code, so if you decide to use a different name, don't forget to make the appropriate changes when applying this tutorial.
 
-### Step 1: Init the Project
+```shell
+mkdir counter-cdk && cd counter-cdk
+```
 
-Run the sam init and then
+Initialize a new CDK project.
 
-- Select AWS Quick Start Templates
-- Select 2 - python3.8
-- Enter your project name: python-redis-example
-- Select 1 - Hello World Example SAM will generate your project in a new folder.
+```shell
+cdk init app --language typescript
+```
 
-### Step 2: Install a Redis Client
+### Counter Function Setup
 
-Our only dependency is redis client. Install python redis via
-`pip install redis`. Also add redis to `requirements.txt`.
+Create a folder named `api` under `lib`
 
-### Step 3: Create a Redis Database
+```shell
+mkdir lib/api
+```
 
-Create a Redis database from Upstash console. Free tier should be enough. It is
-pretty straight forward but if you need help, check
-[getting started](../overall/getstarted) guide. In the database details page,
-click the Connect button. You will need the endpoint and password in the next
-step.
+Create `/lib/api/requirements.txt`
 
-### Step 4: The function Code
+```txt /lib/api/requirements.txt
+upstash-redis
+```
 
-Edit the `hello-world>app.py` as below:
+Create `/lib/api/index.py`
 
-```python
-import json
-import redis
+```py /lib/api/index.py
+from upstash_redis import Redis
 
-r = redis.StrictRedis(
-host='YOUR_REDIS_ENDPOINT',
-port='YOUR_REDIS_PORT',
-password='YOUR_REDIS_PASSWORD',
-charset="utf-8",
-decode_responses=True)
+redis = Redis.from_env()
 
-def lambda_handler(event, context):
-counter = r.incr('counter')
-
+def handler(event, context):
+    count = redis.incr('counter')
     return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "counter": counter,
-        }),
+        'statusCode': 200,
+        'body': f'Counter: {count}'
+    }
+```
+
+### Counter Stack Setup
+
+Update `/lib/counter-cdk-stack.ts`
+
+```ts /lib/counter-cdk-stack.ts
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as path from 'path';
+
+export class CounterCdkStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const counterFunction = new lambda.Function(this, 'CounterFunction', {
+      code: lambda.Code.fromAsset(path.join(__dirname, 'api'), {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_9.bundlingImage,
+          command: [
+            'bash', '-c',
+            'pip install -r requirements.txt -t /asset-output && cp -au . /asset-output'
+          ],
+        },
+      }),
+      runtime: lambda.Runtime.PYTHON_3_9,
+      handler: 'index.handler',
+      environment: {
+        UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || '',
+        UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+      },
+    });
+
+    const counterFunctionUrl = counterFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+    });
+
+    new cdk.CfnOutput(this, "counterFunctionUrlOutput", {
+      value: counterFunctionUrl.url,
+    })
+  }
 }
 ```
 
-Replace the "YOUR_REDIS_ENDPOINT", "YOUR_REDIS_PORT" and "YOUR_REDIS_PASSWORD"
-with your database's endpoint and password which you created in the Step 3. The
-code simply increments a counter in Redis database and returns its value in json
-format.
+### Database Setup
 
-### Step 5: Deployment
+Create a Redis database using [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli) and export `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to your environment.
 
-Now we are ready to deploy our API. First build it via sam build. Then run the
-command sam local start-api. You can check your API locally on
-[http://127.0.0.1:3000/hello](http://127.0.0.1:3000/hello)
+```shell
+export UPSTASH_REDIS_REST_URL=<YOUR_URL>
+export UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+```
 
-<br />
-<br /> If it is working, you can deploy your app to AWS by running `sam deploy --guided`.
-Enter a stack name and pick your region. After confirming changes, the deployment
-should begin. The command will output API Gateway endpoint URL, you can check the
-API in your browser.
-<br />
-<br /> You can also check your deployment on your AWS console. You will see your
-function has been created. Click on your function, you will see the code is uploaded
-and API Gateway is configured.
+### Deploy
 
-### Notes
+Run in the top folder:
 
-- Check the template.yaml file. You can add new functions and APIGateway
-  endpoints editing this file.
-- It is a good practice to keep your Redis endpoint and password as environment
-  variable.
-- You can use [serverless framework](https://www.serverless.com/) instead of AWS
-  SAM to deploy your function.
+```shell
+cdk synth
+cdk bootstrap
+cdk deploy
+```
+
+Visit the output url.

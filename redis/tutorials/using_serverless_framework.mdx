@@ -1,156 +1,125 @@
 ---
 title: Using Serverless Framework
 ---
+<Card title="GitHub Repository" icon="github" href="https://github.com/upstash/redis-js/tree/main/examples/serverless-framework/counter" horizontal>
+  You can find the project source code on GitHub.
+</Card>
 
-This tutorial implements a serverless application and deploy it to AWS Lambda
+This tutorial implements a serverless application and deploys it to AWS Lambda
 using Serverless Framework
 
-<Note>
-  See [Using AWS SAM](/redis/tutorials/using_aws_sam), if you prefer AWS SAM
-  over Serverless Framework.
-</Note>
+### Prerequisites
 
-### Step 1: Create database on Upstash
+1. Install the Serverless Framework with `npm i serverless -g`
 
-If you do not have one, create a database following this
-[guide](../overall/getstarted).
+### Project Setup
 
-### Step 2: Project Setup
+Create a Serverless Framework application with the following options:
 
-If you do not have it already install serverless framework via:
-`npm install -g serverless`
+```shell
+➜  tutorials > ✗ serverless
+Serverless ϟ Framework
 
-In any folder run `serverless` as below:
+Welcome to Serverless Framework V.4
 
-```text
->> serverless
+Create a new project by selecting a Template to generate scaffolding for a specific use-case.
 
-Serverless: No project detected. Do you want to create a new one? Yes
-Serverless: What do you want to make? AWS Node.js
-Serverless: What do you want to call this project? test-upstash
+✔ Select A Template: · AWS / Node.js / HTTP API
 
-Project successfully created in 'test-upstash' folder.
+✔ Name Your Project: · counter-serverless
 
-You can monitor, troubleshoot, and test your new service with a free Serverless account.
+✔ Template Downloaded
 
-Serverless: Would you like to enable this? No
-You can run the “serverless” command again if you change your mind later.
+✔ Create Or Select An Existing App: · Create A New App
+
+✔ Name Your New App: · counter-serverless
+
+Your new Service "counter-serverless" is ready. Here are next steps:
+
+• Open Service Directory: cd counter-serverless
+• Install Dependencies: npm install (or use another package manager)
+• Deploy Your Service: serverless deploy
 ```
 
-Inside the project folder create a node project with the command:
-
-```
-npm init
+```shell
+cd counter-serverless
 ```
 
-Then install the redis client with:
+Create `package.json` with `@upstash/redis` as a dependency:
 
+```json package.json
+{
+    "dependencies": {
+      "@upstash/redis": "latest"
+    }
+  }
 ```
-npm install ioredis
+
+Install the dependencies:
+
+```shell
+npm install
 ```
 
-Edit handler.js file as below. Replace the Redis URL (copy ioredis url from your
-Upstash console).
+### Database Setup
 
-```javascript
-var Redis = require("ioredis");
+Create a Redis database using [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli) and copy the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` into your `.env` file.
 
-if (typeof client === "undefined") {
-  var client = new Redis(REDIS_URL);
-}
-module.exports.hello = async (event) => {
-  await client.set("foo", "bar");
-  let response = await client.get("foo");
-  return { response: response };
+```shell .env
+UPSTASH_REDIS_REST_URL=<YOUR_URL>
+UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+```
+
+### Counter Function Setup
+
+Update `handler.js`:
+
+```js handler.js
+const { Redis } = require('@upstash/redis');
+
+const redis = Redis.fromEnv();
+
+exports.counter = async (event) => {
+    const count = await redis.incr("counter");
+    return {
+        statusCode: 200,
+        body: JSON.stringify('Counter: ' + count),
+    };
 };
 ```
 
-<Snippet file="redis/ioredisnote.mdx" />
+Update `serverless.yml` to pass the environment variables:
 
-### Step 3: Deploy Your Function
+```yaml serverless.yml
+service: counter-serverless
 
-In the project folder run:
+provider:
+  name: aws
+  runtime: nodejs20.x
+  environment:
+    UPSTASH_REDIS_REST_URL: ${env:UPSTASH_REDIS_REST_URL}
+    UPSTASH_REDIS_REST_TOKEN: ${env:UPSTASH_REDIS_REST_TOKEN}
 
+functions:
+  counter:
+    handler: handler.counter
+    events:
+      - httpApi:
+          path: /
+          method: get
 ```
+
+### Developing
+Run the following command to start your dev session.
+```shell
+serverless dev
+```
+
+### Deployment
+Run the following command to deploy your service.
+```shell
 serverless deploy
 ```
 
-The output will be:
+Visit the output url.
 
-```shell
-➜  test-upstash> serverless deploy
-Serverless: Packaging service...
-Serverless: Excluding development dependencies...
-Serverless: Creating Stack...
-Serverless: Checking Stack create progress...
-........
-Serverless: Stack create finished...
-Serverless: Uploading CloudFormation file to S3...
-Serverless: Uploading artifacts...
-Serverless: Uploading service test-upstash.zip file to S3 (178.2 KB)...
-Serverless: Validating template...
-Serverless: Updating Stack...
-Serverless: Checking Stack update progress...
-...............
-Serverless: Stack update finished...
-Service Information
-service: test-upstash
-stage: dev
-region: us-east-1
-stack: test-upstash-dev
-resources: 6
-api keys:
-  None
-endpoints:
-  None
-functions:
-  hello: test-upstash-dev-hello
-layers:
-  None
-```
-
-Run your function via `serverless invoke -f hello`:
-
-```shell
-serverless invoke -f hello
-{
-    "response": "bar"
-}
-```
-
-You can also test your function using AWS console. In your AWS Lambda section,
-click on your function. Scroll down to the code sections and click on the `Test`
-button on the top right.
-
-<Frame>
-  <img src="/img/awslambda/success2.png" />
-</Frame>
-
-Congratulations, now your lambda function inserts entry to your Upstash
-database.
-
-### What can be the next?
-
-- You can write and deploy another function to just get values from the
-  database.
-- You can integrate
-  [API Gateway](https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-create-api-as-simple-proxy-for-lambda.html)
-  so you can call your function via http.
-- You can learn about how to monitor your functions from CloudWatch as described
-  [here](https://docs.aws.amazon.com/lambda/latest/dg//monitoring-functions-logs.html).
-
-#### Redis Connections in AWS Lambda
-
-Although Redis connections are very lightweight, a new connection inside each
-Lambda function can cause a notable latency. On the other hand, reusing Redis
-connections inside the AWS Lambda functions has its own drawbacks. When AWS
-scales out Lambda functions, the number of open connections can rapidly
-increase. Fortunately, Upstash detects and terminates the idle and zombie
-connections thanks to its smart connection handling algorithm. Thanks to this
-algorithm; we have been recommending caching your Redis connection in serverless
-functions.
-
-<Info>
-  See [the blog post](https://blog.upstash.com/serverless-database-connections)
-  about the database connections in serverless functions.
-</Info>
