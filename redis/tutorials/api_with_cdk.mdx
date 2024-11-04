@@ -1,23 +1,19 @@
 ---
 title: "Deploy a Serverless API with AWS CDK and AWS Lambda"
-
-description: "In this tutorial, we will implement a Serverless API using AWS Lambda and we will deploy it using AWS CDK."
-image: img/examples/cdk.png
 ---
+<Card title="GitHub Repository" icon="github" href="https://github.com/upstash/redis-js/tree/main/examples/aws-cdk-typescript" horizontal>
+  You can find the project source code on GitHub.
+</Card>
 
 In this tutorial, we will implement a Serverless API using AWS Lambda and we
 will deploy it using AWS CDK. We will use Typescript as the CDK language. It
-will be a page view counter where we will keep the state in Redis.
-
-Check
-[the github repo](https://github.com/upstash/examples/tree/master/examples/api-with-cdk)
-for the source code.
+will be a view counter where we keep the state in Redis.
 
 ### What is AWS CDK?
 
 AWS CDK is an interesting project which allows you to provision and deploy AWS
 infrastructure with code. Currently TypeScript, JavaScript, Python, Java,
-C#/.Net are supported. You can compare AWS CDK with following technologies:
+C#/.Net and Go are supported. You can compare AWS CDK with following technologies:
 
 - AWS CloudFormation
 - AWS SAM
@@ -28,138 +24,105 @@ files (yaml, json) while with AWS CDK, you set up the resources with code. For
 more information about CDK see the related
 [AWS Docs](https://docs.aws.amazon.com/cdk/latest/guide/home.html).
 
+### Prerequisites
+
+- Complete all steps in [Getting started with the AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html)
+
 ### Project Setup
 
-Install cdk with: `npm install -g aws-cdk`
+Create and navigate to a directory named `counter-cdk`. The CDK CLI uses this directory name to name things in your CDK code, so if you decide to use a different name, don't forget to make the appropriate changes when applying this tutorial.
 
-Create a directory for your project. Inside the directory init cdk:
-
-```
-mkdir api-with-cdk
-
-cd api-with-cdk
-
-cdk init --language typescript
+```shell
+mkdir counter-cdk && cd counter-cdk
 ```
 
-### Counter Function Code
+Initialize a new CDK project.
 
-Create a directory for your API function
-
-`mkdir api`
-
-Inside the API folder, init and npm project and install ioredis.
-
-```
-cd api
-npm init
-npm install ioredis
+```shell
+cdk init app --language typescript
 ```
 
-In the api folder, create a file: counter.js
+Install `@upstash/redis`.
 
-```typescript
-var Redis = require("ioredis");
-if (typeof client === "undefined") {
-  var client = new Redis(process.env.REDIS_URL);
-}
+```shell
+npm install @upstash/redis
+```
 
-exports.main = async function (event, context) {
-  try {
-    const count = await client.incr("counter");
+### Counter Function Setup
+
+Create `/api/counter.ts`.
+
+```ts /api/counter.ts
+import { Redis } from '@upstash/redis';
+
+const redis = Redis.fromEnv();
+
+export const handler = async function() {
+    const count = await redis.incr("counter");
     return {
-      statusCode: 200,
-      headers: {},
-      body: "View count:" + count,
+        statusCode: 200,
+        body: JSON.stringify('Counter: ' + count),
     };
-  } catch (error) {
-    var body = error.stack || JSON.stringify(error, null, 2);
-    return {
-      statusCode: 400,
-      headers: {},
-      body: JSON.stringify(body),
-    };
-  }
 };
 ```
 
-### Counter Service
+### Counter Stack Setup
 
-Go back to the top directory, install lambda and api-gateway libraries:
+Update `/lib/counter-cdk-stack.ts`.
 
-```
-cd ..
-npm install @aws-cdk/aws-apigateway @aws-cdk/aws-lambda
-```
+```ts /lib/counter-cdk-stack.ts
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as nodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 
-Inside the lib directory, create counter_service.ts:
+export class CounterCdkStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
 
-```typescript
-import * as core from "@aws-cdk/core";
-import * as apigateway from "@aws-cdk/aws-apigateway";
-import * as lambda from "@aws-cdk/aws-lambda";
-
-export class CounterService extends core.Construct {
-  constructor(scope: core.Construct, id: string) {
-    super(scope, id);
-
-    const handler = new lambda.Function(this, "AppHandler", {
-      runtime: lambda.Runtime.NODEJS_10_X,
-      code: lambda.Code.fromAsset("api"),
-      handler: "counter.main",
+    const counterFunction = new nodejs.NodejsFunction(this, 'CounterFunction', {
+      entry: 'api/counter.ts',
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_20_X,
       environment: {
-        REDIS_URL: "REPLACE_HERE",
+        UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL || '',
+        UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+      },
+      bundling: {
+        format: nodejs.OutputFormat.ESM,
+        target: "node20",
+        nodeModules: ['@upstash/redis'],
       },
     });
 
-    const api = new apigateway.RestApi(this, "counter-api", {
-      restApiName: "Serverless Counter API",
-      description: "This is a basic API.",
+    const counterFunctionUrl = counterFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
     });
 
-    const apiIntegration = new apigateway.LambdaIntegration(handler, {
-      requestTemplates: { "application/json": '{ "statusCode": "200" }' },
-    });
-
-    api.root.addMethod("GET", apiIntegration);
+    new cdk.CfnOutput(this, "counterFunctionUrlOutput", {
+      value: counterFunctionUrl.url,
+    })
   }
 }
 ```
 
-You need to replace REPLACE_HERE with a proper Redis URL (ioredis format). You
-can create a Serverless Redis database in the [Upstash](https://upstash.com/)
-for free. Copy the ioredis URL from
-[Upstash console](https://console.upstash.com).
+### Database Setup
 
-### Update the Stack
+Create a Redis database using [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli) and export `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to your environment.
 
-Update `lib/api-with-cdk-stack.ts`:
-
-```typescript
-import * as cdk from "@aws-cdk/core";
-import * as counter_service from "../lib/counter_service";
-
-export class ApiWithCdkStack extends cdk.Stack {
-  constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
-    new counter_service.CounterService(this, "CounterApi");
-  }
-}
+```shell
+export UPSTASH_REDIS_REST_URL=<YOUR_URL>
+export UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
 ```
 
 ### Deploy
 
-In the top folder:
+Run in the top folder:
 
-```
+```shell
 cdk synth
 cdk bootstrap
 cdk deploy
 ```
 
-Now you should see the command outputs the endpoint url. Click to the url, you
-should see the page counter.
-
-[https://h9zf2bdye0.execute-api.eu-west-1.amazonaws.com/prod/](https://h9zf2bdye0.execute-api.eu-west-1.amazonaws.com/prod/)
-
-Success 🎉
+Visit the output URL.

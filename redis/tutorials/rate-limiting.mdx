@@ -1,137 +1,146 @@
 ---
 title: "AWS Lambda Rate Limiting with Serverless Redis"
-
-description: "This tutorial shows how to limit rate in AWS Lambda with Serverless Redis."
 ---
 
-UPDATE: We have developed
-[Upstash Rate Limiting SDK](https://github.com/upstash/ratelimit). We recommend
-it with Upstash Redis.
+In this tutorial, we will deploy a AWS Lambda function ratelimited based on the client's IP address using `@upstash/ratelimit` and Serverless Framework.
 
-In this tutorial, we will throttle AWS Lambda functions using Serverless Redis
-based on the client's IP address.
+### Prerequisites
 
-See
-[code](https://github.com/upstash/examples/tree/master/examples/serverless-rate-limiting).
+1. Install the Serverless Framework with `npm i serverless -g`
 
-See [demo](https://5hg3vtj7gk.execute-api.us-west-1.amazonaws.com/hello).
+### Project Setup
 
-### `1` Serverless Project Setup
+Create a Serverless Framework application with the following options:
 
-If you do not have it already, install serverless framework via:
-`npm install -g serverless`
+```shell
+➜  tutorials > ✗ serverless
+Serverless ϟ Framework
 
-In any folder run `serverless` as below:
+Welcome to Serverless Framework V.4
 
-```text
->> serverless
+Create a new project by selecting a Template to generate scaffolding for a specific use-case.
 
-Serverless: No project detected. Do you want to create a new one? Yes
-Serverless: What do you want to make? AWS Node.js
-Serverless: What do you want to call this project? serverless-rate-limiting
+✔ Select A Template: · AWS / Node.js / HTTP API
 
-Project successfully created in 'serverless-rate-limiting' folder.
+✔ Name Your Project: · ratelimit-serverless
 
-You can monitor, troubleshoot, and test your new service with a free Serverless account.
+✔ Template Downloaded
 
-Serverless: Would you like to enable this? No
-You can run the “serverless” command again if you change your mind later.
+✔ Create Or Select An Existing App: · Create A New App
+
+✔ Name Your New App: · ratelimit-serverless
+
+Your new Service "ratelimit-serverless" is ready. Here are next steps:
+
+• Open Service Directory: cd ratelimit-serverless
+• Install Dependencies: npm install (or use another package manager)
+• Deploy Your Service: serverless deploy
 ```
 
-<Note>
-  See [Using AWS SAM](/redis/tutorials/using_aws_sam), if you prefer AWS SAM
-  over Serverless Framework.
-</Note>
-
-Inside the project folder create a node project with the command:
-
-```
-npm init
+```shell
+cd ratelimit-serverless
 ```
 
-Then install the redis client and rate limiting libraries with:
+Create `package.json` with `@upstash/ratelimit` as a dependency:
 
-```
-npm install ioredis async-ratelimiter request-ip
-```
-
-Update the `serverless.yml` as below. Copy your Redis URL from console and
-replace below:
-
-```yaml
-service: serverless-rate-limiting
-frameworkVersion: "2"
-provider:
-  name: aws
-  runtime: nodejs12.x
-  lambdaHashingVersion: 20201221
-functions:
-  hello:
-    handler: handler.hello
-    events:
-      - httpApi:
-          path: /hello
-          method: get
+```json package.json
+{
+    "dependencies": {
+      "@upstash/ratelimit": "latest",
+      "@upstash/redis": "latest"
+    }
+  }
 ```
 
-<Note>
-  For the best performance choose the same region for your Lambda function and
-  Upstash database.
-</Note>
+Install the dependencies:
 
-### `2` Create a Redis (Upstash) Database
+```shell
+npm install
+```
 
-Create a database from [Upstash console](https://console.upstash.com)
+### Database Setup
 
-### `3` Code
+Create a Redis database using [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli) and copy the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` into your `.env` file.
 
-Edit handler.js and replace your REDIS_URL below.
+```shell .env
+UPSTASH_REDIS_REST_URL=<YOUR_URL>
+UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+```
 
-<Snippet file="redis/ioredisnote.mdx" />
+### Ratelimited Function Setup
 
-```javascript
-const RateLimiter = require("async-ratelimiter");
-const Redis = require("ioredis");
-const { getClientIp } = require("request-ip");
+Update `handler.js`:
 
-const rateLimiter = new RateLimiter({
-  db: new Redis("YOUR_REDIS_URL"),
-  max: 1,
-  duration: 5_000,
+```js handler.js
+const { Ratelimit } = require("@upstash/ratelimit");
+const { Redis } = require("@upstash/redis");
+
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(10, "10 s"),
+  prefix: "@upstash/ratelimit",
+  analytics: true,
 });
 
-module.exports.hello = async (event) => {
-  const clientIp = getClientIp(event) || "NA";
-  const limit = await rateLimiter.get({ id: clientIp });
-  if (!limit.remaining) {
+exports.ratelimit = async (event) => {
+  const identifier = event.requestContext.http.sourceIP;
+  const { success, limit, remaining, pending } = await ratelimit.limit(
+    identifier
+  );
+  const response = {
+    success: success,
+    limit: limit,
+    remaining: remaining,
+  };
+
+  // pending is a promise for handling the analytics submission
+  await pending;
+
+  if (!success) {
     return {
       statusCode: 429,
-      body: JSON.stringify({
-        message: "Sorry, you are rate limited. Wait for 5 seconds",
-      }),
+      body: JSON.stringify(response),
     };
   }
-
   return {
     statusCode: 200,
-    body: JSON.stringify({
-      message: "hello!",
-    }),
+    body: JSON.stringify(response),
   };
 };
 ```
 
-Above, we have configured the rate limiting to accept 1 request from the same IP
-address in 5 seconds.
+Update `serverless.yml` to pass the environment variables:
 
-### `4` Deploy and Try the API
+```yaml serverless.yml
+service: ratelimit-serverless
 
-Deploy your functions with:
+provider:
+  name: aws
+  runtime: nodejs20.x
+  environment:
+    UPSTASH_REDIS_REST_URL: ${env:UPSTASH_REDIS_REST_URL}
+    UPSTASH_REDIS_REST_TOKEN: ${env:UPSTASH_REDIS_REST_TOKEN}
 
-```bash
+functions:
+  ratelimit:
+    handler: handler.ratelimit
+    events:
+      - httpApi:
+          path: /
+          method: get
+```
+
+### Developing
+Run the following command to start your dev session.
+```shell
+serverless dev
+```
+
+### Deployment
+Run the following command to deploy your service.
+```shell
 serverless deploy
 ```
 
-The command will deploy the function and show the endpoint url. Click to the
-endpoint url. If you refresh your page, you will see that your request is
-throttled.
+Visit the output url.
+
