@@ -1,0 +1,137 @@
+---
+title: "Custom Retry Logic"
+---
+
+## Introduction
+
+In this example, we demonstrate how to implement a custom retry logic using Upstash Workflows. This retry mechanism helps handle rate limits and temporary failures when making API calls to third-party services. The code is structured to:
+
+1.	Attempt to make the API call up to 10 times.
+2.	Check the status and headers in the response to handle specific cases like rate limits.
+3.	Implement a delay between retry attempts, especially when a rate limit is reached.
+4.	Store successful responses asynchronously.
+
+This example uses OpenAI’s API as the third-party service, with the goal of analyzing a data chunk provided in the request payload. The custom retry logic leverages status codes and headers from the API response to control when to retry, sleep, or store the response.
+
+## Code Example
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/workflow/nextjs";
+import {convertToSeconds, storeResponse} from "../../../lib/util"
+
+export const { POST } = serve<{ data: string }>(async (context) => {
+  for (let i = 0; i < 10; i++) {
+    const callResponse = await context.call(
+      `callThirdParty`,
+      { url : "https://api.openai.com/v1/chat/completions",
+        method : "POST",
+        body : { 
+          model: "gpt-4", 
+          messages: [
+          {
+            role: "system",
+            content: "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data.",
+          },
+          {
+            role: "user",
+            content: `Analyze this data chunk: ${context.requestPayload.data}`,
+          },
+        ],
+        max_tokens: 150,
+      }, headers : { authorization: `Bearer ${process.env.OPENAI_API_KEY}` })
+      if(callResponse.status == 429) {
+        let rate1Str = callResponse.header["x-ratelimit-reset-requests"]
+        let rate1 = 0
+        let rate2 = 0
+        if (rate1Str[0] != undefined) {
+          rate1 = convertToSeconds(rate1Str[0])
+        }
+        let rate2Str = callResponse.header["x-ratelimit-reset-tokens"]
+        if (rate2Str[0] != undefined) {
+          rate2 = convertToSeconds(rate2Str[0])
+        }
+        await context.sleep("sleepUntilReset", Math.max(rate1, rate2))
+      }
+      if(callResponse.status < 300){
+        await context.run("storeRespnse", () => {
+          storeResponse(callResponse.body)
+          return
+        })
+      }
+      await context.sleep("sleepSome", 10)
+  }
+});
+```
+
+## Code Breakdown
+
+### 1. Setting up the Workflow and Defining the Retry Loop
+
+The POST endpoint function is wrapped with serve, allowing it to manage incoming requests. Inside the function, a for loop is defined to attempt the API call up to 10 times, with built-in error handling and rate limit management.
+
+```typescript
+export const { POST } = serve<{ data: string }>(async (context) => {
+  for (let i = 0; i < 10; i++) {
+    // Call logic and retry will be implemented here
+  }
+});
+```
+
+### 2. Making the Third-Party API Call
+
+The function uses context.call to send a request to a third-party API, OpenAI in this case. The request includes headers (e.g., authorization), model parameters, and the data chunk to be analyzed. The response from this function call (callResponse) is used to determine the next steps based on its status code and headers.
+
+```typescript
+const callResponse = await context.call(
+  `callThirdParty`,
+  {
+    url: "https://api.openai.com/v1/chat/completions",
+    method: "POST",
+    body: { 
+      model: "gpt-4", 
+      messages: [
+        { role: "system", content: "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data." },
+        { role: "user", content: `Analyze this data chunk: ${context.requestPayload.data}` },
+      ],
+      max_tokens: 150,
+    },
+    headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+  }
+);
+```
+
+### 3. Handling Rate Limits (Status Code 429)
+
+If the API response indicates a rate limit error (status code 429), the function retrieves rate limit reset values from response headers. Using the convertToSeconds helper, it calculates the time until the rate limit resets and then pauses execution (context.sleep) for the required duration.
+
+```typescript
+if (callResponse.status == 429) {
+  let rate1Str = callResponse.header["x-ratelimit-reset-requests"];
+  let rate1 = rate1Str[0] ? convertToSeconds(rate1Str[0]) : 0;
+  let rate2Str = callResponse.header["x-ratelimit-reset-tokens"];
+  let rate2 = rate2Str[0] ? convertToSeconds(rate2Str[0]) : 0;
+
+  await context.sleep("sleepUntilReset", Math.max(rate1, rate2));
+}
+```
+
+### 4. Processing a Successful Response (Status Code < 300)
+
+If the response is successful (status code under 300), the function stores the response body by calling the storeResponse function. This is handled as a new workflow task (context.run) to process response storage independently.
+
+```typescript
+if (callResponse.status < 300) {
+  await context.run("storeResponse", () => {
+    storeResponse(callResponse.body);
+    return;
+  });
+}
+```
+
+### 5. Waiting Before the Next Retry Attempt
+
+To avoid making too many requests within a short period, the function pauses briefly (10 seconds here) before the next retry attempt, regardless of rate limits. This ensures requests are spaced out to prevent overwhelming the API.
+
+```typescript
+await context.sleep("sleepSome", 10);
+```
