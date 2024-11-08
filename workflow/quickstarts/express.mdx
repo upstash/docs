@@ -1,0 +1,218 @@
+---
+title: Express.js
+---
+
+<Card
+  title="GitHub Repository"
+  icon="github"
+  href="https://github.com/upstash/workflow-js/tree/main/examples/express"
+  horizontal
+>
+  You can find the project source code on GitHub.
+</Card>
+This guide provides detailed, step-by-step instructions on how to use and deploy
+Upstash Workflow with Express.js. You can also explore our [Express.js example](https://github.com/upstash/workflow-js/tree/main/examples/express)
+for a detailed, end-to-end example and best practices.
+
+## Prerequisites
+
+1. An Upstash QStash API key.
+2. Node.js and npm (another package manager) installed.
+
+If you haven't obtained your QStash API key yet, you can do so by [signing up](https://console.upstash.com/login) for an Upstash account and navigating to your QStash dashboard.
+
+## Step 1: Installation
+
+First, install the Workflow SDK in your Express.js project:
+
+<Tabs>
+  <Tab title="npm">```bash npm install @upstash/workflow ```</Tab>
+  <Tab title="pnpm">```bash pnpm install @upstash/workflow ```</Tab>
+  <Tab title="bun">```bash bun add @upstash/workflow ```</Tab>
+</Tabs>
+
+## Step 2: Configure Environment Variables
+
+Create a `.env` file in your project root and add your QStash token. This key is used to authenticate your application with the QStash service.
+
+```bash Terminal
+touch .env
+```
+
+Open the environment file and add your QStash token, as well as the environment you're running in:
+
+```bash .env
+QSTASH_TOKEN="***"
+QSTASH_URL="***"
+
+# if you are working on local environment
+UPSTASH_WORKFLOW_URL=""
+```
+
+You can learn more about `UPSTASH_WORKFLOW_URL` from [our documentation on local development](https://upstash.com/docs/workflow/howto/local-development).
+
+Replace `***` with your actual QStash token and url found here:
+
+<Frame>
+  <img src="/img/qstash-workflow/qstash_token.png" />
+</Frame>
+
+## Step 3: Create a Workflow Endpoint
+
+A workflow endpoint allows you to define a set of steps that, together, make up a workflow. Each step contains a piece of business logic that is automatically retried on failure, with easy monitoring via our visual workflow dashboard.
+
+To define a workflow endpoint with Express.js, navigate into your entrypoint file (usually `src/index.ts`) and add the following code:
+
+<Tabs>
+
+<Tab title="Minimal example">
+```typescript src/index.ts
+import { serve } from "@upstash/workflow/express";
+import express from 'express';
+import { config } from 'dotenv';
+
+config();
+
+const app = express();
+
+app.use(
+  express.json()
+);
+
+app.post(
+  '/workflow',
+  serve<{ message: string }>(
+    async (context) => {
+      const res1 = await context.run("step1", async () => {
+        const message = context.requestPayload.message;
+        return message;
+      })
+
+      await context.run("step2", async () => {
+          console.log(res1);
+      })
+    }
+  )
+);
+
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
+
+````
+</Tab>
+</Tabs>
+
+## Step 4: Run the Workflow Endpoint
+
+To start your Express.js app locally, run the following command:
+
+```bash Terminal
+npm run dev
+````
+
+Executing this command prints a local URL to your workflow endpoint. By default, this URL is `http://localhost:3000`.
+
+Upstash Workflow is powered by [QStash](/qstash/overall/getstarted), and QStash needs a publicly accessible URL to run your workflows. You can easily forward your localhost URL to a live URL by following our guide about [setting up your workflow endpoint for local development](/workflow/howto/local-development).
+
+Once you have a live URL, proceeed with either one of the following steps:
+
+### Setting an enviroment variable (recommended)
+
+Set your publically accessible URL (without extensions such as `/workflow`) as an environment variable. This variable is only needed for local development and doesn't need to be set in production:
+
+```bash .env
+UPSTASH_WORKFLOW_URL="https://<YOUR_NGROK_OR_TUNNEL_URL>/"
+```
+
+### Using the `baseUrl` option
+
+As an alternative to setting an environment variable, you can also use the `baseUrl` option in the `serve` method. This option is only needed for local development and can be omitted in production:
+
+```typescript src/index.ts
+app.post(
+  '/workflow',
+  serve<{ message: string }>(
+    async (context) => { ... }, {
+      // just the base URL, no `/workflow`
+      baseUrl: 'https://<YOUR_NGROK_OR_TUNNEL_URL>/'
+    }
+  )
+);
+
+```
+
+### Triggering the workflow
+
+<Warning>Express.js integration only works with `Content-Type: application/json` header. Other payload types are not supported yet.</Warning>
+After setting your live URL as the environment variable or `baseUrl` option, trigger your workflow by sending a POST request. For each workflow run, a unique workflow run ID is returned:
+
+```bash Terminal
+curl -X POST http://localhost:3000/workflow \
+    -H "Content-Type: application/json" \
+    -d '{"message": "Hello from the workflow!"}'
+
+# result: {"workflowRunId":"wfr_xxxxxx"}
+```
+
+<Frame>
+  <img src="/img/qstash-workflow/hono_local_request.png" />
+</Frame>
+
+Use this ID to track the workflow run and see its status in your QStash workflow dashboard. All steps are listed with their statuses, headers, and body for a detailed overview of your workflow from start to finish. Click on a step to see its detailed logs.
+
+<Frame>
+  <img src="/img/qstash-workflow/dashboard.png" />
+</Frame>
+
+## Step 5: Deploying to Production
+
+When deploying your Hono app with Upstash Workflow to production, there are a few key points to keep in mind:
+
+1. **Environment Variables**: Make sure that all necessary environment variables from your `.dev.vars` file are set in your Cloudflare Worker project settings. For example, your `QSTASH_TOKEN`, and any other configuration variables your workflow might need.
+
+2. **Remove Local Development Settings**: In your production code, you can remove or conditionally exclude any local development settings. For example, the `baseUrl` option in the `serve` function can be omitted in production.
+
+```typescript src/index.ts
+import { serve } from "@upstash/workflow/express";
+import express from 'express';
+
+const app = express();
+
+app.use(
+    express.json()
+);
+
+app.use('/workflow',
+	serve<{ message: string }>(async (context) => { ... }, {
+		baseUrl: 'https://<YOUR_NGROK_OR_TUNNEL_URL>/'
+	})
+);
+
+app.listen(3000, () => {
+    console.log('Server running on port 3000');
+});
+
+```
+
+3. **Deployment**: Deploy your Express.js app to production as you normally would, for example to fly.io, Heroku, or AWS.
+
+4. **Verify Workflow Endpoint**: After deployment, verify that your workflow endpoint is accessible by making a POST request to your production URL:
+
+```bash Terminal
+curl -X POST <DEPLOYMENT_URL>/workflow \
+	-H "Content-Type: application/json" \
+	-d '{"message": "Hello from the workflow!"}'
+```
+
+5. **Monitor in QStash Dashboard**: Use the QStash dashboard to monitor your production workflows. You can track workflow runs, view step statuses, and access detailed logs.
+
+6. **Set Up Alerts**: Consider setting up alerts in Sentry or other monitoring tools to be notified of any workflow failures in production.
+
+## Next Steps
+
+1. Learn how to protect your workflow endpoint from unauthorized access by [securing your workflow endpoint](/workflow/howto/security).
+
+2. Explore our [Express example](https://github.com/upstash/workflow-js/tree/main/examples/express) for a detailed, end-to-end example and best practices.
+
+3. For setting up and testing your workflows in a local environment, check out our [local development guide](/workflow/howto/local-development).
