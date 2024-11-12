@@ -1,0 +1,158 @@
+---
+title: Multithreaded Web Scraping with Redis Caching
+---
+
+In this tutorial, we’ll build a multithreaded web scraper in Python that leverages Redis for caching responses to minimize redundant HTTP requests. The scraper will be capable of handling groups of URLs across multiple threads while caching responses to reduce load and improve performance.
+
+### Database Setup
+
+Create a Redis database using the [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli), and add `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to your '.env' file:
+
+```plaintext
+UPSTASH_REDIS_REST_URL=your_upstash_redis_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_token
+```
+
+This file will be used to load environment variables.
+
+### Installation
+
+First, install the necessary libraries using the following command:
+
+```bash
+pip install threading requests upstash-redis python-dotenv
+```
+
+### Code Explanation
+
+We’ll create a multithreaded web scraper that performs HTTP requests on a set of grouped URLs. Each thread will check if the response for a URL is cached in Redis. If the URL has been previously requested, it will retrieve the cached response; otherwise, it will perform a fresh HTTP request, cache the result, and store it for future requests.
+
+### Code
+
+Here’s the complete code:
+
+```python
+import threading
+import requests
+from upstash_redis import Redis
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Initialize Redis client
+redis = Redis.from_env()
+
+# Group URLs by thread, with one or two overlapping URLs across groups
+urls_to_scrape_groups = [
+    [
+        'https://httpbin.org/delay/1',
+        'https://httpbin.org/delay/4',
+        'https://httpbin.org/delay/2',
+        'https://httpbin.org/delay/5',
+        'https://httpbin.org/delay/3',
+    ],
+    [
+        'https://httpbin.org/delay/5',  # Overlapping URL
+        'https://httpbin.org/delay/6',
+        'https://httpbin.org/delay/7',
+        'https://httpbin.org/delay/2',  # Overlapping URL
+        'https://httpbin.org/delay/8',
+    ],
+    [
+        'https://httpbin.org/delay/3',  # Overlapping URL
+        'https://httpbin.org/delay/9',
+        'https://httpbin.org/delay/10',
+        'https://httpbin.org/delay/4',  # Overlapping URL
+        'https://httpbin.org/delay/11',
+    ],
+]
+
+class Scraper(threading.Thread):
+    def __init__(self, urls):
+        threading.Thread.__init__(self)
+        self.urls = urls
+        self.results = {}
+
+    def run(self):
+        for url in self.urls:
+            cache_key = f"url:{url}"
+            
+            # Attempt to retrieve cached response
+            cached_response = redis.get(cache_key)
+            
+            if cached_response:
+                print(f"[CACHE HIT] {self.name} - URL: {url}")
+                self.results[url] = cached_response
+                continue  # Skip to the next URL if cache is found
+            
+            # If no cache, perform the HTTP request
+            print(f"[FETCHING] {self.name} - URL: {url}")
+            response = requests.get(url)
+            if response.status_code == 200:
+                self.results[url] = response.text
+                # Store the response in Redis cache
+                redis.set(cache_key, response.text)
+            else:
+                print(f"[ERROR] {self.name} - Failed to retrieve {url}")
+                self.results[url] = None
+
+def main():
+    threads = []
+    for urls in urls_to_scrape_groups:
+        scraper = Scraper(urls)
+        threads.append(scraper)
+        scraper.start()
+
+    # Wait for all threads to complete
+    for scraper in threads:
+        scraper.join()
+
+    print("\nScraping results:")
+    for scraper in threads:
+        for url, result in scraper.results.items():
+            print(f"Thread {scraper.name} - URL: {url} - Response Length: {len(result) if result else 'Failed'}")
+
+if __name__ == "__main__":
+    main()
+```
+
+### Explanation
+
+1. **Threaded Scraper Class**: The `Scraper` class is a subclass of `threading.Thread`. Each thread takes a list of URLs and iterates over them to retrieve or fetch their responses.
+
+2. **Redis Caching**:
+    - Before making an HTTP request, the scraper checks if the response is already in the Redis cache.
+    - If a cached response is found, it uses that response instead of making a new request, marked with `[CACHE HIT]` in the logs.
+    - If no cached response exists, it fetches the content from the URL, caches the result in Redis, and proceeds.
+
+3. **Overlapping URLs**:
+    - Some URLs are intentionally included in multiple groups to demonstrate the cache functionality across threads. Once a URL’s response is cached by one thread, another thread retrieving the same URL will pull it from the cache instead of re-fetching.
+
+4. **Main Function**:
+    - The `main` function initiates and starts multiple `Scraper` threads, each handling a group of URLs.
+    - It waits for all threads to complete before printing the results.
+
+### Running the Code
+
+Once everything is set up, run the script using:
+
+```bash
+python your_script_name.py
+```
+
+### Sample Output
+
+You will see output similar to this:
+
+```
+[FETCHING] Thread-1 - URL: https://httpbin.org/delay/1
+[FETCHING] Thread-1 - URL: https://httpbin.org/delay/4
+[CACHE HIT] Thread-2 - URL: https://httpbin.org/delay/5
+[FETCHING] Thread-3 - URL: https://httpbin.org/delay/3
+...
+```
+
+### Benefits of Using Redis Cache
+
+Using Redis as a cache reduces the number of duplicate requests, particularly for overlapping URLs. It allows for quick retrieval of previously fetched responses, enhancing performance and reducing load.
