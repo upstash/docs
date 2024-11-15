@@ -2,136 +2,159 @@
 title: "Custom Retry Logic"
 ---
 
-## Introduction
+## Key Features
 
-In this example, we demonstrate how to implement a custom retry logic using Upstash Workflows. This retry mechanism helps handle rate limits and temporary failures when making API calls to third-party services. The code is structured to:
+This example demonstrates how to implement custom retry logic when using third-party services in your Upstash Workflow.
 
-1.	Attempt to make the API call up to 10 times.
-2.	Check the status and headers in the response to handle specific cases like rate limits.
-3.	Implement a delay between retry attempts, especially when a rate limit is reached.
-4.	Store successful responses asynchronously.
-
-This example uses OpenAI’s API as the third-party service, with the goal of analyzing a data chunk provided in the request payload. The custom retry logic leverages status codes and headers from the API response to control when to retry, sleep, or store the response.
+We'll use OpenAI as an example for such a third-party service. **Our retry logic uses response status codes and headers to control when to retry, sleep, or store the third-party API response**.
 
 ## Code Example
 
-```typescript api/workflow/route.ts
-import { serve } from "@upstash/workflow/nextjs";
-import {convertToSeconds, storeResponse} from "../../../lib/util"
+The following code:
 
-export const { POST } = serve<{ data: string }>(async (context) => {
-  for (let i = 0; i < 10; i++) {
-    const callResponse = await context.call(
-      `callThirdParty`,
-      { url : "https://api.openai.com/v1/chat/completions",
-        method : "POST",
-        body : { 
-          model: "gpt-4", 
-          messages: [
-          {
-            role: "system",
-            content: "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data.",
-          },
-          {
-            role: "user",
-            content: `Analyze this data chunk: ${context.requestPayload.data}`,
-          },
-        ],
-        max_tokens: 150,
-      }, headers : { authorization: `Bearer ${process.env.OPENAI_API_KEY}` })
-      if(callResponse.status == 429) {
-        let rate1Str = callResponse.header["x-ratelimit-reset-requests"]
-        let rate1 = 0
-        let rate2 = 0
-        if (rate1Str[0] != undefined) {
-          rate1 = convertToSeconds(rate1Str[0])
-        }
-        let rate2Str = callResponse.header["x-ratelimit-reset-tokens"]
-        if (rate2Str[0] != undefined) {
-          rate2 = convertToSeconds(rate2Str[0])
-        }
-        await context.sleep("sleepUntilReset", Math.max(rate1, rate2))
-      }
-      if(callResponse.status < 300){
-        await context.run("storeRespnse", () => {
-          storeResponse(callResponse.body)
-          return
-        })
-      }
-      await context.sleep("sleepSome", 10)
+1. Attempts to make an API call up to 10 times.
+2. Dynamically adjusts request delays based on response headers or status.
+3. Stores successful responses asynchronously.
+
+```typescript api/workflow/route.ts
+import { serve } from "@upstash/workflow/nextjs"
+import { convertToSeconds, storeResponse } from "@/lib/utils"
+
+const OPENAI_CONFIG = {
+  url: "https://api.openai.com/v1/chat/completions",
+  model: "gpt-4",
+  maxTokens: 150,
+  maxRetries: 10,
+  baseDelay: 10, // seconds
+}
+
+const createSystemMessage = () => ({
+  role: "system",
+  content: "You are an AI assistant providing a brief summary and key insights for any given data.",
+})
+
+const createUserMessage = (data: string) => ({
+  role: "user",
+  content: `Analyze this data chunk: ${data}`,
+})
+
+export const { POST } = serve<{ userData: string }>(async (workflow) => {
+  // 👇 initial data sent along when triggering the workflow
+  const { userData } = workflow.requestPayload
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const response = await workflow.call(`call-openai`, {
+      url: OPENAI_CONFIG.url,
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: {
+        model: OPENAI_CONFIG.model,
+        messages: [createSystemMessage(), createUserMessage(userData)],
+        max_tokens: OPENAI_CONFIG.maxTokens,
+      },
+    })
+
+    // Success case
+    if (response.status < 300) {
+      await workflow.run("store-response-in-db", () => storeResponse(response.body))
+      return
+    }
+
+    // Rate limit case - wait and retry
+    if (response.status === 429) {
+      const resetTime =
+        response.header["x-ratelimit-reset-tokens"]?.[0] ||
+        response.header["x-ratelimit-reset-requests"]?.[0] ||
+        OPENAI_CONFIG.baseDelay
+
+      // assuming `resetTime` is in seconds
+      await workflow.sleep("sleep-until-retry", Number(resetTime))
+
+      continue
+    }
+
+    // Any other scenario - pause for 5 seconds to avoid overloading OpenAI API
+    await workflow.sleep("pause-to-avoid-spam", 5)
   }
-});
+})
 ```
 
 ## Code Breakdown
 
-### 1. Setting up the Workflow and Defining the Retry Loop
+### 1. Setting up our Workflow
 
-The POST endpoint function is wrapped with serve, allowing it to manage incoming requests. Inside the function, a for loop is defined to attempt the API call up to 10 times, with built-in error handling and rate limit management.
+This POST endpoint serves our workflow. We create a loop to attempt the API call (we're about to write) up to 10 times.
 
 ```typescript
-export const { POST } = serve<{ data: string }>(async (context) => {
-  for (let i = 0; i < 10; i++) {
-    // Call logic and retry will be implemented here
+export const { POST } = serve<{ userData: string }>(async (workflow) => {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    // TODO: call API in here
   }
-});
+})
 ```
 
-### 2. Making the Third-Party API Call
+### 2. Making a Third-Party API Call
 
-The function uses context.call to send a request to a third-party API, OpenAI in this case. The request includes headers (e.g., authorization), model parameters, and the data chunk to be analyzed. The response from this function call (callResponse) is used to determine the next steps based on its status code and headers.
+We use `workflow.call` to send a request to any third-party API, for example OpenAI.
+
+<Note>
+  Using `workflow.call` to request data from an API is one of the most powerful Upstash Workflow
+  features. Your request can take much longer than any function timeout would normally allow,
+  completely bypassing any platform-specific timeout limits.
+</Note>
+
+Our request to OpenAI includes an auth header, model parameters, and the data to be processed by the AI. The response from this function call (`response`) is used to determine our retry logic based on its status code and headers.
 
 ```typescript
-const callResponse = await context.call(
-  `callThirdParty`,
-  {
-    url: "https://api.openai.com/v1/chat/completions",
-    method: "POST",
-    body: { 
-      model: "gpt-4", 
-      messages: [
-        { role: "system", content: "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data." },
-        { role: "user", content: `Analyze this data chunk: ${context.requestPayload.data}` },
-      ],
-      max_tokens: 150,
-    },
-    headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
-  }
-);
+const response = await workflow.call(`call-openai`, {
+  url: OPENAI_CONFIG.url,
+  method: "POST",
+  headers: {
+    authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+  },
+  body: {
+    model: OPENAI_CONFIG.model,
+    messages: [createSystemMessage(), createUserMessage(userData)],
+    max_tokens: OPENAI_CONFIG.maxTokens,
+  },
+})
 ```
 
-### 3. Handling Rate Limits (Status Code 429)
+### 3. Processing a Successful Response (Status Code < 300)
 
-If the API response indicates a rate limit error (status code 429), the function retrieves rate limit reset values from response headers. Using the convertToSeconds helper, it calculates the time until the rate limit resets and then pauses execution (context.sleep) for the required duration.
+If the OpenAI response is successful (status code under 300), we store the response in our database. We create a new workflow task (`workflow.run`) to do this for maximum reliability.
 
 ```typescript
-if (callResponse.status == 429) {
-  let rate1Str = callResponse.header["x-ratelimit-reset-requests"];
-  let rate1 = rate1Str[0] ? convertToSeconds(rate1Str[0]) : 0;
-  let rate2Str = callResponse.header["x-ratelimit-reset-tokens"];
-  let rate2 = rate2Str[0] ? convertToSeconds(rate2Str[0]) : 0;
-
-  await context.sleep("sleepUntilReset", Math.max(rate1, rate2));
+if (response.status < 300) {
+  await workflow.run("store-response-in-db", () => storeResponse(response.body))
+  return
 }
 ```
 
-### 4. Processing a Successful Response (Status Code < 300)
+### 4. Handling Rate Limits (Status Code 429)
 
-If the response is successful (status code under 300), the function stores the response body by calling the storeResponse function. This is handled as a new workflow task (context.run) to process response storage independently.
+If the API response indicates a rate limit error (status code 429), we retrieve our rate limit reset values from the response headers. We calculate the time until the rate limit resets and then pause execution (`workflow.sleep`) for this duration.
 
 ```typescript
-if (callResponse.status < 300) {
-  await context.run("storeResponse", () => {
-    storeResponse(callResponse.body);
-    return;
-  });
+if (response.status === 429) {
+  const resetTime =
+    response.header["x-ratelimit-reset-tokens"]?.[0] ||
+    response.header["x-ratelimit-reset-requests"]?.[0] ||
+    OPENAI_CONFIG.baseDelay
+
+  // assuming `resetTime` is in seconds
+  await workflow.sleep("sleep-until-retry", Number(resetTime))
+
+  continue
 }
 ```
 
 ### 5. Waiting Before the Next Retry Attempt
 
-To avoid making too many requests within a short period, the function pauses briefly (10 seconds here) before the next retry attempt, regardless of rate limits. This ensures requests are spaced out to prevent overwhelming the API.
+To avoid making too many requests in a short period and possibly overloading the OpenAI API, we pause our workflow before the next retry attempt (i.e., 5 seconds), regardless of rate limits.
 
 ```typescript
-await context.sleep("sleepSome", 10);
+await workflow.sleep("pause-to-avoid-spam", 5)
 ```
