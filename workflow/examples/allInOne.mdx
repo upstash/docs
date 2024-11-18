@@ -48,7 +48,11 @@ export const { POST } = serve<{ datasetId: string; userId: string }>(
     })
 
     // HTTP request with much longer timeout (2hrs)
-    const dataset = await context.call("download-dataset", datasetUrl, "GET")
+    const { body: dataset } = await context.call("download-dataset", {
+      url: datasetUrl,
+      method: "GET"
+    })
+      
 
     // Step 2: Process data in chunks using OpenAI
     const chunkSize = 1000
@@ -56,26 +60,28 @@ export const { POST } = serve<{ datasetId: string; userId: string }>(
     const processedChunks: string[] = []
 
     for (let i = 0; i < chunks.length; i++) {
-      const processedChunk = await context.call<OpenAiResponse>(
+      const { body: processedChunk } = await context.call<OpenAiResponse>(
         `process-chunk-${i}`,
-        "https://api.openai.com/v1/chat/completions",
-        "POST",
         {
-          model: "gpt-4",
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data.",
-            },
-            {
-              role: "user",
-              content: `Analyze this data chunk: ${JSON.stringify(chunks[i])}`,
-            },
-          ],
-          max_tokens: 150,
-        },
-        { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+          url: "https://api.openai.com/v1/chat/completions",
+          headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+          method: "POST",
+          body: {
+            model: "gpt-4",
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data.",
+              },
+              {
+                role: "user",
+                content: `Analyze this data chunk: ${JSON.stringify(chunks[i])}`,
+              },
+            ],
+            max_tokens: 150,
+          },
+        }
       )
 
       processedChunks.push(processedChunk.choices[0].message.content)
@@ -112,10 +118,13 @@ const datasetUrl = await context.run("get-dataset-url", async () => {
   return await getDatasetUrl(request.datasetId)
 })
 
-const dataset = await context.call("download-dataset", datasetUrl, "GET")
+const { body: dataset } = await context.call("download-dataset", {
+  url: datasetUrl,
+  method: "GET"
+})
 ```
 
-Note that we use `context-call` for the download, a way to make HTTP requests that run for much longer than your serverless execution limit would normally allow.
+Note that we use `context.call` for the download, a way to make HTTP requests that run for much longer than your serverless execution limit would normally allow.
 
 ### 2. Processing our data
 
@@ -123,30 +132,29 @@ We split the dataset into chunks and process each one using OpenAI's GPT-4 model
 
 ```typescript api/workflow/route.ts
 for (let i = 0; i < chunks.length; i++) {
-  const processedChunk = await context.call(
+  const { body: processedChunk } = await context.call<OpenAiResponse>(
     `process-chunk-${i}`,
-    "https://api.openai.com/v1/chat/completions",
-    "POST",
     {
-      model: "gpt-4",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data.",
-        },
-        {
-          role: "user",
-          content: `Analyze this data chunk: ${JSON.stringify(chunks[i])}`,
-        },
-      ],
-      max_tokens: 150,
-    },
-    { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }
+      url: "https://api.openai.com/v1/chat/completions",
+      headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      method: "POST",
+      body: {
+        model: "gpt-4",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an AI assistant tasked with analyzing data chunks. Provide a brief summary and key insights for the given data.",
+          },
+          {
+            role: "user",
+            content: `Analyze this data chunk: ${JSON.stringify(chunks[i])}`,
+          },
+        ],
+        max_tokens: 150,
+      },
+    }
   )
-
-  processedChunks.push(processedChunk.choices[0].message.content)
-}
 ```
 
 ### 3. Aggregating our data

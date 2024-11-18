@@ -26,6 +26,10 @@ import {
   getImageUrl,
 } from "./utils"
 
+type ImageResult = {
+  imageUrl: string
+}
+
 export const { POST } = serve<{ imageId: string; userId: string }>(
   async (context) => {
     const { imageId, userId } = context.requestPayload
@@ -37,16 +41,18 @@ export const { POST } = serve<{ imageId: string; userId: string }>(
 
     // Step 2: Resize the image to multiple resolutions
     const resolutions = [640, 1280, 1920]
-    const resizedImages: string[] = []
 
-    const resizedImages = await Promise.all(resolutions.map(
-      resolution => context.call(
+    const resizedImages: { body: ImageResult }[] = await Promise.all(resolutions.map(
+      resolution => context.call<ImageResult>(
         `resize-image-${resolution}`,
-        "https://image-processing-service.com/resize",
-        "POST",
         {
-          imageUrl,
-          width: resolution,
+          // endpoint which returns ImageResult type in response
+          url: "https://image-processing-service.com/resize",
+          method: "POST",
+          body: {
+            imageUrl,
+            width: resolution,
+          }
         }
       )
     ))
@@ -57,25 +63,28 @@ export const { POST } = serve<{ imageId: string; userId: string }>(
 
     for (const resizedImage of resizedImages) {
       for (const filter of filters) {
-        const processedImagePromise = context.call(
+        const processedImagePromise = context.call<ImageResult>(
           `apply-filter-${filter}`,
-          "https://image-processing-service.com/filter",
-          "POST",
           {
-            imageUrl: resizedImage,
-            filter,
+            // endpoint which returns ImageResult type in response
+            url: "https://image-processing-service.com/filter",
+            method: "POST",
+            body: {
+              imageUrl: resizedImage.body.imageUrl,
+              filter,
+            }
           }
         )
         processedImagePromises.push(processedImagePromise)
       }
     }
-    const processedImages: string[] = await Promise.all(processedImagePromises)
+    const processedImages: { body: ImageResult }[] = await Promise.all(processedImagePromises)
 
     // Step 4: Store processed images in cloud storage
     const storedImageUrls: string[] = await Promise.all(
       processedImages.map(
         processedImage => context.run(`store-image`, async () => {
-          return await storeImage(processedImage)
+          return await storeImage(processedImage.body.imageUrl)
         })
       )
     )
@@ -103,16 +112,18 @@ We call `context.call` for each resolution and use `Promise.all` to run them par
 
 ```typescript
 const resolutions = [640, 1280, 1920]
-const resizedImages: string[] = []
 
-const resizedImages = await Promise.all(resolutions.map(
-  resolution => context.call(
+const resizedImages: { body: ImageResult }[] = await Promise.all(resolutions.map(
+  resolution => context.call<ImageResult>(
     `resize-image-${resolution}`,
-    "https://image-processing-service.com/resize",
-    "POST",
     {
-      imageUrl,
-      width: resolution,
+      // endpoint which returns ImageResult type in response
+      url: "https://image-processing-service.com/resize",
+      method: "POST",
+      body: {
+        imageUrl,
+        width: resolution,
+      }
     }
   )
 ))
@@ -130,19 +141,22 @@ const processedImagePromises: Promise<string>[] = []
 
 for (const resizedImage of resizedImages) {
   for (const filter of filters) {
-    const processedImagePromise = context.call(
+    const processedImagePromise = context.call<ImageResult>(
       `apply-filter-${filter}`,
-      "https://image-processing-service.com/filter",
-      "POST",
       {
-        imageUrl: resizedImage,
-        filter,
+        // endpoint which returns ImageResult type in response
+        url: "https://image-processing-service.com/filter",
+        method: "POST",
+        body: {
+          imageUrl: resizedImage.body.imageUrl,
+          filter,
+        }
       }
     )
     processedImagePromises.push(processedImagePromise)
   }
 }
-const processedImages: string[] = await Promise.all(processedImagePromises)
+const processedImages: { body: ImageResult }[] = await Promise.all(processedImagePromises)
 ```
 
 ### 4. Storing the Processed Images
@@ -153,7 +167,7 @@ We store each processed image in cloud storage and return the URLs of the stored
 const storedImageUrls: string[] = await Promise.all(
   processedImages.map(
     processedImage => context.run(`store-image`, async () => {
-      return await storeImage(processedImage)
+      return await storeImage(processedImage.body.imageUrl)
     })
   )
 )
