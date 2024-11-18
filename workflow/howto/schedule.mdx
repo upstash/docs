@@ -9,26 +9,26 @@ You can schedule a workflow to run periodically using a cron definition.
 For example, let's define a workflow that creates a backup of some important data daily. Our workflow endpoint might look like this:
 
 ```typescript api/workflow/route.ts
-import { serve } from "@upstash/workflow/nextjs"
-import { createBackup, uploadBackup } from "./utils"
+import { serve } from "@upstash/workflow/nextjs";
+import { createBackup, uploadBackup } from "./utils";
 
 export const { POST } = serve(
   async (ctx) => {
     const backup = await ctx.run("create-backup", async () => {
-      return await createBackup()
-    })
+      return await createBackup();
+    });
 
     await ctx.run("upload-backup", async () => {
-      await uploadBackup(backup)
-    })
+      await uploadBackup(backup);
+    });
   },
   {
-    failureFunction(context, failStatus, failResponse, failHeader) {
+    failureFunction({ context, failStatus, failResponse, failHeader }) {
       // immediately get notified for failed backups
       // i.e. send an email, log to Sentry
     },
   }
-)
+);
 ```
 
 To run this endpoint on a schedule, navigate to `Schedules` in your QStash dashboard and click `Create Schedule`:
@@ -52,22 +52,22 @@ In order to massively improve the user experience, many applications send weekly
 Let's create a user-specific schedule, sending a first report to each user exactly 7 days after they signed up:
 
 ```typescript api/sign-up/route.ts
-import { signUp } from "@/utils/auth-utils"
-import { Client } from "@upstash/qstash"
+import { signUp } from "@/utils/auth-utils";
+import { Client } from "@upstash/qstash";
 
-const client = new Client({ token: process.env.QSTASH_TOKEN! })
+const client = new Client({ token: process.env.QSTASH_TOKEN! });
 
 export async function POST(request: Request) {
-  const userData: UserData = await request.json()
+  const userData: UserData = await request.json();
 
   // Simulate user registration
-  const user = await signUp(userData)
+  const user = await signUp(userData);
 
   // Calculate the date for the first summary (7 days from now)
-  const firstSummaryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  const firstSummaryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   // Create cron expression for weekly summaries starting 7 days from signup
-  const cron = `${firstSummaryDate.getMinutes()} ${firstSummaryDate.getHours()} * * ${firstSummaryDate.getDay()}`
+  const cron = `${firstSummaryDate.getMinutes()} ${firstSummaryDate.getHours()} * * ${firstSummaryDate.getDay()}`;
 
   // Schedule weekly account summary
   await client.schedules.create({
@@ -75,12 +75,12 @@ export async function POST(request: Request) {
     destination: "https://<YOUR_APP_URL>/api/send-weekly-summary",
     body: { userId: user.id },
     cron: cron,
-  })
+  });
 
   return NextResponse.json(
     { success: true, message: "User registered and summary scheduled" },
     { status: 201 }
-  )
+  );
 }
 ```
 
@@ -91,33 +91,33 @@ Note: when creating a user-specific schedule, pass a unique `scheduleId` to ensu
 Lastly, add the summary-creating and email-sending logic inside of your workflow. For example:
 
 ```typescript api/send-weekly-summary/route.ts
-import { serve } from "@upstash/workflow/nextjs"
-import { getUserData, generateSummary } from "@/utils/user-utils"
-import { sendEmail } from "@/utils/email-utils"
+import { serve } from "@upstash/workflow/nextjs";
+import { getUserData, generateSummary } from "@/utils/user-utils";
+import { sendEmail } from "@/utils/email-utils";
 
 // Type-safety for starting our workflow
 interface WeeklySummaryData {
-  userId: string
+  userId: string;
 }
 
 export const { POST } = serve<WeeklySummaryData>(async (context) => {
-  const { userId } = context.requestPayload
+  const { userId } = context.requestPayload;
 
   // Step 1: Fetch user data
   const user = await context.run("fetch-user-data", async () => {
-    return await getUserData(userId)
-  })
+    return await getUserData(userId);
+  });
 
   // Step 2: Generate weekly summary
   const summary = await context.run("generate-summary", async () => {
-    return await generateSummary(userId)
-  })
+    return await generateSummary(userId);
+  });
 
   // Step 3: Send email with weekly summary
   await context.run("send-summary-email", async () => {
-    await sendEmail(user.email, "Your Weekly Summary", summary)
-  })
-})
+    await sendEmail(user.email, "Your Weekly Summary", summary);
+  });
+});
 ```
 
 Just like that, each user will receive an account summary every week, starting one week after signing up.
