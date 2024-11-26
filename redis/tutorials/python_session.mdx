@@ -1,0 +1,171 @@
+---
+title: "Manage Sessions in Python with Serverless Redis"
+---
+
+In this tutorial, we’ll see how to implement session management in a FastAPI application using Upstash Redis. We’ll use cookies to store session IDs, while session data is maintained in Redis for its speed and expiration features.
+
+## **What Are Sessions and Cookies?**
+
+- **Session:** A session is a mechanism to store user-specific data (like authentication status) between requests. It allows the server to "remember" users as they interact with the application.
+- **Cookie:** A small piece of data stored in the client’s browser. In this tutorial, we’ll use cookies to store session IDs, which the server uses to fetch session details from Redis.
+
+## **Why Redis?**
+Redis is a great choice for session management because:
+1. **Fast Lookups:** Redis is an in-memory database, ensuring near-instantaneous access to session data.
+2. **Expiration Control:** Built-in expiration functionality allows sessions to automatically expire after a defined timeout.
+
+---
+
+## **Setup**
+
+### **1. Install the Required Libraries**
+
+Install FastAPI, Upstash Redis, and other necessary dependencies:
+```bash
+pip install fastapi upstash-redis uvicorn python-dotenv
+```
+
+### **2. Create a Redis Database**
+
+Create a Redis database using the [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli).
+
+Create a `.env` file in the root of your project with the following content:
+```bash 
+UPSTASH_REDIS_REST_URL=your_upstash_redis_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_token
+```
+
+## **Code**
+
+Let's implement a simple FastAPI application that handles login, profile access, and logout using Redis for session management. We use sliding expiration by updating the session expiration time on every request. If a session is inactive for 15 minutes (900 seconds), it will automatically expire.
+
+```python main.py
+from fastapi import FastAPI, Response, Cookie, HTTPException
+from pydantic import BaseModel
+from upstash_redis import Redis
+from dotenv import load_dotenv
+import uuid
+
+# Load environment variables
+load_dotenv()
+redis = Redis.from_env()
+
+app = FastAPI()
+
+SESSION_TIMEOUT_SECONDS = 900  # 15 minutes
+
+# Define the request body model for login
+class LoginRequest(BaseModel):
+    username: str
+
+@app.post("/login/")
+async def login(request: LoginRequest, response: Response):
+    session_id = str(uuid.uuid4())
+    redis.hset(f"session:{session_id}", values={"user": request.username, "status": "active"})
+    redis.expire(f"session:{session_id}", SESSION_TIMEOUT_SECONDS)
+
+    response.set_cookie(key="session_id", value=session_id, httponly=True)
+    return {"message": "Logged in successfully", "session_id": session_id}
+
+
+@app.get("/profile/")
+async def get_profile(session_id: str = Cookie(None)):
+    if not session_id:
+        raise HTTPException(status_code=403, detail="No session cookie found")
+
+    session_data = redis.hgetall(f"session:{session_id}")
+    if not session_data:
+        response = Response()
+        response.delete_cookie(key="session_id") # Clear the expired cookie
+        raise HTTPException(status_code=404, detail="Session expired")
+
+    # Update the session expiration time (sliding expiration)
+    redis.expire(f"session:{session_id}", SESSION_TIMEOUT_SECONDS)
+
+    return {"session_id": session_id, "session_data": session_data}
+
+
+@app.post("/logout/")
+async def logout(response: Response, session_id: str = Cookie(None)):
+    if session_id:
+        redis.delete(f"session:{session_id}")
+        response.delete_cookie(key="session_id")
+    return {"message": "Logged out successfully"}
+```
+
+Let's test the implementation using the following script:
+
+```python test_script.py
+import requests
+
+base_url = "http://127.0.0.1:8000"
+
+# Test login
+response = requests.post(f"{base_url}/login/", json={"username": "abdullah"})
+print("Login Response:", response.json())
+
+# In the browser, you don't need to set cookies manually. The browser will handle it automatically.
+session_cookie = response.cookies.get("session_id")
+
+# Test profile
+profile_response = requests.get(f"{base_url}/profile/", cookies={"session_id": session_cookie})
+print("Access Profile Response:", profile_response.json())
+
+# Test logout
+logout_response = requests.post(f"{base_url}/logout/", cookies={"session_id": session_cookie})
+print("Logout Response:", logout_response.json())
+
+# Test profile after logout
+profile_after_logout_response = requests.get(f"{base_url}/profile/", cookies={"session_id": session_cookie})
+print("Access Profile After Logout Response:", profile_after_logout_response.text)
+```
+
+---
+
+### **Code Explanation**
+
+1. **`/login/` Endpoint:**
+    - Generates a unique session ID using `uuid.uuid4()`.
+    - Stores the session data in Redis using the session ID as the key.
+    - Sets a cookie named `session_id` with the generated session ID.
+    - Returns a success message along with the session ID.
+
+2. **`/profile/` Endpoint:**
+    - Retrieves the session ID from the cookie.
+    - Fetches the session data from Redis using the session ID.
+    - Updates the session expiration time.
+    - Returns the session ID and session data.
+
+3. **`/logout/` Endpoint:**
+    - Deletes the session data from Redis using the session ID.
+    - Clears the `session_id` cookie.
+
+---
+
+### **Run the Application**
+
+1. Start the FastAPI server:
+   ```bash
+   uvicorn main:app --reload
+   ```
+
+2. Run the test script:
+   ```bash
+   python test_script.py
+   ```
+
+Here's what you should expect:
+```plaintext
+Login Response: {'message': 'Logged in successfully', 'session_id': '68223c50-ede4-48eb-9d26-4a4dd735c10d'}
+Access Profile Response: {'session_id': '68223c50-ede4-48eb-9d26-4a4dd735c10d', 'session_data': {'user': 'abdullah', 'status': 'active'}}
+Logout Response: {'message': 'Logged out successfully'}
+Access Profile After Logout Response: {"detail":"Session not found or expired"}
+```
+
+---
+
+## **Conclusion**
+
+By combining FastAPI, cookies, and Upstash Redis, we’ve created a reliable session management system. With Redis’s speed and built-in expiration features, this approach ensures secure and efficient handling of user sessions.
+
+To learn more about Upstash Redis, visit the [Upstash Redis Documentation](https://upstash.com/docs/redis).
