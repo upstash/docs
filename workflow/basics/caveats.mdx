@@ -81,13 +81,28 @@ If you are curious about why an endpoint is called multiple times, see [how Work
 
 A workflow endpoint should always produce the same results, even if it's called multiple times. Avoid:
 
+- Non-idempotent functions
 - Time-dependent code
 - Randomness
-- Non-idempotent functions
 
 Example of what to avoid:
 
 <CodeGroup>
+
+```typescript ❌ Non-idempotent functions
+export const { POST } = serve<{ entryId: string }>(async (context) => {
+  const { entryId } = context.requestPayload;
+
+  // 👇 Problem: Non-idempotent function outside context.run:
+  const result = await getResultFromDb(entryId);
+  if (result.return) {
+    return;
+  }
+
+  // ...
+})
+```
+
 ```typescript ❌ Time-dependent code
 export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
@@ -122,6 +137,21 @@ export const { POST } = serve<string>(async (context) => {
 })
 ```
 </CodeGroup>
+
+
+If you implement a non-idempotent code like the one shown above, you might encounter `Failed to authenticate Workflow request.` errors. This can happen if you `return` based on the result of the non-idempotent code before any workflow step.
+
+To prevent this, ensure that the non-idempotent code (such as `getResultFromDb` in the example) runs within `context.run`.
+
+```ts
+const result = await context.run(async () => {
+  await getResultFromDb(entryId)
+});
+if (result.return) {
+  return;
+}
+```
+
 
 ### Ensure Idempotency in `context.run`
 
