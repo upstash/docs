@@ -1,0 +1,264 @@
+---
+title: Resumable Query
+---
+
+When searching for approximate nearest neighbors of a vector with regular query API,
+you specify a topK so that the vector index returns at most that many results.
+
+In regular query API, it is not possible to continue the query where it is left off, as
+each query runs from start to completion, before returning a response.
+
+However, there might be cases where you want to get the next topK many similar vectors
+after running a regular query. Perhaps, you wanted to fetch the next batch of vectors
+for the next page of your search functionality.
+
+Resumable query helps you to achieve that. It has the same features as the regular query;
+you can specify a filter, get values, metadata or data of the vectors, or specify a topK
+value. But, after getting the initial response from the server, it allows you to query
+for more, starting from where it left off instead of the start.
+
+## Starting a Resumable Query
+
+Each resumable query starts in this phase. Using our SDKs or the REST API, you can
+initiate a resumable query. The filter or flags to include vector values, metadata,
+or data will be valid for the entire duration of the resumable query.
+
+When you start the query, the server responds with the first batch of the most
+similar vectors and a handle that uniquely identifies the query so that you
+can continue the query where you left off.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+from upstash_vector import Index
+
+index = Index(
+    url="UPSTASH_VECTOR_REST_URL",
+    token="UPSTASH_VECTOR_REST_TOKEN",
+)
+
+result, handle = index.resumable_query(
+    vector=[0.1, 0.2],
+    top_k=2,
+    include_metadata=True,
+)
+
+# first batch of the results
+for r in result:
+    print(r)
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+
+```js
+import { Index } from "@upstash/vector"
+
+const index = new Index({
+  url: "UPSTASH_VECTOR_REST_URL",
+  token: "UPSTASH_VECTOR_REST_TOKEN",
+});
+
+const { result, fetchNext, stop } = await index.resumableQuery({
+  vector: [0.1, 0.2],
+  topK: 2,
+  includeMetadata: true,
+});
+
+// first batch of the results
+for (let r of result) {
+  console.log(r);
+}
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/resumable-query \
+  -X POST \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '{
+    "vector": [0.1, 0.2],
+    "topK": 2,
+    "includeMetadata": true
+  }'
+```
+
+</Tab>
+
+</Tabs>
+
+We support resumable queries with raw vector values as shown above,
+or with raw text data for indexes created with Upstash hosted embedding models.
+
+## Resuming the Resumable Query
+
+Using the handle returned by the initial call to resumable query,
+you can get the next batch of the most similar vectors, starting
+from the last response.
+
+You can fetch as many next batch as possible until you iterate
+over the entire index.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+# next batch of the results
+next_result = handle.fetch_next(
+    additional_k=3,
+)
+
+for r in next_result:
+    print(r)
+
+# it is possible to call fetch_next more than once
+next_result = handle.fetch_next(
+    additional_k=5,
+)
+
+for r in next_result:
+    print(r)
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+
+```js
+// next batch of the results
+let nextResult = await fetchNext(3);
+
+for (let r of nextResult) {
+  console.log(r);
+}
+
+// it is possible to call fetch_next more than once
+nextResult = await fetchNext(3);
+
+for (let r of nextResult) {
+  console.log(r);
+}
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/resumable-query-next \
+  -X POST \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '{
+    "uuid": "550e8400-e29b-41d4-a716-446655440000",
+    "additionalK": 3
+  }'
+```
+
+</Tab>
+
+</Tabs>
+
+## Stopping the Resumable Query
+
+Each resumable query requires us to maintain a state in the server.
+So, there is a limit for the maximum number of active resumable queries
+at a time.
+
+That's why it is important to stop the resumable query once you are
+done with it.
+
+Resumable queries can be stopped using the handle returned with the
+initial call.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+handle.stop()
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+
+```js
+await stop();
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/resumable-query-end \
+  -X POST \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '{
+    "uuid": "550e8400-e29b-41d4-a716-446655440000"
+  }'
+```
+
+</Tab>
+
+</Tabs>
+
+We periodically scan resumable queries to stop the idle ones, so
+queries that have not touched for some time are stopped automatically.
+
+By default, the max idle time of a resumable query is 1 hour.
+You can configure this behavior by specifying a max idle time in seconds
+while starting the resumable query.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+result, handle = index.resumable_query(
+    vector=[0.1, 0.2],
+    top_k=2,
+    include_metadata=True,
+    max_idle = 7200, # two hours, in seconds
+)
+```
+
+</Tab>
+
+<Tab title="JavaScript">
+
+```js
+const { result, fetchNext, stop } = await index.resumableQuery({
+  vector: [0.1, 0.2],
+  topK: 2,
+  includeMetadata: true,
+  maxIdle: 7200, // two hours, in seconds
+});
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/resumable-query \
+  -X POST \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '{
+    "vector": [0.1, 0.2],
+    "topK": 2,
+    "includeMetadata": true,
+    "maxIdle": 7200
+  }'
+```
+
+</Tab>
+
+</Tabs>
