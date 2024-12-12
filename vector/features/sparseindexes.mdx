@@ -1,0 +1,370 @@
+---
+title: Sparse Indexes
+---
+
+Sparse vectors are representations in a high-dimensional space,
+where only a small number of dimensions have non-zero values.
+
+For example, for the same text, a dense vector representation with
+the BGE-M3 model would have 1024 non-zero valued dimensions.
+However, the sparse vector representation of the same text would
+have less than a hundred non-zero valued dimensions, whereas vector
+space potentially has more than 250 thousand dimensions. Also, unlike
+dense vector representations, sparse vectors might have varying
+non-zero valued dimensions depending on the text.
+
+Generally, sparse vectors can be represented with two arrays of equal
+sizes:
+
+- The first array for the indices contains the indices of the non-zero
+  dimensions.
+- The second array for values contains the floating point values for
+  the non-zero dimensions.
+
+```python
+dense = [0.1, 0.3, , ...thousands of non-zero values..., 0.5, 0.2]
+
+sparse = (
+    [23, 42, 5523, 123987, 240001], # some low number of dimension indices
+    [0.1, 0.3, 0.1, 0.2, 0.5], # non-zero values corresponding to dimensions
+)
+```
+
+Unlike dense vectors which excel at approximate semantic matching,
+sparse vectors are particularly useful for tasks that require exact or
+near exact matching of tokens/words/features. That makes it useful
+for various tasks, such as:
+
+- **Information Retrieval and Text Analysis**: By representing documents
+  as sparse vectors where each token/word would correspond to a dimension
+  in high dimensional vocabulary; and varying values by the frequencies
+  of the tokens/words in the document or by weighting them with inverse
+  document frequencies to favor rare terms, you can build complex
+  search pipelines.
+- **Recommender Systems**: By representing user interactions, preferences,
+  ratings, or purchases as sparse vectors, you can identify relevant
+  recommendations, and personalize content delivery.
+
+## Creating Sparse Vectors
+
+There are various ways to create sparse vectors. You can use
+[BM25](https://en.wikipedia.org/wiki/Okapi_BM25) for information
+retrieval tasks, or use models like [SPLADE](https://github.com/naver/splade)
+that enhance documents and queries with term weighting and expansion.
+
+Upstash gives you full control by allowing you to upsert and query
+raw sparse vectors.
+
+Similar to dense vectors, it also provides Upstash-hosted models
+that can encode raw text data into sparse vectors for you.
+
+To use them, you have to create your index with the appropriate models.
+
+### BGE-M3 Sparse Vectors
+
+BGE-M3 is a multi-functional, multi-lingual, and multi-granular model
+widely used for dense indexes.
+
+We also provide BGE-M3 as a sparse vector embedder, which outputs
+sparse vectors from `250_002` dimensional space.
+
+These sparse vectors have values where each token is weighted
+according to the input text, which enhances traditional sparse vectors
+with contextuality.
+
+### BM25 Sparse Vectors
+
+BM25 is a popular algorithm used in full-text search systems to rank
+documents based on their relevance to a query.
+
+This algorithm relies on key principles of term frequency,
+inverse document frequency, and document length normalization,
+making it well-suited for text retrieval tasks.
+
+- **Rare terms are important**: BM25 gives more weight to words that are
+  less common in the collection of documents. For example, in a search
+  for “Upstash Vector”, the word “Upstash” might be considered more
+  important than “Vector” if it appears less frequently across all documents.
+- **Repeating a Word Helps—But Only Up to a Point**: BM25 considers how
+  often a word appears in a document, but it limits the benefit of repeating
+  the word too many times. This means mentioning “Upstash” a hundred times
+  won’t make a document overly important compared to one that mentions
+  it just a few times.
+- **Shorter Documents Often Rank Higher**: Shorter documents that match
+  the query are usually more relevant. BM25 adjusts for document length
+  so longer documents don’t get unfairly ranked just because they contain
+  more words.
+
+Upstash provides a general purpose BM25 algorithm, that applies to documents
+and queries in English. It tokenizes the text into words, removes stop words,
+stems the remaining words, and assigns a weighted value to them, based on the
+BM25 formula:
+
+```
+                       IDF(qᵢ) * f(qᵢ, D) * (k₁ + 1)
+BM25(D, Q) = Σ ----------------------------------------------
+               f(qᵢ, D) + k₁ * (1 - b + b * (|D| / avg(|D|)))
+```
+
+Where:
+
+- `f(qᵢ, D)` is the frequency of term `qᵢ` in document `D`.
+- `|D|` is the length of document `D`.
+- `avg(|D|)` is the average document length in the collection.
+- `k₁` is the term frequency saturation parameter.
+- `b` is the length normalization parameter.
+- `IDF(qᵢ)` is the inverse document frequency of term `qᵢ`
+
+To make it a general purpose model, we had to decide on some of the
+constants mentioned above, which would differ from implementation
+to implementation. We decided to use the following values for
+
+- `k₁` = `1.2`, a widely used value in the absence of advanced optimizations
+- `b` = `0.75`, a widely used value in the absence of advanced optimizations
+- `avg(|D|)` = `32`, which was chosen by tokenizing and taking the average of
+  [MSMARCO](https://microsoft.github.io/msmarco/) dataset vectors, rounded
+  to the nearest power of two.
+
+In the future, we might provide support for more languages and the ability to
+provide different values for the above constants.
+
+As for the inverse document frequency `IDF(qᵢ)`, we maintain that information
+per token in the vector database itself. You can use it by providing it
+as the weighting strategy for your queries so that you don't have to weight
+it yourself.
+
+## Using Sparse Indexes
+
+### Upserting Sparse Vectors
+
+You can upsert sparse vectors into Upstash Vector indexes in two different ways.
+
+#### Upserting Raw Sparse Vectors
+
+You can upsert raw sparse vectors by representing them as two arrays of equal
+sizes. One signed 32-bit integer array for non-zero dimension indices,
+and one 32-bit float array for the values.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+from upstash_vector import Index, Vector
+from upstash_vector.types import SparseVector
+
+index = Index(
+    url="UPSTASH_VECTOR_REST_URL",
+    token="UPSTASH_VECTOR_REST_TOKEN",
+)
+
+index.upsert(
+    vectors=[
+        Vector(id="id-0", sparse_vector=SparseVector([1, 2], [0.1, 0.2])),
+        Vector(id="id-1", sparse_vector=SparseVector([123, 44232], [0.5, 0.4])),
+    ]
+)
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/upsert \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '[
+    {"id": "id-0", "sparseVector": {"indices": [1, 2], "values": [0.1, 0.2]}},
+    {"id": "id-1", "sparseVector": {"indices": [123, 44232], "values": [0.5, 0.4]}}
+  ]'
+```
+
+</Tab>
+
+</Tabs>
+
+Note that, we do not allow sparse vectors to have more than `1_000` non-zero valued dimension.
+
+#### Upserting Text as Sparse Vectors
+
+If you created the sparse index with an Upstash-hosted sparse embedding model,
+you can upsert raw text data, and Upstash can embed it behind the scenes.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+from upstash_vector import Index, Vector
+
+index = Index(
+    url="UPSTASH_VECTOR_REST_URL",
+    token="UPSTASH_VECTOR_REST_TOKEN",
+)
+
+index.upsert(
+    vectors=[
+        Vector(id="id-0", data="Upstash Vector provides sparse embedding models.")),
+        Vector(id="id-1", data="You can upsert raw text data with these embedding models.")),
+    ]
+)
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/upsert-data \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '[
+    {"id": "id-0", "data": "Upstash Vector provides sparse embedding models."},
+    {"id": "id-1", "data": "You can upsert raw text data with these embedding models."}
+  ]'
+```
+
+</Tab>
+
+</Tabs>
+
+### Querying Sparse Vectors
+
+Similar to upserts, you can query sparse vectors in two different ways.
+
+#### Querying with Raw Sparse Vectors
+
+You can query raw sparse vectors by representing the sparse query vector
+as two arrays of equal sizes. One signed 32-bit integer array for
+non-zero dimension indices, and one 32-bit float array for the values.
+
+We use the inner product similarity metric while calculating the
+similarity scores, only considering the matching non-zero valued
+dimension indices between the query vector and the indexed vectors.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+from upstash_vector import Index
+from upstash_vector.types import SparseVector
+
+index = Index(
+    url="UPSTASH_VECTOR_REST_URL",
+    token="UPSTASH_VECTOR_REST_TOKEN",
+)
+
+index.query(
+    sparse_vector=SparseVector([3, 5], [0.3, 0.5]),
+    top_k=5,
+    include_metadata=True,
+)
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/query \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '{"sparseVector": {"indices": [3, 5], "values": [0.3, 0.5]}, "topK": 5, "includeMetadata": true}'
+```
+
+</Tab>
+
+</Tabs>
+
+Note that, the similarity scores are exact, not approximate. So, if there
+are no vectors with one or more matching non-zero valued dimension indices with
+the query vector, the result might be less than the provided top-K value.
+
+#### Querying with Text as Sparse Vectors
+
+If you created the sparse index with an Upstash-hosted sparse embedding model,
+you can query with raw text data, and Upstash can embed it behind the scenes
+before performing the actual query.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+from upstash_vector import Index
+
+index = Index(
+    url="UPSTASH_VECTOR_REST_URL",
+    token="UPSTASH_VECTOR_REST_TOKEN",
+)
+
+index.query(
+    data="Upstash Vector",
+    top_k=5,
+)
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/query-data \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '{"data": "Upstash Vector", "topK": 5}'
+```
+
+</Tab>
+
+</Tabs>
+
+#### Weighting Query Values
+
+For algorithms like BM25, it is important to take the inverse
+document frequencies that make matching rare terms more important
+into account. It might be tricky to maintain that information
+yourself, so Upstash Vector provides it out of the box. To make use
+of IDF in your queries, you can pass it as a weighting strategy.
+
+Since this is mainly meant to be used with BM25 models, the IDF
+is defined as:
+
+```
+IDF(qᵢ) = log((N - n(qᵢ) + 0.5) / (n(qᵢ) + 0.5))
+```
+
+- `N` is the total number of documents in the collection.
+- `n(qᵢ)` is the number of documents containing term `qᵢ`.
+
+<Tabs>
+
+<Tab title="Python">
+
+```python
+from upstash_vector import Index
+from upstash_vector.types import WeightingStrategy
+
+index = Index(
+    url="UPSTASH_VECTOR_REST_URL",
+    token="UPSTASH_VECTOR_REST_TOKEN",
+)
+
+index.query(
+    data="Upstash Vector",
+    top_k=5,
+    weighting_strategy=WeightingStrategy.IDF,
+)
+```
+
+</Tab>
+
+<Tab title="curl">
+
+```shell
+curl $UPSTASH_VECTOR_REST_URL/query-data \
+  -H "Authorization: Bearer $UPSTASH_VECTOR_REST_TOKEN" \
+  -d '{"data": "Upstash Vector", "topK": 5, "weightingStrategy": "IDF"}'
+```
+
+</Tab>
+
+</Tabs>
