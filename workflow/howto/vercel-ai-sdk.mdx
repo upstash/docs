@@ -8,6 +8,7 @@ Upstash Workflow integrates with the Vercel AI SDK to provide durable and reliab
 - Manage AI operations with workflow steps
 - Implement tools and function calling with durability
 - Handle errors gracefully across your AI operations
+- Handle long-running AI operations with extended timeouts
 
 This guide will walk you through setting up and implementing AI features using Upstash Workflow's durability guarantees with Vercel AI SDK's capabilities.
 
@@ -17,6 +18,7 @@ Before getting started, make sure you have:
 
 - An OpenAI API key
 - Basic familiarity with Upstash Workflow and Vercel AI SDK
+- Vercel AI SDK version 4.0.12 or higher (required for ToolExecutionError handling)
 
 ## Installation
 
@@ -65,8 +67,8 @@ export const createWorkflowOpenAI = (context: WorkflowContext) => {
         // Prepare body from init.body
         const body = init?.body ? JSON.parse(init.body as string) : undefined;
 
-        // Call the workflow context
-        const responseInfo = await context.call("call step", {
+        // Make network call
+        const responseInfo = await context.call("openai-call-step", {
           url: input.toString(),
           method: init?.method as HTTPMethods,
           headers,
@@ -101,7 +103,7 @@ export const createWorkflowOpenAI = (context: WorkflowContext) => {
 
 ### Using OpenAI client to generate text
 
-Now that we've created the OpenAI client, we can use it to generate text or embeddings etc.
+Now that we've created the OpenAI client, we can use it to generate the text.
 
 For that, we're going to create a new workflow endpoint that uses the payload as prompt to generate text using the OpenAI client.
 
@@ -114,7 +116,7 @@ import { createWorkflowOpenAI } from './model';
 export const { POST } = serve(async (context) => {
   const openai = createWorkflowOpenAI(context);
 
-  // Important: Must get prompt in a step before using generateText 
+  // Important: Must have a step before generateText
   const prompt = await context.run("get prompt", async () => {
     return context.requestPayload.prompt;
   });
@@ -138,8 +140,6 @@ export const { POST } = serve(async (context) => {
       throw error;
     }
   }
-}, {
-  retries: 0
 });
 ```
 
@@ -201,24 +201,31 @@ When using Upstash Workflow with the Vercel AI SDK, there are several critical r
 The most critical requirement is that `generateText` cannot be called before any workflow step. Always get your prompt in an initial step:
 
 <CodeGroup>
-```typescript ❌ Wrong {1}
-// Will throw "prompt is undefined"
-const result = await generateText({
-  model: openai('gpt-3.5-turbo'),
-  prompt: context.requestPayload.prompt
-});
+```typescript ❌ Wrong {4}
+export const { POST } = serve(async (context) => {
+  const openai = createWorkflowOpenAI(context);
 
+  // Will throw "prompt is undefined"
+  const result = await generateText({
+    model: openai('gpt-3.5-turbo'),
+    prompt: context.requestPayload.prompt
+  });
+});
 ```
 
-```typescript ✅ Correct {1-4}
-// Get prompt in a step first
-const prompt = await context.run("get prompt", async () => {
-  return context.requestPayload.prompt;
-});
+```typescript ✅ Correct {4-7}
+export const { POST } = serve(async (context) => {
+  const openai = createWorkflowOpenAI(context);
 
-const result = await generateText({
-  model: openai('gpt-3.5-turbo'),
-  prompt
+  // Get prompt in a step first
+  const prompt = await context.run("get prompt", async () => {
+    return context.requestPayload.prompt;
+  });
+
+  const result = await generateText({
+    model: openai('gpt-3.5-turbo'),
+    prompt
+  });
 });
 ```
 </CodeGroup>
