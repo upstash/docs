@@ -1,0 +1,193 @@
+---
+title: "General"
+sidebarTitle: "General"
+---
+
+## Running Steps Inside try/catch Blocks
+
+When running steps (run, sleep, call, or any other step) inside a try/catch block, you'll encounter the following error:
+
+```
+WorkflowAbort: This is an Upstash Workflow error thrown after
+a step executes. It is expected to be raised. Make sure that
+you await for each step. Also, if you are using try/catch
+blocks, you should not wrap context.run/sleep/sleepUntil/call
+methods with try/catch. Aborting workflow after executing
+step 'some-step'.
+```
+
+The `WorkflowAbort` error is thrown by the Workflow SDK when a step executes successfully. When you run a step inside a try/catch block, you have two primary options:
+
+1. **Avoid Running Steps in try/catch**: The simplest solution is to not wrap steps in try/catch blocks.
+
+2. **Re-throw WorkflowAbort**: If you need a try/catch block, re-throw the `WorkflowAbort` error:
+
+```typescript {1, 6-7}
+import { WorkflowAbort } from '@upstash/workflow';
+
+try {
+  await context.run( ... );
+} catch (error) {    
+  if (error instanceof WorkflowAbort) {
+    throw error;
+  } else {
+    // handle other errors
+  }
+}
+```
+
+## `context.requestPayload` Becoming Undefined
+
+### Headers Considerations
+
+In some frameworks, you may need to pass specific headers for the workflow to access `requestPayload`:
+
+- Try passing `Content-type: text/plain` or `Content-type: application/json` headers when starting the workflow.
+- Note that `publishJSON` can only publish `Content-type: application/json`.
+
+### `context.call` Execution
+
+[During a workflow run, the endpoint will be called multiple times](/workflow/how). While executing `context.call`, the endpoint is called at least twice, with the SDK attempting to run the route function until the first step for custom authorization.
+
+Accessing `context.requestPayload` before any step can result in it becoming undefined:
+
+```typescript {2-4, 8}
+export const { POST } = serve(async (context) => {
+  // Will print undefined while executing context.call
+  const payload = context.requestPayload
+  console.log(payload)
+
+  // ... steps or any other code
+
+  context.call( ... )
+})
+```
+
+This behavior stems from the internal mechanics of `context.call`, and resolving this specific interaction is on our roadmap. Note that if you are passing `context.requestPayload` as a parameter to `context.call`, the payload remains intact. However, during the actual execution of `context.call`, the `context.requestPayload` becomes undefined due to the SDK's internal workflow processing steps.
+
+To fix this issue, you can try adding a step which returns the payload:
+
+```typescript {2-4, 7}
+export const { POST } = serve(async (context) => {
+  // Payload will never be undefined
+  const payload = await context.run("get payload", () => context.requestPayload)
+
+  // ... steps or any other code
+
+  context.call( ... )
+})
+```
+
+You can find an example of this usage in [our documentation on usage with AI SDK](/workflow/howto/vercel-ai-sdk).
+
+## Verification Failed Scenarios
+
+When [QStash signature verification](/workflow/howto/security#using-qstashs-built-in-request-verification-recommended) is enabled, you might encounter an error like:
+
+```
+Failed to verify that the Workflow request comes from QStash: some-error
+
+If signature is missing, trigger the workflow endpoint by publishing your request to QStash instead of calling it directly.
+
+If you want to disable QStash Verification, you should clear env variables QSTASH_CURRENT_SIGNING_KEY and QSTASH_NEXT_SIGNING_KEY
+```
+
+Troubleshooting verification errors:
+
+- Ensure you [start the workflow using `client.trigger` or by publishing to QStash](/workflow/howto/start).
+- Verify that `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` environment variables are correct.
+- Pass [appropriate `Content-type` headers](/workflow/troubleshooting/general#headers-considerations) when starting the workflow.
+
+## Authorization Error Handling
+
+Consider this workflow:
+
+```typescript {2-5}
+export const { POST } = serve(async (context) => {
+  
+  if (someCondition()) => {
+    return;
+  }
+
+  // rest of the workflow
+})
+```
+
+Returning before running any steps will result in:
+- HTTP status: 400
+- Error message: `Failed to authenticate Workflow request.`
+
+
+This behavior is a direct result of the [custom authorization mechanism](/workflow/howto/security#custom-authorization-method). The Workflow SDK interprets an early function return without executing any steps as an authentication failure.
+
+If the function `someCondition()` is non-deterministic, the recommended approach is to transform this condition into an explicit workflow step. Here's the recommended pattern for handling such non-deterministic conditions:
+
+```typescript {3-6}
+export const { POST } = serve(async (context) => {
+  
+  const shouldReturn = await context.run("check condition", () => someCondition())
+  if (shouldReturn) => {
+    return;
+  }
+
+  // rest of the workflow
+})
+```
+
+## Retry Configuration
+
+Retry settings can be configured in three locations:
+
+1. [**Workflow Start** (publish/publishJSON or client.trigger)](/workflow/howto/start)
+   - Default retries: 3
+
+2. [**Context Call**](/workflow/basics/context#context-call)
+   - Default retries: 0
+
+3. [**Serve Options**](/workflow/basics/serve#retries)
+   - Default retries: 3
+   - Covers all other requests except the above two
+
+## Verbose Mode Diagnostics
+
+Use [verbose mode](/workflow/basics/serve#verbose) to diagnose workflow issues.
+
+The logs in this section should be seen very rarely. If you observe these logs consistently, you can reach out to our support.
+
+### Localhost in URL Warning
+
+```
+Workflow URL contains localhost. This can happen in local development,
+but shouldn't happen in production unless you have a route which contains
+localhost. Received: ...
+```
+
+This error indicates that the workflow URL has localhost. Publish requests will fail and workflow won't be able to run.
+
+**Potential Solutions:**
+- Verify [baseUrl](/workflow/basics/serve#baseurl)
+- Check UPSTASH_WORKFLOW_URL
+- Explicitly pass the full [url](/workflow/basics/serve#url)
+
+### Deduplication Log
+Since QStash has at least once delivery guarantee, there is a very small chance that a step will run twice. This is why we suggest [idempotancy](/workflow/basics/caveats#ensure-idempotency-in-context-run). When this happens, the duplicate step should print the following log and terminate:
+
+```
+Upstash Workflow: The step 'some-step' with id 'step-index' has run twice during workflow execution. Rest of the workflow will continue running as usual.
+```
+
+### Network Issue Warnings
+
+In rare instances, the workflow endpoint may complete its task successfully but fail to send a proper response. The SDK is designed to detect such occurrences. When this happens, the workflow endpoint will return a `200` status code and log one of the following three warnings:
+
+```
+Workflow run wfr-*** already exists. A new one isn't created.
+tried to append to a cancelled workflow. exiting without publishing.
+Failed to remove workflow run wfr-*** as it doesn't exist.
+```
+
+A similar issue can occur if you have two parallel context.call steps at the end of your workflow. While the workflow will execute successfully, you may see this warnings:
+
+```
+Couldn't fetch workflow run steps. This can happen if the workflow run succesfully ends before some callback is executed.
+```
