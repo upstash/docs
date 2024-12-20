@@ -65,11 +65,13 @@ function initializePosthog() {
     capture_pageleave: true,
     autocapture: false,
     persistence: "cookie",
+    opt_out_capturing_by_default: true,
     rate_limiting: {
       events_burst_limit: 1000,
       events_per_second: 100,
     },
   });
+  posthog.opt_in_capturing();
 }
 const checkGeolocation = () => {
   return fetch("https://upstash.com/api/geolocation")
