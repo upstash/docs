@@ -3,36 +3,19 @@ title: "Verify Signatures"
 ---
 
 We send a JWT with each request. This JWT is signed by your individual secret
-signing keys and sent in the `Upstash-Signature` HTTP header.
+signing key and sent in the `Upstash-Signature` HTTP header.
 
-To verify the jwt you can choose from a
-[wide array of open source libraries](https://jwt.io/libraries), or roll your
-own solution.
+You can use this signature to verify the request is coming from QStash.
 
-## Claims
-
-All claims in the JWT are listed [here](/qstash/features/security#claims)
+![](/img/qstash/signing-key-logic.png)
 
 ## Verifying
 
-The exact implementation depends on the language of your choice and the library
-if you use one.
+You can use the official QStash SDKs or implement a custom verifier either by using [an open source library](https://jwt.io/libraries) or by processing the JWT manually.
 
-Instead here are the steps you need to follow:
+### Via SDK (Recommended)
 
-1. Split the JWT into its header, payload and signature
-2. Verify the signature
-3. Decode the payload and verify the claims
-   - `iss`: The issuer must be`Upstash`.
-   - `sub`: The subject must the url of your API.
-   - `exp`: Verify the token has not expired yet.
-   - `nbf`: Verify the token is already valid.
-   - `body`: Hash the raw request body using `SHA-256` and compare it with the
-     `body` claim.
-
-You can also reference the implementation in our
-[typescript sdk](https://github.com/upstash/sdk-qstash-ts/blob/main/src/receiver.ts#L82) or use 
-the methods provided in the SDKs:
+QStash SDKs provide a `Receiver` type that simplifies signature verification.
 
 <CodeGroup>
 ```typescript Typescript
@@ -73,9 +56,53 @@ receiver.verify(
     url="YOUR-SITE-URL",
 )
 ```
+
+```go Golang
+import "github.com/qstash/qstash-go"
+
+receiver := qstash.NewReceiver("<CURRENT_SIGNING_KEY>", "NEXT_SIGNING_KEY")
+
+// ... in your request handler
+
+signature := req.Header.Get("Upstash-Signature")
+body, err := io.ReadAll(req.Body)
+// handle err
+
+err := receiver.Verify(qstash.VerifyOptions{
+    Signature: signature,
+    Body:      string(body),
+    Url:       "YOUR-SITE-URL", // optional
+})
+// handle err
+```
 </CodeGroup>
 
 <Warning>In JavaScript, the body could be presented by an object via the HTTP handler if it is a JSON. Don't forget to convert to string first via JSON.stringify(body)</Warning>
 
+
+### Manual verification 
+
+If you don't want to use the SDKs, you can implement your own verifier either by using an open-source library or by manually processing the JWT. 
+
+The exact implementation depends on the language of your choice and the library if you use one.
+Instead here are the steps you need to follow:
+
+1. Split the JWT into its header, payload and signature
+2. Verify the signature
+3. Decode the payload and verify the claims
+   - `iss`: The issuer must be`Upstash`.
+   - `sub`: The subject must the url of your API.
+   - `exp`: Verify the token has not expired yet.
+   - `nbf`: Verify the token is already valid.
+   - `body`: Hash the raw request body using `SHA-256` and compare it with the
+     `body` claim.
+
+You can also reference the implementation in our
+[Typescript SDK](https://github.com/upstash/sdk-qstash-ts/blob/main/src/receiver.ts#L82).
+
 After you have verified the signature and the claims, you can be sure the
 request came from Upstash and process it accordingly.
+
+## Claims
+
+All claims in the JWT are listed [here](/qstash/features/security#claims)
