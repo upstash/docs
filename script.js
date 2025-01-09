@@ -100,35 +100,49 @@ function initialize() {
 }
 
 initialize();
-
 function createCookieConsentBanner() {
   if (
     document.getElementById("cookie-consent-banner") ||
     localStorage.getItem("cookieConsent")
-  ) {
+  )
     return;
-  }
 
   return checkGeolocation().then((isHandled) => {
     if (!isHandled) {
+      const style = document.createElement("style");
+      style.textContent = `
+        #cookie-consent-banner {
+          position: fixed;
+          bottom: 0;
+          left: 0;
+          width: 100%;
+          z-index: 50;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          background-color: rgb(52, 211, 153);
+          padding: 6px 80px 6px 16px;
+          font-size: 14px;
+          color: black;
+          box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+        }
+        @media (min-width: 768px) {
+          #cookie-consent-banner {
+            bottom: 16px;
+            left: 50%;
+            width: 600px;
+            transform: translateX(-50%);
+            gap: 16px;
+            padding: 6px 6px 6px 16px;
+            border-radius: 9999px;
+          }
+        }
+      `;
+      document.head.appendChild(style);
+
       const banner = document.createElement("div");
       banner.id = "cookie-consent-banner";
-      banner.style.cssText = `
-    position: fixed;
-    bottom: 16px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 50;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    background-color: rgb(52, 211, 153);
-    padding: 4px 16px 4px 16px;
-    border-radius: 9999px;
-    font-size: 14px;
-    color: black;
-    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
-  `;
 
       const message = document.createElement("span");
       message.innerHTML =
@@ -136,50 +150,59 @@ function createCookieConsentBanner() {
 
       const buttonContainer = document.createElement("div");
       buttonContainer.style.cssText = `
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  `;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      `;
 
       const acceptButton = document.createElement("button");
-      acceptButton.textContent = "Accept";
+      const acceptText = document.createElement("p");
+      acceptText.textContent = "Accept";
+      acceptButton.appendChild(acceptText);
       acceptButton.style.cssText = `
-    background-color: white;
-    padding: 4px 12px;
-    border-radius: 9999px;
-    border: none;
-    font-size: 12px;
-    cursor: pointer;
-    transition: background-color 0.2s;
-  `;
-
-      acceptButton.addEventListener("mouseover", () => {
-        acceptButton.style.backgroundColor = "#f3f4f6";
-      });
-      acceptButton.addEventListener("mouseout", () => {
-        acceptButton.style.backgroundColor = "white";
-      });
+        display: flex;
+        align-items: center;
+        background-color: white;
+        padding: 4px 12px 4px 12px;
+        border-radius: 9999px;
+        border: none;
+        font-size: 12px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+      `;
 
       const closeButton = document.createElement("button");
       closeButton.textContent = "x";
       closeButton.style.cssText = `
-    display: flex;
-    height: 24px;
-    width: 24px;
-    align-items: center;
-    justify-content: center;
-    border-radius: 9999px;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    transition: background-color 0.2s;
-  `;
-      closeButton.addEventListener("mouseover", () => {
-        closeButton.style.backgroundColor = "rgb(16, 185, 129)";
-      });
-      closeButton.addEventListener("mouseout", () => {
-        closeButton.style.backgroundColor = "transparent";
-      });
+        display: flex;
+        height: 24px;
+        width: 24px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9999px;
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        padding-bottom: 3px;
+        transition: background-color 0.2s;
+      `;
+
+      acceptButton.addEventListener(
+        "mouseover",
+        () => (acceptButton.style.backgroundColor = "#f3f4f6")
+      );
+      acceptButton.addEventListener(
+        "mouseout",
+        () => (acceptButton.style.backgroundColor = "white")
+      );
+      closeButton.addEventListener(
+        "mouseover",
+        () => (closeButton.style.backgroundColor = "rgb(16, 185, 129)")
+      );
+      closeButton.addEventListener(
+        "mouseout",
+        () => (closeButton.style.backgroundColor = "transparent")
+      );
 
       acceptButton.addEventListener("click", () => {
         localStorage.setItem("cookieConsent", "true");
@@ -187,11 +210,8 @@ function createCookieConsentBanner() {
         initializePosthog();
       });
 
-      closeButton.addEventListener("click", () => {
-        banner.remove();
-      });
+      closeButton.addEventListener("click", () => banner.remove());
 
-      // Assemble banner
       buttonContainer.appendChild(acceptButton);
       buttonContainer.appendChild(closeButton);
       banner.appendChild(message);
