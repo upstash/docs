@@ -4,16 +4,34 @@ title: "Workflow Context"
 
 A workflow's context is a JavaScript object provided by the serve function and is used to define your workflow endpoint. This context object offers utility methods for creating workflow steps, managing delays, and performing timeout-resistant HTTP calls.
 
+<CodeGroup>
+
 ```typescript api/workflow/route.ts
-import { serve } from "@upstash/workflow/nextjs"
+import { serve } from "@upstash/workflow/nextjs";
 
 export const { POST } = serve(
   // 👇 the workflow context
   async (context) => {
     // ...
   }
-)
+);
 ```
+
+```python main.py
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None: ...
+
+```
+
+</CodeGroup>
 
 This context object provides utility methods to create workflow steps, wait for certain periods of time or perform timeout-resistant HTTP calls.
 
@@ -44,23 +62,24 @@ Further, the context object provides all request headers, the incoming request p
 Defines and executes a workflow step.
 
 <CodeGroup>
-```typescript Serial execution
-import { serve } from "@upstash/workflow/nextjs"
+```typescript Serial execution (JS)
+import { serve } from "@upstash/workflow/nextjs";
 
 export const { POST } = serve<string>(async (context) => {
-  const input = context.requestPayload
+  const input = context.requestPayload;
 
   const result1 = await context.run("step-1", async () => {
-    return someWork(input)
-  })
+    return someWork(input);
+  });
 
   await context.run("step-2", async () => {
-    someOtherWork(result1)
-  })
-})
+    someOtherWork(result1);
+  });
+});
+
 ```
 
-```typescript Parallel execution
+```typescript Parallel execution (JS)
 import { serve } from "@upstash/workflow/nextjs"
 
 export const { POST } = serve<string>(
@@ -79,70 +98,160 @@ export const { POST } = serve<string>(
   },
 );
 ```
+
+```python Serial execution (Python)
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    async def _step1():
+        return some_work(input)
+
+    result1 = await context.run("step-1", _step1)
+
+    async def _step2():
+        return some_other_work(result1)
+
+    await context.run("step-2", _step2)
+
+```
+
 </CodeGroup>
 
 ### context.sleep
 
 Pauses workflow execution for a specified duration.
 
-<Tip>
-  Always `await` a `sleep` action to properly pause execution.
-</Tip>
+<Tip>Always `await` a `sleep` action to properly pause execution.</Tip>
 
-```typescript api/workflow/route.ts
-import { serve } from "@upstash/workflow/nextjs"
-import { signIn, sendEmail } from "@/utils/onboarding-utils"
+<CodeGroup>
 
-export const { POST } = serve<User>(
-  async (context) => {
-    const userData = context.requestPayload;
+```typescript JS
+import { serve } from "@upstash/workflow/nextjs";
+import { signIn, sendEmail } from "@/utils/onboarding-utils";
 
-    const user = await context.run("sign-in", async () => {
-      const signedInUser = await signIn(userData);
-      return signedInUser;
-    });
+export const { POST } = serve<User>(async (context) => {
+  const userData = context.requestPayload;
 
-    // 👇 Wait for one day (in seconds)
-    await context.sleep("wait-until-welcome-email", "1d");
+  const user = await context.run("sign-in", async () => {
+    const signedInUser = await signIn(userData);
+    return signedInUser;
+  });
 
-    await context.run("send-welcome-email", async () => {
-      return sendEmail(user.name, user.email);
-    });
-  },
-);
+  // 👇 Wait for one day (in seconds)
+  await context.sleep("wait-until-welcome-email", "1d");
+
+  await context.run("send-welcome-email", async () => {
+    return sendEmail(user.name, user.email);
+  });
+});
 ```
+
+```python Python
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+from onboarding_utils import sign_in, send_email
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@serve.post("/api/onboarding")
+async def onboarding(context: AsyncWorkflowContext[User]) -> None:
+    user_data = context.request_payload
+
+    async def _sign_in():
+        return await sign_in(user_data)
+
+    user = await context.run("sign-in", _sign_in)
+
+    # 👇 Wait for one day (in seconds)
+    await context.sleep("wait-until-welcome-email", 60 * 60 * 24)
+
+    async def _send_email():
+        return await send_email(user.name, user.email)
+
+    await context.run("send-welcome-email", _send_email)
+
+```
+
+</CodeGroup>
 
 ### context.sleepUntil
 
 Pauses workflow execution until a specific timestamp.
 
-<Tip>
-  Always await a `sleepUntil` action to properly pause execution.
-</Tip>
+<Tip>Always await a `sleepUntil` action to properly pause execution.</Tip>
 
-```typescript api/workflow/route.ts
-import { serve } from "@upstash/workflow/nextjs"
-import { signIn, sendEmail } from "@/utils/onboarding-utils"
+<CodeGroup>
+
+```typescript JS
+import { serve } from "@upstash/workflow/nextjs";
+import { signIn, sendEmail } from "@/utils/onboarding-utils";
 
 export const { POST } = serve<User>(async (context) => {
-  const userData = context.requestPayload
+  const userData = context.requestPayload;
 
   const user = await context.run("sign-in", async () => {
-    return signIn(userData)
-  })
+    return signIn(userData);
+  });
 
   // 👇 Calculate the date for one week from now
-  const oneWeekFromNow = new Date()
-  oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7)
+  const oneWeekFromNow = new Date();
+  oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7);
 
   // 👇 Wait until the calculated date
-  await context.sleepUntil("wait-for-one-week", oneWeekFromNow)
+  await context.sleepUntil("wait-for-one-week", oneWeekFromNow);
 
   await context.run("send-welcome-email", async () => {
-    return sendEmail(user.name, user.email)
-  })
-})
+    return sendEmail(user.name, user.email);
+  });
+});
 ```
+
+```python Python
+from fastapi import FastAPI
+from datetime import datetime, timedelta
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+from onboarding_utils import sign_in, send_email
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@serve.post("/api/onboarding")
+async def onboarding(context: AsyncWorkflowContext[User]) -> None:
+    user_data = context.request_payload
+
+    async def _sign_in():
+        return await sign_in(user_data)
+
+    user = await context.run("sign-in", _sign_in)
+
+    # 👇 Calculate the date for one week from now
+    one_week_from_now = datetime.now() + timedelta(days=7)
+
+    # 👇 Wait until the calculated date
+    await context.sleep_until("wait-for-one-week", one_week_from_now)
+
+    async def _send_email():
+        return await send_email(user.name, user.email)
+
+    await context.run("send-welcome-email", _send_email)
+
+```
+
+</CodeGroup>
 
 ### context.call
 
@@ -150,49 +259,101 @@ Performs an HTTP call as a workflow step, allowing for longer response times.
 
 Can take up to 15 minutes or 2 hours, depending on your [QStash plans](https://upstash.com/pricing/qstash) max HTTP connection timeout.
 
-```javascript
-import { serve } from "@upstash/workflow/nextjs"
+<CodeGroup>
 
-export const { POST } = serve<{ topic: string }>(async (context) => {
-  const request = context.requestPayload
+```javascript JS
+import { serve } from "@upstash/workflow/nextjs";
 
-  const {
-    status, // response status
-    headers, // response headers
-    body // response body
-  } = await context.call(
-    "generate-long-essay", // Step name
-    {
-      url: "https://api.openai.com/v1/chat/completions", // Endpoint URL
-      method: "POST",
-      body: { // Request body
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
-          },
-          { role: "user", content: request.topic },
-        ],
-      },
-      headers: { // request headers
-        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+export const { POST } =
+  serve <
+  { topic: string } >
+  (async (context) => {
+    const request = context.requestPayload;
+
+    const {
+      status, // response status
+      headers, // response headers
+      body, // response body
+    } = await context.call(
+      "generate-long-essay", // Step name
+      {
+        url: "https://api.openai.com/v1/chat/completions", // Endpoint URL
+        method: "POST",
+        body: {
+          // Request body
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
+            },
+            { role: "user", content: request.topic },
+          ],
+        },
+        headers: {
+          // request headers
+          authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
       }
-    }
-  )
-})
+    );
+  });
 ```
+
+```python Python
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@dataclass
+class Request:
+    topic: str
+
+
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[Request]) -> None:
+    request: Request = context.request_payload
+
+    result = await context.call(
+        "generate-long-essay",
+        url="https://api.openai.com/v1/chat/completions",
+        method="POST",
+        body={
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
+                },
+                {"role": "user", "content": request["topic"]},
+            ],
+        },
+        headers={
+            "authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+        },
+    )
+
+    status, headers, body = result.status, result.headers, result.body
+
+```
+
+</CodeGroup>
 
 <Tip>
   If the endpoint you request does not return a success response (status code 200-299),  
   `context.call` will still be treated as successful, and the workflow will continue executing.  
-  As a result, `failureFunction` or `failureUrl` will not be invoked.  
+  As a result, `failureFunction` or `failureUrl` will not be invoked.
 
-  To handle non-success cases, you can check the `status` field in the response and implement custom logic as needed.
+To handle non-success cases, you can check the `status` field in the response and implement custom logic as needed.
+
 </Tip>
 
 context.call parameters are:
+
 - `url`: The URL to send the HTTP request to.
 - `method`: The HTTP method to use for the request (e.g., GET, POST, PUT, etc.). Defaults to GET.
 - `body`: Body to use in the request
@@ -210,17 +371,24 @@ type ResultType = {
   field2: number
 };
 
-const result = await context.call<ResultType>( ... ); 
+const result = await context.call<ResultType>( ... );
 ```
 
 <Note>
-The context.call method can make requests to any public API endpoint. However, it cannot:
+  The context.call method can make requests to any public API endpoint. However, it cannot:
 
-- Make requests to localhost (unless you set up a local tunnel, [here's how](http://localhost:3000/workflow/howto/local-development))
-- Make requests to internal Upstash QStash endpoints
+  - Make requests to localhost (unless you set up a local tunnel, [here's how](http://localhost:3000/workflow/howto/local-development))
+  - Make requests to internal Upstash QStash endpoints
 </Note>
 
 ### context.api
+
+<Note>
+  This feature is not yet available in
+  [workflow-py](https://github.com/upstash/workflow-py). See our
+  [Roadmap](/workflow/roadmap) for feature parity plans and
+  [Changelog](/workflow/changelog) for updates.
+</Note>
 
 In addition to context.call, another way to make third party requests is to use the context.api namespace. Under this namespace, you can find integrations for OpenAI, Anthropic and Resend.
 
@@ -229,62 +397,52 @@ With context.api, you can call the available integrations in a typesafe manner.
 <CodeGroup>
 
 ```typescript OpenAI
-const { status, body } = await context.api.openai.call(
-  "Call OpenAI",
-  {
-    token: "<OPENAI_API_KEY>",
-    operation: "chat.completions.create",
-    body: {
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content: "Assistant says 'hello!'",
-        },
-        { role: "user", content: "User shouts back 'hi!'" },
-      ],
-    },
-  }
-);
+const { status, body } = await context.api.openai.call("Call OpenAI", {
+  token: "<OPENAI_API_KEY>",
+  operation: "chat.completions.create",
+  body: {
+    model: "gpt-4o",
+    messages: [
+      {
+        role: "system",
+        content: "Assistant says 'hello!'",
+      },
+      { role: "user", content: "User shouts back 'hi!'" },
+    ],
+  },
+});
 ```
 
 ```typescript Anthropic
-const { status, body } = await context.api.anthropic.call(
-  "Call Anthropic",
-  {
-    token: "<ANTHROPIC_API_KEY>",
-    operation: "messages.create",
-    body: {
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content: "Assistant says hello!",
-        },
-        { role: "user", content: "User shouts there!" },
-      ],
-    },
-  }
-);
+const { status, body } = await context.api.anthropic.call("Call Anthropic", {
+  token: "<ANTHROPIC_API_KEY>",
+  operation: "messages.create",
+  body: {
+    model: "gpt-4o",
+    messages: [
+      {
+        role: "system",
+        content: "Assistant says hello!",
+      },
+      { role: "user", content: "User shouts there!" },
+    ],
+  },
+});
 ```
 
-
 ```typescript Resend
-const { status, body } = await context.api.resend.call(
-  "Call Resend",
-  {
-    token: "<RESEND_API_KEY>",
-    body: {
-      from: "Acme <onboarding@resend.dev>",
-      to: ["delivered@resend.dev"],
-      subject: "Hello World",
-      html: "<p>It works!</p>",
-    },
-    headers: {
-      "content-type": "application/json",
-    },
-  }
-);
+const { status, body } = await context.api.resend.call("Call Resend", {
+  token: "<RESEND_API_KEY>",
+  body: {
+    from: "Acme <onboarding@resend.dev>",
+    to: ["delivered@resend.dev"],
+    subject: "Hello World",
+    html: "<p>It works!</p>",
+  },
+  headers: {
+    "content-type": "application/json",
+  },
+});
 ```
 
 </CodeGroup>
@@ -302,49 +460,66 @@ await context.api.openai.call<ReturnType, BodyType>( ... )
 
 ### context.waitForEvent
 
+<Note>
+  This feature is not yet available in
+  [workflow-py](https://github.com/upstash/workflow-py). See our
+  [Roadmap](/workflow/roadmap) for feature parity plans and
+  [Changelog](/workflow/changelog) for updates.
+</Note>
+
 Stops the workflow run until it is notified externally to continue.
 
 There is also a timeout setting which makes the workflow continue if it's not notified within the time frame.
 
 ```javascript
-import { serve } from "@upstash/workflow/nextjs"
+import { serve } from "@upstash/workflow/nextjs";
 
-export const { POST } = serve<{ topic: string }>(async (context) => {
-  const request = context.requestPayload
+export const { POST } =
+  serve <
+  { topic: string } >
+  (async (context) => {
+    const request = context.requestPayload;
 
-  const {
-    eventData, // data passed in notify
-    timeout    // boolean denoting whether the step was notified or timed out
-  } = await context.waitForEvent(
-    "wait for some event",
-    "my-event-id",
-    {
-      timeout: "1000s" // 1000 second timeout
-    }
-  );
-})
+    const {
+      eventData, // data passed in notify
+      timeout, // boolean denoting whether the step was notified or timed out
+    } = await context.waitForEvent("wait for some event", "my-event-id", {
+      timeout: "1000s", // 1000 second timeout
+    });
+  });
 ```
 
 Default timeout value is 7 days.
 
 A workflow run waiting for event can be notified in two ways:
+
 - `context.notify`: [Notify step explained below](/workflow/basics/context#context-notify)
 - `client.notify`: [Notify method of the Workflow Client](/workflow/basics/client#notify-waiting-workflow).
 
 ### context.notify
 
+<Note>
+  This feature is not yet available in
+  [workflow-py](https://github.com/upstash/workflow-py). See our
+  [Roadmap](/workflow/roadmap) for feature parity plans and
+  [Changelog](/workflow/changelog) for updates.
+</Note>
+
 Notifies workflows waiting for an event with some payload.
 
 ```javascript
-import { serve } from "@upstash/workflow/nextjs"
+import { serve } from "@upstash/workflow/nextjs";
 
-export const { POST } = serve<{ topic: string }>(async (context) => {
-  const payload = context.requestPayload
+export const { POST } =
+  serve <
+  { topic: string } >
+  (async (context) => {
+    const payload = context.requestPayload;
 
-  const {
-    notifyResponse // result of notify, which is a list of notified waiters
-  } = await context.notify("notify step", "my-event-Id", payload);
-})
+    const {
+      notifyResponse, // result of notify, which is a list of notified waiters
+    } = await context.notify("notify step", "my-event-Id", payload);
+  });
 ```
 
 `notifyResponse` is a list of `NotifyResponse` objects:
@@ -362,6 +537,13 @@ More details about the `Waiter` object:
 <Snippet file="qstash/waiter.mdx" />
 
 ### context.cancel
+
+<Note>
+  This feature is not yet available in
+  [workflow-py](https://github.com/upstash/workflow-py). See our
+  [Roadmap](/workflow/roadmap) for feature parity plans and
+  [Changelog](/workflow/changelog) for updates.
+</Note>
 
 The methods we listed so far were all for defining a workflow step. `context.cancel` is different.
 
