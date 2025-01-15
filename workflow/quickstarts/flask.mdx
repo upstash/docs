@@ -1,0 +1,268 @@
+---
+title: Flask
+---
+
+<Card title="GitHub Repository" icon="github" href="https://github.com/upstash/workflow-py/tree/master/examples/flask" horizontal>
+  You can find the project source code on GitHub.
+</Card>
+
+This guide provides detailed, step-by-step instructions on how to use Upstash Workflow with Flask. You can also explore our [Flask example](https://github.com/upstash/workflow-py/tree/master/examples/flask) for a detailed, end-to-end example and best practices.
+
+## Prerequisites
+
+1. An Upstash QStash API key.
+2. Python and pip installed.
+
+If you haven't obtained your QStash API key yet, you can do so by [signing up](https://console.upstash.com/login) for an Upstash account and navigating to your QStash dashboard.
+
+## Step 1: Installation
+                   
+First, install the Workflow SDK and Flask in a new Python project:
+
+```bash
+pip install Flask upstash-workflow
+```
+
+
+## Step 2: Configure Environment Variables
+
+Create a `.env.local` file in your project root and add your QStash token. This token is used to authenticate your application with the QStash service.
+
+```bash Terminal
+touch .env.local
+```
+
+Open the environment file and add your QStash token:
+
+```bash .env.local
+QSTASH_TOKEN=xxxxxxxxx
+```
+
+Replace `xxxxxxxxx` with your actual QStash token found here:
+
+<Frame>
+  <img src="/img/qstash-workflow/qstash_token.png" />
+</Frame>
+
+<Note>
+  This quickstart uses QStash production credentials for simplicity. However, we recommend using our local development server for development and testing once you're familiar with the basics.
+  
+  Our [local development guide](/workflow/howto/local-development) provides complete setup instructions for creating a sandboxed development environment.
+</Note>
+
+## Step 3: Create a Workflow Endpoint
+
+A workflow endpoint allows you to define a set of steps that, together, make up a workflow. Each step contains a piece of business logic that is automatically retried on failure, with easy monitoring via our visual workflow dashboard.
+
+To define a workflow endpoint in a Flask project, create a `main.py` file that contains your workflow:
+
+<Tabs>
+<Tab title="Example">
+```python main.py
+from flask import Flask
+from upstash_workflow.flask import Serve
+
+app = Flask(__name__)
+serve = Serve(app)
+
+
+@serve.route("/api/workflow")
+def workflow(context) -> None:
+    def _step1() -> None:
+        print("initial step ran")
+
+    context.run("initial-step", _step1)
+
+    def _step2() -> None:
+        print("second step ran")
+
+    context.run("second-step", _step2)
+
+```
+</Tab>
+<Tab title="Sleep">
+```python main.py
+from flask import Flask
+import time
+from upstash_workflow.flask import Serve
+from upstash_workflow import WorkflowContext
+
+app = Flask(__name__)
+serve = Serve(app)
+
+
+def some_work(input: str) -> str:
+    return f"processed '{input}'"
+
+
+@serve.route("/sleep")
+def sleep(context: WorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    def _step1() -> str:
+        output = some_work(input)
+        print("step 1 input", input, "output", output)
+        return output
+
+    result1: str = context.run("step1", _step1)
+
+    context.sleep_until("sleep1", time.time() + 3)
+
+    def _step2() -> str:
+        output = some_work(result1)
+        print("step 2 input", result1, "output", output)
+        return output
+
+    result2: str = context.run("step2", _step2)
+
+    context.sleep("sleep2", 2)
+
+    def _step3() -> None:
+        output = some_work(result2)
+        print("step 3 input", result2, "output", output)
+
+    context.run("step3", _step3)
+
+```
+</Tab>
+
+<Tab title="Call">
+```python main.py
+from flask import Flask
+from typing import Dict
+from upstash_workflow.flask import Serve
+from upstash_workflow import WorkflowContext, CallResponse
+
+app = Flask(__name__)
+serve = Serve(app)
+
+
+def some_work(input: str) -> str:
+    return f"processed '{input}'"
+
+
+@app.route("/get-data", methods=["POST"])
+def get_data() -> Dict[str, str]:
+    return {"message": "get data response"}
+
+
+@serve.route("/call")
+def call(context: WorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    def _step1() -> str:
+        output = some_work(input)
+        print("step 1 input", input, "output", output)
+        return output
+
+    result1: str = context.run("step1", _step1)
+
+    response: CallResponse[Dict[str, str]] = context.call(
+        "get-data",
+        url=f"{context.env.get('UPSTASH_WORKFLOW_URL', 'http://localhost:8000')}/get-data",
+        method="POST",
+        body={"message": result1},
+    )
+
+    def _step2() -> str:
+        output = some_work(response.body["message"])
+        print("step 2 input", response, "output", output)
+        return output
+
+    context.run("step2", _step2)
+
+```
+</Tab>
+<Tab title="Auth">
+```python main.py
+from flask import Flask
+from upstash_workflow.flask import Serve
+from upstash_workflow import WorkflowContext
+
+app = Flask(__name__)
+serve = Serve(app)
+
+
+def some_work(input: str) -> str:
+    return f"processed '{input}'"
+
+
+@serve.route("/auth")
+def auth(context: WorkflowContext[str]) -> None:
+    if context.headers.get("Authentication") != "Bearer secret_password":
+        print("Authentication failed.")
+        return
+
+    def _step1() -> str:
+        return "output 1"
+
+    context.run("step1", _step1)
+
+    def _step2() -> str:
+        return "output 2"
+
+    context.run("step2", _step2)
+
+```
+</Tab>
+</Tabs>
+
+## Step 4: Run the Workflow Endpoint
+
+Upstash Workflow is powered by [QStash](/qstash/overall/getstarted), and QStash needs a publicly accessible URL to run your workflows. Here's how to [set up your workflow endpoint for local development](/workflow/howto/local-development).
+
+Once you have a live URL, proceeed with either one of the following steps:
+
+### Setting an enviroment variable (recommended)
+
+Set your publically accessible URL as an environment variable. This variable is only needed for local development and doesn't need to be set in production:
+
+```bash .env.local
+UPSTASH_WORKFLOW_URL=https://<YOUR_NGROK_OR_TUNNEL_URL>/
+```
+
+### Using the `base_url` option
+
+As an alternative to setting an environment variable, you can also use the `base_url` option in the `@serve.route` decorator. This option is only needed for local development and can be omitted in production:
+
+```python main.py
+@serve.route("/api/example", base_url="https://<YOUR_NGROK_OR_TUNNEL_URL>/")
+def example(context: WorkflowContext[str]) -> None: ...
+
+```
+
+### Triggering the workflow
+
+After setting your live URL as the environment variable or `base_url` option, trigger your workflow by first starting your Flask app:
+
+```bash Terminal
+flask --app main run -p 8000
+```
+
+and then making a POST request to your workflow endpoint. For each workflow run, a unique workflow run ID is returned:
+
+```bash Terminal
+curl -X POST https://<YOUR_NGROK_OR_TUNNEL_URL>/api/workflow
+
+# result: {"workflowRunId":"wfr_xxxxxx"}
+```
+
+See the [documentation on starting a workflow](/workflow/howto/start) for other ways you can start your workflow.
+
+<Frame>
+  <img src="/img/qstash-workflow/nextjs_local_request.png" />
+</Frame>
+
+Use this ID to track the workflow run and see its status in your QStash workflow dashboard. All steps are listed with their statuses, headers, and body for a detailed overview of your workflow from start to finish. Click on a step to see its detailed logs.
+
+<Frame>
+  <img src="/img/qstash-workflow/dashboard.png" />
+</Frame>
+
+## Next Steps
+
+1. Learn how to protect your workflow endpoint from unauthorized access by [securing your workflow endpoint](/workflow/howto/security).
+
+2. Explore our [Flask example](https://github.com/upstash/workflow-py/tree/master/examples/flask) for a detailed, end-to-end example and best practices.
+
+3. For setting up and testing your workflows in a local environment, check out our [local development guide](/workflow/howto/local-development).
