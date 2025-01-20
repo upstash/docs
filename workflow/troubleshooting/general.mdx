@@ -22,7 +22,9 @@ The `WorkflowAbort` error is thrown by the Workflow SDK when a step executes suc
 
 2. **Avoid Running Steps in try/catch**: The simplest solution is to not wrap steps in try/catch blocks. If you have a `context.run` inside try/catch, you can try putting the try/catch inside the context.run.
 
-```typescript {1, 6-7}
+<CodeGroup>
+
+```typescript TypeScript {1, 6-7}
 import { WorkflowAbort } from '@upstash/workflow';
 
 try {
@@ -35,6 +37,21 @@ try {
   }
 }
 ```
+
+``` python Python {1, 6-7}
+from upstash_workflow import WorkflowAbort
+
+try:
+    await context.run( ... )
+except Exception as e:
+    if isinstance(e, WorkflowAbort):
+        raise e
+    else:
+        # handle other errors
+
+```
+
+</CodeGroup>
 
 ## `context.requestPayload` Becoming Undefined
 
@@ -51,7 +68,9 @@ In some frameworks, you may need to pass specific headers for the workflow to ac
 
 Accessing `context.requestPayload` before any step can result in it becoming undefined:
 
-```typescript {2-4, 8}
+<CodeGroup>
+
+```typescript TypeScript {2-4, 8}
 export const { POST } = serve(async (context) => {
   // Will print undefined while executing context.call
   const payload = context.requestPayload
@@ -63,11 +82,28 @@ export const { POST } = serve(async (context) => {
 })
 ```
 
+``` python Python {3-5, 9}
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    # Will print None while executing context.call
+    payload = context.request_payload
+    print(payload)
+
+    # ... steps or any other code
+
+    context.call( ... )
+
+```
+
+</CodeGroup>
+
 This behavior stems from the internal mechanics of `context.call`, and resolving this specific interaction is on our roadmap. Note that if you are passing `context.requestPayload` as a parameter to `context.call`, the payload remains intact. However, during the actual execution of `context.call`, the `context.requestPayload` becomes undefined due to the SDK's internal workflow processing steps.
 
 To fix this issue, you can try adding a step which returns the payload:
 
-```typescript {2-4, 7}
+<CodeGroup>
+
+```typescript TypeScript {2-4, 7}
 export const { POST } = serve(async (context) => {
   // Payload will never be undefined
   const payload = await context.run("get payload", () => context.requestPayload)
@@ -77,6 +113,24 @@ export const { POST } = serve(async (context) => {
   context.call( ... )
 })
 ```
+
+``` python Python {4-8, 12}
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+
+    async def _get_payload() -> str:
+        return context.request_payload
+    
+    # Payload will never be None
+    payload = await context.run("get payload", _get_payload)
+
+    # ... steps or any other code
+
+    context.call( ... )
+
+```
+
+</CodeGroup>
 
 You can find an example of this usage in [our documentation on usage with AI SDK](/workflow/howto/vercel-ai-sdk).
 
@@ -102,7 +156,9 @@ Troubleshooting verification errors:
 
 Consider this workflow:
 
-```typescript {2-5}
+<CodeGroup>
+
+```typescript TypeScript {2-5}
 export const { POST } = serve(async (context) => {
   
   if (someCondition()) => {
@@ -113,6 +169,18 @@ export const { POST } = serve(async (context) => {
 })
 ```
 
+``` python Python {3-4}
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    if some_condition():
+        return
+
+    # rest of the workflow
+
+```
+
+</CodeGroup>
+
 Returning before running any steps will result in:
 - HTTP status: 400
 - Error message: `Failed to authenticate Workflow request.`
@@ -122,7 +190,9 @@ This behavior is a direct result of the [custom authorization mechanism](/workfl
 
 If the function `someCondition()` is non-deterministic, the recommended approach is to transform this condition into an explicit workflow step. Here's the recommended pattern for handling such non-deterministic conditions:
 
-```typescript {3-6}
+<CodeGroup>
+
+```typescript TypeScript {3-6}
 export const { POST } = serve(async (context) => {
   
   const shouldReturn = await context.run("check condition", () => someCondition())
@@ -133,6 +203,23 @@ export const { POST } = serve(async (context) => {
   // rest of the workflow
 })
 ```
+
+``` python Python {4-9}
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+
+    async def _check_condition() -> bool:
+        return some_condition()
+
+    should_return = await context.run("check condition", _check_condition)
+    if should_return:
+        return
+
+    # rest of the workflow
+
+```
+
+</CodeGroup>
 
 ## Retry Configuration
 
@@ -149,6 +236,13 @@ Retry settings can be configured in three locations:
    - Covers all other requests except the above two
 
 ## Verbose Mode Diagnostics
+
+<Note>
+  This feature is not yet available in
+  [workflow-py](https://github.com/upstash/workflow-py). See our
+  [Roadmap](/workflow/roadmap) for feature parity plans and
+  [Changelog](/workflow/changelog) for updates.
+</Note>
 
 Use [verbose mode](/workflow/basics/serve#verbose) to diagnose workflow issues.
 

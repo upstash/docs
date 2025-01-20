@@ -20,6 +20,8 @@ Our workflow will:
 
 ## Code Example
 
+<CodeGroup>
+
 ```typescript api/workflow/route.ts
 import { serve } from "@upstash/workflow/nextjs";
 import { WorkflowContext } from '@upstash/qstash/workflow'
@@ -154,43 +156,232 @@ async function sendEmail(email: string, content: string) {
 }
 ```
 
+```python main.py
+from fastapi import FastAPI
+from typing import Dict, TypedDict
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+
+class UserCreatedPayload(TypedDict):
+    name: str
+    email: str
+
+
+class UserStats(TypedDict):
+    total_problems_solved: int
+    most_interested_topic: str
+
+
+async def create_user_in_database(name: str, email: str) -> Dict[str, str]:
+    print("Creating a user in the database:", name, email)
+    return {"userid": "12345"}
+
+
+async def create_new_user_in_stripe(email: str) -> None:
+    # Implement logic to create a new user in Stripe
+    print("Creating a user in Stripe for", email)
+
+
+async def start_trial_in_stripe(email: str) -> None:
+    # Implement logic to start a trial in Stripe
+    print("Starting a trial of 14 days in Stripe for", email)
+
+
+async def get_user_stats(userid: str) -> UserStats:
+    # Implement logic to get user stats
+    print("Getting user stats for", userid)
+    return {"total_problems_solved": 10000, "most_interested_topic": "Python"}
+
+
+async def check_upgraded_plan(email: str) -> bool:
+    # Implement logic to check if the user has upgraded the plan
+    print("Checking if the user has upgraded the plan", email)
+    return False
+
+
+async def send_email(email: str, content: str) -> None:
+    # Implement logic to send an email
+    print("Sending email to", email, content)
+
+
+async def send_problem_solved_email(
+    context: AsyncWorkflowContext[UserCreatedPayload], email: str, stats: UserStats
+) -> None:
+    if stats["total_problems_solved"] == 0:
+
+        async def _send_no_answers_email() -> None:
+            await send_email(
+                email, "Hey, you haven't solved any questions in the last 7 days..."
+            )
+
+        await context.run("send no answers email", _send_no_answers_email)
+    else:
+
+        async def _send_stats_email() -> None:
+            await send_email(
+                email,
+                f"You have solved {stats['total_problems_solved']} problems in the last 7 days. Keep it up!",
+            )
+
+        await context.run("send stats email", _send_stats_email)
+
+
+@serve.post("/auth-provider-webhook")
+async def auth_provider_webhook(
+    context: AsyncWorkflowContext[UserCreatedPayload],
+) -> None:
+    payload = context.request_payload
+    name = payload["name"]
+    email = payload["email"]
+
+    async def _sync_user() -> str:
+        return await create_user_in_database(name, email)
+
+    result = await context.run("sync user", _sync_user)
+    userid = result["userid"]
+
+    async def _create_new_user_in_stripe() -> None:
+        await create_new_user_in_stripe(email)
+
+    await context.run("create new user in stripe", _create_new_user_in_stripe)
+
+    async def _start_trial_in_stripe() -> None:
+        await start_trial_in_stripe(email)
+
+    await context.run("start trial in Stripe", _start_trial_in_stripe)
+
+    async def _send_welcome_email() -> None:
+        await send_email(
+            email, "Welcome to our platform!, You have 14 days of free trial."
+        )
+
+    await context.run("send welcome email", _send_welcome_email)
+
+    await context.sleep("wait", 7 * 24 * 60 * 60)
+
+    # get user stats and send email with them
+
+    async def _get_user_stats() -> UserStats:
+        return await get_user_stats(userid)
+
+    stats: UserStats = await context.run("get user stats", _get_user_stats)
+
+    await send_problem_solved_email(context, email, stats)
+
+    # wait until there are two days to the end of trial period and check upgrade status
+    await context.sleep("wait for trial warning", 5 * 24 * 60 * 60)
+
+    async def _check_upgraded_plan() -> bool:
+        return await check_upgraded_plan(email)
+
+    is_upgraded = await context.run("check upgraded plan", _check_upgraded_plan)
+
+    # end the workflow if upgraded
+    if is_upgraded:
+        return
+
+    async def _send_trial_warning_email() -> None:
+        await send_email(
+            email,
+            "Your trial is about to end in 2 days. Please upgrade your plan to keep using our platform.",
+        )
+
+    await context.run("send trial warning email", _send_trial_warning_email)
+
+    await context.sleep("wait for trial end", 2 * 24 * 60 * 60)
+
+    async def _send_trial_end_email() -> None:
+        await send_email(
+            email,
+            "Your trial has ended. Please upgrade your plan to keep using our platform.",
+        )
+
+    await context.run("send trial end email", _send_trial_end_email)
+
+```
+
+</CodeGroup>
+
 ## Code Breakdown
 
 ### 1. Sync User
 
 We start by creating a new user in our database:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 const { userid } = await context.run("sync user", async () => {
   return await createUserInDatabase({ name, email });
 });
 ```
 
+```python Python
+async def _sync_user() -> str:
+    return await create_user_in_database(name, email)
+
+result = await context.run("sync user", _sync_user)
+userid = result["userid"]
+
+```
+
+</CodeGroup>
+
 ### 2. Create New User in Stripe
 
 Next, we create a new user in Stripe:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 await context.run("create new user in stripe", async () => {
   await createNewUserInStripe(email);
 });
 ```
 
+```python Python
+async def _create_new_user_in_stripe() -> None:
+    await create_new_user_in_stripe(email)
+
+await context.run("create new user in stripe", _create_new_user_in_stripe)
+
+```
+
+</CodeGroup>
+
 ### 3. Start Trial in Stripe
 
 We start a trial in Stripe:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 await context.run("start trial in Stripe", async () => {
   await startTrialInStripe(email);
 });
 ```
 
+```python Python
+async def _start_trial_in_stripe() -> None:
+    await start_trial_in_stripe(email)
+
+await context.run("start trial in Stripe", _start_trial_in_stripe)
+
+```
+
+</CodeGroup>
+
 ### 4. Send Welcome Email
 
 We send a welcome email to the user:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 await context.run("send welcome email", async () => {
   await sendEmail(
     email,
@@ -199,11 +390,25 @@ await context.run("send welcome email", async () => {
 });
 ```
 
+```python Python
+async def _send_welcome_email() -> None:
+    await send_email(
+        email, "Welcome to our platform!, You have 14 days of free trial."
+    )
+
+await context.run("send welcome email", _send_welcome_email)
+
+```
+
+</CodeGroup>
+
 ### 5. Send Reminder Email
 
 After 7 days, we check if the user has solved any questions. If not, we send a reminder email:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 await context.sleep("wait", 7 * 24 * 60 * 60);
 
 const stats = await context.run("get user stats", async () => {
@@ -212,9 +417,25 @@ const stats = await context.run("get user stats", async () => {
 await sendProblemSolvedEmail({context, email, stats});
 ```
 
+```python Python
+await context.sleep("wait", 7 * 24 * 60 * 60)
+
+async def _get_user_stats() -> UserStats:
+    return await get_user_stats(userid)
+
+stats: UserStats = await context.run("get user stats", _get_user_stats)
+
+await send_problem_solved_email(context, email, stats)
+
+```
+
+</CodeGroup>
+
 The `sendProblemSolvedEmail` method:
 
-```typescript
+<CodeGroup>
+
+```typescript TypeScript
 async function sendProblemSolvedEmail({
   context: WorkflowContext<UserCreatedPayload>
   email: string,
@@ -238,11 +459,39 @@ async function sendProblemSolvedEmail({
 }
 ```
 
+```python Python
+async def send_problem_solved_email(
+    context: AsyncWorkflowContext[UserCreatedPayload], email: str, stats: UserStats
+) -> None:
+    if stats["total_problems_solved"] == 0:
+
+        async def _send_no_answers_email() -> None:
+            await send_email(
+                email, "Hey, you haven't solved any questions in the last 7 days..."
+            )
+
+        await context.run("send no answers email", _send_no_answers_email)
+    else:
+
+        async def _send_stats_email() -> None:
+            await send_email(
+                email,
+                f"You have solved {stats['total_problems_solved']} problems in the last 7 days. Keep it up!",
+            )
+
+        await context.run("send stats email", _send_stats_email)
+
+```
+
+</CodeGroup>
+
 ### 6. Send Trial Warning Email
 
 If the user hasn't upgraded 2 days before the trial ends, we send a trial warning email:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 await context.sleep("wait for trial warning", 5 * 24 * 60 * 60);
 
 const isUpgraded = await context.run("check upgraded plan", async () => {
@@ -259,13 +508,39 @@ await context.run("send trial warning email", async () => {
 });
 ```
 
+```python Python
+await context.sleep("wait for trial warning", 5 * 24 * 60 * 60)
+
+async def _check_upgraded_plan() -> bool:
+    return await check_upgraded_plan(email)
+
+is_upgraded = await context.run("check upgraded plan", _check_upgraded_plan)
+
+# end the workflow if upgraded
+if is_upgraded:
+    return
+
+async def _send_trial_warning_email() -> None:
+    await send_email(
+        email,
+        "Your trial is about to end in 2 days. Please upgrade your plan to keep using our platform.",
+    )
+
+await context.run("send trial warning email", _send_trial_warning_email)
+
+```
+
+</CodeGroup>
+
 If they upgraded, we end the workflow by returning.
 
 ### 7. Send Trial Ended Email
 
 If the user hasn't upgraded after the trial ends, we send a trial ended email:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 await context.sleep("wait for trial end", 2 * 24 * 60 * 60);
 
 await context.run("send trial end email", async () => {
@@ -275,3 +550,18 @@ await context.run("send trial end email", async () => {
   );
 });
 ```
+
+```python Python
+await context.sleep("wait for trial end", 2 * 24 * 60 * 60)
+
+async def _send_trial_end_email() -> None:
+    await send_email(
+        email,
+        "Your trial has ended. Please upgrade your plan to keep using our platform.",
+    )
+
+await context.run("send trial end email", _send_trial_end_email)
+
+```
+
+</CodeGroup>

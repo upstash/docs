@@ -16,6 +16,8 @@ Our workflow will:
 
 ## Code Example
 
+<CodeGroup>
+
 ```typescript api/workflow/route.ts
 import { serve } from "@upstash/workflow/nextjs"
 
@@ -64,11 +66,76 @@ const getUserState = async (): Promise<UserState> => {
 }
 ```
 
+```python main.py
+from fastapi import FastAPI
+from typing import Literal, TypedDict
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+UserState = Literal["non-active", "active"]
+
+
+class InitialData(TypedDict):
+    email: str
+
+
+async def send_email(message: str, email: str) -> None:
+    # Implement email sending logic here
+    print(f"Sending {message} email to {email}")
+
+
+async def get_user_state() -> UserState:
+    # Implement user state logic here
+    return "non-active"
+
+
+@serve.post("/customer-onboarding")
+async def customer_onboarding(context: AsyncWorkflowContext[InitialData]) -> None:
+    email = context.request_payload["email"]
+
+    async def _new_signup() -> None:
+        await send_email("Welcome to the platform", email)
+
+    await context.run("new-signup", _new_signup)
+
+    await context.sleep("wait-for-3-days", 60 * 60 * 24 * 3)
+
+    while True:
+
+        async def _check_user_state() -> UserState:
+            return await get_user_state()
+
+        state: UserState = await context.run("check-user-state", _check_user_state)
+
+        if state == "non-active":
+
+            async def _send_email_non_active() -> None:
+                await send_email("Email to non-active users", email)
+
+            await context.run("send-email-non-active", _send_email_non_active)
+        else:
+
+            async def _send_email_active() -> None:
+                await send_email("Send newsletter to active users", email)
+
+            await context.run("send-email-active", _send_email_active)
+
+        await context.sleep("wait-for-1-month", 60 * 60 * 24 * 30)
+
+```
+
+</CodeGroup>
+
 ## Code Breakdown
 
 ### 1. New User Signup
 
 We start by sending a newly signed-up user a welcome email:
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 await context.run("new-signup", async () => {
@@ -76,17 +143,38 @@ await context.run("new-signup", async () => {
 })
 ```
 
+```python main.py
+async def _new_signup() -> None:
+    await send_email("Welcome to the platform", email)
+
+await context.run("new-signup", _new_signup)
+
+```
+
+</CodeGroup>
+
 ### 2. Initial Waiting Period
 
 To leave time for the user to interact with our platform, we use `context.sleep` to pause our workflow for 3 days:
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 await context.sleep("wait-for-3-days", 60 * 60 * 24 * 3)
 ```
 
+```python main.py
+await context.sleep("wait-for-3-days", 60 * 60 * 24 * 3)
+
+```
+
+</CodeGroup>
+
 ### 3. Periodic State Check
 
 We enter an infinite loop to periodically (every month) check the user's engagement level with our platform and send appropriate emails:
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 while (true) {
@@ -107,6 +195,33 @@ while (true) {
   await context.sleep("wait-for-1-month", 60 * 60 * 24 * 30)
 }
 ```
+
+```python main.py
+while True:
+
+    async def _check_user_state() -> UserState:
+        return await get_user_state()
+
+    state: UserState = await context.run("check-user-state", _check_user_state)
+
+    if state == "non-active":
+
+        async def _send_email_non_active() -> None:
+            await send_email("Email to non-active users", email)
+
+        await context.run("send-email-non-active", _send_email_non_active)
+    else:
+
+        async def _send_email_active() -> None:
+            await send_email("Send newsletter to active users", email)
+
+        await context.run("send-email-active", _send_email_active)
+
+    await context.sleep("wait-for-1-month", 60 * 60 * 24 * 30)
+    
+```
+
+</CodeGroup>
 
 ## Key Features
 

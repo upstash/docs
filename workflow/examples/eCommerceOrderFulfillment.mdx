@@ -18,6 +18,8 @@ Our workflow will:
 
 ## Code Example
 
+<CodeGroup>
+
 ```typescript api/workflow/route.ts
 import { serve } from "@upstash/workflow/nextjs"
 import {
@@ -74,11 +76,92 @@ export const { POST } = serve<OrderPayload>(async (context) => {
 })
 ```
 
+```python main.py
+from fastapi import FastAPI
+from typing import List, TypedDict
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+from utils import (
+    create_order_id,
+    check_stock_availability,
+    process_payment,
+    dispatch_order,
+    send_order_confirmation,
+    send_dispatch_notification,
+)
+
+app = FastAPI()
+serve = Serve(app)
+
+
+class OrderItem(TypedDict):
+    product_id: str
+    quantity: int
+
+
+class OrderPayload(TypedDict):
+    user_id: str
+    items: List[OrderItem]
+
+
+@serve.post("/order-fulfillment")
+async def order_fulfillment(context: AsyncWorkflowContext[OrderPayload]) -> None:
+    # Get the order payload from the request
+    payload = context.request_payload
+    user_id = payload["user_id"]
+    items = payload["items"]
+
+    # Step 1: Create Order Id
+    async def _create_order_id():
+        return await create_order_id(user_id)
+
+    order_id: str = await context.run("create-order-id", _create_order_id)
+
+    # Step 2: Verify stock availability
+    async def _check_stock():
+        return await check_stock_availability(items)
+
+    stock_available: bool = await context.run("check-stock", _check_stock)
+
+    if not stock_available:
+        print("Some items are out of stock")
+        return
+
+    # Step 3: Process payment
+    async def _process_payment():
+        return await process_payment(order_id)
+
+    await context.run("process-payment", _process_payment)
+
+    # Step 4: Dispatch the order
+    async def _dispatch_order():
+        return await dispatch_order(order_id, items)
+
+    await context.run("dispatch-order", _dispatch_order)
+
+    # Step 5: Send order confirmation email
+    async def _send_confirmation():
+        return await send_order_confirmation(user_id, order_id)
+
+    await context.run("send-confirmation", _send_confirmation)
+
+    # Step 6: Send dispatch notification
+    async def _send_dispatch_notification():
+        return await send_dispatch_notification(user_id, order_id)
+
+    await context.run("send-dispatch-notification", _send_dispatch_notification)
+
+```
+
+</CodeGroup>
+
 ## Code Breakdown
 
 ### 1. Verifying Stock Availability
 
 We start by creating an order id and verifying if the items in the order are available in stock. If not, we throw an error to halt the process:
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 const orderId = await context.run("create-order-id", async () => {
@@ -95,9 +178,30 @@ if (!stockAvailable) {
 }
 ```
 
+```python main.py
+async def _create_order_id():
+    return await create_order_id(user_id)
+
+order_id: str = await context.run("create-order-id", _create_order_id)
+
+async def _check_stock():
+    return await check_stock_availability(items)
+
+stock_available: bool = await context.run("check-stock", _check_stock)
+
+if not stock_available:
+    print("Some items are out of stock")
+    return
+
+```
+
+</CodeGroup>
+
 ### 2. Processing Payment
 
 Once the stock is verified, the workflow processes the payment for the order:
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 await context.run("process-payment", async () => {
@@ -105,9 +209,21 @@ await context.run("process-payment", async () => {
 })
 ```
 
+```python main.py
+async def _process_payment():
+    return await process_payment(order_id)
+
+await context.run("process-payment", _process_payment)
+
+```
+
+</CodeGroup>
+
 ### 3. Dispatching the Order
 
 After payment confirmation, we dispatch the order for delivery:
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 await context.run("dispatch-order", async () => {
@@ -115,9 +231,21 @@ await context.run("dispatch-order", async () => {
 })
 ```
 
+```python main.py
+async def _dispatch_order():
+    return await dispatch_order(order_id, items)
+
+await context.run("dispatch-order", _dispatch_order)
+
+```
+
+</CodeGroup>
+
 ### 4. Sending Confirmation and Notification Emails
 
 Lastly, we send an order confirmation email to the customer and notify them when the order is dispatched:
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 await context.run("send-confirmation", async () => {
@@ -129,10 +257,25 @@ await context.run("send-dispatch-notification", async () => {
 })
 ```
 
+```python main.py
+async def _send_confirmation():
+    return await send_order_confirmation(user_id, order_id)
+
+await context.run("send-confirmation", _send_confirmation)
+
+async def _send_dispatch_notification():
+    return await send_dispatch_notification(user_id, order_id)
+
+await context.run("send-dispatch-notification", _send_dispatch_notification)
+
+```
+
+</CodeGroup>
+
 ## Key Features
 
 1. **Stock Verification**: Ensures items are available in stock before processing the payment, avoiding issues with unavailable products.
-  
+
 2. **Payment Processing**: Handles payment securely and only proceeds to dispatch if successful.
-  
+
 3. **Customer Notifications**: Keeps the customer informed at each step of the order process, improving user experience.
