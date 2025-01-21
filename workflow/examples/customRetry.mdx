@@ -20,15 +20,9 @@ The following code:
 
 ```typescript api/workflow/route.ts
 import { serve } from "@upstash/workflow/nextjs"
-import { convertToSeconds, storeResponse } from "@/lib/utils"
+import { storeResponse } from "@/lib/utils"
 
-const OPENAI_CONFIG = {
-  url: "https://api.openai.com/v1/chat/completions",
-  model: "gpt-4",
-  maxTokens: 150,
-  maxRetries: 10,
-  baseDelay: 10, // seconds
-}
+const BASE_DELAY = 10;
 
 const createSystemMessage = () => ({
   role: "system",
@@ -40,27 +34,24 @@ const createUserMessage = (data: string) => ({
   content: `Analyze this data chunk: ${data}`,
 })
 
-export const { POST } = serve<{ userData: string }>(async (workflow) => {
+export const { POST } = serve<{ userData: string }>(async (context) => {
   // 👇 initial data sent along when triggering the workflow
-  const { userData } = workflow.requestPayload
+  const { userData } = context.requestPayload
 
   for (let attempt = 0; attempt < 10; attempt++) {
-    const response = await workflow.call(`call-openai`, {
-      url: OPENAI_CONFIG.url,
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
+    const response = await context.api.openai.call(`call-openai`, {
+      token: process.env.OPENAI_API_KEY!,
+      operation: "chat.completions.create",
       body: {
-        model: OPENAI_CONFIG.model,
+        model: "gpt-3.5-turbo",
         messages: [createSystemMessage(), createUserMessage(userData)],
-        max_tokens: OPENAI_CONFIG.maxTokens,
+        max_completion_tokens: 150,
       },
     })
 
     // Success case
     if (response.status < 300) {
-      await workflow.run("store-response-in-db", () => storeResponse(response.body))
+      await context.run("store-response-in-db", () => storeResponse(response.body))
       return
     }
 
@@ -69,16 +60,16 @@ export const { POST } = serve<{ userData: string }>(async (workflow) => {
       const resetTime =
         response.header["x-ratelimit-reset-tokens"]?.[0] ||
         response.header["x-ratelimit-reset-requests"]?.[0] ||
-        OPENAI_CONFIG.baseDelay
+        BASE_DELAY
 
       // assuming `resetTime` is in seconds
-      await workflow.sleep("sleep-until-retry", Number(resetTime))
+      await context.sleep("sleep-until-retry", Number(resetTime))
 
       continue
     }
 
     // Any other scenario - pause for 5 seconds to avoid overloading OpenAI API
-    await workflow.sleep("pause-to-avoid-spam", 5)
+    await context.sleep("pause-to-avoid-spam", 5)
   }
 })
 ```
@@ -171,7 +162,7 @@ This POST endpoint serves our workflow. We create a loop to attempt the API call
 <CodeGroup>
 
 ```typescript TypeScript
-export const { POST } = serve<{ userData: string }>(async (workflow) => {
+export const { POST } = serve<{ userData: string }>(async (context) => {
   for (let attempt = 0; attempt < 10; attempt++) {
     // TODO: call API in here
   }
@@ -190,10 +181,11 @@ async def custom_retry_logic(context: AsyncWorkflowContext[InitialData]) -> None
 
 ### 2. Making a Third-Party API Call
 
-We use `workflow.call` to send a request to any third-party API, for example OpenAI.
+We use `context.api.openai.call` to send a request to OpenAI.
 
 <Note>
-  Using `workflow.call` to request data from an API is one of the most powerful Upstash Workflow
+  `context.api.openai.call` uses `context.call` in the background and
+  using `context.call` to request data from an API is one of the most powerful Upstash Workflow
   features. Your request can take much longer than any function timeout would normally allow,
   completely bypassing any platform-specific timeout limits.
 </Note>
@@ -203,16 +195,13 @@ Our request to OpenAI includes an auth header, model parameters, and the data to
 <CodeGroup>
 
 ```typescript TypeScript
-const response = await workflow.call(`call-openai`, {
-  url: OPENAI_CONFIG.url,
-  method: "POST",
-  headers: {
-    authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-  },
+const response = await context.api.openai.call(`call-openai`, {
+  token: process.env.OPENAI_API_KEY,
+  operation: "chat.completions.create",
   body: {
-    model: OPENAI_CONFIG.model,
+    model: "gpt-3.5-turbo",
     messages: [createSystemMessage(), createUserMessage(userData)],
-    max_tokens: OPENAI_CONFIG.maxTokens,
+    max_completion_tokens: 150,
   },
 })
 ```
@@ -244,7 +233,7 @@ If the OpenAI response is successful (status code under 300), we store the respo
 
 ```typescript TypeScript
 if (response.status < 300) {
-  await workflow.run("store-response-in-db", () => storeResponse(response.body))
+  await context.run("store-response-in-db", () => storeResponse(response.body))
   return
 }
 ```
@@ -273,10 +262,10 @@ if (response.status === 429) {
   const resetTime =
     response.header["x-ratelimit-reset-tokens"]?.[0] ||
     response.header["x-ratelimit-reset-requests"]?.[0] ||
-    OPENAI_CONFIG.baseDelay
+    BASE_DELAY
 
   // assuming `resetTime` is in seconds
-  await workflow.sleep("sleep-until-retry", Number(resetTime))
+  await context.sleep("sleep-until-retry", Number(resetTime))
 
   continue
 }
@@ -309,7 +298,7 @@ To avoid making too many requests in a short period and possibly overloading the
 <CodeGroup>
 
 ```typescript TypeScript
-await workflow.sleep("pause-to-avoid-spam", 5)
+await context.sleep("pause-to-avoid-spam", 5)
 ```
 
 ```python Python
