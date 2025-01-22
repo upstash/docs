@@ -19,6 +19,8 @@ Our workflow will:
 
 ## Code Example
 
+<CodeGroup>
+
 ```typescript api/workflow/route.ts
 import { serve } from "@upstash/workflow/nextjs";
 
@@ -122,12 +124,130 @@ async function chargeCustomer(attempt: number) {
 }
 ```
 
+```python main.py
+from fastapi import FastAPI
+from typing import TypedDict, Optional
+from dataclasses import dataclass
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@dataclass
+class ChargeResult:
+    invoice_id: str
+    total_cost: float
+
+
+class ChargeUserPayload(TypedDict):
+    email: str
+
+
+async def send_email(email: str, content: str) -> None:
+    # Implement the logic to send an email
+    print("Sending email to", email, "with content:", content)
+
+
+async def check_suspension(email: str) -> bool:
+    # Implement the logic to check if the user is suspended
+    print("Checking suspension status for", email)
+    return True
+
+
+async def suspend_user(email: str) -> None:
+    # Implement the logic to suspend the user
+    print("Suspending the user", email)
+
+
+async def unsuspend_user(email: str) -> None:
+    # Implement the logic to unsuspend the user
+    print("Unsuspending the user", email)
+
+
+async def charge_customer(attempt: int) -> Optional[ChargeResult]:
+    # Implement the logic to charge the customer
+    print("Charging the customer")
+    if attempt <= 2:
+        raise Exception("Payment failed")
+    return ChargeResult(invoice_id="INV123", total_cost=100)
+
+
+@serve.post("/payment-retries")
+async def payment_retries(context: AsyncWorkflowContext[ChargeUserPayload]) -> None:
+    email = context.request_payload["email"]
+
+    async def _check_suspension() -> bool:
+        return await check_suspension(email)
+
+    for i in range(3):
+        # attempt to charge the user
+        async def _charge_customer() -> Optional[ChargeResult]:
+            try:
+                return await charge_customer(i + 1)
+            except Exception as e:
+                print(f"Error: {e}")
+                return None
+
+        result = await context.run("charge customer", _charge_customer)
+
+        if not result:
+            # Wait for a day
+            await context.sleep("wait for retry", 24 * 60 * 60)
+        else:
+            # Unsuspend User
+            is_suspended = await context.run("check suspension", _check_suspension)
+
+            if is_suspended:
+
+                async def _unsuspend_user() -> None:
+                    await unsuspend_user(email)
+
+                await context.run("unsuspend user", _unsuspend_user)
+
+            # send invoice email
+            async def _send_invoice_email() -> None:
+                await send_email(
+                    email,
+                    f"Payment successful. Invoice: {result.invoice_id}, Total cost: ${result.total_cost}",
+                )
+
+            await context.run("send invoice email", _send_invoice_email)
+
+            # by returning, we end the workflow run
+            return
+
+    # suspend user if the user isn't suspended
+    is_suspended = await context.run("check suspension", _check_suspension)
+
+    if not is_suspended:
+
+        async def _suspend_user() -> None:
+            await suspend_user(email)
+
+        await context.run("suspend user", _suspend_user)
+
+        async def _send_suspended_email() -> None:
+            await send_email(
+                email,
+                "Your account has been suspended due to payment failure. Please update your payment method.",
+            )
+
+        await context.run("send suspended email", _send_suspended_email)
+
+```
+
+</CodeGroup>
+
 ## Code Breakdown
 
 ### 1. Charge Customer
 We attempt to charge the customer:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 const result = await context.run("charge customer", async () => {
   try {
     return await chargeCustomer(i + 1),
@@ -138,6 +258,20 @@ const result = await context.run("charge customer", async () => {
 });
 ```
 
+```python Python
+async def _charge_customer() -> Optional[ChargeResult]:
+    try:
+        return await charge_customer(i + 1)
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+result = await context.run("charge customer", _charge_customer)
+
+```
+
+</CodeGroup>
+
 <Note>
 If we haven't put a try-catch block here, the workflow would still have retried the step.
 Hovewer, because we want to run custom logic when the payment fails, we catch the error here.
@@ -147,13 +281,15 @@ Hovewer, because we want to run custom logic when the payment fails, we catch th
 
 We try to charge the customer 3 times with a 24-hour delay between each attempt:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 for (let i = 0; i < 3; i++) {
   // attempt to charge the customer
 
   if (!result) {
     // Wait for a day
-    await context.sleep("wait for retry", 24 * 60 * 60);  
+    await context.sleep("wait for retry", 24 * 60 * 60);
   } else {
     // Payment succeeded
     // Unsuspend user, send invoice email
@@ -163,6 +299,22 @@ for (let i = 0; i < 3; i++) {
 }
 ```
 
+```python Python
+for i in range(3):
+    # attempt to charge the customer
+
+    if not result:
+        # Wait for a day
+        await context.sleep("wait for retry", 24 * 60 * 60)
+    else:
+        # Payment succeeded
+        # Unsuspend user, send invoice email
+        # end the workflow:
+        return
+
+```
+
+</CodeGroup>
 
 ### 3. If Payment Succeeds
 
@@ -170,7 +322,9 @@ for (let i = 0; i < 3; i++) {
 
 We check if the user is suspended and unsuspend them if they are:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 const isSuspended = await context.run("check suspension", async () => {
   return await checkSuspension(email);
 });
@@ -181,12 +335,30 @@ if (isSuspended) {
 }
 ```
 
+```python Python
+async def _check_suspension() -> bool:
+    return await check_suspension(email)
+
+is_suspended = await context.run("check suspension", _check_suspension)
+
+if is_suspended:
+
+    async def _unsuspend_user() -> None:
+        await unsuspend_user(email)
+
+    await context.run("unsuspend user", _unsuspend_user)
+
+```
+
+</CodeGroup>
+
 #### 3.2. Send Invoice Email
 
 We send an invoice we got from the payment step to the user:
 
+<CodeGroup>
 
-```typescript 
+```typescript TypeScript
 await context.run("send invoice email", async () => {
   await sendEmail(
     email,
@@ -194,6 +366,19 @@ await context.run("send invoice email", async () => {
   );
 });
 ```
+
+```python Python
+async def _send_invoice_email() -> None:
+    await send_email(
+        email,
+        f"Payment successful. Invoice: {result.invoice_id}, Total cost: ${result.total_cost}",
+    )
+
+await context.run("send invoice email", _send_invoice_email)
+
+```
+
+</CodeGroup>
 
 <Tip>
 One of the biggest advantages of using Upstash Workflow is that you have access to the result of the previous steps.
@@ -206,7 +391,9 @@ This allows you to pass data between steps without having to store it in a datab
 
 If the payment fails after 3 retries, we suspend the user and send them an email to notify them:
 
-```typescript 
+<CodeGroup>
+
+```typescript TypeScript
 const isSuspended = await context.run("check suspension", async () => {
   return await checkSuspension(email);
 });
@@ -224,3 +411,28 @@ if (!isSuspended) {
   });
 }
 ```
+
+```python Python
+async def _check_suspension() -> bool:
+    return await check_suspension(email)
+
+is_suspended = await context.run("check suspension", _check_suspension)
+
+if not is_suspended:
+
+    async def _suspend_user() -> None:
+        await suspend_user(email)
+
+    await context.run("suspend user", _suspend_user)
+
+    async def _send_suspended_email() -> None:
+        await send_email(
+            email,
+            "Your account has been suspended due to payment failure. Please update your payment method.",
+        )
+
+    await context.run("send suspended email", _send_suspended_email)
+
+```
+
+</CodeGroup>

@@ -17,6 +17,8 @@ Your workflow endpoint will be called multiple times during a workflow run. Ther
 
 Example:
 
+<CodeGroup>
+
 ```typescript api/workflow/route.ts
 export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
@@ -34,13 +36,35 @@ export const { POST } = serve<string>(async (context) => {
 })
 ```
 
+```python main.py
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    async def _step_1() -> Dict:
+        return {"success": True}
+
+    result = await context.run("step-1", _step_1)
+
+    print("This log will appear multiple times")
+
+    async def _step_2() -> None:
+        print("This log will appear just once")
+        print("Step 1 status is:", result["success"])
+
+    await context.run("step-2", _step_2)
+
+```
+
+</CodeGroup>
+
 ### Return Results from context.run for Later Use
 
 Always return step results if needed in subsequent steps.
 
 <CodeGroup>
 
-```typescript ❌ Incorrect:
+```typescript ❌ Incorrect - TypeScript
 export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
 
@@ -55,7 +79,7 @@ export const { POST } = serve<string>(async (context) => {
 })
 ```
 
-```typescript ✅ Correct
+```typescript ✅ Correct - TypeScript
 export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
 
@@ -67,6 +91,43 @@ export const { POST } = serve<string>(async (context) => {
     someOtherWork(result)
   })
 })
+```
+
+```python ❌ Incorrect - Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    result = None
+
+    async def _step_1() -> Dict:
+        nonlocal result
+        result = await some_work(input)
+
+    await context.run("step-1", _step_1)
+
+    async def _step_2() -> None:
+        await some_other_work(result)
+
+    await context.run("step-2", _step_2)
+
+```
+
+```python ✅ Correct - Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    async def _step_1() -> Dict:
+        return await some_work(input)
+
+    result = await context.run("step-1", _step_1)
+
+    async def _step_2() -> None:
+        await some_other_work(result)
+
+    await context.run("step-2", _step_2)
+
 ```
 
 </CodeGroup>
@@ -89,7 +150,7 @@ Example of what to avoid:
 
 <CodeGroup>
 
-```typescript ❌ Non-idempotent functions
+```typescript ❌ Non-idempotent functions - TypeScript
 export const { POST } = serve<{ entryId: string }>(async (context) => {
   const { entryId } = context.requestPayload;
 
@@ -103,7 +164,7 @@ export const { POST } = serve<{ entryId: string }>(async (context) => {
 })
 ```
 
-```typescript ❌ Time-dependent code
+```typescript ❌ Time-dependent code - TypeScript
 export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
 
@@ -120,7 +181,7 @@ export const { POST } = serve<string>(async (context) => {
 })
 ```
 
-```typescript ❌ Random code
+```typescript ❌ Random code - TypeScript
 export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
 
@@ -136,6 +197,47 @@ export const { POST } = serve<string>(async (context) => {
   }
 })
 ```
+
+```python ❌ Non-idempotent functions - Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    entry_id = context.request_payload["entry_id"]
+
+    # 👇 Problem: Non-idempotent function outside context.run:
+    result = await get_result_from_db(entry_id)
+    if result.should_return:
+        return
+
+    # ...
+
+```
+
+```python ❌ Time-dependent code - Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    # 👇 Problem: time-dependent code
+    if time.time() % 5 == 2:
+        await context.run("step-1", lambda: ...)
+    else:
+        await context.run("step-2", lambda: ...)
+
+```
+
+```python ❌ Random code - Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    # 👇 Problem: random code
+    if random.randint(0, 9) % 5 == 2:
+        await context.run("step-1", lambda: ...)
+    else:
+        await context.run("step-2", lambda: ...)
+
+```
+
 </CodeGroup>
 
 
@@ -143,7 +245,9 @@ If you implement a non-idempotent code like the one shown above, you might encou
 
 To prevent this, ensure that the non-idempotent code (such as `getResultFromDb` in the example) runs within `context.run`.
 
-```ts
+<CodeGroup>
+
+```typescript TypeScript
 const result = await context.run(async () => {
   await getResultFromDb(entryId)
 });
@@ -152,12 +256,26 @@ if (result.return) {
 }
 ```
 
+```python Python
+async def _get_result_from_db():
+    return await get_result_from_db(entry_id)
+
+result = await context.run("get-result-from-db", _get_result_from_db)
+
+if result.should_return:
+    return
+
+```
+
+</CodeGroup>
 
 ### Ensure Idempotency in `context.run`
 
 Business logic should be idempotent due to potential retries in distributed systems. In other words, **when a workflow runs twice with the same input, the end result should be the same as if the workflow only ran once**.
 
 In the example below, the `someWork` function must be idempotent:
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 export const { POST } = serve<string>(async (context) => {
@@ -169,6 +287,20 @@ export const { POST } = serve<string>(async (context) => {
 })
 ```
 
+```python main.py
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    async def _step_1() -> None:
+        return await some_work(input)
+
+    await context.run("step-1", _step_1)
+
+```
+
+</CodeGroup>
+
 Imagine that `someWork` executes once and makes a change to a database. However, before the database had a chance to respond with the successful change, the connection is lost. Your Workflow cannot know if the database change was successful or not. The caller has no choice but to retry, which will cause `someWork` to run twice.
 
 If `someWork` is not idempotent, this could lead to unintended consequences. For example duplicated records or corrupted data. Idempotency is crucial to maintaining the integrity and reliability of your workflow.
@@ -176,6 +308,8 @@ If `someWork` is not idempotent, this could lead to unintended consequences. For
 ### Don't Nest Context Methods
 
 Avoid calling `context.call`, `context.sleep`, `context.sleepFor`, or `context.run` within another `context.run`.
+
+<CodeGroup>
 
 ```typescript api/workflow/route.ts
 import { serve } from "@upstash/workflow/nextjs"
@@ -190,3 +324,19 @@ export const { POST } = serve<string>(async (context) => {
   })
 })
 ```
+
+```python main.py
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    async def _step_1() -> None:
+        await context.sleep(...) #  ❌ INCORRECT
+        await context.run(...) #  ❌ INCORRECT
+        await context.call(...) #  ❌ INCORRECT
+
+    await context.run("step-1", _step_1)
+
+```
+
+</CodeGroup>

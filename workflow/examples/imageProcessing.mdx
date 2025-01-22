@@ -2,6 +2,13 @@
 title: "Image Processing"
 ---
 
+<Note>
+  Since parallel steps are not yet available in
+  [workflow-py](https://github.com/upstash/workflow-py), Python example is implemented in a sequential manner. See our
+  [Roadmap](/workflow/roadmap) for feature parity plans and
+  [Changelog](/workflow/changelog) for updates.
+</Note>
+
 ## Introduction
 
 This example demonstrates how to process images using Upstash Workflow. The following workflow will upload an image, resize it into multiple resolutions, apply filters, and store the processed versions for later retrieval.
@@ -17,7 +24,9 @@ Our workflow will:
 
 ## Code Example
 
-```typescript
+<CodeGroup>
+
+```typescript api/workflow/route.ts
 import { serve } from "@upstash/workflow/nextjs"
 import {
   resizeImage,
@@ -92,17 +101,107 @@ export const { POST } = serve<{ imageId: string; userId: string }>(
 )
 ```
 
+```python main.py
+from fastapi import FastAPI
+from typing import List, TypedDict
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext, CallResponse
+from utils import store_image, get_image_url
+
+app = FastAPI()
+serve = Serve(app)
+
+
+class ImageResult(TypedDict):
+    image_url: str
+
+
+class ImageProcessingPayload(TypedDict):
+    image_id: str
+    user_id: str
+
+
+@serve.post("/process-image")
+async def process_image(context: AsyncWorkflowContext[ImageProcessingPayload]) -> None:
+    payload = context.request_payload
+    image_id = payload["image_id"]
+    user_id = payload["user_id"]
+
+    # Step 1: Retrieve the uploaded image
+    async def _get_image_url() -> str:
+        return await get_image_url(image_id)
+
+    image_url: str = await context.run("get-image-url", _get_image_url)
+
+    # Step 2: Resize the image to multiple resolutions
+    resolutions = [640, 1280, 1920]
+    resize_responses = []
+
+    for resolution in resolutions:
+        response: CallResponse[ImageResult] = await context.call(
+            f"resize-image-{resolution}",
+            # endpoint which returns ImageResult type in response
+            url="https://image-processing-service.com/resize",
+            method="POST",
+            body={"imageUrl": image_url, "width": resolution},
+        )
+        resize_responses.append(response)
+
+    resized_images = [response.body for response in resize_responses]
+
+    # Step 3: Apply filters to each resized image
+    filters = ["grayscale", "sepia", "contrast"]
+    filter_responses = []
+
+    for resized_image in resized_images:
+        for filter in filters:
+            response: CallResponse[ImageResult] = await context.call(
+                f"apply-filter-{filter}",
+                # endpoint which returns ImageResult type in response
+                url="https://image-processing-service.com/filter",
+                method="POST",
+                body={"imageUrl": resized_image["imageUrl"], "filter": filter},
+            )
+            filter_responses.append(response)
+
+    processed_images = [response.body for response in filter_responses]
+
+    # Step 4: Store processed images in cloud storage
+    async def _store_image() -> str:
+        return await store_image(processed_image["imageUrl"])
+
+    stored_image_urls: List[str] = []
+    for processed_image in processed_images:
+        stored_image_url = await context.run("store-image", _store_image)
+        stored_image_urls.append(stored_image_url)
+
+```
+
+</CodeGroup>
+
 ## Code Breakdown
 
 ### 1. Retrieving the Image
 
 We begin by getting the URL of the uploaded image based on its ID:
 
-```typescript
+<CodeGroup>
+
+```typescript TypeScript
 const imageUrl = await context.run("get-image-url", async () => {
   return await getImageUrl(imageId)
 })
 ```
+
+```python Python
+async def _get_image_url() -> str:
+    return await get_image_url(image_id)
+
+image_url: str = await context.run("get-image-url", _get_image_url)
+
+```
+
+</CodeGroup>
 
 ### 2. Resizing the Image
 
@@ -110,7 +209,9 @@ We resize the image into three different resolutions (640, 1280, 1920) using an 
 
 We call `context.call` for each resolution and use `Promise.all` to run them parallel:
 
-```typescript
+<CodeGroup>
+
+```typescript TypeScript
 const resolutions = [640, 1280, 1920]
 
 const resizedImages: { body: ImageResult }[] = await Promise.all(resolutions.map(
@@ -129,13 +230,35 @@ const resizedImages: { body: ImageResult }[] = await Promise.all(resolutions.map
 ))
 ```
 
+```python Python
+resolutions = [640, 1280, 1920]
+resize_responses = []
+
+for resolution in resolutions:
+    response: CallResponse[ImageResult] = await context.call(
+        f"resize-image-{resolution}",
+        # endpoint which returns ImageResult type in response
+        url="https://image-processing-service.com/resize",
+        method="POST",
+        body={"imageUrl": image_url, "width": resolution},
+    )
+    resize_responses.append(response)
+
+resized_images = [response.body for response in resize_responses]
+
+```
+
+</CodeGroup>
+
 ### 3. Applying Filters
 
 After resizing, we apply filters such as grayscale, sepia, and contrast to the resized images.
 
 Again, we call `context.call` for each filter & image pair. We collect the promises of these requests in an array `processedImagePromise`. Then, we call `Promise.all` again to run them all parallel.
 
-```typescript
+<CodeGroup>
+
+```typescript TypeScript
 const filters = ["grayscale", "sepia", "contrast"]
 const processedImagePromises: Promise<string>[] = []
 
@@ -159,11 +282,34 @@ for (const resizedImage of resizedImages) {
 const processedImages: { body: ImageResult }[] = await Promise.all(processedImagePromises)
 ```
 
+```python Python
+filters = ["grayscale", "sepia", "contrast"]
+filter_responses = []
+
+for resized_image in resized_images:
+    for filter in filters:
+        response: CallResponse[ImageResult] = await context.call(
+            f"apply-filter-{filter}",
+            # endpoint which returns ImageResult type in response
+            url="https://image-processing-service.com/filter",
+            method="POST",
+            body={"imageUrl": resized_image["imageUrl"], "filter": filter},
+        )
+        filter_responses.append(response)
+
+processed_images = [response.body for response in filter_responses]
+
+```
+
+</CodeGroup>
+
 ### 4. Storing the Processed Images
 
 We store each processed image in cloud storage and return the URLs of the stored images:
 
-```typescript
+<CodeGroup>
+
+```typescript TypeScript
 const storedImageUrls: string[] = await Promise.all(
   processedImages.map(
     processedImage => context.run(`store-image`, async () => {
@@ -172,6 +318,19 @@ const storedImageUrls: string[] = await Promise.all(
   )
 )
 ```
+
+```python Python
+async def _store_image() -> str:
+    return await store_image(processed_image["imageUrl"])
+
+stored_image_urls: List[str] = []
+for processed_image in processed_images:
+    stored_image_url = await context.run("store-image", _store_image)
+    stored_image_urls.append(stored_image_url)
+
+```
+
+</CodeGroup>
 
 ## Key Features
 

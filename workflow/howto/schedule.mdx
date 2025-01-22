@@ -8,6 +8,8 @@ You can schedule a workflow to run periodically using a cron definition.
 
 For example, let's define a workflow that creates a backup of some important data daily. Our workflow endpoint might look like this:
 
+<CodeGroup>
+
 ```typescript api/workflow/route.ts
 import { serve } from "@upstash/workflow/nextjs";
 import { createBackup, uploadBackup } from "./utils";
@@ -31,6 +33,32 @@ export const { POST } = serve(
 );
 ```
 
+```python main.py
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+from utils import create_backup, upload_backup
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@serve.post("/api/workflow")
+async def workflow(context: AsyncWorkflowContext[str]) -> None:
+    async def _step1():
+        return await create_backup()
+
+    backup = await context.run("create_backup", _step1)
+
+    async def _step2():
+        await upload_backup(backup)
+
+    await context.run("upload_backup", _step2)
+
+```
+
+</CodeGroup>
+
 To run this endpoint on a schedule, navigate to `Schedules` in your QStash dashboard and click `Create Schedule`:
 
 <Frame>
@@ -50,6 +78,8 @@ Your workflow will now run repeatedly at the interval you have defined. For more
 In order to massively improve the user experience, many applications send weekly summary reports to their users. These could be weekly analytics summaries or SEO statistics to keep users engaged with the platform.
 
 Let's create a user-specific schedule, sending a first report to each user exactly 7 days after they signed up:
+
+<CodeGroup>
 
 ```typescript api/sign-up/route.ts
 import { signUp } from "@/utils/auth-utils";
@@ -84,11 +114,54 @@ export async function POST(request: Request) {
 }
 ```
 
+```python main.py
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from qstash import AsyncQStash
+from datetime import datetime, timedelta
+
+app = FastAPI()
+
+client = AsyncQStash("<QSTACK_TOKEN>")
+
+
+@app.post("/api/sign-up")
+async def sign_up(request: Request):
+    user_data = await request.json()
+
+    # Simulate user registration
+    user = await sign_up(user_data)
+
+    # Calculate the date for the first summary (7 days from now)
+    first_summary_date = datetime.now() + timedelta(days=7)
+
+    # Create cron expression for weekly summaries starting 7 days from signup
+    cron = f"{first_summary_date.minute} {first_summary_date.hour} * * {first_summary_date.day}"
+
+    # Schedule weekly account summary
+    await client.schedule.create_json(
+        schedule_id=f"user-summary-{user.email}",
+        destination="https://<YOUR_APP_URL>/api/send-weekly-summary",
+        body={"userId": user.id},
+        cron=cron,
+    )
+
+    return JSONResponse(
+        content={"success": True, "message": "User registered and summary scheduled"},
+        status_code=201,
+    )
+
+```
+
+</CodeGroup>
+
 This code will call our workflow every week, starting exactly seven days after a user signs up. Each call to our workflow will contain the respective user's ID.
 
 Note: when creating a user-specific schedule, pass a unique `scheduleId` to ensure the operation is idempotent. (See [caveats](/workflow/basics/caveats) for more details on why this is important).
 
 Lastly, add the summary-creating and email-sending logic inside of your workflow. For example:
+
+<CodeGroup>
 
 ```typescript api/send-weekly-summary/route.ts
 import { serve } from "@upstash/workflow/nextjs";
@@ -119,5 +192,46 @@ export const { POST } = serve<WeeklySummaryData>(async (context) => {
   });
 });
 ```
+
+```python main.py
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+from utils import get_user_data, generate_summary, send_email
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@dataclass
+class WeeklySummaryData:
+    user_id: str
+
+
+@serve.post("/api/send-weekly-summary")
+async def send_weekly_summary(context: AsyncWorkflowContext[WeeklySummaryData]) -> None:
+    user_id = context.request_payload.user_id
+
+    # Step 1: Fetch user data
+    async def _step1():
+        return await get_user_data(user_id)
+
+    user = await context.run("fetch_user_data", _step1)
+
+    # Step 2: Generate weekly summary
+    async def _step2():
+        return await generate_summary(user_id)
+
+    summary = await context.run("generate_summary", _step2)
+
+    # Step 3: Send email with weekly summary
+    async def _step3():
+        await send_email(user.email, "Your Weekly Summary", summary)
+
+    await context.run("send_summary_email", _step3)
+
+```
+
+</CodeGroup>
 
 Just like that, each user will receive an account summary every week, starting one week after signing up.
