@@ -1,0 +1,82 @@
+---
+title: "Prompt Chaining"
+---
+
+<img src="/img/workflow/agents/diagram/prompt-chain-diagram.png" />
+
+This workflow involves chaining multiple LLM calls, where the output of one agent becomes the input for the next agent.
+
+```ts
+import { serve } from "@upstash/workflow/nextjs";
+import { WikipediaQueryRun } from "@langchain/community/tools/wikipedia_query_run";
+
+export const { POST } = serve(async (context) => {
+  const model = context.agents.openai('gpt-3.5-turbo');
+
+  const agent1 = context.agents.agent({
+    model,
+    name: 'firstAgent',
+    maxSteps: 1,
+    background: 'You are an agent that lists famous physicists.',
+    tools: {}
+  });
+
+  const agent2 = context.agents.agent({
+    model,
+    name: 'secondAgent',
+    // set to 2 as this agent will first request tools
+    // and then summarize them:
+    maxSteps: 2,
+    background:
+      'You are an agent that describes the work of' +
+      ' the physicists listed in the previous prompt.',
+    tools: {
+      wikiTool: new WikipediaQueryRun({
+        topKResults: 1,
+        maxDocContentLength: 500,
+      })
+    }
+  });
+
+  const agent3 = context.agents.agent({
+    model,
+    name: 'thirdAgent',
+    maxSteps: 1,
+    background:
+      'You are an agent that summarizes the ' +
+      'works of the physicists mentioned previously.',
+    tools: {}
+  });
+
+  // Chaining agents
+  const firstOutput = await context.agents.task({
+    agent: agent1,
+    prompt: "List 3 famous physicists."
+  }).run();
+
+  const secondOutput = await context.agents.task({
+    agent: agent2,
+    prompt: `Describe the work of: ${firstOutput.text}`
+  }).run();
+  
+
+  const { text } = await context.agents.task({
+    agent: agent3,
+    prompt: `Summarize: ${secondOutput.text}`
+  }).run();
+
+  console.log(text);
+});
+```
+
+<img src="/img/workflow/agents/logs/logs-chain.png" />
+
+In response to the prompt, our agents generate this response:
+
+```
+Albert Einstein was a German physicist known for his theory of relativity and the famous equation E=mc^2. He made significant contributions to quantum mechanics and was awarded the Nobel Prize in Physics in 1921. 
+
+Isaac Newton, an English polymath, was a key figure in the Scientific Revolution and the Enlightenment. He is famous for his laws of motion and universal gravitation, as outlined in his book "PhilosophiÃ¦ Naturalis Principia Mathematica."
+
+Marie Curie, a Polish-French physicist and chemist, conducted pioneering research on radioactivity and was the first woman to win a Nobel Prize. She is the only person to win Nobel Prizes in two scientific fields and her work has had a lasting impact on physics and chemistry.
+```

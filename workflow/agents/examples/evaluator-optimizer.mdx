@@ -1,0 +1,70 @@
+---
+title: "Evaluator-Optimizer"
+---
+
+<img src="/img/workflow/agents/diagram/evaluator-diagram.png" />
+
+In this example, the generator creates output and passes it to the evaluator, which evaluates the response. If the evaluation fails, the evaluator returns corrections, and the generator is called again using the corrected output.
+
+```ts
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve(async (context) => {
+  const model = context.agents.openai('gpt-3.5-turbo');
+
+  // Generator agent that generates content
+  const generator = context.agents.agent({
+    model,
+    name: 'generator',
+    maxSteps: 1,
+    background: 'You are an agent that generates text based on a prompt.',
+    tools: {}
+  });
+
+  // Evaluator agent that evaluates the text and gives corrections
+  const evaluator = context.agents.agent({
+    model,
+    name: 'evaluator',
+    maxSteps: 1,
+    background: 'You are an agent that evaluates the generated text and provides corrections if needed.',
+    tools: {}
+  });
+
+  let generatedText = '';
+  let evaluationResult = '';
+
+  const prompt = "Generate a short explanation of quantum mechanics.";
+  let nextPrompt = prompt;
+  for (let i = 0; i < 3; i++) {
+    // Construct prompt for generator: 
+    // - If there's no evaluation, use the original prompt
+    // - If there's an evaluation, provide the prompt, the last generated text, and the evaluator's feedback
+    if (evaluationResult && evaluationResult !== "PASS") {
+      nextPrompt = `Please revise the answer to the question "${prompt}". Previous answer was: "${generatedText}", which received this feedback: "${evaluationResult}".`;
+    }
+
+    // Generate content
+    const generatedResponse = await context.agents.task({ agent: generator, prompt: nextPrompt }).run();
+    generatedText = generatedResponse.text
+
+    // Evaluate the generated content
+    const evaluationResponse = await context.agents.task({ agent: evaluator, prompt: `Evaluate and provide feedback for the following text: ${generatedText}` }).run();
+    evaluationResult = evaluationResponse.text
+
+    // If the evaluator accepts the content (i.e., "PASS"), stop
+    if (evaluationResult.includes("PASS")) {
+      break;
+    }
+  }
+
+  console.log(generatedText);
+});
+```
+
+<img src="/img/workflow/agents/logs/logs-evaluator.png" />
+
+In response to the prompt, our agents generate this response:
+
+```
+Quantum mechanics is a branch of physics that describes the behavior of particles at the smallest scales, such as atoms and subatomic particles. It introduces the concept of quantized energy levels, wave-particle duality, and probabilistic nature of particles. In quantum mechanics, particles can exist in multiple states simultaneously until measured, and their behavior is governed by mathematical equations known as wave functions. This theory has revolutionized our understanding of the fundamental building blocks of the universe and has led to the development of technologies like quantum computing and quantum cryptography.
+```

@@ -1,0 +1,93 @@
+---
+title: "Orchestrator-Workers"
+---
+
+<img src="/img/workflow/agents/diagram/orchestrator-diagram.png" />
+
+This workflow uses an orchestrator to direct multiple worker agents to handle different subtasks, then synthesizes their outputs.
+
+```ts
+import { serve } from "@upstash/workflow/nextjs";
+import { WikipediaQueryRun } from "@langchain/community/tools/wikipedia_query_run";
+
+const wikiTool = new WikipediaQueryRun({
+  topKResults: 1,
+  maxDocContentLength: 500,
+})
+
+export const { POST } = serve(async (context) => {
+  const model = context.agents.openai('gpt-4o');
+
+  // Worker agents
+  const worker1 = context.agents.agent({
+    model,
+    name: 'worker1',
+    tools: { wikiTool },
+    maxSteps: 3,
+    background: 'You are a worker agent that answers general questions about advanced physics.'
+  });
+
+  const worker2 = context.agents.agent({
+    model,
+    name: 'worker2',
+    tools: { wikiTool },
+    maxSteps: 3,
+    background: 'You are a worker agent that answers questions about quantum mechanics.'
+  });
+
+  const worker3 = context.agents.agent({
+    model,
+    name: 'worker3',
+    tools: { wikiTool },
+    maxSteps: 3,
+    background: 'You are a worker agent that answers questions about relativity.'
+  });
+
+  // Synthesizing results
+  const task = context.agents.task({
+    model,
+    prompt: `Create a Q&A for advanced topics in physics`,
+    agents: [worker1, worker2, worker3],
+    maxSteps: 3,
+  })
+  const { text } = await task.run();
+
+  console.log(text);
+});
+```
+
+If you wish to manually use the model results instead of utilizing a [manager LLM](/workflow/agents/overview#multi-agents) as we did in this example, see the [parallelization example](/workflow/agents/examples/parallelization)
+
+<img src="/img/workflow/agents/logs/logs-manager.png" />
+
+In response to the prompt, the agents create the following response:
+
+```
+### Quantum Mechanics
+
+**Q: What is quantum mechanics?**
+A: Quantum mechanics is a fundamental theory in physics that describes the behavior of nature at the atomic and subatomic levels. It serves as the foundation for all quantum physics, including quantum chemistry, quantum field theory, quantum technology, and quantum information science.
+
+**Q: What are some key principles of quantum mechanics?**
+A: 
+1. **Wave-Particle Duality**: Particles exhibit both wave-like and particle-like properties.
+2. **Uncertainty Principle**: Certain pairs of physical properties, like position and momentum, cannot be simultaneously measured with arbitrary precision.
+3. **Quantum Superposition**: A quantum system can exist in multiple states at once until it is measured.
+4. **Quantum Entanglement**: Particles become interconnected such that the state of one influences the state of another, regardless of distance.
+5. **Quantization**: Energy levels in quantum systems are discrete.
+6. **Probability and Wave Functions**: Quantum systems are described by wave functions, which provide probabilities of finding a system in a particular state.
+7. **Observer Effect**: Measurement affects the system being observed.
+
+### Relativity
+
+**Q: What is the theory of relativity?**
+A: Developed by Albert Einstein, the theory of relativity encompasses two interrelated theories: special relativity and general relativity.
+
+**Q: What is special relativity?**
+A: Proposed by Einstein in 1905, special relativity addresses the relationship between space and time in the absence of gravity. It is based on two key postulates: the invariance of physical laws in all inertial frames and the constancy of the speed of light in a vacuum.
+
+**Q: What is general relativity?**
+A: Published by Einstein in 1915, general relativity is a geometric theory of gravitation. It describes gravity as a geometric property of space and time, or four-dimensional spacetime, and explains how massive objects cause a distortion in spacetime.
+
+These topics challenge classical intuitions and have led to significant advancements in our understanding of the universe and the development of new technologies.
+```
