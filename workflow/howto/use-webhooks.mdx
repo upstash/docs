@@ -30,7 +30,9 @@ Upstash Workflow provides a simple way to receive these events and trigger workf
 
 To create a webhook endpoint, use the `serve` function from `@upstash/workflow`:
 
-```typescript
+<CodeGroup>
+
+```typescript TypeScript
 import { serve } from "@upstash/workflow/nextjs";
 
 export const { POST } = serve(
@@ -45,12 +47,33 @@ export const { POST } = serve(
 );
 ```
 
+```python Python
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+
+def initial_payload_parser(payload):
+    return payload
+
+
+@serve.post("/api/example", initial_payload_parser=initial_payload_parser)
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    # Your webhook handling logic here
+
+```
+
+</CodeGroup>
+
 #### Request Validation
 
 Always validate incoming webhook requests to ensure they're legitimate. This way, no one other than the original webhook source can trigger your workflow. Here's an example using Clerk webhooks with Svix:
 
 <CodeGroup>
-```typescript Validate and Parse in Workflow
+```typescript Validate and Parse in Workflow - TypeScript
 export const { POST } = serve<string>(async (context) => {
 	const payloadString = context.requestPayload;
 	const headerPayload = context.headers;
@@ -66,9 +89,29 @@ export const { POST } = serve<string>(async (context) => {
 
 })
 
-````
+```
 
-```typescript Validation Function
+```python Validate and Parse in Workflow - Python
+async def validate_request(payload_string: str, header_payload: dict):
+    # Validate the request
+    pass
+
+
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    payload_string = context.request_payload
+    header_payload = context.headers
+
+    try:
+        event = await validate_request(payload_string, header_payload)
+    except:
+        return
+
+    # Next steps based on the event
+
+```
+
+```typescript Validation Function - TypeScript
 import { Webhook } from "svix";
 import { WebhookEvent } from "@clerk/nextjs/server";
 
@@ -83,7 +126,7 @@ async function validateRequest(payloadString: string, headerPayload: Headers) {
   const wh = new Webhook(webhookSecret);
   return wh.verify(payloadString, svixHeaders) as WebhookEvent;
 }
-````
+```
 
 </CodeGroup>
 
@@ -91,7 +134,9 @@ async function validateRequest(payloadString: string, headerPayload: Headers) {
 
 Use the context.run method to process webhook events in discrete, trackable steps:
 
-```typescript
+<CodeGroup>
+
+```typescript TypeScript
 export const { POST } = serve(async (context) => {
   // ... Parse and validate the incoming request
 
@@ -121,9 +166,49 @@ export const { POST } = serve(async (context) => {
 });
 ```
 
+```python Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    # ... Parse and validate the incoming request
+
+    async def _handle_webhook_event():
+        if event.type == "user.created":
+            clerk_user_id = event.data["id"]
+            email_addresses = event.data["email_addresses"]
+            first_name = event.data["first_name"]
+
+            primary_email = next(
+                (
+                    email
+                    for email in email_addresses
+                    if email.id == event.data["primary_email_address_id"]
+                ),
+                None,
+            )
+
+            if not primary_email:
+                return False
+
+            return {
+                "event": event.type,
+                "user_id": clerk_user_id,
+                "email": primary_email["email_address"],
+                "first_name": first_name,
+            }
+
+        return False
+
+    user = await context.run("handle-webhook-event", _handle_webhook_event)
+
+```
+
+</CodeGroup>
+
 After validating the webhook and extracting the initial user data, you'll often need to perform additional operations like creating customer records, sending welcome emails etc.
 
-```typescript
+<CodeGroup>
+
+```typescript TypeScript
 export const { POST } = serve(async (context) => {
   // ... Previous validation and user data extraction
 
@@ -144,5 +229,28 @@ export const { POST } = serve(async (context) => {
   /// ... Additional steps
 });
 ```
+
+```python Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    # ... Previous validation and user data extraction
+
+    if not user:
+        return
+
+    async def _create_stripe_customer():
+        return await stripe.customers.create(
+            email=user["email"],
+            name=f"{user['first_name']} {user['last_name']}",
+            metadata={"user_id": user["user_id"]},
+        )
+
+    customer = await context.run("create-stripe-customer", _create_stripe_customer)
+
+    # ... Additional steps
+
+```
+
+</CodeGroup>
 
 You're now ready to perform any operation in the following steps.
