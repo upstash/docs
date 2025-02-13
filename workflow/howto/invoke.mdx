@@ -1,0 +1,57 @@
+---
+title: "Invoke other workflows"
+---
+
+You can start another workflow run inside a workflow and await its execution to complete.
+This allows to orchestrate multiple workflows together without external syncranization.
+
+```typescript
+const { response, isFailed, isCanceled } = await context.invoke("analyze-content", {
+    workflow: analyzeContent,
+    body: {/**/},
+    headers: {/**/}
+})
+```
+
+As you may notice, we pass a workflow object to the invoke function. This object is initialized using the `createWorkflow()` function.
+
+Normally, workflows are initialized with `serve()` method and exposed as a standalone route in your application.
+However, when workflows are defined separately using `serve()`, type safety is not guaranteed.
+
+To ensure type safety for request and response when invoking other workflows, we introduced the `createWorkflow()` function.
+`createWorkflow()` returns a referenceable workflow object that can be used in `context.invoke()`.
+
+```typescript
+import { WorkflowContext }  from "@upstash/workflow";
+import { create, serve } from "@upstash/workflow/nextjs";
+
+// 👇 anotherWorkflow: (string) => number
+const anotherWorkflow = createWorkflow(async (context: WorkflowContext<string>) => {
+
+    await context.run("step-1", () => {
+        // Execute any business logic...
+    }),
+
+    return {message: "This is the data returned by workflow"}
+});
+
+const someWorkflow = createWorkflow(async (context) => {
+    // 👇 type(response) = {message: string} 
+    const { response } = await context.invoke("invoke ", {
+        workflow: anotherWorkflow,
+        // 👇 type(body) = string
+        body: "user-1"
+    }),
+});
+
+export const { POST } = serve([someWorkflow, anotherWorkflow])
+```
+
+`createWorkflow()` does not expose your workflow like `serve()`, it just initializes the workflow object.
+To be able to use the workflow, they must be exposed with `serve([<WORKFLOW_LIST>])` function.
+
+<Warning>
+If workflows are going to be invoke each other, they must be exposed in the same `serve` endpoint.
+
+If you pass a workflow object which is initialized with `createWorkflow()` but not exposed inside the same `serve`, you will get a runtime error.
+</Warning>
