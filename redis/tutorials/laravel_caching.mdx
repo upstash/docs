@@ -1,0 +1,352 @@
+---
+title: "Caching in Laravel with Redis"
+---
+
+## Project Setup
+
+Create a new Laravel application:
+
+```shell
+laravel new todo-cache
+cd todo-cache
+```
+
+## Database Setup
+
+Create a Redis database using [Upstash Console](https://console.upstash.com). Go to the **Connect to your database** section and click on Laravel. Copy those values into your .env file:
+
+```shell .env
+REDIS_HOST="<YOUR_ENDPOINT>"
+REDIS_PORT=6379
+REDIS_PASSWORD="<YOUR_PASSWORD>"
+```
+
+### Cache Setup
+To use Upstash Redis as your caching driver, update the CACHE_STORE in your .env file:
+
+```shell .env
+CACHE_STORE="redis"
+REDIS_CACHE_DB="0"
+```
+
+## Creating a Todo App
+
+First, we'll create a Todo model with its associated controller, factory, migration, and API resource files:
+
+```shell
+php artisan make:model Todo -cfmr --api
+```
+
+Next, we'll set up the database schema for our todos table with a simple structure including an ID, title, and timestamps:
+
+```php database/migrations/2025_02_10_111720_create_todos_table.php
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('todos', function (Blueprint $table) {
+            $table->id();
+            $table->string('title');
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('todos');
+    }
+};
+```
+
+We'll create a factory to generate fake todo data for testing and development:
+
+```php database/factories/TodoFactory.php
+<?php
+
+namespace Database\Factories;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/**
+ * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\Todo>
+ */
+class TodoFactory extends Factory
+{
+    /**
+     * Define the model's default state.
+     *
+     * @return array<string, mixed>
+     */
+    public function definition(): array
+    {
+        return [
+            'title' => $this->faker->sentence,
+        ];
+    }
+}
+```
+
+In the database seeder, we'll set up the creation of 50 sample todo items:
+
+```php database/seeders/DatabaseSeeder.php
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Todo;
+use App\Models\User;
+use Illuminate\Database\Seeder;
+
+class DatabaseSeeder extends Seeder
+{
+    /**
+     * Seed the application's database.
+     */
+    public function run(): void
+    {
+        Todo::factory()->times(50)->create();
+    }
+}
+```
+
+Run the migration to create the todos table in the database:
+
+```shell
+php artisan migrate
+```
+
+Seed the database with our sample todo items:
+
+```shell
+php artisan db:seed
+```
+
+Install the API package:
+
+```shell
+php artisan install:api
+```
+
+Set up the API routes for our Todo resource:
+
+```php routes/api.php
+<?php
+
+use Illuminate\Support\Facades\Route;
+use \App\Http\Controllers\TodoController;
+
+Route::resource('todos', TodoController::class);
+```
+
+Create a basic Todo controller with an index method to retrieve all todos:
+
+```php app/Http/Controllers/TodoController.php
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Todo;
+use Illuminate\Http\Request;
+
+class TodoController extends Controller
+{
+    /**
+     * Display a listing of the resource.
+     */
+    public function index()
+    {
+        return Todo::all();
+    }
+    ...
+}
+```
+
+Finally, test the index route to verify our API is working correctly:
+
+```shell
+curl http://todo-cache.test/api/todos
+```
+
+## Using Cache in Laravel
+
+Laravel offers a simple yet powerful unified interface for working with different caching systems. We will focus on `Cache::remember`, `Cache::flexible` and `Cache::forget` methods, to learn more about the available methods, check the [Laravel Cache Documentation](https://laravel.com/docs/11.x/cache).
+
+### `Cache::remember`
+
+The `Cache::remember` method retrieves the value of a key from the cache. If the key does not exist in the cache, the method will execute the given closure and store the result in the cache for the specified duration.
+
+```php
+$value = Cache::remember('todos', $seconds, function () {
+    return Todo::all();
+});
+```
+
+### `Cache::flexible`
+
+The stale-while-revalidate pattern, implemented through `Cache::flexible`, is a caching strategy that balances performance and data freshness by defining two time periods: a "fresh" period where cached data is served immediately, and a "stale" period where outdated data is served while triggering a background refresh. When data is accessed during the stale period (in this example, between 5 and 10 seconds), users still get a fast response with slightly outdated data while the cache refreshes asynchronously, only forcing users to wait for a full recalculation if the data is accessed after both periods have expired.
+
+```php
+$value = Cache::flexible('todos', [5, 10], function () {
+    return Todo::all();
+});
+```
+
+### `Cache::forget`
+
+The `Cache::forget` method removes the specified key from the cache:
+
+```php
+Cache::forget('todos');
+```
+
+## Caching the Todo List
+
+Let's first update the Todo model to make it mass assignable:
+
+```php app/Models/Todo.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Todo extends Model
+{
+    /** @use HasFactory<\Database\Factories\TodoFactory> */
+    use HasFactory;
+
+    protected $fillable = ['title'];
+}
+```
+
+Next, we'll update the methods in the TodoController to use caching:
+
+```php app/Http/Controllers/TodoController.php
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Todo;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Cache;
+
+class TodoController extends Controller
+{
+    private const CACHE_KEY = 'todos';
+
+    private const CACHE_TTL = [300, 1800]; // 5 minutes fresh, 30 minutes stale
+
+    /**
+     * Display a listing of the resource.
+     */
+    public function index()
+    {
+        return Cache::flexible(self::CACHE_KEY, self::CACHE_TTL, function () {
+            return Todo::all();
+        });
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $request->validate([
+            'title' => 'required|string|max:255',
+        ]);
+
+        $todo = Todo::create($request->all());
+
+        // Invalidate the todos cache
+        Cache::forget(self::CACHE_KEY);
+
+        return response()->json($todo, Response::HTTP_CREATED);
+    }
+
+    /**
+     * Display the specified resource.
+     */
+    public function show(Todo $todo): Todo
+    {
+        return Cache::flexible(
+            "todo.{$todo->id}",
+            self::CACHE_TTL,
+            function () use ($todo) {
+                return $todo;
+            }
+        );
+    }
+
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request, Todo $todo): JsonResponse
+    {
+        $request->validate([
+            'title' => 'required|string|max:255',
+        ]);
+
+        $todo->update($request->all());
+
+        // Invalidate both the collection and individual todo cache
+        Cache::forget(self::CACHE_KEY);
+        Cache::forget("todo.{$todo->id}");
+
+        return response()->json($todo);
+    }
+
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(Todo $todo): JsonResponse
+    {
+        $todo->delete();
+
+        // Invalidate both the collection and individual todo cache
+        Cache::forget(self::CACHE_KEY);
+        Cache::forget("todo.{$todo->id}");
+
+        return response()->json(null, Response::HTTP_NO_CONTENT);
+    }
+}
+```
+
+Now we can test our methods with the following curl commands:
+
+```shell
+# Get all todos
+curl http://todo-cache.test/api/todos
+
+# Get a specific todo
+curl http://todo-cache.test/api/todos/1
+
+# Create a new todo
+curl -X POST http://todo-cache.test/api/todos \
+  -H "Content-Type: application/json" \
+  -d '{"title":"New Todo"}'
+
+# Update a todo
+curl -X PUT http://todo-cache.test/api/todos/1 \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Updated Todo"}'
+
+# Delete a todo
+curl -X DELETE http://todo-cache.test/api/todos/1
+```
+
+Visit Redis Data Browser in Upstash Console to see the cached data.
