@@ -1,8 +1,208 @@
-// Placeholder for a tutorial video i'll create here:
+---
+title: "Next.js Search Quickstart"
+---
 
-- starting in Upstash dashboard
-- setting up a database
-- adding data
-- going into Next.js and implementing basic search
+### Create a Search Database
+Follow the instructions in the [Getting Started guide](/search/overall/getstarted) to create a Search Database.
 
-similar to a getting started, but as a clear, easy-to-follow video guide. people really like these
+### Project Setup
+
+Let's create a new Next.js application with App Router and install `@upstash/search` package.
+
+```shell
+npx create-next-app@latest search-app
+cd search-app
+npm install @upstash/search
+```
+
+### Add Environment Variables
+
+Find the environment variables from your database dashboard and add them to your `.env` file:
+```env
+UPSTASH_SEARCH_REST_URL=<YOUR_SEARCH_REST_URL>
+UPSTASH_SEARCH_REST_TOKEN=<YOUR_SEARCH_REST_TOKEN>
+```
+
+### Create a Route to Upsert Documents
+Create an API route in `app/api/upsert/route.ts`:
+```typescript
+import { Search } from "@upstash/search";
+
+const client = new Search({
+  url: process.env.UPSTASH_SEARCH_REST_URL,
+  token: process.env.UPSTASH_SEARCH_REST_TOKEN,
+});
+
+const index = client.index("my-index");
+
+export async function POST() {
+  await index.upsert([
+    {
+      id: "film-1",
+      content: { title: "Inception", description: "A mind-bending thriller about dreams within dreams." },
+      metadata: { genre: "Sci-Fi", year: 2010 },
+    },
+    {
+      id: "film-2",
+      content: { title: "The Godfather", description: "A story about a powerful Italian-American crime family." },
+      metadata: { genre: "Crime", year: 1972 },
+    },
+    {
+      id: "film-3",
+      content: { title: "The Dark Knight", description: "A gritty tale of Batman's fight against the Joker." },
+      metadata: { genre: "Action", year: 2008 },
+    },
+  ]);
+  return new Response(JSON.stringify({ message: "Documents upserted successfully" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+```
+
+### Create a Route to Search Documents
+Create an API route in `app/api/search/route.ts`:
+```typescript
+import { Search } from "@upstash/search";
+
+const client = new Search({
+  url: process.env.UPSTASH_SEARCH_REST_URL,
+  token: process.env.UPSTASH_SEARCH_REST_TOKEN,
+});
+
+const index = client.index("my-index");
+
+export async function POST(req: Request) {
+  const { query } = await req.json() as { query: string }
+
+  const results = await index.search({ query });
+  return new Response(JSON.stringify(results), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+```
+
+### Create a Simple Page
+Add the following code in `app/page.tsx`:
+```typescript
+"use client";
+
+import { useState } from "react";
+
+interface SearchResult {
+  id: string;
+  content: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  score: number;
+}
+
+export default function Home() {
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [query, setQuery] = useState("");
+  const [isUpserting, setIsUpserting] = useState(false);
+  const [upsertSuccess, setUpsertSuccess] = useState(false);
+
+  const upsertData = async () => {
+    setIsUpserting(true);
+    setUpsertSuccess(false);
+    await fetch("/api/upsert", { method: "POST" });
+    setIsUpserting(false);
+    setUpsertSuccess(true);
+  };
+
+  const search = async () => {
+    const res = await fetch(`/api/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    const data = await res.json();
+    setSearchResults(data || []);
+  };
+
+  return (
+    <main className="min-h-screen bg-emerald-50 flex flex-col items-center py-10">
+      <div className="w-full max-w-2xl bg-white shadow-md rounded-lg p-6">
+        <header className="mb-6 text-center">
+          <h1 className="text-2xl font-bold text-emerald-800">Search App</h1>
+          <p className="text-emerald-600">
+            Upsert data and search through the database.
+          </p>
+        </header>
+
+        <div className="mb-6">
+          <button
+            onClick={upsertData}
+            disabled={isUpserting}
+            className={`w-full py-2 px-4 rounded-md text-white ${
+              isUpserting
+                ? "bg-emerald-300"
+                : "bg-emerald-500 hover:bg-emerald-600"
+            }`}
+          >
+            {isUpserting ? "Upserting..." : "Upsert Data"}
+          </button>
+          {upsertSuccess && (
+            <p className="mt-2 text-sm text-emerald-600">
+              Data upserted successfully!
+            </p>
+          )}
+        </div>
+
+        <div className="mb-6">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search..."
+              className="flex-1 border border-emerald-300 rounded-md px-4 py-2 text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+            <button
+              onClick={search}
+              className="bg-emerald-500 text-white px-4 py-2 rounded-md hover:bg-emerald-600"
+            >
+              Search
+            </button>
+          </div>
+        </div>
+
+        <ul className="space-y-2">
+          {searchResults.map((result, index) => (
+            <li
+              key={index}
+              className="bg-emerald-100 p-4 rounded-md shadow-sm text-emerald-800"
+            >
+              <p className="font-bold">ID: {result.id}</p>
+              <p className="text-sm">Content: {JSON.stringify(result.content)}</p>
+              <p className="text-sm">Metadata: {JSON.stringify(result.metadata)}</p>
+              <p className="text-sm">Score: {result.score}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </main>
+  );
+}
+
+```
+
+### Start the Project
+Run the following command to start the development server:
+```bash
+npm run dev
+```
+
+Open your browser and navigate to `http://localhost:3000` to test the application.
+
+You can click the `Upsert Data` button to add three films to your database and then use the search bar to make a query.
+
+
+### Next Steps
+
+Learn more about:
+- [Typescript SDK](/search/sdks/ts/getting-started)
+- [Content and Metadata fields](/search/features/content-and-metadata)
