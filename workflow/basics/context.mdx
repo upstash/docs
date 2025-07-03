@@ -565,7 +565,9 @@ checkout [Invoke other workflows](/workflow/howto/invoke) guide.
 
 The methods we listed so far were all for defining a workflow step. `context.cancel` is different.
 
-`context.cancel` allows you to cancel the current workflow:
+`context.cancel` allows you to cancel the current workflow
+The run will be labeled as cancelled, so failure function 
+is not triggered in this case, and no dlq entries generated:
 
 ```ts
 export const { POST } = serve<{ topic: string }>(async (context) => {
@@ -579,18 +581,13 @@ export const { POST } = serve<{ topic: string }>(async (context) => {
 })
 ```
 
-### context.fail
+## Error handling and retries
 
-<Note>
-  This feature is not yet available in
-  [workflow-py](https://github.com/upstash/workflow-py). See our
-  [Roadmap](/workflow/roadmap) for feature parity plans and
-  [Changelog](/workflow/changelog) for updates.
-</Note>
-
-`context.fail` allows you to fail the current workflow on will 
-without going into retry cycle.
-
+- context.run automatically retries on failures. Default is 3 retries with exponential backoff.
+- context.call doesn't retry by default. If you wish to add retry, you can use `retries` option.
+- `WorkflowNonRetryableError` allows you to fail workflow on will
+  without going into retry cycle. The run will be labeled as failed, 
+  triggering the failure function and creating a dlq entry:
 
 ```ts
 export const { POST } = serve<{ topic: string }>(async (context) => {
@@ -599,24 +596,11 @@ export const { POST } = serve<{ topic: string }>(async (context) => {
   const result = await context.run("check if failed", () => { ... });
 
   if (result.fail) {
-    await context.fail() // fail the workflow run
+    throw new WorkflowNonRetryableError("error message")  // fail the workflow run
   }
 })
 ```
 
-### Distinction between `context.cancel` and `context.fail`
-`context.cancel`:
-- run will be labeled as canceled.
-- failure function will not run and a dlq entry won't be created
-
-`context.fail`:
-- run will be labeled as failed
-- failure function will run, dlq entry will be created
-
-## Error handling and retries
-
-- context.run automatically retries on failures. Default is 3 retries with exponential backoff.
-- context.call doesn't retry by default. If you wish to add retry, you can use `retries` option.
 - Future releases will allow more configuration of retry behavior.
 
 ## Limitations and Plan-Specific-Features
