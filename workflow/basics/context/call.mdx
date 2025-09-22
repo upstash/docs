@@ -1,0 +1,183 @@
+---
+title: "context.call"
+---
+
+`context.call()` performs an HTTP request as a workflow step, supporting longer response times up to 12 hours.
+
+The request is executed by **Upstash on your behalf**, so your application does not consume compute resources during the request duration.
+
+If the endpoint responds with a non‑success status code (anything outside `200–299`),
+`context.call()` still returns the response and the workflow continues.
+This allows you to inspect the response (via the `status` field) and decide how to handle failure cases in your logic.
+
+If you want requests to retry automatically, you can explicitly pass a retry configuration.
+
+## Arguments
+
+<ParamField body="url" type="string">
+    The URL of the HTTP endpoint to call.
+</ParamField>
+
+<ParamField body="method" type="string">
+    TThe HTTP method to use (`GET`, `POST`, `PUT`, etc.). Defaults to `GET`.
+</ParamField>
+
+<ParamField body="body" type="string">
+    The request body.
+</ParamField>
+
+<ParamField body="headers" type="object">
+   A map of headers to include in the request.
+</ParamField>
+
+<ParamField body="retries" >
+    Number of retry attempts if the request fails. Defaults to `0` (no retries).
+</ParamField>
+
+<ParamField body="retryDelay" >
+    Delay between retries (in milliseconds). By default, uses exponential backoff. You can use mathematical expressions and the special variable `retried` (current retry attempt count starting from 0). Examples: `1000`, `pow(2, retried)`, `max(10, pow(2, retried))`.
+</ParamField>
+
+<ParamField body="flowControl">
+    Throttle outbound requests.
+
+    See [Flow Control](/workflow/howto/flow-control) for details.
+
+    <Expandable title="properties">
+        <ParamField body="key" type="string">
+          A logical grouping key that identifies which requests share the same flow control limits.
+        </ParamField>
+
+        <ParamField body="rate" type="number">
+            The maximum number of allowed requests per second.
+        </ParamField>
+
+        <ParamField body="parallelism" type="number">
+            The maximum number of concurrent requests allowed.
+        </ParamField>
+
+        <ParamField body="period" type="string|number">
+            The time window used to enforce the defined rate limit.
+        </ParamField>
+    </Expandable>
+</ParamField>
+
+<ParamField body="timeout" type="number" >
+    Maximum time (in seconds) to wait for a response.
+    If retries are enabled, this timeout applies individually to each attempt.
+</ParamField>
+
+<ParamField body="workflow" >
+    When using [`serveMany`](/workflow/howto/invoke#servemany), you can call another workflow defined in the same `serveMany` by passing it to this parameter.
+</ParamField>
+
+## Response
+
+<ResponseField name="status" type="number">
+    The HTTP response status code.
+</ResponseField>
+
+<ResponseField name="body" type="string">
+    The response body.
+
+    `context.call()` attempts to parse the body as JSON.
+    If parsing fails, the raw body string is returned.
+</ResponseField>
+
+<ResponseField name="headers" type="dictionary">
+    The response headers.
+</ResponseField>
+
+<Tip>
+    In TypeScript, you can declare the expected result type for strong typing:
+
+    ```typescript
+    type ResultType = {
+      field1: string,
+      field2: number
+    };
+
+    const result = await context.call<ResultType>( ... );
+    ```
+</Tip>
+
+## Usage
+
+<CodeGroup>
+
+```javascript TypeScript
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve<{ topic: string }>(async (context) => {
+  const { userId, name } = context.requestPayload;
+
+  const { status,  headers,  body } = await context.call("sync-user-data", {
+      url: "https://my-third-party-app", // Endpoint URL
+      method: "POST",
+      body: {
+        userId,
+        name
+      },
+      headers: {
+        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+    }
+  );
+});
+
+```
+
+```python Python
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@dataclass
+class Request:
+    topic: str
+
+
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[Request]) -> None:
+    request: Request = context.request_payload
+
+    result = await context.call(
+        "generate-long-essay",
+        url="https://api.openai.com/v1/chat/completions",
+        method="POST",
+        body={
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
+                },
+                {"role": "user", "content": request["topic"]},
+            ],
+        },
+        headers={
+            "authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+        },
+    )
+
+    status, headers, body = result.status, result.headers, result.body
+
+```
+
+</CodeGroup>
+
+<Tip>
+    We provide integrations for **OpenAI, Anthropic, and Resend**, allowing you to call their APIs with strongly typed request bodies using `context.call`.
+    See [`context.api`](/workflow/basics/context#context-api) for details.
+</Tip>
+
+<Info>
+  The `context.call()` function can make requests to any public API endpoint. However, it cannot:
+
+  - Make requests to localhost (unless you set up a local tunnel, [here's how](http://localhost:3000/workflow/howto/local-development))
+  - Make requests to internal Upstash QStash endpoints.
+</Info>

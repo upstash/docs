@@ -1,0 +1,142 @@
+---
+title: "Prevent Retries"
+---
+
+It’s recommended to enable retries by default for workflow runs.
+
+In some cases, you may want the workflow to stop execution immediately when an error occurs, without attempting additional retries.
+There are several mechanisms to terminate execution gracefully.
+
+## Using `WorkflowNonRetryableError`
+
+`WorkflowNonRetryableError` allows you to fail workflow on will without going into retry cycle.
+
+The run will be labeled as failed, triggering the failure function and passing workflow run to the DLQ.
+
+```ts highlight={7}
+export const { POST } = serve<{ topic: string }>(async (context) => {
+  const payload = context.requestPayload
+
+  const isExists = await context.run("is-user-exists", () => { ... });
+
+  if (!isExists) {
+    throw new WorkflowNonRetryableError("The user does not exists!")
+  }
+})
+```
+
+## Using `context.cancel()`
+
+You can stop the workflow run execution by canceling it inside the workflow.
+
+The run will be labeled as canceled, which will **NOT** trigger the failure function nor pass the workflow run to the DLQ.
+
+<CodeGroup>
+```typescript TypeScript
+export const { POST } = serve<{ orderId: string }>(async (context) => {
+  const { orderId } = context.requestPayload;
+
+  // Check if order is still valid
+  const orderStatus = await context.run("check-order-status", async () => {
+    return await getOrderStatus(orderId);
+  });
+
+  if (orderStatus === "cancelled") {
+    // Stop execution gracefully without error
+    await context.cancel();
+    return;
+  }
+
+  // Continue processing if order is valid
+  await context.run("process-order", async () => {
+    return await processOrder(orderId);
+  });
+});
+```
+
+```python Python
+@serve.post("/graceful-cancellation")
+async def graceful_cancellation(context: AsyncWorkflowContext[dict]) -> None:
+    order_id = context.request_payload["order_id"]
+
+    async def _check_order_status():
+        return await get_order_status(order_id)
+
+    # Check if order is still valid
+    order_status = await context.run("check-order-status", _check_order_status)
+
+    if order_status == "cancelled":
+        # Stop execution gracefully without error
+        await context.cancel()
+        return
+
+    # Continue processing if order is valid
+    async def _process_order():
+        return await process_order(order_id)
+
+    await context.run("process-order", _process_order)
+```
+</CodeGroup>
+
+## Using conditional execution
+
+You can also use conditional logic to prevent certain steps from executing without throwing errors.
+
+The run will be labeled as success since the workflow run completed the execution without any errors.
+
+<CodeGroup>
+    ```typescript TypeScript
+    export const { POST } = serve<{ data: any }>(async (context) => {
+      const { data } = context.requestPayload;
+
+      // Validate data first
+      const validationResult = await context.run("validate-data", async () => {
+        return validateInputData(data);
+      });
+
+      if (!validationResult.isValid) {
+        // Log the validation failure
+        await context.run("log-validation-failure", async () => {
+          await logValidationError(validationResult.errors);
+        });
+
+        // Stop execution without error
+        return;
+      }
+
+      // Only execute if validation passes
+      await context.run("process-valid-data", async () => {
+        return await processData(data);
+      });
+    });
+    ```
+
+    ```python Python
+    @serve.post("/conditional-execution")
+    async def conditional_execution(context: AsyncWorkflowContext[dict]) -> None:
+        data = context.request_payload["data"]
+
+        async def _validate_data():
+            return validate_input_data(data)
+
+        # Validate data first
+        validation_result = await context.run("validate-data", _validate_data)
+
+        if not validation_result["is_valid"]:
+            # Log the validation failure
+            async def _log_validation_failure():
+                await log_validation_error(validation_result["errors"])
+
+            await context.run("log-validation-failure", _log_validation_failure)
+
+            # Stop execution without error
+            return
+
+        # Only execute if validation passes
+        async def _process_valid_data():
+            return await process_data(data)
+
+        await context.run("process-valid-data", _process_valid_data)
+    ```
+</CodeGroup>
+
