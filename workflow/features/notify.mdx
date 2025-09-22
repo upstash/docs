@@ -1,0 +1,120 @@
+---
+title: "Notify"
+---
+
+You can notify all the workflow runs waitingi for a specific event ID.
+There are two ways to send a notify request.
+
+<Note>
+When a notify request is sent, all workflow runs waiting for that event are notified sequentially.
+To avoid heavy notify operations, it’s recommended to use unique event IDs instead of generic ones.
+</Note>
+
+## Notify within Workflow
+
+Notifies other workflows waiting for a specific event from within a workflow.
+
+<CodeGroup>
+```typescript TypeScript
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve<string>(async (context) => {
+  const { orderId, processingResult } = context.requestPayload;
+
+  await context.run("process-order", async () => {
+    // ...
+  })
+
+  const { notifyResponse } = await context.notify(
+    "notify-processing-complete",
+    `order-${orderId}`,
+    {
+      orderId,
+      status: "completed",
+      result: processingResult,
+      completedAt: new Date().toISOString()
+    }
+  );
+
+});
+```
+
+```python Python
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+from datetime import datetime
+
+app = FastAPI()
+serve = Serve(app)
+
+@serve.post("/api/order-processor")
+async def order_processor(context: AsyncWorkflowContext[str]) -> None:
+    order_id = context.request_payload["order_id"]
+    processing_result = context.request_payload["processing_result"]
+
+    # Process the order
+    async def _process_order():
+        return await process_order(order_id)
+
+    result = await context.run("process-order", _process_order)
+
+    # Notify waiting workflows that processing is complete
+    notify_response = await context.notify(
+        "notify-processing-complete",
+        f"order-{order_id}",
+        {
+            "order_id": order_id,
+            "status": "completed",
+            "result": processing_result,
+            "completed_at": datetime.utcnow().isoformat()
+        }
+    )
+
+    # Log notification results
+    async def _log_notification():
+        print(f"Notified {len(notify_response)} waiting workflows")
+        return notify_response
+
+    await context.run("log-notification", _log_notification)
+```
+</CodeGroup>
+
+## External Notification
+
+You can also notify workflows from external systems using the Workflow Client:
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<WORKFLOW_TOKEN>" });
+
+await client.notify({
+  eventId: "order-completed-123",
+  eventData: {
+    orderId: "123",
+    status: "completed",
+    deliveryTime: "2 days",
+    trackingNumber: "TRK123456"
+  }
+});
+```
+
+```python Python
+from upstash_workflow import Client
+
+client = Client("<WORKFLOW_TOKEN>")
+
+# Notify workflows waiting for a specific event
+await client.notify(
+    event_id="order-completed-123",
+    event_data={
+        "order_id": "123",
+        "status": "completed",
+        "delivery_time": "2 days",
+        "tracking_number": "TRK123456"
+    }
+)
+```
+</CodeGroup>

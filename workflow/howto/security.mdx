@@ -1,131 +1,143 @@
 ---
-title: "Secure an Endpoint"
+title: "Secure a Workflow"
 ---
 
-To prevent _anyone_ from triggering your workflow endpoint, you can use two methods:
+To prevent unauthorized access to your workflow endpoint, you can add an authorization layer.
+Upstash Workflow supports two approaches:
 
-- QStash's [built-in request verification](/qstash/features/security)
-- Custom header and custom authorization mechanism
+- **Built-in request verification** (recommended)
+- **Custom authorization method**
 
-### Using QStash's built-in request verification (recommended)
+### Built-in request verification (recommended)
 
-Use QStash's built-in request verification to allow only authorized clients to trigger your workflow. Set two environment variables in addition to your QStash API key:
+Upstash Workflow provides a built-in mechanism to secure your workflow endpoint by verifying request signatures.
+Every request to your endpoint include a valid `Upstash-Signature` header.
+
+How it works:
+
+1. Upstash Workflow automatically adds the `Upstash-Signature` header to every request.
+   This signature is generated using your signing keys.
+
+2. When this mechanism is enabled, the SDK verifies that the signature is valid before processing the request.
+
+This ensures that only requests originating from Upstash Workflow are processed.
+
+To enable this verification, set the following environment variables in your application:
 
 ```bash .env
 QSTASH_CURRENT_SIGNING_KEY=xxxxxxxxx
 QSTASH_NEXT_SIGNING_KEY=xxxxxxxxx
 ```
 
-And replace `xxxxxxxxx` with your actual keys. Find both of these keys in your QStash dashboard under the **"Signing keys"** tab:
+You can find the values in Upstash Workflow dashboard.
 
 <Frame>
   <img src="/img/qstash-workflow/qstash_signing_keys.png" />
 </Frame>
 
-This will require **every request** to your workflow endpoint to include a valid signature, including the initial request that triggers a workflow. In other words: all requests need to come either from QStash (which automatically populates the `Upstash-Signature` header) or from a client that manually populates the `Upstash-Signature` header with your signing secret.
+<Info>
+    For edge cases where environment variables cannot be used, you can explicitly create and pass a `Receiver` object to verify request signatures:
 
-We suggest using QStash's publish API to trigger your workflow:
+    <CodeGroup>
 
-```bash Terminal
-curl -XPOST \
-    -H 'Authorization: Bearer <YOUR_QSTASH_TOKEN>' \
-    -H "Content-type: application/json" \
-    -d '{ "initialData": "hello world" }' \
-    'https://qstash.upstash.io/v2/publish/https://<your-app-url>/api/workflow'
-```
+        ```typescript TypeScript
+        import { Receiver } from "@upstash/qstash";
+        import { serve } from "@upstash/workflow/nextjs";
 
-For edge cases that do not support environment variables as outlined above, you can explicitly pass your signing keys to the `serve` function:
+        export const { POST } = serve(
+          async (context) => { ... },
+          {
+            receiver: new Receiver({
+              currentSigningKey: "<QSTASH_CURRENT_SIGNING_KEY>",
+              nextSigningKey: "<QSTASH_NEXT_SIGNING_KEY>",
+            }),
+          }
+        );
+        ```
 
-<CodeGroup>
+        ```python Python
+        from qstash import Receiver
 
-```typescript TypeScript
-import { Receiver } from "@upstash/qstash";
-import { serve } from "@upstash/workflow/nextjs";
+        @serve.post(
+            "/api/example",
+            receiver=Receiver(
+                current_signing_key=os.environ["QSTASH_CURRENT_SIGNING_KEY"],
+                next_signing_key=os.environ["QSTASH_NEXT_SIGNING_KEY"],
+            ),
+        )
+        async def example(context: AsyncWorkflowContext[str]) -> None:
+            ...
 
-export const { POST } = serve(
-  async (context) => {
-    // Your workflow steps...
-  },
-  {
-    receiver: new Receiver({
-      currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY,
-      nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY,
-    }),
-  }
-);
-```
-
-```python Python
-from qstash import Receiver
-
-@serve.post(
-    "/api/example",
-    receiver=Receiver(
-        current_signing_key=os.environ["QSTASH_CURRENT_SIGNING_KEY"],
-        next_signing_key=os.environ["QSTASH_NEXT_SIGNING_KEY"],
-    ),
-)
-async def example(context: AsyncWorkflowContext[str]) -> None:
-    ...
-
-```
-
-</CodeGroup>
+        ```
+    </CodeGroup>
+</Info>
 
 ## Custom Authorization Method
 
-You can use your own authorization mechanism with Upstash Workflow. We ensure that the initial headers and initial request body will be available on every call made to your workflow.
+You can implement your own authorization mechanism with Upstash Workflow.
+
+The context object provides access to the initial request headers and payload on every workflow step.
+You can use them to pass your custom authentication token to verify the requests.
 
 <CodeGroup>
 
-```typescript TypeScript
-import { serve } from "@upstash/workflow/nextjs";
+    ```typescript TypeScript
+    import { serve } from "@upstash/workflow/nextjs";
 
-export const { POST } = serve(
-  async (context) => {
-    const authHeader = context.headers.get("authorization");
-    const bearerToken = authHeader?.split(" ")[1];
+    export const { POST } = serve(
+      async (context) => {
+        // 👇 Extract Bearer token form the request headers
+        const authHeader = context.headers.get("authorization");
+        const bearerToken = authHeader?.split(" ")[1];
 
-    if (!isValid(bearerToken)) {
-      console.error("Authentication failed.");
-      return;
-    }
+        // 👇 Use your authentication function to verify the token
+        if (!isValid(bearerToken)) {
+          console.error("Authentication failed.");
+          return;
+        }
 
-    // Your workflow steps..
-  },
-  {
-    failureFunction: async () => {
-      const authHeader = context.headers.get("authorization");
-      const bearerToken = authHeader?.split(" ")[1];
+        // Your workflow steps..
+      },
+      {
+        failureFunction: async () => {
+          // 👇 Same auth check for failure function
+          const authHeader = context.headers.get("authorization");
+          const bearerToken = authHeader?.split(" ")[1];
 
-      if (!isValid(bearerToken)) {
-        // ...
+          if (!isValid(bearerToken)) {
+            // ...
+          }
+        },
       }
-    },
-  }
-);
-```
+    );
+    ```
 
-```python Python
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
+    ```python Python
+    from fastapi import FastAPI
+    from upstash_workflow.fastapi import Serve
+    from upstash_workflow import AsyncWorkflowContext
 
-app = FastAPI()
-serve = Serve(app)
+    app = FastAPI()
+    serve = Serve(app)
 
 
-@serve.post("/api/example")
-async def example(context: AsyncWorkflowContext[str]) -> None:
-    auth_header = context.headers.get("authorization")
-    bearer_token = auth_header.split(" ")[1] if auth_header else None
+    @serve.post("/api/example")
+    async def example(context: AsyncWorkflowContext[str]) -> None:
+        auth_header = context.headers.get("authorization")
+        bearer_token = auth_header.split(" ")[1] if auth_header else None
 
-    if not is_valid(bearer_token):
-        print("Authentication failed.")
-        return
+        if not is_valid(bearer_token):
+            print("Authentication failed.")
+            return
 
-    # Your workflow steps...
+        # Your workflow steps...
 
-```
+    ```
 
 </CodeGroup>
+
+<Warning>
+    If you implement custom authorization in your workflow route, you should also include the same authorization check in the failure function.
+
+    The failure function executes independently of the route function, so without this check, unauthorized requests could trigger the failure function
+</Warning>
