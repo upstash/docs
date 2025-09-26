@@ -1,0 +1,77 @@
+---
+title: "Parallelism"
+---
+
+The parallelism limit controls the maximum number of calls that can be executed concurrently.
+Unlike rate limiting (which works per time window), parallelism enforces concurrency control with a token-based system.
+
+```typescript Configure Retry Attempt Count
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" })
+
+const { workflowRunId } = await client.trigger({
+  url: "https://<YOUR_WORKFLOW_ENDPOINT>/<YOUR-WORKFLOW-ROUTE>",
+  flowControl: {
+    key: "user-signup",
+    parallelism: 10,
+  }
+  applyConfiguration: true,
+})
+```
+
+
+**Example**:
+If `parallelism = 3`, at most 3 requests can run concurrently.
+
+When tokens are available, requests acquire one and start execution:
+<Frame caption="A failing step is automatically retried three times">
+  <img src="/img/workflow/parallelism_1.png" />
+</Frame>
+
+When all tokens are in use, additional requests are not failed — they’re queued in a **waitlist**:
+<Frame caption="A failing step is automatically retried three times">
+  <img src="/img/workflow/parallelism_2.png" />
+</Frame>
+
+The step in the waitlist will wait for a step to complete and hand off it's token to a pending request:
+
+<Tip>
+    Token handoff does not guarantee strict ordering.
+    A later request in the waitlist may acquire a token before an earlier one.
+</Tip>
+
+<Frame caption="A failing step is automatically retried three times">
+  <img src="/img/workflow/parallelism_3.png" />
+</Frame>
+
+## Monitoring
+
+You can monitor wait list size of your flow control key's using the REST API.
+
+<CodeGroup>
+
+```bash Single Flow Control Key
+curl -X GET https://qstash.upstash.io/v2/flowControl/YOUR_FLOW_CONTROL_KEY \
+  -H "Authorization: Bearer <token>"
+```
+
+```bash List All Flow Control Keys
+curl -X GET https://qstash.upstash.io/v2/flowControl/ \
+  -H "Authorization: Bearer <token>"
+```
+</CodeGroup>
+
+It will return the wait list size. In case you request all flow-control keys, it is an array response.
+
+<ResponseField name="flowControlKey" type="string">
+    The identifier for your flow control configuration
+</ResponseField>
+
+<ResponseField name="waitListSize" type="number">
+    Number of steps waiting to be executed due to parallelism limits
+</ResponseField>
+
+<Info>
+    Adding a dashboard to list and manage flow control key's is on our roadmap.
+</Info>

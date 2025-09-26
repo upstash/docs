@@ -2,27 +2,72 @@
 title: "Overview"
 ---
 
-Upstash Workflow provides automatic retry mechanisms to ensure your workflows are reliable and resilient to temporary failures. 
+Upstash Workflow provides an automatic retry mechanism to improve reliability and make workflows resilient against temporary failures.
 Workflow automatically handles transient errors such as network issues or service unavailability.
 
 ## How Retries Work
 
-When a step fails, Upstash Workflow automatically retries the failed step with configurable retry attempts and delays to allow temporary outages to resolve.
+When a step fails, Upstash Workflow automatically retries the failed step with configurable retry attempts and delay strategy.
+This allows temporary issues to resolve without manual intervention.
 
-<Frame caption="A failed step is automatically retried three times">
+<Frame caption="A failing step is automatically retried three times by default">
   <img src="/img/workflow/automatic_retry.png" />
 </Frame>
 
-By default, retry count is set to 3 and exponential delay is used.
+By default, the retry count is set to **3**, and an **exponential backoff** delay strategy is used.
 
 ```javascript Default Backoff Algorithm
 // n = how many times this request has been retried
 delay = min(86400, e ** (2.5*n)) // in seconds
 ```
 
-| Retry Attempt | Algorithm  | Delay    |
-|---------------| ----- |----------|
-| 1             | $$e^{2.5}$$ | 12s      |
-| 2             | $$e^5$$| 2m28s    |
-| 3             | $$e^{7.5}$$| 30m8s    |
-| 4+            | $$86400$$| 24h      |
+| Retry Attempt | Algorithm    | Delay  |
+|---------------|--------------|--------|
+| 1             | $$e^{2.5}$$  | 12s    |
+| 2             | $$e^5$$      | 2m28s  |
+| 3             | $$e^{7.5}$$  | 30m8s  |
+| 4+            | $$86400$$    | 24h    |
+
+## Configuration
+
+You can configure retry behavior when starting a new workflow run.
+
+### Configure Retry Attempt Count
+
+You can specify how many times a step should be retried upon failure.
+
+```typescript Configure Retry Attempt Count
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" })
+
+const { workflowRunId } = await client.trigger({
+  url: "https://<YOUR_WORKFLOW_ENDPOINT>/<YOUR-WORKFLOW-ROUTE>",
+  retries: 3,
+  applyConfiguration: true,
+})
+```
+
+### Configure Retry Delay Strategy
+
+Retry delay is the time to wait before trying again after a failure. You can define a custom retry delay strategy.
+
+The delay is defined as a math expression that is calculated on every retry.
+The expression can use the `retried` variable, which represents how many times the step has already retried (starting from 0).
+
+To apply a constant delay, you can simply provide a fixed value.
+
+The expression must return the delay in **milliseconds**.
+
+```typescript Configure Retry Delay Strategy
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" })
+
+const { workflowRunId } = await client.trigger({
+  url: "https://<YOUR_WORKFLOW_ENDPOINT>/<YOUR-WORKFLOW-ROUTE>",
+  retries: 3,
+  retryDelay: "(1 + retried) * 1000",
+  applyConfiguration: true,
+})
+```

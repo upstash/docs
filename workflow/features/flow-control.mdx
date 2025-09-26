@@ -2,51 +2,132 @@
 title: "Overview"
 ---
 
-Flow Control enables you to limit the number of calls made to your workflow endpoint by delaying the delivery.
-This feature is essential for managing resource consumption, preventing API rate limit violations, and ensuring your workflows operate within defined constraints.
+Flow Control allows you to limit how many workflow steps are executed by delaying and queuing their delivery.
 
-There are two main use cases for Flow Control in Upstash Workflow:
-
-1. **Limiting the Workflow Environment**: Controlling the execution environment to prevent resource exhaustion
-2. **Limiting External API Calls**: Preventing excessive requests to external services that have rate limits
+This feature helps to:
+- Manage resource consumption
+- Prevent violations of external API rate limits
+- Ensure workflows run within defined system constraints
 
 ## How Flow Control Works
 
-Flow Control operates by automatically queuing and delaying requests when limits are exceeded, rather than rejecting them. This ensures that your workflows continue to process requests while respecting the defined constraints.
+When defined limits are exceeded, Flow Control automatically queues and delays step executions instead of rejecting them.
+This guarantees that all steps are eventually processed while staying within configured thresholds.
 
-### Key Concepts
+To configure Flow Control, you define a flow control key, a unique identifier used to group related steps under the same rate and parallelism limits.
+The steps that has the same flow control key respect the same constraints.
 
-- **Flow Control Key**: A unique identifier that groups related requests for rate limiting purposes
-- **Rate Limiting**: Controls how many requests can be processed within a specific time window
-- **Parallelism**: Limits the maximum number of concurrent workflow executions
-- **Period**: The time window over which rate limits are enforced
+There are two main parameters to configure:
 
-## Configuration Parameters
+- [Rate and Period](/workflow/features/flow-control/rate-period): Maximum number of steps that may start within a time window
+- [Parallelism](/workflow/features/flow-control/parallelism): Maximum number of steps allowed to run concurrently
 
-### Rate and Period
+These parameters can be combined for fine‑grained control.
+For example, you can allow up to 10 steps per minute but restrict concurrency
+to 5 steps in parallel, ensuring more predictable load patterns.
 
-The `rate` parameter specifies the maximum number of calls allowed within a given period. The `period` parameter defines the time window over which the rate limit is enforced.
+## Example
 
-- **Rate**: Maximum calls per period (e.g., 10 calls per minute)
-- **Period**: Time window for rate limiting (default: 1 second, configurable)
+Suppose you have the following workflow:
 
-### Parallelism
+```typescript
+export const { POST } = serve<{ topic: string }>(async (context) => {
+  const payload = context.requestPayload
 
-The parallelism limit controls the maximum number of calls that can be executed concurrently. Unlike rate limiting, parallelism considers the duration of each workflow execution.
+  await context.run("step-1", () => { ... });
 
-- **Parallelism**: Maximum concurrent workflow executions
-- **Behavior**: Additional calls are queued until an active execution completes
+  await context.run("step-2", () => { ... });
 
-### Combining Parameters
+  await context.run("step-3", () => { ... });
+})
+```
 
-All three parameters can be combined for fine-grained control. For example, with a rate of 10 per minute and parallelism of 20, if each workflow takes a minute to complete, the system will trigger 10 executions in the first minute and wait for one to complete before starting the next.
+Now imagine you trigger **N workflow runs** for this workflow with the following configuration:
 
-## Important Considerations
+```typescript
+const { workflowRunId } = await client.trigger({
+  url: "https://<YOUR_WORKFLOW_ENDPOINT>/<YOUR-WORKFLOW-ROUTE>",
+  flowControl: {
+    key: "fw_example",
+    parallelism: 7,
+    rate: 3,
+    period: "1m",
+  }
+  applyConfiguration: true,
+})
+```
 
-### Configuration Persistence
+Without Flow Control, all workflow runs immediately execute their steps as soon as possible.
+If the workflow calls an external API in a step, this would likely result in ~N concurrent requests being fired in a very short timeframe, potentially overloading services or breaching API limits.
+
+<Frame caption="Workflow simplified by step types">
+  <img src="/img/workflow/flow_control_ex_3.png" />
+</Frame>
+
+With the configuration above:
+- **Rate:** At most 3 steps per minute can start across all workflow runs.
+- **Parallelism:** At most 7 steps can be running at the same time.
+
+Steps that exceed these limits are automatically queued and executed later.
+
+<Frame caption="Steps are enqueued for execution">
+  <img src="/img/workflow/flow_control_ex_2.png" />
+</Frame>
+
+Note that each step above corresponds to a separate workflow run.
+Because this workflow is sequential, each workflow run has only one pending step at a time.
+In workflows with **parallel branches**, multiple steps from the same workflow run may appear in the schedule simultaneously.
+
+Parallelism slots are consumed by running steps.
+If no slots are available, new steps enter the **waitlist** until resources free up:
+
+<Frame caption="Parallelism waitlist for the flow-control">
+  <img src="/img/workflow/flow_control_ex_1.png" />
+</Frame>
+
+<Note>
+Upstash Workflow does not support per-step level configuration. Meaning that you can attach a flow-control configuration
+to the workflow run and all the steps will inherit to the same limits.
+Following the analogy above, you cannot enforce parallelism limit on "green" steps natively.
+
+The context.call and context.invoke steps are exception this to this rule and accept their own flow control configuration:
+
+- [context.call](/workflow) – lets you run external HTTP requests under a separate key, so you can throttle third‑party API calls independently of your workflow logic.
+- [context.invoke](/workflow) – starts a new workflow run with its own flow control configuration. This allows the invoked workflow to run under different limits than the parent workflow, giving you more precise control.
+
+If you want to throttle a specific `context.run` step, the recommended approach is to **extract it into a separate workflow** and call it using `context.invoke()` with its own flow control configuration with a stricter limits.
+
+See [Advanced Per-Step Configuration](/workflow) for more details.
+</Note>
+
+
+## Configuration
+
+You can configure flow control when starting a workflow run:
+
+```typescript Configure Retry Attempt Count
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" })
+
+const { workflowRunId } = await client.trigger({
+  url: "https://<YOUR_WORKFLOW_ENDPOINT>/<YOUR-WORKFLOW-ROUTE>",
+  flowControl: {
+    key: "user-signup",
+    parallelism: 1,
+    rate: 10,
+    period: 100,
+  }
+  applyConfiguration: true,
+})
+```
+
+All steps within a workflow run will adhere to the specified flow control configuration.
 
 <Warning>
-Keep in mind that rate/period and parallelism info are kept on each publish separately. If you change the rate/period or parallelism on a new publish, the old fired ones will not be affected. They will keep their flowControl config.
+Keep in mind that rate/period and parallelism info are kept on each step separately.
+If you change the rate/period or parallelism on a new deployment, the old fired ones will not be affected.
+They will keep their flow control configuration.
 
-During the period that old `publishes` have not been delivered but there are also `publishes` with new rates, QStash will effectively allow the highest rate/period or highest parallelism. Eventually (after the old publishes are delivered), the new rate/period and parallelism will be used.
+During the period that old steps have not been delivered but there are also steps with new rates, Upstash Workflow will effectively allow the highest rate/period or highest parallelism. Eventually (after the old publishes are delivered), the new rate/period and parallelism will be used.
 </Warning>
