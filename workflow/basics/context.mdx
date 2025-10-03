@@ -1,615 +1,86 @@
 ---
-title: "Workflow Context"
+title: "Overview"
 ---
 
-A workflow's context is a JavaScript object provided by the serve function and is used to define your workflow endpoint. This context object offers utility methods for creating workflow steps, managing delays, and performing timeout-resistant HTTP calls.
+A workflow's **context** is an object provided by the route function.
+
+The context object provides:
+- **Workflow APIs** – functions for defining workflow steps.
+- **Workflow Run Properties** – request payload, request headers, and other metadata.
 
 <CodeGroup>
+    ```typescript api/workflow/route.ts highlight={4-5}
+    import { serve } from "@upstash/workflow/nextjs";
 
-```typescript api/workflow/route.ts
-import { serve } from "@upstash/workflow/nextjs";
+    export const { POST } = serve(
+      // 👇 the workflow context
+      async (context) => {
+        // ...
+      }
+    );
+    ```
 
-export const { POST } = serve(
-  // 👇 the workflow context
-  async (context) => {
-    // ...
-  }
-);
-```
+    ```python main.py
+    from fastapi import FastAPI
+    from upstash_workflow.fastapi import Serve
+    from upstash_workflow import AsyncWorkflowContext
 
-```python main.py
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-
-app = FastAPI()
-serve = Serve(app)
+    app = FastAPI()
+    serve = Serve(app)
 
 
-@serve.post("/api/example")
-async def example(context: AsyncWorkflowContext[str]) -> None: ...
+    @serve.post("/api/example")
+    async def example(context: AsyncWorkflowContext[str]) -> None: ...
 
-```
-
+    ```
 </CodeGroup>
-
-This context object provides utility methods to create workflow steps, wait for certain periods of time or perform timeout-resistant HTTP calls.
-
-Further, the context object provides all request headers, the incoming request payload and current workflow ID.
 
 ## Context Object Properties
 
-- `qstashClient`: QStash client used by the serve method
-
-- `workflowRunId`: Current workflow run ID
-
-- `url`: Publically accessible workflow endpoint URL
-
-- `failureUrl`: URL for workflow failure notifications.
-
-- `requestPayload`: Incoming request payload
-
-- `rawInitialPayload`: String version of the initial payload
-
-- `headers`: Request headers
-
-- `env`: Environment variables
-
-## Core Workflow Methods
-
-### context.run
-
-Defines and executes a workflow step.
-
-<CodeGroup>
-```typescript Serial execution (TypeScript)
-import { serve } from "@upstash/workflow/nextjs";
-
-export const { POST } = serve<string>(async (context) => {
-  const input = context.requestPayload;
-
-  const result1 = await context.run("step-1", async () => {
-    return someWork(input);
-  });
-
-  await context.run("step-2", async () => {
-    someOtherWork(result1);
-  });
-});
-
-```
-
-```typescript Parallel execution (TypeScript)
-import { serve } from "@upstash/workflow/nextjs"
-
-export const { POST } = serve<string>(
-  async (context) => {
-    const input = context.requestPayload;
-
-    const promise1 = context.run("step-1", async () => {
-      return someWork(input);
-    });
-
-    const promise2 = context.run("step-2", async () => {
-      return someOtherWork(input);
-    });
-
-    await Promise.all([promise1, promise2]);
-  },
-);
-```
-
-```python Serial execution (Python)
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-
-app = FastAPI()
-serve = Serve(app)
-
-
-@serve.post("/api/example")
-async def example(context: AsyncWorkflowContext[str]) -> None:
-    input = context.request_payload
-
-    async def _step1():
-        return some_work(input)
-
-    result1 = await context.run("step-1", _step1)
-
-    async def _step2():
-        return some_other_work(result1)
-
-    await context.run("step-2", _step2)
-
-```
-
-</CodeGroup>
-
-### context.sleep
-
-Pauses workflow execution for a specified duration.
-
-<Tip>Always `await` a `sleep` action to properly pause execution.</Tip>
-
-<CodeGroup>
-
-```typescript TypeScript
-import { serve } from "@upstash/workflow/nextjs";
-import { signIn, sendEmail } from "@/utils/onboarding-utils";
-
-export const { POST } = serve<User>(async (context) => {
-  const userData = context.requestPayload;
-
-  const user = await context.run("sign-in", async () => {
-    const signedInUser = await signIn(userData);
-    return signedInUser;
-  });
-
-  // 👇 Wait for one day (in seconds)
-  await context.sleep("wait-until-welcome-email", "1d");
-
-  await context.run("send-welcome-email", async () => {
-    return sendEmail(user.name, user.email);
-  });
-});
-```
-
-```python Python
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-from onboarding_utils import sign_in, send_email
-
-app = FastAPI()
-serve = Serve(app)
-
-
-@serve.post("/api/onboarding")
-async def onboarding(context: AsyncWorkflowContext[User]) -> None:
-    user_data = context.request_payload
-
-    async def _sign_in():
-        return await sign_in(user_data)
-
-    user = await context.run("sign-in", _sign_in)
-
-    # 👇 Wait for one day (in seconds)
-    await context.sleep("wait-until-welcome-email", "1d")
-
-    async def _send_email():
-        return await send_email(user.name, user.email)
-
-    await context.run("send-welcome-email", _send_email)
-
-```
-
-</CodeGroup>
-
-### context.sleepUntil
-
-Pauses workflow execution until a specific timestamp.
-
-<Tip>Always await a `sleepUntil` action to properly pause execution.</Tip>
-
-<CodeGroup>
-
-```typescript TypeScript
-import { serve } from "@upstash/workflow/nextjs";
-import { signIn, sendEmail } from "@/utils/onboarding-utils";
-
-export const { POST } = serve<User>(async (context) => {
-  const userData = context.requestPayload;
-
-  const user = await context.run("sign-in", async () => {
-    return signIn(userData);
-  });
-
-  // 👇 Calculate the date for one week from now
-  const oneWeekFromNow = new Date();
-  oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7);
-
-  // 👇 Wait until the calculated date
-  await context.sleepUntil("wait-for-one-week", oneWeekFromNow);
-
-  await context.run("send-welcome-email", async () => {
-    return sendEmail(user.name, user.email);
-  });
-});
-```
-
-```python Python
-from fastapi import FastAPI
-from datetime import datetime, timedelta
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-from onboarding_utils import sign_in, send_email
-
-app = FastAPI()
-serve = Serve(app)
-
-
-@serve.post("/api/onboarding")
-async def onboarding(context: AsyncWorkflowContext[User]) -> None:
-    user_data = context.request_payload
-
-    async def _sign_in():
-        return await sign_in(user_data)
-
-    user = await context.run("sign-in", _sign_in)
-
-    # 👇 Calculate the date for one week from now
-    one_week_from_now = datetime.now() + timedelta(days=7)
-
-    # 👇 Wait until the calculated date
-    await context.sleep_until("wait-for-one-week", one_week_from_now)
-
-    async def _send_email():
-        return await send_email(user.name, user.email)
-
-    await context.run("send-welcome-email", _send_email)
-
-```
-
-</CodeGroup>
-
-### context.call
-
-Performs an HTTP call as a workflow step, allowing for longer response times.
-
-Can take up to 15 minutes or 2 hours, depending on your [QStash plans](https://upstash.com/pricing/workflow) max HTTP connection timeout.
-
-<CodeGroup>
-
-```javascript TypeScript
-import { serve } from "@upstash/workflow/nextjs";
-
-export const { POST } = serve<{ topic: string }>(async (context) => {
-  const request = context.requestPayload;
-
-  const {
-    status, // response status
-    headers, // response headers
-    body, // response body
-  } = await context.call(
-    "generate-long-essay", // Step name
-    {
-      url: "https://api.openai.com/v1/chat/completions", // Endpoint URL
-      method: "POST",
-      body: {
-        // Request body
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
-          },
-          { role: "user", content: request.topic },
-        ],
-      },
-      headers: {
-        // request headers
-        authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-    }
-  );
-});
-
-```
-
-```python Python
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-
-app = FastAPI()
-serve = Serve(app)
-
-
-@dataclass
-class Request:
-    topic: str
-
-
-@serve.post("/api/example")
-async def example(context: AsyncWorkflowContext[Request]) -> None:
-    request: Request = context.request_payload
-
-    result = await context.call(
-        "generate-long-essay",
-        url="https://api.openai.com/v1/chat/completions",
-        method="POST",
-        body={
-            "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant writing really long essays that would cause a normal serverless function to timeout.",
-                },
-                {"role": "user", "content": request["topic"]},
-            ],
-        },
-        headers={
-            "authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-        },
-    )
-
-    status, headers, body = result.status, result.headers, result.body
-
-```
-
-</CodeGroup>
-
-If you want to call OpenAI, you can also use [`context.api.openai.call`](/workflow/basics/context#context-api).
-
-<Tip>
-  If the endpoint you request does not return a success response (status code 200-299),  
-  `context.call` will still be treated as successful, and the workflow will continue executing.  
-  As a result, `failureFunction` or `failureUrl` will not be invoked.
-
-To handle non-success cases, you can check the `status` field in the response and implement custom logic as needed.
-
-</Tip>
-
-context.call parameters are:
-
-- `url`: The URL to send the HTTP request to.
-- `method`: The HTTP method to use for the request (e.g., GET, POST, PUT, etc.). Defaults to GET.
-- `body`: Body to use in the request
-- `headers`: An object representing the HTTP headers to include in the request.
-- `retries`: The number of retry attempts to make if the request fails. [Retries use exponential backoff](https://upstash.com/docs/qstash/features/retry). Defaults to 0 (no retries).
-- `retryDelay`: Delay between retries (in milliseconds). By default, uses exponential backoff. You can use mathematical expressions and the special variable `retried` (current retry attempt count starting from 0). Examples: `1000`, `pow(2, retried)`, `max(10, pow(2, retried))`.
-- `flowControl`: To limit the number of calls made to your endpoint. See [Flow Control](/workflow/howto/flow-control) for more details. The default is no limit.
-    - `key`: The key to use for flow control.
-    - `rate`: The maximum number of calls per second.
-    - `parallelism`: The maximum number of calls that can be active at the same time.
-    - `period`: Time window over which the rate limit is enforced.
-- `timeout`: The maximum duration to wait for a response from the endpoint, in seconds. If retries are enabled, this timeout applies individually to each retry attempt.
-- `workflow`: If you are using [`serveMany`](/workflow/howto/invoke#servemany), you can call another workflow defined under the same `serveMany` method by passing it to the `workflow` parameter of `context.call`.
-
-context.call attempts to parse the response body as JSON. If this is not possible, the body is returned as it is.
-
-In TypeScript, you can declare the expected result type as follows:
-
-```typescript
-type ResultType = {
-  field1: string,
-  field2: number
-};
-
-const result = await context.call<ResultType>( ... );
-```
-
-<Note>
-  The context.call method can make requests to any public API endpoint. However, it cannot:
-
-  - Make requests to localhost (unless you set up a local tunnel, [here's how](http://localhost:3000/workflow/howto/local-development))
-  - Make requests to internal Upstash QStash endpoints
-</Note>
-
-### context.api
-
-<Note>
-  This feature is not yet available in
-  [workflow-py](https://github.com/upstash/workflow-py). See our
-  [Roadmap](/workflow/roadmap) for feature parity plans and
-  [Changelog](/workflow/changelog) for updates.
-</Note>
-
-In addition to context.call, another way to make third party requests is to use the context.api namespace. Under this namespace, you can find integrations for OpenAI, Anthropic and Resend.
-
-With context.api, you can call the available integrations in a typesafe manner.
-
-<CodeGroup>
-
-```typescript OpenAI
-const { status, body } = await context.api.openai.call("Call OpenAI", {
-  token: "<OPENAI_API_KEY>",
-  operation: "chat.completions.create",
-  body: {
-    model: "gpt-4o",
-    messages: [
-      {
-        role: "system",
-        content: "Assistant says 'hello!'",
-      },
-      { role: "user", content: "User shouts back 'hi!'" },
-    ],
-  },
-});
-```
-
-```typescript Anthropic
-const { status, body } = await context.api.anthropic.call(
-  "Call Anthropic",
-  {
-    token: "<ANTHROPIC_API_KEY>",
-    operation: "messages.create",
-    body: {
-      model: "claude-3-5-sonnet-20241022",
-      max_tokens: 1024,
-      messages: [
-          {"role": "user", "content": "Hello, world"}
-      ]
-    },
-  }
-);
-```
-
-```typescript Resend
-const { status, body } = await context.api.resend.call("Call Resend", {
-  token: "<RESEND_API_KEY>",
-  body: {
-    from: "Acme <onboarding@resend.dev>",
-    to: ["delivered@resend.dev"],
-    subject: "Hello World",
-    html: "<p>It works!</p>",
-  },
-  headers: {
-    "content-type": "application/json",
-  },
-});
-```
-
-</CodeGroup>
-
-We are planning to add more integrations over time.
-
-You can learn more about these integrations under the [integrations section](/workflow/integrations/openai).
-
-### context.waitForEvent
-
-<Note>
-  This feature is not yet available in
-  [workflow-py](https://github.com/upstash/workflow-py). See our
-  [Roadmap](/workflow/roadmap) for feature parity plans and
-  [Changelog](/workflow/changelog) for updates.
-</Note>
-
-Stops the workflow run until it is notified externally to continue.
-
-There is also a timeout setting which makes the workflow continue if it's not notified within the time frame.
-
-```javascript
-import { serve } from "@upstash/workflow/nextjs";
-
-export const { POST } = serve<{ topic: string }>(async (context) => {
-  const request = context.requestPayload;
-
-  const {
-    eventData, // data passed in notify
-    timeout, // boolean denoting whether the step was notified or timed out
-  } = await context.waitForEvent("wait for some event", "my-event-id", {
-    timeout: "1000s", // 1000 second timeout
-  });
-});
-
-```
-
-Default timeout value is 7 days.
-
-A workflow run waiting for event can be notified in two ways:
-
-- `context.notify`: [Notify step explained below](/workflow/basics/context#context-notify)
-- `client.notify`: [Notify method of the Workflow Client](/workflow/basics/client#notify-waiting-workflow).
-
-### context.notify
-
-<Note>
-  This feature is not yet available in
-  [workflow-py](https://github.com/upstash/workflow-py). See our
-  [Roadmap](/workflow/roadmap) for feature parity plans and
-  [Changelog](/workflow/changelog) for updates.
-</Note>
-
-Notifies workflows waiting for an event with some payload.
-
-```javascript
-import { serve } from "@upstash/workflow/nextjs";
-
-export const { POST } = serve<{ topic: string }>(async (context) => {
-  const payload = context.requestPayload;
-
-  const {
-    notifyResponse, // result of notify, which is a list of notified waiters
-  } = await context.notify("notify step", "my-event-Id", payload);
-});
-
-```
-
-`notifyResponse` is a list of `NotifyResponse` objects:
-
-```typescript
-export type NotifyResponse = {
-  waiter: Waiter;
-  messageId: string;
-  error: string;
-  workflowRunId: string;
-  workflowCreatedAt: number;
-};
-```
-
-More details about the `Waiter` object:
-
-<Snippet file="qstash/waiter.mdx" />
-
-### context.invoke
-
-Triggers another workflow run and waits for its completion. 
-The workflow continues when the invoked workflow finishes, whether successfully, with failure, or is canceled.
-The `body` is the data returned by the invoked workflow, if any is returned.
-
-```ts
-const { body, isFailed, isCanceled } = await context.invoke(
-  "invoke another workflow",
-  {
-    workflow: anotherWorkflow,
-    body: "test",
-    header: {...}, // headers to pass to anotherWorkflow (optional)
-    retries,       // number of retries (optional, default: 3)
-    retryDelay,    // delay between retries (optional, uses exponential backoff by default)
-    flowControl,   // flow control settings (optional)
-    workflowRunId  // workflowRunId to set (optional)
-  }
-);
-```
-
-Only workflows that served together can invoke each other. To learn more about how you can serve multiple workflows together,
-checkout [Invoke other workflows](/workflow/howto/invoke) guide.
-
-### context.cancel
-
-<Note>
-  This feature is not yet available in
-  [workflow-py](https://github.com/upstash/workflow-py). See our
-  [Roadmap](/workflow/roadmap) for feature parity plans and
-  [Changelog](/workflow/changelog) for updates.
-</Note>
-
-The methods we listed so far were all for defining a workflow step. `context.cancel` is different.
-
-`context.cancel` allows you to cancel the current workflow:
-
-```ts
-export const { POST } = serve<{ topic: string }>(async (context) => {
-  const payload = context.requestPayload
-
-  const result = await context.run("check if canceled", () => { ... });
-
-  if (result.cancel) {
-    await context.cancel() // cancel the workflow run
-  }
-})
-```
-
-The run will be labeled as cancelled, so failure function 
-is not triggered in this case, and no dlq entries generated.
-
-## Error handling and retries
-
-- `context.run` automatically retries on failures. Default is 3 retries with exponential backoff.
-- `context.call` doesn't retry by default. If you wish to add retry, you can use `retries` option.
-- Both `context.call` and `context.invoke` support the `retryDelay` parameter to customize the delay between retry attempts. You can use mathematical expressions with functions like `pow`, `sqrt`, `min`, `max`, etc., and the variable `retried` (current retry attempt count).
-- `WorkflowNonRetryableError` allows you to fail workflow on will
-  without going into retry cycle. The run will be labeled as failed, 
-  triggering the failure function and creating a dlq entry:
-
-```ts
-export const { POST } = serve<{ topic: string }>(async (context) => {
-  const payload = context.requestPayload
-
-  const result = await context.run("check if failed", () => { ... });
-
-  if (result.fail) {
-    throw new WorkflowNonRetryableError("error message")  // fail the workflow run
-  }
-})
-```
-
-- Future releases will allow more configuration of retry behavior.
-
-## Limitations and Plan-Specific-Features
-
-- Sleep durations and HTTP timeouts vary based on your QStash plan.
-- See your plan's "Max Delay" and "Max HTTP Connection Timeout" for specific limits.
+<ParamField path="requestPayload" type="object">
+  The request payload passed to the workflow run via `trigger()` call.
+</ParamField>
+
+<ParamField path="headers" type="object">
+  The request headers passed to the workflow run via `trigger()` call.
+</ParamField>
+
+<ParamField path="workflowRunId" type="string">
+  The unique identifier of the current workflow run.
+</ParamField>
+
+<ParamField path="url" type="string">
+  The public URL of the workflow endpoint.
+</ParamField>
+
+<ParamField path="failureUrl" type="string">
+  The URL used for workflow failure callback.
+
+  If a failure function is defined, this is the same as the workflow's `url`.
+</ParamField>
+
+<ParamField path="env" type="object">
+  The environment variables available to the workflow.
+</ParamField>
+
+<ParamField path="qstashClient" type="object">
+  The QStash client instance used by the workflow endpoint.
+</ParamField>
+
+<ParamField path="label" type="srting | undefined">
+  The label of the current workflow run, if set in [client.trigger](/workflow/basics/client/trigger).
+</ParamField>
+
+## Context Object Functions
+
+You can use the functions exposed by context object to define workflow steps.
+
+- [context.run](/workflow/basics/context/run)
+- [context.sleep](/workflow/basics/context/sleep)
+- [context.sleepUntil](/workflow/basics/context/sleepUntil)
+- [context.waitForEvent](/workflow/basics/context/waitForEvent)
+- [context.notify](/workflow/basics/context/notify)
+- [context.invoke](/workflow/basics/context/invoke)
+- [context.call](/workflow/basics/context/call)
+- [context.cancel](/workflow/basics/context/cancel)
+- [context.api](/workflow/basics/context/api)

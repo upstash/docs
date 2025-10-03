@@ -1,0 +1,84 @@
+---
+title: "Wait"
+---
+
+You can pause a workflow run with the `waitForEvent` step. An event is uniquely identified by event ID.
+
+The workflow will resume when the matching event is published.
+
+`waitForEvent` supports configurable timeouts to prevent workflows from waiting indefinitely.
+When a timeout occurs, the returned object includes `timeout: true`, allowing you to handle the failure case gracefully (for example, cancel an order, notify the user, or retry later).
+
+<Tip>
+If no timeout is specified, the default is **7 days**.
+</Tip>
+
+<CodeGroup>
+```typescript TypeScript
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve<string>(async (context) => {
+  const { orderId, userEmail } = context.requestPayload;
+
+  // Wait for order processing completion
+  const { eventData, timeout } = await context.waitForEvent(
+    "wait-for-order-processing",
+    `order-${orderId}`,
+    {
+      timeout: "1d" // 1 day timeout
+    }
+  );
+
+  if (timeout) {
+    // Handle timeout scenario
+    await context.run("handle-timeout", async () => {
+      return await handleOrderTimeout(orderId, userEmail);
+    });
+    return;
+  }
+
+});
+```
+
+```python Python
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+
+app = FastAPI()
+serve = Serve(app)
+
+@serve.post("/api/order-processing")
+async def order_processing(context: AsyncWorkflowContext[str]) -> None:
+    order_id = context.request_payload["order_id"]
+    user_email = context.request_payload["user_email"]
+
+    # Send order processing request
+    async def _request_order_processing():
+        return await request_order_processing(order_id)
+
+    await context.run("request-order-processing", _request_order_processing)
+
+    # Wait for order processing completion
+    result = await context.wait_for_event(
+        "wait-for-order-processing",
+        f"order-{order_id}",
+        timeout="10m"  # 10 minutes timeout
+    )
+
+    if result["timeout"]:
+        # Handle timeout scenario
+        async def _handle_timeout():
+            return await handle_order_timeout(order_id, user_email)
+
+        await context.run("handle-timeout", _handle_timeout)
+        return
+
+    # Process the completed order
+    async def _process_completed_order():
+        return await process_completed_order(order_id, result["event_data"])
+
+    await context.run("process-completed-order", _process_completed_order)
+```
+</CodeGroup>
+
