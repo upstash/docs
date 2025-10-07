@@ -1,63 +1,14 @@
 ---
-title: "Schedule Repeated Runs"
+title: "Schedule a Workflow"
 ---
 
 You can schedule a workflow to run periodically using a cron definition.
 
+For this feature, you would need to use Upstash QStash's Schedules feature.
+
 ## Scheduling a workflow
 
-For example, let's define a workflow that creates a backup of some important data daily. Our workflow endpoint might look like this:
-
-<CodeGroup>
-
-```typescript api/workflow/route.ts
-import { serve } from "@upstash/workflow/nextjs";
-import { createBackup, uploadBackup } from "./utils";
-
-export const { POST } = serve(
-  async (ctx) => {
-    const backup = await ctx.run("create-backup", async () => {
-      return await createBackup();
-    });
-
-    await ctx.run("upload-backup", async () => {
-      await uploadBackup(backup);
-    });
-  },
-  {
-    failureFunction({ context, failStatus, failResponse, failHeader }) {
-      // immediately get notified for failed backups
-      // i.e. send an email, log to Sentry
-    },
-  }
-);
-```
-
-```python main.py
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-from utils import create_backup, upload_backup
-
-app = FastAPI()
-serve = Serve(app)
-
-
-@serve.post("/api/workflow")
-async def workflow(context: AsyncWorkflowContext[str]) -> None:
-    async def _step1():
-        return await create_backup()
-
-    backup = await context.run("create_backup", _step1)
-
-    async def _step2():
-        await upload_backup(backup)
-
-    await context.run("upload_backup", _step2)
-
-```
-
-</CodeGroup>
+For example, let's suppose that you have a workflow that creates a backup of some important data daily. Our workflow endpoint might look like this:
 
 To run this endpoint on a schedule, navigate to `Schedules` in your QStash dashboard and click `Create Schedule`:
 
@@ -73,7 +24,7 @@ Enter your live endpoint URL, add a CRON expression to define the interval at wh
 
 Your workflow will now run repeatedly at the interval you have defined. For more details on CRON expressions, see our [QStash scheduling documentation](/qstash/features/schedules).
 
-## Scheduling a per-user workflow
+## Programmatically Schedule
 
 In order to massively improve the user experience, many applications send weekly summary reports to their users. These could be weekly analytics summaries or SEO statistics to keep users engaged with the platform.
 
@@ -89,15 +40,6 @@ const client = new Client({ token: process.env.QSTASH_TOKEN! });
 
 export async function POST(request: Request) {
   const userData: UserData = await request.json();
-
-  // Simulate user registration
-  const user = await signUp(userData);
-
-  // Calculate the date for the first summary (7 days from now)
-  const firstSummaryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
-  // Create cron expression for weekly summaries starting 7 days from signup
-  const cron = `${firstSummaryDate.getMinutes()} ${firstSummaryDate.getHours()} * * ${firstSummaryDate.getDay()}`;
 
   // Schedule weekly account summary
   await client.schedules.create({
@@ -157,81 +99,6 @@ async def sign_up(request: Request):
 
 This code will call our workflow every week, starting exactly seven days after a user signs up. Each call to our workflow will contain the respective user's ID.
 
-Note: when creating a user-specific schedule, pass a unique `scheduleId` to ensure the operation is idempotent. (See [caveats](/workflow/basics/caveats) for more details on why this is important).
-
-Lastly, add the summary-creating and email-sending logic inside of your workflow. For example:
-
-<CodeGroup>
-
-```typescript api/send-weekly-summary/route.ts
-import { serve } from "@upstash/workflow/nextjs";
-import { getUserData, generateSummary } from "@/utils/user-utils";
-import { sendEmail } from "@/utils/email-utils";
-
-// Type-safety for starting our workflow
-interface WeeklySummaryData {
-  userId: string;
-}
-
-export const { POST } = serve<WeeklySummaryData>(async (context) => {
-  const { userId } = context.requestPayload;
-
-  // Step 1: Fetch user data
-  const user = await context.run("fetch-user-data", async () => {
-    return await getUserData(userId);
-  });
-
-  // Step 2: Generate weekly summary
-  const summary = await context.run("generate-summary", async () => {
-    return await generateSummary(userId);
-  });
-
-  // Step 3: Send email with weekly summary
-  await context.run("send-summary-email", async () => {
-    await sendEmail(user.email, "Your Weekly Summary", summary);
-  });
-});
-```
-
-```python main.py
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-from utils import get_user_data, generate_summary, send_email
-
-app = FastAPI()
-serve = Serve(app)
-
-
-@dataclass
-class WeeklySummaryData:
-    user_id: str
-
-
-@serve.post("/api/send-weekly-summary")
-async def send_weekly_summary(context: AsyncWorkflowContext[WeeklySummaryData]) -> None:
-    user_id = context.request_payload.user_id
-
-    # Step 1: Fetch user data
-    async def _step1():
-        return await get_user_data(user_id)
-
-    user = await context.run("fetch_user_data", _step1)
-
-    # Step 2: Generate weekly summary
-    async def _step2():
-        return await generate_summary(user_id)
-
-    summary = await context.run("generate_summary", _step2)
-
-    # Step 3: Send email with weekly summary
-    async def _step3():
-        await send_email(user.email, "Your Weekly Summary", summary)
-
-    await context.run("send_summary_email", _step3)
-
-```
-
-</CodeGroup>
-
-Just like that, each user will receive an account summary every week, starting one week after signing up.
+<Note>
+    When creating a per-user schedule, pass a unique `scheduleId` to identify the schedule for better management and observability.
+</Note>

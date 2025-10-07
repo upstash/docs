@@ -1,0 +1,67 @@
+---
+title: "Overview"
+---
+
+Wait for Event feature that allows you to pause workflow execution until an external event occurs.
+
+This feature enables you to build asynchronous workflows that can wait for user interactions, external system responses, or any other events without consuming compute resources.
+
+## How Wait for Event Works
+
+When you use `context.waitForEvent()` in your workflow, Upstash Workflow automatically pauses execution and waits for an external notification to resume.
+This happens without keeping your serverless function running, making it cost-effective and reliable for event-driven workflows.
+
+Each waiter has a timeout duration to wait for the event and then fires automatically.
+
+<Note>
+   Wait for Event timeouts have limits based on your pricing plan:
+  - **Free**: Maximum timeout of 7 days
+  - **Pay-as-you-go**: Maximum timeout of 1 year  
+  - **Fixed pricing**: Custom timeouts (no limit)
+</Note>
+
+## Race Condition Between Wait and Notify
+
+A race condition can occur when `notify` is called before `waitForEvent` is executed.
+In this scenario, the notification will be sent but no workflow will be waiting to receive it, causing the event to be lost.
+
+To prevent race conditions, always check the response of the `notify` operation.
+The `notify` method returns a list of notified waiters.
+If this list is empty, it means no workflows were waiting for the event, and you should retry the notification.
+
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<WORKFLOW_TOKEN>" });
+
+const result = await client.notify({
+    eventId,
+    eventData
+});
+
+// Check if any workflows were notified
+if (result.waiters && result.waiters.length > 0) {
+    console.log(`Notified ${result.waiters.length} workflows`);
+    return result;
+}
+
+// If no workflows were waiting, wait and retry once
+console.log("No workflows waiting, retrying in 5 seconds...");
+await new Promise(resolve => setTimeout(resolve, 5000));
+
+return await client.notify({
+    eventId,
+    eventData
+});
+```
+</CodeGroup>
+
+## Selecting an Event ID
+
+When a workflow run waits on an event ID, it's appended to a list of waiters for the event ID.
+
+When a notify request is sent, all workflow runs waiting for that event are notified sequentially.
+To avoid heavy notify operations, it’s recommended to use unique event IDs instead of generic ones.
+For example, instead of waiting on `user-sent-verification`, wait the workflow on `user-{userId}-sent-verification` event.
