@@ -1,0 +1,224 @@
+---
+title: TanStack Start
+---
+
+<Card
+  title="GitHub Repository"
+  icon="github"
+  href="https://github.com/upstash/workflow-js/tree/main/examples/tanstack-start"
+  horizontal
+>
+  You can find the project source code on GitHub.
+</Card>
+
+This guide provides detailed, step-by-step instructions on how to use Upstash Workflow with TanStack Start. You can also explore [the source code](https://github.com/upstash/workflow-js/tree/main/examples/tanstack-start) for a detailed, end-to-end example and best practices.
+
+## Prerequisites
+
+- Node.js and pnpm installed.
+
+You can integrate Upstash Workflow into an existing TanStack Start app, or create a new TanStack Start project from scratch.
+
+## Step 1: Create a new TanStack Start project
+
+Run the following command to create a new TanStack Start project:
+
+```bash
+pnpm create @tanstack/start@latest
+```
+
+Navigate to the project directory:
+
+```bash
+cd your-project-name
+```
+
+## Step 2: Installation
+
+Run the following command to install the Upstash Workflow SDK in your TanStack Start app.
+
+<Tabs>
+  <Tab title="pnpm">
+  ```bash
+  pnpm install @upstash/workflow
+  ```
+  </Tab>
+  <Tab title="npm">
+  ```bash
+  npm install @upstash/workflow
+  ```
+  </Tab>
+  <Tab title="bun">
+  ```bash
+  bun add @upstash/workflow
+  ```
+  </Tab>
+</Tabs>
+
+## Step 3: Run the development server
+
+Upstash Workflow is built on top of Upstash QStash.
+
+In a production environment, your application connects to the managed QStash servers hosted by Upstash.
+This ensures that requests are delivered reliably, securely, and at scale without requiring you to run and maintain your own infrastructure.
+
+For local development, you don't need to depend on the managed QStash servers. Instead, you can run a local QStash server directly on your machine.
+This local server behaves just like the production version but does not require external network calls.
+
+Start the local server with:
+
+<Tabs>
+  <Tab title="pnpm">
+  ```bash
+  pnpx @upstash/qstash-cli dev
+  ```
+  </Tab>
+  <Tab title="npm">
+  ```bash
+  npx @upstash/qstash-cli dev
+  ```
+  </Tab>
+</Tabs>
+
+When the server starts, it will print the credentials.
+You'll need these values in the next step to connect your TanStack Start app to QStash.
+
+You can enable local mode in the Upstash Workflow dashboard to use the UI while developing locally.
+
+<Frame>
+  <img src="/img/qstash-workflow/local-dev.png" alt="Enable local mode on dashboard" />
+</Frame>
+
+## Step 4: Configure Environment Variables
+
+Next, you need to configure your TanStack Start app to connect with the local QStash server by setting environment variables.
+
+In the root of your project, create a `.env` file (or update your existing one) and add the values printed by the QStash local server:
+
+```txt
+QSTASH_URL="http://127.0.0.1:8080"
+QSTASH_TOKEN="eyJVc2VySUQiOiJkZWZhdWx0VXNlciIsIlBhc3N3b3JkIjoiZGVmYXVsdFBhc3N3b3JkIn0="
+QSTASH_CURRENT_SIGNING_KEY="sig_7kYjw48mhY7kAjqNGcy6cr29RJ6r"
+QSTASH_NEXT_SIGNING_KEY="sig_5ZB6DVzB1wjE8S6rZ7eenA8Pdnhs"
+```
+
+<Tip>
+  For production, replace these with your actual credentials from the Upstash Workflow dashboard.
+</Tip>
+
+## Step 5: Create a Workflow Endpoint
+
+With your environment ready, the next step is to define your first workflow endpoint.
+
+In Upstash Workflow, every workflow is exposed as an endpoint. 
+Every endpoint you expose using the SDK's `serve()` function acts as a workflow that can be triggered independently.
+
+In TanStack Start, these endpoints are implemented as **API routes** using the file-based routing system.
+
+Create a new file `src/routes/api/workflow.ts`:
+
+```typescript src/routes/api/workflow.ts
+import { createFileRoute } from '@tanstack/react-router'
+import { serve } from '@upstash/workflow/tanstack'
+
+const someWork = (input: string) => {
+  return `processed '${JSON.stringify(input)}'`
+}
+
+export const Route = createFileRoute('/api/workflow')({
+  server: {
+    handlers: serve<string>(async (context) => {
+      const input = context.requestPayload
+      
+      const result1 = await context.run('step1', () => {
+        const output = someWork(input)
+        console.log('step 1 input', input, 'output', output)
+        return output
+      })
+
+      await context.run('step2', () => {
+        const output = someWork(result1)
+        console.log('step 2 input', result1, 'output', output)
+      })
+    }),
+  },
+})
+```
+
+## Step 6: Start your TanStack Start app
+
+Start your TanStack Start development server:
+
+<Tabs>
+  <Tab title="pnpm">
+  ```bash
+  pnpm dev
+  ```
+  </Tab>
+  <Tab title="npm">
+  ```bash
+  npm run dev
+  ```
+  </Tab>
+</Tabs>
+
+Your app should now be running on `http://localhost:3000`.
+
+## Step 7: Run the Workflow Endpoint
+
+Once your endpoint is defined, the next step is to trigger a workflow run.
+
+You can start a new workflow run using the `trigger()` function from the Upstash Workflow SDK. 
+
+```javascript
+import { Client } from "@upstash/workflow";
+
+const client = Client()
+
+const { workflowRunId } = await client.trigger({
+    url: `http://localhost:3000/api/workflow`,
+    body: "Hello World!",
+    retries: 3,
+});
+```
+
+<Info>
+  The `trigger()` function should typically be called from a server-side action (not directly in client-side code) to keep your credentials secure.
+</Info>
+
+Check the Upstash Workflow dashboard to view logs of your workflow run:
+
+<Frame>
+  <img src="/img/qstash-workflow/run-view.png" alt="Debug a workflow run on UI" />
+</Frame>
+
+<Tip>
+Inside the `trigger()` call, you need to provide the URL of your workflow endpoint:
+
+- Local development → use the URL where your app is running, for example: http://localhost:3000/api/workflow
+- Production → use the URL of your deployed app, for example: https://yourapp.com/api/workflow
+
+To avoid hardcoding URLs, you can define a `BASE_URL` constant and set it based on the environment:
+
+```javascript
+const BASE_URL = process.env.NODE_ENV === 'production'
+  ? 'https://yourapp.com'
+  : 'http://localhost:3000'
+
+const { workflowRunId } = await client.trigger({
+    url: `${BASE_URL}/api/workflow`,
+    body: "Hello World!",
+    retries: 3,
+});
+```
+</Tip>
+
+## Next Steps
+
+Now that you've created your first workflow, here are some recommended guides to continue learning:
+
+1. **[Learn the Workflow API](/workflow/basics/context)**: Dive deeper into the full API surface and advanced capabilities.
+
+2. **[Configure Workflow Runs](/workflow/basics/client)**: Learn how to configure workflow execution to fit your app's needs.
+
+3. **[Handle Failures](/workflow/howto/failures)**: Understand how to detect and recover from failed workflow runs.
