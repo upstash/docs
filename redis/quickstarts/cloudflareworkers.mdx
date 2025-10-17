@@ -96,16 +96,14 @@ export interface Env {
 }
 
 export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    ctx: ExecutionContext
-  ): Promise<Response> {
-    const redis = Redis.fromEnv(env);
-    const count = await redis.incr("counter");
-    return new Response(JSON.stringify({ count }));
-  },
-};
+	async fetch(request, env, ctx): Promise<Response> {
+		const redis = Redis.fromEnv(env);
+		const count = await redis.incr("counter");
+		return new Response(JSON.stringify({ count }));
+		
+	},
+} satisfies ExportedHandler<Env>;
+
 ```
 
 ```js src/index.js
@@ -124,33 +122,101 @@ export default {
 
 ### Configure Credentials
 
-Navigate to [Upstash Console](https://console.upstash.com) and copy/paste your `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to your `wrangler.toml` as below.
+There are two methods for setting up the credentials for Redis. One for worker level, the other for account level.
 
-<CodeGroup>
+#### Using Cloudflare Secrets (Worker Level Secrets)
 
-```yaml wrangler.toml
-[vars]
-UPSTASH_REDIS_REST_URL="REPLACE_HERE"
-UPSTASH_REDIS_REST_TOKEN="REPLACE_HERE"
-```
-```jsonc wrangler.jsonc
-{
-  "vars": {
-    "UPSTASH_REDIS_REST_URL": "REPLACE_HERE",
-    "UPSTASH_REDIS_REST_TOKEN": "REPLACE_HERE"
-  }
+This is the common way of creating secrets for your worker, see [Workflow Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
+
+- Navigate to [Upstash Console](https://console.upstash.com) and get your Redis credentials.
+
+- In [Cloudflare Dashboard](https://dash.cloudflare.com/), Go to **Compute (Workers)** > **Workers & Pages**.
+
+- Select your worker and go to **Settings** > **Variables and Secrets**.
+
+- Add your Redis credentials as secrets here:
+
+<Frame>
+  <img src="/img/cloudflare-integration/redis-secrets.png" />
+</Frame>
+
+#### Using Cloudflare Secrets Store (Account Level Secrets)
+
+This method requires a few modifications in the worker code, see [Access to Secret on Env Object](https://developers.cloudflare.com/secrets-store/integrations/workers/#3-access-the-secret-on-the-env-object)
+
+```ts src/index.ts
+import { Redis } from "@upstash/redis/cloudflare";
+
+export interface Env {
+  UPSTASH_REDIS_REST_URL: SecretsStoreSecret;
+  UPSTASH_REDIS_REST_TOKEN: SecretsStoreSecret;
 }
+
+export default {
+	async fetch(request, env, ctx): Promise<Response> {
+		const redis = Redis.fromEnv({
+			UPSTASH_REDIS_REST_URL: await env.UPSTASH_REDIS_REST_URL.get(),
+			UPSTASH_REDIS_REST_TOKEN: await env.UPSTASH_REDIS_REST_TOKEN.get(),
+		});
+		const count = await redis.incr("counter");
+		return new Response(JSON.stringify({ count }));
+
+	},
+} satisfies ExportedHandler<Env>;
 ```
 
-</CodeGroup>
+After doing these modifications, you can deploy the worker to Cloudflare with `npx wrangler deploy`, and
+follow the steps below to define the secrets:
 
-### Test and Deploy
+- Navigate to [Upstash Console](https://console.upstash.com) and get your Redis credentials.
 
-You can test the function locally with `npx wrangler dev`
+- In [Cloudflare Dashboard](https://dash.cloudflare.com/), Go to **Secrets Store** and add Redis credentials as secrets.
+
+<Frame>
+  <img src="/img/cloudflare-integration/redis-secrets-store.png" />
+</Frame>
+
+- Under **Compute (Workers)** > **Workers & Pages**, find your worker and add these secrets as bindings.
+
+<Frame>
+  <img src="/img/cloudflare-integration/redis-add-binding.png" />
+</Frame>
+
+### Deployment
+
+<Note>
+  Newer deployments may revert the configurations you did in the dashboard.
+  While worker level secrets persist, the bindings will be gone!
+</Note>
 
 Deploy your function to Cloudflare with `npx wrangler deploy`
 
 The endpoint of the function will be provided to you, once the deployment is done.
+
+### Testing
+
+Open a different terminal and test the endpoint. Note the destination
+url is the same that was printed in the previous deploy step.
+
+```bash
+curl -X POST 'https://<your-worker-name>.<account-name>.workers.dev' \
+     -H 'Content-Type: application/json' 
+```
+
+The response will be in the format of `{"count":20}`
+
+In the logs you should see something like this:
+
+```bash
+$ npx wrangler tail
+
+⛅️ wrangler 4.43.0
+--------------------
+
+Successfully created tail, expires at 2025-10-16T18:59:18Z
+Connected to <your-worker-name>, waiting for logs...
+POST https://<your-worker-name>.<account-name>.workers.dev/ - Ok @ 10/16/2025, 4:05:30 PM
+```
 
 ## Repositories
 

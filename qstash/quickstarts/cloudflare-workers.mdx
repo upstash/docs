@@ -26,29 +26,24 @@ This will install the `create-cloudflare` package, and lead you through setup. C
 ```text
 ➜  npm create cloudflare@latest
 Need to install the following packages:
-  create-cloudflare@2.1.0
+  create-cloudflare@2.52.3
 Ok to proceed? (y) y
 
-using create-cloudflare version 2.1.0
+using create-cloudflare version 2.52.3
 
 ╭ Create an application with Cloudflare Step 1 of 3
 │
 ├ In which directory do you want to create your application?
 │ dir ./cloudflare_starter
 │
-├ What type of application do you want to create?
-│ type "Hello World" Worker
+├ What would you like to start with?
+│ category Hello World example
 │
-├ Do you want to use TypeScript?
-│ yes typescript
+├ Which template would you like to use?
+│ type Worker only
 │
-├ Copying files from "hello-world" template
-│
-├ Do you want to use TypeScript?
-│ yes typescript
-│
-├ Retrieving current workerd compatibility date
-│ compatibility date 2023-08-07
+├ Which language do you want to use?
+│ lang TypeScript
 │
 ├ Do you want to use git for version control?
 │ yes git
@@ -67,7 +62,7 @@ npm install @upstash/qstash
 First we import the library:
 
 ```ts src/index.ts
-import { Receiver } from "@upstash/qstash"
+import { Receiver } from "@upstash/qstash";
 ```
 
 Then we adjust the `Env` interface to include the `QSTASH_CURRENT_SIGNING_KEY`
@@ -75,8 +70,8 @@ and `QSTASH_NEXT_SIGNING_KEY` environment variables.
 
 ```ts src/index.ts
 export interface Env {
-  QSTASH_CURRENT_SIGNING_KEY: string
-  QSTASH_NEXT_SIGNING_KEY: string
+  QSTASH_CURRENT_SIGNING_KEY: string;
+  QSTASH_NEXT_SIGNING_KEY: string;
 }
 ```
 
@@ -88,98 +83,122 @@ First we create a new receiver and provide it with the signing keys.
 const receiver = new Receiver({
   currentSigningKey: env.QSTASH_CURRENT_SIGNING_KEY,
   nextSigningKey: env.QSTASH_NEXT_SIGNING_KEY,
-})
+});
 ```
 
 Then we verify the signature.
 
 ```ts src/index.ts
-const body = await request.text()
+const body = await request.text();
 
 const isValid = await receiver.verify({
   signature: request.headers.get("Upstash-Signature")!,
   body,
-})
+});
 ```
 
 The entire file looks like this now:
 
 ```ts src/index.ts
-import { Receiver } from "@upstash/qstash"
+import { Receiver } from "@upstash/qstash";
+
 export interface Env {
-  QSTASH_CURRENT_SIGNING_KEY: string
-  QSTASH_NEXT_SIGNING_KEY: string
+  QSTASH_CURRENT_SIGNING_KEY: string;
+  QSTASH_NEXT_SIGNING_KEY: string;
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const c = new Receiver({
+  async fetch(request, env, ctx): Promise<Response> {
+    const receiver = new Receiver({
       currentSigningKey: env.QSTASH_CURRENT_SIGNING_KEY,
       nextSigningKey: env.QSTASH_NEXT_SIGNING_KEY,
-    })
+    });
 
-    const body = await request.text()
+    const body = await request.text();
 
-    const isValid = await c
-      .verify({
-        signature: request.headers.get("Upstash-Signature")!,
-        body,
-      })
-      .catch((err) => {
-        console.error(err)
-        return false
-      })
+    const isValid = await receiver.verify({
+      signature: request.headers.get("Upstash-Signature")!,
+      body,
+    });
 
     if (!isValid) {
-      return new Response("Invalid signature", { status: 401 })
+      return new Response("Invalid signature", { status: 401 });
     }
 
     // signature is valid
 
-    return new Response("Hello World!")
+    return new Response("Hello World!");
   },
-}
+} satisfies ExportedHandler<Env>;
 ```
 
 ### Configure Credentials
 
-There are two methods for setting up the credentials for QStash. The recommended way is to use Cloudflare Upstash Integration. Alternatively, you can add the credentials manually.
+There are two methods for setting up the credentials for QStash. One for worker level, the other for account level.
 
-#### Using the Cloudflare Integration
+#### Using Cloudflare Secrets (Worker Level Secrets)
 
-Access to the [Cloudflare Dashboard](https://dash.cloudflare.com) and login with the same account that you've used while setting up the Worker application. Then, navigate to **Workers & Pages > Overview** section on the sidebar. Here, you'll find your application listed.
+This is the common way of creating secrets for your worker, see [Workflow Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
 
-<Frame>
-  <img src="/img/cloudflare-integration/overview.png" />
-</Frame>
+- Navigate to [Upstash Console](https://console.upstash.com) and get your QStash credentials.
 
-Clicking on the application will direct you to the application details page, where you can perform the integration process. Switch to the **Settings** tab in the application details, and proceed to **Integrations** section. You will see various Worker integrations listed. To proceed, click the **Add Integration** button associated with the QStash.
+- In [Cloudflare Dashboard](https://dash.cloudflare.com/), Go to **Compute (Workers)** > **Workers & Pages**.
 
-<Frame>
-  <img src="/img/cloudflare-integration/qstash-add-integration.png" />
-</Frame>
+- Select your worker and go to **Settings** > **Variables and Secrets**.
 
-On the Integration page, connect to your Upstash account. Then, select the related database from the dropdown menu. Finalize the process by pressing Save button.
+- Add your QStash credentials as secrets here:
 
 <Frame>
-  <img src="/img/cloudflare-integration/qstash-credentials.png" />
+  <img src="/img/cloudflare-integration/secrets.png" />
 </Frame>
 
-#### Setting up Manually
+#### Using Cloudflare Secrets Store (Account Level Secrets)
 
-Navigate to [Upstash Console](https://console.upstash.com) and copy/paste your QStash credentials to `wrangler.toml` as below.
+This method requires a few modifications in the worker code, see [Access to Secret on Env Object](https://developers.cloudflare.com/secrets-store/integrations/workers/#3-access-the-secret-on-the-env-object)
 
-```yaml
-[vars]
-QSTASH_URL="REPLACE_HERE"
-QSTASH_TOKEN="REPLACE_HERE"
-QSTASH_CURRENT_SIGNING_KEY="REPLACE_HERE"
-QSTASH_NEXT_SIGNING_KEY="REPLACE_HERE"
+```ts src/index.ts
+import { Receiver } from "@upstash/qstash";
+
+export interface Env {
+  QSTASH_CURRENT_SIGNING_KEY: SecretsStoreSecret;
+  QSTASH_NEXT_SIGNING_KEY: SecretsStoreSecret;
+}
+
+export default {
+  async fetch(request, env, ctx): Promise<Response> {
+    const c = new Receiver({
+      currentSigningKey: await env.QSTASH_CURRENT_SIGNING_KEY.get(),
+      nextSigningKey: await env.QSTASH_NEXT_SIGNING_KEY.get(),
+    });
+
+    // Rest of the code
+  },
+};
 ```
 
-### Test and Deploy
+After doing these modifications, you can deploy the worker to Cloudflare with `npx wrangler deploy`, and
+follow the steps below to define the secrets:
 
-You can test the function locally with `npx wrangler dev`
+- Navigate to [Upstash Console](https://console.upstash.com) and get your QStash credentials.
+
+- In [Cloudflare Dashboard](https://dash.cloudflare.com/), Go to **Secrets Store** and add QStash credentials as secrets.
+
+<Frame>
+  <img src="/img/cloudflare-integration/secrets-store.png" />
+</Frame>
+
+- Under **Compute (Workers)** > **Workers & Pages**, find your worker and add these secrets as bindings.
+
+<Frame>
+  <img src="/img/cloudflare-integration/add-binding.png" />
+</Frame>
+
+### Deployment
+
+<Note>
+  Newer deployments may revert the configurations you did in the dashboard.
+  While worker level secrets persist, the bindings will be gone!
+</Note>
 
 Deploy your function to Cloudflare with `npx wrangler deploy`
 
@@ -191,7 +210,7 @@ Open a different terminal and publish a message to QStash. Note the destination
 url is the same that was printed in the previous deploy step.
 
 ```bash
-curl --request POST "https://qstash.upstash.io/v2/publish/https://cloudflare-workers.upstash.workers.dev" \
+curl --request POST "https://qstash.upstash.io/v2/publish/https://<your-worker-name>.<account-name>.workers.dev" \
      -H "Authorization: Bearer <QSTASH_TOKEN>" \
      -H "Content-Type: application/json" \
      -d "{ \"hello\": \"world\"}"
@@ -202,13 +221,12 @@ In the logs you should see something like this:
 ```bash
 $ npx wrangler tail
 
-⛅️ wrangler 2.0.17
+⛅️ wrangler 4.43.0
 --------------------
-Retrieving cached values for account from node_modules/.cache/wrangler
-Successfully created tail, expires at 2022-07-11T21:11:36Z
-Connected to cloudflare-workers, waiting for logs...
-POST https://cloudflare-workers.upstash.workers.dev/ - Ok @ 7/11/2022, 5:13:19 PM
-  (log) The signature was valid
+
+Successfully created tail, expires at 2025-10-16T00:25:17Z
+Connected to <your-worker-name>, waiting for logs...
+POST https://<your-worker-name>.<account-name>.workers.dev/ - Ok @ 10/15/2025, 10:34:55 PM
 ```
 
 ## Next Steps
