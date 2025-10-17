@@ -73,12 +73,71 @@ function initializePosthog() {
   });
   posthog.opt_in_capturing();
 }
+// Validation function to replace zod
+function validateCacheData(data) {
+  if (!data || typeof data !== "object") return false;
+  if (typeof data.isEuropean !== "boolean") return false;
+  if (typeof data.expiresAt !== "number") return false;
+  return true;
+}
+
+// Cache management functions
+const GEO_CACHE_KEY = "geo:is_eu";
+const GEO_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * @returns {boolean | null}
+ */
+function getCachedIsEuropean() {
+  try {
+    const raw = localStorage.getItem(GEO_CACHE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    if (!validateCacheData(parsed)) {
+      localStorage.removeItem(GEO_CACHE_KEY);
+      return null;
+    }
+
+    if (Date.now() > parsed.expiresAt) {
+      localStorage.removeItem(GEO_CACHE_KEY);
+      return null;
+    }
+
+    return parsed.isEuropean;
+  } catch {
+    return null;
+  }
+}
+
+function setCachedIsEuropean(isEuropean) {
+  const expiresAt = Date.now() + GEO_CACHE_TTL_MS;
+  localStorage.setItem(
+    GEO_CACHE_KEY,
+    JSON.stringify({ isEuropean, expiresAt })
+  );
+}
+
 const checkGeolocation = () => {
+  const cachedIsEU = getCachedIsEuropean();
+  if (cachedIsEU !== null) {
+    if (!cachedIsEU) {
+      localStorage.setItem("cookieConsent", "true");
+      initializePosthog();
+      return Promise.resolve(true); // indicates we've handled non-European user
+    }
+    return Promise.resolve(false); // indicates we should show the banner
+  }
+
+  // If no cache, fetch from API
   return fetch("https://upstash.com/api/geolocation")
     .then((response) => {
       return response.json();
     })
     .then((data) => {
+      // Cache the result
+      setCachedIsEuropean(data.isEuropean);
+
       if (!data.isEuropean) {
         localStorage.setItem("cookieConsent", "true");
         initializePosthog();
