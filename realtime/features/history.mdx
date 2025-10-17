@@ -1,0 +1,355 @@
+---
+title: "History"
+---
+
+Message history allows you to retrieve past events and replay them to clients on connection. This is useful for making sure clients always have the latest state.
+
+## Overview
+
+All Upstash Realtime messages are automatically stored in Redis Streams. This way, messages are always delivered correctly, even after reconnects or network interruptions.
+
+Clients can fetch past events and optionally subscribe to new events.
+
+## Server Configuration
+
+Enable history when creating your Realtime instance:
+
+```typescript lib/realtime.ts
+import { Realtime } from "@upstash/realtime"
+import { redis } from "./redis"
+import z from "zod"
+
+const schema = {
+  chat: {
+    message: z.object({
+      text: z.string(),
+      sender: z.string(),
+    }),
+  },
+}
+
+export const realtime = new Realtime({
+  schema,
+  redis,
+  // 👇 (optional) per-channel history settings.
+  history: {
+    maxLength: 100,
+    expireAfterSecs: 86400,
+  },
+})
+```
+
+<ParamField path="maxLength" type="number" default="Infinite">
+  Maximum number of messages to retain per channel. Example: `maxLength: 100` will keep
+  the last 100 messages in the stream and automatically remove older messages as new ones
+  are added.
+</ParamField>
+
+<ParamField path="expireAfterSecs" type="number" default="Infinite">
+  How long to keep messages per channel before deleting them (in seconds). Resets every
+  time a message is emitted to this channel.
+</ParamField>
+
+## Client Usage
+
+Get history on connection:
+
+```tsx page.tsx
+"use client"
+
+import { useRealtime } from "@upstash/realtime/client"
+import type { RealtimeEvents } from "@/lib/realtime"
+
+export default function Page() {
+  useRealtime<RealtimeEvents>({
+    event: "chat.message",
+    history: true,
+    onData(data, channel) {
+      console.log("Historical or new message:", data)
+    },
+  })
+
+  return <>...</>
+}
+```
+
+### History Options
+
+<ParamField path="history" type="boolean | object">
+  - `true`: Fetch all available history
+  - `{ length: number }`: Fetch the last N messages
+  - `{ since: number }`: Fetch messages after a Unix timestamp (in milliseconds)
+</ParamField>
+
+```tsx page.tsx
+useRealtime<RealtimeEvents>({
+  event: "chat.message",
+  history: {
+    length: 50,
+  },
+  onData(data, channel) {},
+})
+```
+
+```tsx page.tsx
+const ONE_DAY_IN_MS = 60 * 60 * 24 * 1000
+const oneDayAgo = Date.now() - ONE_DAY_IN_MS
+
+useRealtime<RealtimeEvents>({
+  event: "chat.message",
+  history: {
+    since: oneDayAgo,
+  },
+  onData(data, channel) {},
+})
+```
+
+You can also use both `length` and `since` together.
+
+## Server-Side History
+
+Retrieve and process history on the server:
+
+```typescript route.ts
+import { realtime } from "@/lib/realtime"
+
+export const GET = async () => {
+  const channel = realtime.channel("room-123")
+  const messages = await channel.history({ length: 50 })
+
+  return new Response(JSON.stringify(messages))
+}
+```
+
+### Subscribe to new messages with history
+
+You can automatically replay past messages when subscribing to a channel. See the [Server-Side Usage](/realtime/features/server-side) documentation for more details.
+
+```typescript route.ts
+await realtime
+  .channel("room-123")
+  .history({ length: 50 })
+  .on("chat.message", (data) => {
+    console.log("Message from room-123:", data)
+  })
+```
+
+## Use Cases
+
+<AccordionGroup>
+  <Accordion title="Chat Application">
+    Load recent messages when a user joins a room:
+
+    <Info>We recommend keeping long chat histories in a database (e.g. Redis) and only fetching the latest messages from Upstash Realtime.</Info>
+
+    ```tsx page.tsx
+    "use client"
+
+    import { useRealtime } from "@upstash/realtime/client"
+    import type { RealtimeEvents } from "@/lib/realtime"
+    import { useState } from "react"
+    import z from "zod/v4"
+
+    type Message = z.infer<RealtimeEvents["chat"]["message"]>
+
+    export default function ChatRoom({ roomId }: { roomId: string }) {
+      const [messages, setMessages] = useState<Message[]>([])
+
+      useRealtime<RealtimeEvents>({
+        channels: [roomId],
+        event: "chat.message",
+        history: true,
+        onData(data, channel) {
+          setMessages((prev) => [...prev, data])
+        },
+      })
+
+      return (
+        <div>
+          {messages.map((msg, i) => (
+            <div key={i}>
+              <strong>{msg.sender}:</strong> {msg.text}
+            </div>
+          ))}
+        </div>
+      )
+    }
+    ```
+
+  </Accordion>
+
+  <Accordion title="Notification Center">
+    Show unread notifications with history:
+
+    ```tsx notifications.tsx
+    "use client"
+
+    import { useRealtime } from "@upstash/realtime/client"
+    import type { RealtimeEvents } from "@/lib/realtime"
+    import { useUser } from "@/hooks/auth"
+    import { useState } from "react"
+
+    type Notification = z.infer<RealtimeEvents["notification"]["alert"]>
+
+    export default function Notifications() {
+      const user = useUser()
+      const [notifications, setNotifications] = useState<Notification[]>([])
+
+      useRealtime<RealtimeEvents>({
+        channels: [`user-${user.id}`],
+        event: "notification.alert",
+        history: true,
+        onData(notification, channel) {
+         if(notification.status === "unread") {
+           setNotifications((prev) => [...prev, notification])
+         }
+        },
+      })
+
+      return (
+        <div>
+          {notifications.map((notif, i) => (
+            <div key={i}>{notif}</div>
+          ))}
+        </div>
+      )
+    }
+    ```
+
+  </Accordion>
+
+  <Accordion title="Live Activity Feed">
+    Replay recent activity when users visit:
+
+    ```tsx activity-feed.tsx
+    "use client"
+
+    import { useRealtime } from "@upstash/realtime/client"
+    import type { RealtimeEvents } from "@/lib/realtime"
+    import { useTeam } from "@/hooks/team"
+    import { useState } from "react"
+    import z from "zod/v4"
+
+    type Activity = z.infer<RealtimeEvents["activity"]["update"]>
+
+    export default function ActivityFeed() {
+      const team = useTeam()
+      const [activities, setActivities] = useState<Activity[]>([])
+
+      useRealtime<RealtimeEvents>({
+        channels: [`team-${team.id}`],
+        event: "activity.update",
+        history: { length: 100 },
+        onData(data, channel) {
+          setActivities((prev) => [data, ...prev])
+        },
+      })
+
+      return (
+        <div>
+          {activities.map((activity, i) => (
+            <div key={i}>{activity.message}</div>
+          ))}
+        </div>
+      )
+    }
+    ```
+
+  </Accordion>
+</AccordionGroup>
+
+## How It Works
+
+1. When you emit an event, it's stored in a Redis Stream with a unique stream ID
+2. The stream is trimmed to `maxLength` if configured
+3. The stream expires after `expireAfterSecs` if configured
+4. On connection, clients request history via query parameters
+5. History is replayed in chronological order (oldest to newest)
+6. New events continue streaming right after history replay, no messages lost
+
+## Stream IDs
+
+Messages are identified by Redis Stream IDs in the format `timestamp-sequence`:
+
+```typescript
+1734480000000 - 0
+1734480000001 - 0
+```
+
+You can use stream IDs with `since` to fetch messages after a specific point:
+
+```tsx page.tsx
+useRealtime<RealtimeEvents>({
+  event: "chat.message",
+  history: {
+    since: 1734480000000,
+  },
+  onData(data, channel) {},
+})
+```
+
+## Performance Considerations
+
+Upstash Realtime can handle extremely large histories without problems. The bottleneck is the client who needs to handle all replayed events. 
+
+At that point you should probably consider using a database like Redis or Postgres to fetch the history once, then stream new events to the client with Upstash Realtime.
+
+<AccordionGroup>
+  <Accordion title="Limit History Length">
+    For high-volume channels, limit history to prevent large initial payloads. 
+
+
+    ```typescript lib/realtime.ts
+    export const realtime = new Realtime({
+      schema,
+      redis,
+      history: {
+        maxLength: 1000,
+      },
+    })
+    ```
+
+  </Accordion>
+
+  <Accordion title="Set Expiration">
+    Expire old messages to reduce storage:
+
+    ```typescript lib/realtime.ts
+    export const realtime = new Realtime({
+      schema,
+      redis,
+      history: {
+        expireAfterSecs: 3600,
+      },
+    })
+    ```
+
+  </Accordion>
+
+  <Accordion title="Fetch on Demand">
+    For less critical features, fetch history only when needed:
+
+    ```tsx page.tsx
+    const [showHistory, setShowHistory] = useState(false)
+
+    useRealtime<RealtimeEvents>({
+      event: "chat.message",
+      history: showHistory ? { length: 50 } : false,
+      onData(data, channel) {},
+    })
+    ```
+
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Server-Side Usage" icon="server" href="/realtime/features/server-side">
+    Stream history and subscribe to events on the server
+  </Card>
+
+  <Card title="Channels" icon="tower-broadcast" href="/realtime/features/channels">
+    Scope history to specific rooms or users
+  </Card>
+</CardGroup>

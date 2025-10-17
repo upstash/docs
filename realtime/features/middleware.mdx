@@ -1,12 +1,10 @@
 ---
-title: "Middleware & Authentication"
+title: "Authentication"
 ---
 
-Protect your realtime endpoints with custom authentication and authorization logic.
+Protect your realtime endpoints with custom auth logic.
 
 ## Basic Middleware
-
-Add middleware to your realtime endpoint:
 
 ```typescript api/realtime/route.ts
 import { handle } from "@upstash/realtime"
@@ -15,7 +13,10 @@ import { currentUser } from "@/auth"
 
 export const GET = handle({
   realtime,
-  middleware: async ({ request, channel }) => {
+  middleware: async ({ request, channels }) => {
+    // channels: the channels a user is attempting to connect to
+    // default: ["default"]
+
     const user = await currentUser(request)
 
     if (!user) {
@@ -33,8 +34,8 @@ The middleware function receives:
   The incoming HTTP Request object
 </ParamField>
 
-<ParamField path="channel" type="string" default="default">
-  The channel the client is attempting to connect to
+<ParamField path="channels" type="string[]" default="['default']">
+  The channels a user is attempting to connect to
 </ParamField>
 
 <ResponseField name="return">
@@ -45,6 +46,31 @@ The middleware function receives:
 ## Authentication Patterns
 
 <AccordionGroup>
+ <Accordion title="User-Based Auth">
+    Verify users can access specific channels:
+
+    ```typescript api/realtime/route.ts
+    export const GET = handle({
+      realtime,
+      middleware: async ({ request, channels }) => {
+        const user = await currentUser(request)
+
+        for (const channel of channels) {
+          // 👇 optional: allow access to the default channel
+          if(channel === "default") {
+            continue
+          }
+
+          if (!channel.startsWith(user.id)) {
+            return new Response("You can only access your own channels", { status: 403 })
+          }
+        }
+      },
+    })
+    ```
+
+  </Accordion>
+  
   <Accordion title="Session-Based Auth">
     Verify user sessions before allowing connections:
 
@@ -65,72 +91,32 @@ The middleware function receives:
 
   </Accordion>
 
-  <Accordion title="Token-Based Auth">
-    Validate JWT tokens or API keys:
-
-    ```typescript api/realtime/route.ts
-    import { verifyToken } from "@/auth"
-
-    export const GET = handle({
-      realtime,
-      middleware: async ({ request }) => {
-        const token = request.headers.get("Authorization")?.replace("Bearer ", "")
-
-        if (!token) {
-          return new Response("Missing token", { status: 401 })
-        }
-
-        const payload = await verifyToken(token)
-        if (!payload) {
-          return new Response("Invalid token", { status: 401 })
-        }
-      },
-    })
-    ```
-
-  </Accordion>
-
-  <Accordion title="Channel Permissions">
-    Verify users can access specific channels:
-
-    ```typescript api/realtime/route.ts
-    export const GET = handle({
-      realtime,
-      middleware: async ({ request, channel }) => {
-        const user = await currentUser(request)
-
-        if (channel === user.id) {
-          return
-        }
-
-        if (channel !== user.id) {
-          return new Response("You can only access your own channel", { status: 403 })
-        }
-      },
-    })
-    ```
-
-  </Accordion>
-
   <Accordion title="Role-Based Access">
     Control access based on user roles:
 
     ```typescript api/realtime/route.ts
     export const GET = handle({
       realtime,
-      middleware: async ({ request, channel }) => {
+      middleware: async ({ request, channels }) => {
         const user = await currentUser(request)
 
-        if (channel?.startsWith("admin-") && user.role !== "admin") {
-          return new Response("Admin access required", { status: 403 })
-        }
+        for (const channel of channels) {
+          // 👇 optional: allow access to the default channel
+          if(channel === "default") {
+            continue
+          }
 
-        if (channel?.startsWith("team-")) {
-          const teamId = channel.replace("team-", "")
-          const isMember = await checkTeamMembership(user.id, teamId)
+          if (channel.startsWith("admin-") && user.role !== "admin") {
+            return new Response("Admin access required", { status: 403 })
+          }
 
-          if (!isMember) {
-            return new Response("Not a team member", { status: 403 })
+          if (channel.startsWith("team-")) {
+            const teamId = channel.replace("team-", "")
+            const isMember = await checkTeamMembership(user.id, teamId)
+
+            if (!isMember) {
+              return new Response("Not a team member", { status: 403 })
+            }
           }
         }
       },
@@ -139,68 +125,3 @@ The middleware function receives:
 
   </Accordion>
 </AccordionGroup>
-
-## Custom Error Messages
-
-Return detailed error responses:
-
-```typescript api/realtime/route.ts
-export const GET = handle({
-  realtime,
-  middleware: async ({ request, channel }) => {
-    const user = await currentUser(request)
-
-    if (!user) {
-      return new Response("Authentication required", { status: 401 })
-    }
-
-    if (!user.isVerified) {
-      return new Response("Verify your email", { status: 403 })
-    }
-  },
-})
-```
-
-## Rate Limiting
-
-Combine with Upstash Ratelimit for connection throttling:
-
-```typescript api/realtime/route.ts
-import { Ratelimit } from "@upstash/ratelimit"
-import { redis } from "@/lib/redis"
-
-const ratelimit = new Ratelimit({
-  redis,
-  limiter: Ratelimit.slidingWindow(10, "60 s"),
-})
-
-export const GET = handle({
-  realtime,
-  middleware: async ({ request }) => {
-    const ip = request.headers.get("x-forwarded-for") ?? "anonymous"
-    const { success } = await ratelimit.limit(ip)
-
-    if (!success) {
-      return new Response("Too many connections", { status: 429 })
-    }
-  },
-})
-```
-
-## Multi-Tenant Applications
-
-To make sure users only access their organization's data:
-
-```typescript api/realtime/route.ts
-export const GET = handle({
-  realtime,
-  middleware: async ({ request, channel }) => {
-    const user = await currentUser(request)
-    const orgId = channel?.split("-")[0]
-
-    if (orgId !== user.organizationId) {
-      return new Response("Access denied", { status: 403 })
-    }
-  },
-})
-```

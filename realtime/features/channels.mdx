@@ -2,22 +2,45 @@
 title: "Channels"
 ---
 
-Channels allow you to scope events to specific people or rooms. Perfect for chat rooms, realtime workspaces, or multi-tenant applications.
+Channels allow you to scope events to specific people or rooms. For example:
 
-## Basic Usage
+- Chat rooms
+- Emitting events to a specific user
+
+## Default Channel
+
+By default, events are sent to the `default` channel. If we emit an event without specifying a channel like so:
+
+```typescript
+await realtime.emit("notification.alert", "hello world!")
+```
+
+it can automatically be read using the default channel:
+
+```typescript
+useRealtime<RealtimeEvents>({
+  event: "notification.alert",
+  onData(data, channel) {
+    // 100% type-safe data handling
+  },
+})
+```
+
+---
+
+## Custom Channels
 
 Emit events to a specific channel:
 
 ```typescript route.ts
 const channel = realtime.channel("user-123")
 
-// 👇 emit to a specific channel:
-await channel.notification.alert.emit("Hello user123!")
+await channel.emit("notification.alert", "hello world!")
 ```
 
-Subscribe to a specific channel:
+Subscribe to one or more channels:
 
-```tsx page.tsx
+```tsx page.tsx  highlight={8}
 "use client"
 
 import { useRealtime } from "@upstash/realtime/client"
@@ -25,12 +48,10 @@ import type { RealtimeEvents } from "@/lib/realtime"
 
 export default function Page() {
   useRealtime<RealtimeEvents>({
-    // 👇 subscribe to a specific channel:
-    channel: "user-123",
-    events: {
-      notification: {
-        alert: (data) => console.log(data),
-      },
+    channels: ["user-123"],
+    event: "notification.alert",
+    onData(data, channel) {
+      // 100% type-safe data handling
     },
   })
 
@@ -45,66 +66,82 @@ export default function Page() {
     Send notifications to individual users:
 
     ```typescript route.ts
-    await realtime.channel(`user-${userId}`).notification.alert.emit("You have a new message")
+    const channel = realtime.channel(`user-${userId}`)
+
+    await channel.emit("notification.alert", "hello world!")
     ```
 
     ```typescript page.tsx
     useRealtime<RealtimeEvents>({
-      channel: `user-${currentUser.id}`,
-      events: { /* ... */ },
+      channels: [`user-${user.id}`],
+      event: "notification.alert",
+      onData: (data, channel) => {}
     })
     ```
+
   </Accordion>
 
   <Accordion title="Room-Based Channels">
     Broadcast to all users in a room:
 
     ```typescript route.ts
-    await realtime.channel(`room-${roomId}`).message.new.emit({
+    await realtime.channel(`room-${roomId}`).emit("room.message", {
       text: "Hello everyone!",
       sender: "Alice"
     })
     ```
+
   </Accordion>
 
   <Accordion title="Team Workspaces">
     Scope events to team workspaces:
 
     ```typescript route.ts
-    await realtime.channel(`team-${teamId}`).update.project.emit({
+    await realtime.channel(`team-${teamId}`).emit("project.update", {
       project: "Website Redesign",
       status: "In Progress"
     })
     ```
+
   </Accordion>
 </AccordionGroup>
 
 ## Dynamic Channels
 
-Switch channels dynamically based on user navigation:
+Subscribe to multiple channels at the same time:
 
 ```tsx page.tsx
 "use client"
 
 import { useState } from "react"
 import { useRealtime } from "@upstash/realtime/client"
+import type { RealtimeEvents } from "@/lib/realtime"
 
 export default function Page() {
-  const [roomId, setRoomId] = useState("lobby")
+  const [channels, setChannels] = useState<string[]>(["lobby"])
 
   useRealtime<RealtimeEvents>({
-    channel: roomId,
-    events: {
-      chat: {
-        message: (data) => console.log(`[${roomId}]`, data),
-      },
+    channels,
+    event: "chat.message",
+    onData(data, channel) {
+      console.log(`Message from ${channel}:`, data)
     },
   })
 
+  const joinRoom = (roomId: string) => {
+    setChannels((prev) => [...prev, roomId])
+  }
+
+  const leaveRoom = (roomId: string) => {
+    setChannels((prev) => prev.filter((c) => c !== roomId))
+  }
+
   return (
     <div>
-      <button onClick={() => setRoomId("lobby")}>Join Lobby</button>
-      <button onClick={() => setRoomId("room-1")}>Join Room 1</button>
+      <p>Active channels: {channels.join(", ")}</p>
+      <button onClick={() => joinRoom("room-1")}>Join Room 1</button>
+      <button onClick={() => joinRoom("room-2")}>Join Room 2</button>
+      <button onClick={() => leaveRoom("lobby")}>Leave Lobby</button>
     </div>
   )
 }
@@ -112,15 +149,15 @@ export default function Page() {
 
 ## Broadcasting to Multiple Channels
 
-Emit to multiple channels simultaneously:
+Emit to multiple channels at the same time:
 
 ```typescript route.ts
-const channels = ["room-1", "room-2", "room-3"]
+const rooms = ["lobby", "room-1", "room-2"]
 
 await Promise.all(
-  channels.map((c) => {
-    const channel = realtime.channel(c)
-    await channel.announcement.broadcast.emit(`Hi channel ${channelName}!`)
+  rooms.map((room) => {
+    const channel = realtime.channel(room)
+    await channel.emit("chat.message", `Hi channel ${channelName}!`)
   })
 )
 ```
@@ -136,17 +173,22 @@ import { currentUser } from "@/auth"
 
 export const GET = handle({
   realtime,
-  middleware: async ({ request, channel }) => {
+  middleware: async ({ request, channels }) => {
     const user = await currentUser(request)
 
-    if (!user.canAccessChannel(channel)) {
-      return new Response("Unauthorized", { status: 401 })
+    for (const channel of channels) {
+      if (!user.canAccessChannel(channel)) {
+        return new Response("Unauthorized", { status: 401 })
+      }
     }
   },
 })
 ```
 
-<Card title="Authenticate Realtime Requests" icon="shield" href="/realtime/features/middleware">
+<Card
+  title="Authenticate Realtime Requests"
+  icon="shield"
+  href="/realtime/features/middleware"
+>
   See the middleware documentation for authentication examples
 </Card>
-
