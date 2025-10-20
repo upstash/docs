@@ -73,49 +73,22 @@ function initializePosthog() {
   });
   posthog.opt_in_capturing();
 }
-// Validation function to replace zod
-function validateCacheData(data) {
-  if (!data || typeof data !== "object") return false;
-  if (typeof data.isEuropean !== "boolean") return false;
-  if (typeof data.expiresAt !== "number") return false;
-  return true;
-}
 
-// Cache management functions
+// Cache for geolocation check
 const GEO_CACHE_KEY = "geo:is_eu";
-const GEO_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * @returns {boolean | null}
  */
 function getCachedIsEuropean() {
-  try {
-    const raw = localStorage.getItem(GEO_CACHE_KEY);
-    if (!raw) return null;
-
-    const parsed = JSON.parse(raw);
-    if (!validateCacheData(parsed)) {
-      localStorage.removeItem(GEO_CACHE_KEY);
-      return null;
-    }
-
-    if (Date.now() > parsed.expiresAt) {
-      localStorage.removeItem(GEO_CACHE_KEY);
-      return null;
-    }
-
-    return parsed.isEuropean;
-  } catch {
-    return null;
-  }
+  const value = localStorage.getItem(GEO_CACHE_KEY);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
 }
 
 function setCachedIsEuropean(isEuropean) {
-  const expiresAt = Date.now() + GEO_CACHE_TTL_MS;
-  localStorage.setItem(
-    GEO_CACHE_KEY,
-    JSON.stringify({ isEuropean, expiresAt })
-  );
+  localStorage.setItem(GEO_CACHE_KEY, String(isEuropean));
 }
 
 const checkGeolocation = () => {
