@@ -73,44 +73,57 @@ function initializePosthog() {
   });
   posthog.opt_in_capturing();
 }
-const checkGeolocation = () => {
-  return fetch("https://upstash.com/api/geolocation")
-    .then((response) => {
-      return response.json();
-    })
-    .then((data) => {
-      if (!data.isEuropean) {
-        localStorage.setItem("cookieConsent", "true");
-        initializePosthog();
-        return true; // indicates we've handled non-European user
-      }
-      return false; // indicates we should show the banner
-    })
-    .catch((error) => {
-      return false;
-    });
-};
+
+function getCookieConsent() {
+  const value = localStorage.getItem("cookieConsent");
+  // Backwards compatibility: convert old "true" to "granted"
+  if (value === "true") {
+    localStorage.setItem("cookieConsent", "granted");
+    return "granted";
+  }
+  return value;
+}
+
+function setCookieConsent(value) {
+  localStorage.setItem("cookieConsent", value);
+}
+
+async function checkGeolocation() {
+  try {
+    const response = await fetch("https://upstash.com/api/geolocation");
+    const data = await response.json();
+
+    if (data.isEuropean) {
+      setCookieConsent("pending-eu");
+      createCookieConsentBanner();
+    } else {
+      setCookieConsent("granted");
+      initializePosthog();
+    }
+  } catch (error) {
+    console.error("Error checking geolocation:", error);
+  }
+}
 
 function initialize() {
-  if (localStorage.getItem("cookieConsent") === "true") {
+  const cookieConsent = getCookieConsent();
+
+  if (cookieConsent === "granted") {
     initializePosthog();
-  } else {
+  } else if (cookieConsent === "pending-eu") {
     createCookieConsentBanner();
+  } else {
+    checkGeolocation();
   }
 }
 
 initialize();
-function createCookieConsentBanner() {
-  if (
-    document.getElementById("cookie-consent-banner") ||
-    localStorage.getItem("cookieConsent")
-  )
-    return;
 
-  return checkGeolocation().then((isHandled) => {
-    if (!isHandled) {
-      const style = document.createElement("style");
-      style.textContent = `
+function createCookieConsentBanner() {
+  if (document.getElementById("cookie-consent-banner")) return;
+
+  const style = document.createElement("style");
+  style.textContent = `
         #cookie-consent-banner {
           position: fixed;
           bottom: 0;
@@ -139,27 +152,27 @@ function createCookieConsentBanner() {
           }
         }
       `;
-      document.head.appendChild(style);
+  document.head.appendChild(style);
 
-      const banner = document.createElement("div");
-      banner.id = "cookie-consent-banner";
+  const banner = document.createElement("div");
+  banner.id = "cookie-consent-banner";
 
-      const message = document.createElement("span");
-      message.innerHTML =
-        'We use cookies to improve your experience. <a href="https://upstash.com/trust/privacy.pdf" style="margin-left: 4px; text-decoration: underline;">Read our privacy policy.</a>';
+  const message = document.createElement("span");
+  message.innerHTML =
+    'We use cookies to improve your experience. <a href="https://upstash.com/trust/privacy.pdf" style="margin-left: 4px; text-decoration: underline;">Read our privacy policy.</a>';
 
-      const buttonContainer = document.createElement("div");
-      buttonContainer.style.cssText = `
+  const buttonContainer = document.createElement("div");
+  buttonContainer.style.cssText = `
         display: flex;
         align-items: center;
         gap: 10px;
       `;
 
-      const acceptButton = document.createElement("button");
-      const acceptText = document.createElement("p");
-      acceptText.textContent = "Accept";
-      acceptButton.appendChild(acceptText);
-      acceptButton.style.cssText = `
+  const acceptButton = document.createElement("button");
+  const acceptText = document.createElement("p");
+  acceptText.textContent = "Accept";
+  acceptButton.appendChild(acceptText);
+  acceptButton.style.cssText = `
         display: flex;
         align-items: center;
         background-color: white;
@@ -171,9 +184,9 @@ function createCookieConsentBanner() {
         transition: background-color 0.2s;
       `;
 
-      const closeButton = document.createElement("button");
-      closeButton.textContent = "x";
-      closeButton.style.cssText = `
+  const closeButton = document.createElement("button");
+  closeButton.textContent = "x";
+  closeButton.style.cssText = `
         display: flex;
         height: 24px;
         width: 24px;
@@ -187,36 +200,34 @@ function createCookieConsentBanner() {
         transition: background-color 0.2s;
       `;
 
-      acceptButton.addEventListener(
-        "mouseover",
-        () => (acceptButton.style.backgroundColor = "#f3f4f6")
-      );
-      acceptButton.addEventListener(
-        "mouseout",
-        () => (acceptButton.style.backgroundColor = "white")
-      );
-      closeButton.addEventListener(
-        "mouseover",
-        () => (closeButton.style.backgroundColor = "rgb(16, 185, 129)")
-      );
-      closeButton.addEventListener(
-        "mouseout",
-        () => (closeButton.style.backgroundColor = "transparent")
-      );
+  acceptButton.addEventListener(
+    "mouseover",
+    () => (acceptButton.style.backgroundColor = "#f3f4f6")
+  );
+  acceptButton.addEventListener(
+    "mouseout",
+    () => (acceptButton.style.backgroundColor = "white")
+  );
+  closeButton.addEventListener(
+    "mouseover",
+    () => (closeButton.style.backgroundColor = "rgb(16, 185, 129)")
+  );
+  closeButton.addEventListener(
+    "mouseout",
+    () => (closeButton.style.backgroundColor = "transparent")
+  );
 
-      acceptButton.addEventListener("click", () => {
-        localStorage.setItem("cookieConsent", "true");
-        banner.remove();
-        initializePosthog();
-      });
-
-      closeButton.addEventListener("click", () => banner.remove());
-
-      buttonContainer.appendChild(acceptButton);
-      buttonContainer.appendChild(closeButton);
-      banner.appendChild(message);
-      banner.appendChild(buttonContainer);
-      document.body.appendChild(banner);
-    }
+  acceptButton.addEventListener("click", () => {
+    setCookieConsent("granted");
+    banner.remove();
+    initializePosthog();
   });
+
+  closeButton.addEventListener("click", () => banner.remove());
+
+  buttonContainer.appendChild(acceptButton);
+  buttonContainer.appendChild(closeButton);
+  banner.appendChild(message);
+  banner.appendChild(buttonContainer);
+  document.body.appendChild(banner);
 }
