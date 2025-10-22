@@ -93,8 +93,6 @@ async function checkGeolocation() {
     const response = await fetch("https://upstash.com/api/geolocation");
     const data = await response.json();
 
-    data.isEuropean = true;
-
     if (data.isEuropean) {
       setCookieConsent("pending-eu");
       createCookieConsentBanner();
