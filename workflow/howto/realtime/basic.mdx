@@ -25,7 +25,7 @@ This guide shows you how to integrate Upstash Workflow with Upstash Realtime to 
 ### 1. Install Dependencies
 
 ```bash
-npm install @upstash/workflow @upstash/realtime
+npm install @upstash/workflow @upstash/realtime @upstash/redis zod
 ```
 
 ### 2. Configure Upstash Realtime
@@ -33,24 +33,28 @@ npm install @upstash/workflow @upstash/realtime
 Create a Realtime instance in `lib/realtime.ts`:
 
 ```typescript
-import { Realtime } from "@upstash/realtime";
+import { InferRealtimeEvents, Realtime } from "@upstash/realtime";
+import { Redis } from "@upstash/redis";
+import z from "zod/v4";
 
-export const realtime = new Realtime({
-  redis: {
-    url: process.env.UPSTASH_REDIS_REST_URL!,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-  },
-});
+const redis = Redis.fromEnv();
 
-// Define your event types for type safety
-export type RealtimeEvents = {
-  "workflow.update": 
-    | { type: "runStart"; workflowRunId: string; timestamp: number }
-    | { type: "runFinish"; workflowRunId: string; timestamp: number; status: "success" | "failed"; error?: string }
-    | { type: "stepStart"; workflowRunId: string; stepName: string; timestamp: number }
-    | { type: "stepFinish"; workflowRunId: string; stepName: string; timestamp: number; result?: unknown }
-    | { type: "stepFail"; workflowRunId: string; stepName: string; timestamp: number; error: string };
-};
+const events = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("runStart"), workflowRunId: z.string(), timestamp: z.number() }),
+  z.object({ type: z.literal("runFinish"), workflowRunId: z.string(), timestamp: z.number(), status: z.union([z.literal("success"), z.literal("failed")]), error: z.string().optional() }),
+  z.object({ type: z.literal("stepStart"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string() }),
+  z.object({ type: z.literal("stepFinish"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string(), result: z.unknown().optional() }),
+  z.object({ type: z.literal("stepFail"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string(), error: z.string() }),
+])
+
+const schema = {
+  workflow: {
+    update: events
+  }
+}
+
+export const realtime = new Realtime({ schema, redis })
+export type RealtimeEvents = InferRealtimeEvents<typeof realtime>
 ```
 
 ### 3. Create a Realtime Endpoint
@@ -118,6 +122,9 @@ export const { POST } = serve<WorkflowPayload>(
         }
 
         const result = { valid: true, userId, action };
+
+        // sleep 500 ms
+        await new Promise((resolve) => setTimeout(resolve, 500));
 
         // Emit step completion
         await channel.emit("workflow.update", {
@@ -187,11 +194,15 @@ Create an endpoint to trigger workflows at `app/api/trigger/route.ts`:
 
 ```typescript
 import { NextRequest, NextResponse } from "next/server";
-import { workflowClient } from "@/lib/workflow";
+import { Client } from "@upstash/workflow";
+
+export const workflowClient = new Client({
+  token: process.env.QSTASH_TOKEN,
+  baseUrl: process.env.QSTASH_URL,
+});
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
     const workflowUrl = `${request.nextUrl.origin}/api/workflow/basic`;
 
     const { workflowRunId } = await workflowClient.trigger({
@@ -332,14 +343,18 @@ export default function WorkflowPage() {
   const { trigger, isTriggering, steps, runStatus } = useWorkflowWithRealtime();
 
   return (
-    <div>
+    <div style={{ maxWidth: "600px", margin: "40px auto", fontFamily: "Arial, sans-serif" }}>
       <button onClick={trigger} disabled={isTriggering}>
-        {isTriggering ? "Starting..." : "Trigger Workflow"}
+        {isTriggering ? "Starting..." : "Click to Trigger Workflow"}
       </button>
 
+      <h3 style={{ marginTop: "20px" }}>Run Status:</h3>
+
       {runStatus && (
-        <div>Status: {runStatus.status}</div>
+        <div>{runStatus.status}</div>
       )}
+
+      <h3 style={{ marginTop: "20px" }}>Workflow Steps:</h3>
 
       <div>
         {steps.map((step, index) => (
