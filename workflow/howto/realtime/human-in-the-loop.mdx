@@ -30,17 +30,16 @@ In a human-in-the-loop workflow:
 
 For human-in-the-loop workflows, add these additional event types to your `lib/realtime.ts`:
 
-```typescript {8-9}
-export type RealtimeEvents = {
-  "workflow.update": 
-    | { type: "runStart"; workflowRunId: string; timestamp: number }
-    | { type: "runFinish"; workflowRunId: string; timestamp: number; status: "success" | "failed"; error?: string }
-    | { type: "stepStart"; workflowRunId: string; stepName: string; timestamp: number }
-    | { type: "stepFinish"; workflowRunId: string; stepName: string; timestamp: number; result?: unknown }
-    | { type: "stepFail"; workflowRunId: string; stepName: string; timestamp: number; error: string }
-    | { type: "waitingForInput"; workflowRunId: string; eventId: string; message: string; timestamp: number }
-    | { type: "inputResolved"; workflowRunId: string; eventId: string; timestamp: number };
-};
+```typescript {7-8}
+const events = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("runStart"), workflowRunId: z.string(), timestamp: z.number() }),
+  z.object({ type: z.literal("runFinish"), workflowRunId: z.string(), timestamp: z.number(), status: z.union([z.literal("success"), z.literal("failed")]), error: z.string().optional() }),
+  z.object({ type: z.literal("stepStart"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string() }),
+  z.object({ type: z.literal("stepFinish"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string(), result: z.unknown().optional() }),
+  z.object({ type: z.literal("stepFail"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string(), error: z.string() }),
+  z.object({ type: z.literal("waitingForInput"), workflowRunId: z.string(), eventId: z.string(), message: z.string(), timestamp: z.number() }),
+  z.object({ type: z.literal("inputResolved"), workflowRunId: z.string(), eventId: z.string(), timestamp: z.number() }),
+])
 ```
 
 The new event types are:
@@ -54,7 +53,6 @@ Create your workflow at `app/api/workflow/human-in-loop/route.ts`:
 ```typescript
 import { serve } from "@upstash/workflow/nextjs";
 import { realtime } from "@/lib/realtime";
-import { WorkflowAbort } from "@upstash/workflow";
 
 type WorkflowPayload = {
   userId: string;
@@ -146,17 +144,19 @@ export const { POST } = serve<WorkflowPayload>(
       timestamp: Date.now(),
     });
 
+    const status = eventData.approved ? "approved" : "rejected"
+
     // Step 3: Process based on approval
-    await context.run("process-approval", async () => {
+    await context.run(`process-${status}`, async () => {
       await channel.emit("workflow.update", {
         type: "stepStart",
         workflowRunId,
-        stepName: "process-approval",
+        stepName: `process-${status}`,
         timestamp: Date.now(),
       });
 
       const result = {
-        status: eventData.approved ? "approved" : "rejected",
+        status,
         processedAt: Date.now(),
         action,
         userId,
@@ -165,7 +165,7 @@ export const { POST } = serve<WorkflowPayload>(
       await channel.emit("workflow.update", {
         type: "stepFinish",
         workflowRunId,
-        stepName: "process-approval",
+        stepName: `process-${status}`,
         timestamp: Date.now(),
         result,
       });
@@ -430,40 +430,54 @@ import { useWorkflowWithRealtime } from "@/hooks/useWorkflowWithRealtime";
 export default function WorkflowPage() {
   const {
     trigger,
-    continueWorkflow,
     isTriggering,
     steps,
+    runStatus,
     waitingState,
-    runStatus
+    continueWorkflow,
   } = useWorkflowWithRealtime();
 
   return (
-    <div>
+    <div
+      style={{
+        maxWidth: "600px",
+        margin: "40px auto",
+        fontFamily: "Arial, sans-serif",
+      }}
+    >
       <button onClick={trigger} disabled={isTriggering}>
-        {isTriggering ? "Starting..." : "Trigger Workflow"}
+        {isTriggering ? "Starting..." : "Click to Trigger Workflow"}
       </button>
 
-      {runStatus && <div>Status: {runStatus.status}</div>}
+      <h3 style={{ marginTop: "20px" }}>Run Status:</h3>
+
+      {runStatus && <div>{runStatus.status}</div>}
 
       {/* Show workflow steps */}
+      <h3 style={{ marginTop: "20px" }}>Workflow Steps:</h3>
       <div>
         {steps.map((step, index) => (
           <div key={index}>
             <strong>{step.stepName}</strong>: {step.status}
+            {step.error && <span> - {step.error}</span>}
           </div>
         ))}
       </div>
 
       {/* Show approval UI when waiting for input */}
       {waitingState && (
-        <div className="approval-prompt">
+        <div style={{ marginTop: "20px" }} className="approval-prompt">
           <p>{waitingState.message}</p>
-          <button onClick={() => continueWorkflow({ approved: true })}>
-            Approve
-          </button>
-          <button onClick={() => continueWorkflow({ approved: false })}>
-            Reject
-          </button>
+          <p>
+            <button onClick={() => continueWorkflow({ approved: true })}>
+              Click to Approve
+            </button>
+          </p>
+          <p>
+            <button onClick={() => continueWorkflow({ approved: false })}>
+              Click to Reject
+            </button>
+          </p>
         </div>
       )}
     </div>
