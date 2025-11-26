@@ -2,17 +2,47 @@
 title: "Server-Side Usage"
 ---
 
-Use Upstash Realtime on the server to subscribe to events, retrieve message history, and stream updates to clients.
+Use Upstash Realtime on the server to emit events, subscribe to channels, and retrieve message history.
 
-## Subscribe to Events
+## Emit Events
+
+Emit events from any server context:
 
 ```typescript route.ts
 import { realtime } from "@/lib/realtime"
 
-const channel = realtime.channel("notifications")
+export const POST = async () => {
+  await realtime.emit("notification.alert", "hello world!")
 
-await channel.on("notification.alert", (data) => {
-  console.log("New notification:", data)
+  return new Response("OK")
+}
+```
+
+Emit to specific channels:
+
+```typescript route.ts
+import { realtime } from "@/lib/realtime"
+
+export const POST = async () => {
+  const channel = realtime.channel("user-123")
+  await channel.emit("notification.alert", "hello world!")
+
+  return new Response("OK")
+}
+```
+
+## Subscribe to Events
+
+Subscribe to events on a channel:
+
+```typescript route.ts
+import { realtime } from "@/lib/realtime"
+
+const unsubscribe = await realtime.channel("notifications").subscribe({
+  events: ["notification.alert"],
+  onData({ event, data, channel }) {
+    console.log("New notification:", data)
+  },
 })
 ```
 
@@ -21,16 +51,35 @@ Subscribe to multiple events:
 ```typescript route.ts
 import { realtime } from "@/lib/realtime"
 
+const unsubscribe = await realtime.channel("room-123").subscribe({
+  events: ["chat.message", "user.joined", "user.left"],
+  onData({ event, data, channel }) {
+    // 👇 data is automatically typed based on the event
+    if (event === "chat.message") console.log("New message:", data)
+    if (event === "user.joined") console.log("User joined:", data)
+    if (event === "user.left") console.log("User left:", data)
+  },
+})
+```
+
+### Unsubscribe
+
+Clean up subscriptions when done:
+
+```typescript route.ts
+import { realtime } from "@/lib/realtime"
+
 const channel = realtime.channel("room-123")
 
-await Promise.all([
-  channel.on("chat.message", (data) => {
-    console.log("New message:", data)
-  }),
-  channel.on("user.joined", (data) => {
-    console.log("User joined:", data)
-  }),
-])
+const unsubscribe = await channel.subscribe({
+  events: ["chat.message"],
+  onData({ data }) {
+    console.log("Message:", data)
+  },
+})
+
+unsubscribe()
+// or: channel.unsubscribe()
 ```
 
 ## Retrieve History
@@ -41,8 +90,7 @@ Fetch past messages from a channel:
 import { realtime } from "@/lib/realtime"
 
 export const GET = async () => {
-  const channel = realtime.channel("room-123")
-  const messages = await channel.history({ length: 50 })
+  const messages = await realtime.channel("room-123").history()
 
   return new Response(JSON.stringify(messages))
 }
@@ -50,19 +98,36 @@ export const GET = async () => {
 
 ### History Options
 
-<ParamField path="length" type="number">
-  Number of messages to retrieve (starting from most recent)
+<ParamField path="limit" type="number" default="1000">
+  Maximum number of messages to retrieve (capped at 1000)
 </ParamField>
 
-<ParamField path="since" type="number">
-  Fetch messages by Unix timestamp (inclusive, in milliseconds)
+<ParamField path="start" type="number">
+  Fetch messages after this Unix timestamp (in milliseconds)
+</ParamField>
+
+<ParamField path="end" type="number">
+  Fetch messages before this Unix timestamp (in milliseconds)
 </ParamField>
 
 ```typescript route.ts
-const messages = await channel.history({
-  length: 100,
-  since: Date.now() - 86400000,
+const messages = await realtime.channel("room-123").history({
+  limit: 100,
+  start: Date.now() - 86400000,
 })
+```
+
+### History Response
+
+Each history message contains:
+
+```typescript
+type HistoryMessage = {
+  id: string
+  event: string
+  channel: string
+  data: unknown
+}
 ```
 
 ## Subscribe with History
@@ -74,95 +139,35 @@ import { realtime } from "@/lib/realtime"
 
 const channel = realtime.channel("room-123")
 
-await channel
-  .history({ length: 50 })
-  .on("chat.message", (data) => {
+await channel.subscribe({
+  events: ["chat.message"],
+  history: true,
+  onData({ event, data, channel }) {
     console.log("Message:", data)
-  })
+  },
+})
+```
+
+Pass history options:
+
+```typescript route.ts
+await channel.subscribe({
+  events: ["chat.message"],
+  history: {
+    limit: 50,
+    start: Date.now() - 3600000,
+  },
+  onData({ data }) {
+    console.log("Message:", data)
+  },
+})
 ```
 
 This pattern:
-1. Fetches the last 50 messages
+
+1. Fetches messages matching the history criteria
 2. Replays them in chronological order
 3. Continues to listen for new messages
-
-## Stream to Clients
-
-Stream historical and new messages to clients using Server-Sent Events:
-
-```typescript app/api/stream/route.ts highlight={13-19}
-import { realtime } from "@/lib/realtime"
-
-export const GET = async (req: Request) => {
-  const { searchParams } = new URL(req.url)
-  const channelId = searchParams.get("channel")
-
-  if (!channelId) {
-    return new Response("Channel ID required", { status: 400 })
-  }
-
-  const channel = realtime.channel(channelId)
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      await channel.history().on("notification.alert", (data) => {
-        controller.enqueue(`data: ${JSON.stringify(data)}\n\n`)
-      })
-    },
-  })
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    },
-  })
-}
-```
-
-### Handle Disconnections
-
-Clean up subscriptions when a client disconnects:
-
-```typescript app/api/stream/route.ts highlight={18-20,23-25}
-import { realtime } from "@/lib/realtime"
-
-export const GET = async (req: Request) => {
-  const { searchParams } = new URL(req.url)
-  const channelId = searchParams.get("channel")
-
-  if (!channelId) {
-    return new Response("Channel ID required", { status: 400 })
-  }
-
-  const channel = realtime.channel(channelId)
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      await channel.history().on("task.update", (data) => {
-        controller.enqueue(`data: ${JSON.stringify(data)}\n\n`)
-
-        if (data.status === "completed" || data.status === "failed") {
-          controller.close()
-        }
-      })
-
-      req.signal.addEventListener("abort", () => {
-        controller.close()
-      })
-    },
-  })
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    },
-  })
-}
-```
 
 ## Use Cases
 
@@ -190,35 +195,6 @@ export const GET = async (req: Request) => {
     }
     ```
 
-    Stream updates to the client:
-
-    ```typescript app/api/job/stream/route.ts
-    import { realtime } from "@/lib/realtime"
-
-    export const GET = async (req: Request) => {
-      const { searchParams } = new URL(req.url)
-      const jobId = searchParams.get("id")
-
-      const channel = realtime.channel(jobId)
-
-      const stream = new ReadableStream({
-        async start(controller) {
-          await channel.history().on("job.progress", (data) => {
-            controller.enqueue(`data: ${JSON.stringify(data)}\n\n`)
-
-            if (data.progress === 100) {
-              controller.close()
-            }
-          })
-        },
-      })
-
-      return new Response(stream, {
-        headers: { "Content-Type": "text/event-stream" },
-      })
-    }
-    ```
-
   </Accordion>
 
   <Accordion title="Event Processing">
@@ -228,16 +204,17 @@ export const GET = async (req: Request) => {
     import { realtime } from "@/lib/realtime"
     import { sendEmail } from "@/lib/email"
 
-    const channel = realtime.channel("notifications")
-
-    await channel.on("notification.alert", async (data) => {
-      if (data.priority === "high") {
-        await sendEmail({
-          to: data.userId,
-          subject: "Urgent Notification",
-          body: data.message,
-        })
-      }
+    await realtime.channel("notifications").subscribe({
+      events: ["notification.alert"],
+      onData: async ({ data }) => {
+        if (data.priority === "high") {
+          await sendEmail({
+            to: data.userId,
+            subject: "Urgent Notification",
+            body: data.message,
+          })
+        }
+      },
     })
     ```
 
@@ -283,33 +260,6 @@ export const GET = async (req: Request) => {
   </Accordion>
 </AccordionGroup>
 
-## Emit Events
-
-Emit events from any server context:
-
-```typescript route.ts
-import { realtime } from "@/lib/realtime"
-
-export const POST = async () => {
-  await realtime.emit("notification.alert", "hello world!")
-
-  return new Response("OK")
-}
-```
-
-Emit to specific channels:
-
-```typescript route.ts highlight={4-5}
-import { realtime } from "@/lib/realtime"
-
-export const POST = async () => {
-  const channel = realtime.channel("user-123")
-  await channel.emit("notification.alert", "hello world!")
-
-  return new Response("OK")
-}
-```
-
 ## Next Steps
 
 <CardGroup cols={2}>
@@ -321,4 +271,3 @@ export const POST = async () => {
     Scope events to specific rooms or users
   </Card>
 </CardGroup>
-

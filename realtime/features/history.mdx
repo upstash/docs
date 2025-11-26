@@ -29,7 +29,6 @@ const schema = {
 export const realtime = new Realtime({
   schema,
   redis,
-  // 👇 (optional) per-channel history settings.
   history: {
     maxLength: 100,
     expireAfterSecs: 86400,
@@ -48,62 +47,6 @@ export const realtime = new Realtime({
   time a message is emitted to this channel.
 </ParamField>
 
-## Client Usage
-
-Get history on connection:
-
-```tsx page.tsx
-"use client"
-
-import { useRealtime } from "@upstash/realtime/client"
-import type { RealtimeEvents } from "@/lib/realtime"
-
-export default function Page() {
-  useRealtime<RealtimeEvents>({
-    event: "chat.message",
-    history: true,
-    onData(data, channel) {
-      console.log("Historical or new message:", data)
-    },
-  })
-
-  return <>...</>
-}
-```
-
-### History Options
-
-<ParamField path="history" type="boolean | object">
-  - `true`: Fetch all available history
-  - `{ length: number }`: Fetch the last N messages
-  - `{ since: number }`: Fetch messages after a Unix timestamp (in milliseconds)
-</ParamField>
-
-```tsx page.tsx
-useRealtime<RealtimeEvents>({
-  event: "chat.message",
-  history: {
-    length: 50,
-  },
-  onData(data, channel) {},
-})
-```
-
-```tsx page.tsx
-const ONE_DAY_IN_MS = 60 * 60 * 24 * 1000
-const oneDayAgo = Date.now() - ONE_DAY_IN_MS
-
-useRealtime<RealtimeEvents>({
-  event: "chat.message",
-  history: {
-    since: oneDayAgo,
-  },
-  onData(data, channel) {},
-})
-```
-
-You can also use both `length` and `since` together.
-
 ## Server-Side History
 
 Retrieve and process history on the server:
@@ -112,24 +55,73 @@ Retrieve and process history on the server:
 import { realtime } from "@/lib/realtime"
 
 export const GET = async () => {
-  const channel = realtime.channel("room-123")
-  const messages = await channel.history({ length: 50 })
+  const messages = await realtime.channel("room-123").history()
 
   return new Response(JSON.stringify(messages))
 }
 ```
 
-### Subscribe to new messages with history
+### History Options
 
-You can automatically replay past messages when subscribing to a channel. See the [Server-Side Usage](/realtime/features/server-side) documentation for more details.
+<ParamField path="limit" type="number" default="1000">
+  Maximum number of messages to retrieve (capped at 1000)
+</ParamField>
+
+<ParamField path="start" type="number">
+  Fetch messages after this Unix timestamp (in milliseconds)
+</ParamField>
+
+<ParamField path="end" type="number">
+  Fetch messages before this Unix timestamp (in milliseconds)
+</ParamField>
 
 ```typescript route.ts
-await realtime
-  .channel("room-123")
-  .history({ length: 50 })
-  .on("chat.message", (data) => {
+const messages = await realtime.channel("room-123").history({
+  limit: 50,
+  start: Date.now() - 86400000,
+})
+```
+
+### History Response
+
+Each history message contains:
+
+```typescript
+type HistoryMessage = {
+  id: string
+  event: string
+  channel: string
+  data: unknown
+}
+```
+
+### Subscribe with History
+
+You can automatically replay past messages when subscribing to a channel:
+
+```typescript route.ts
+await realtime.channel("room-123").subscribe({
+  events: ["chat.message"],
+  history: true,
+  onData({ event, data, channel }) {
     console.log("Message from room-123:", data)
-  })
+  },
+})
+```
+
+Pass history options for more control:
+
+```typescript route.ts
+await realtime.channel("room-123").subscribe({
+  events: ["chat.message"],
+  history: {
+    limit: 50,
+    start: Date.now() - 3600000,
+  },
+  onData({ data }) {
+    console.log("Message:", data)
+  },
+})
 ```
 
 ## Use Cases
@@ -143,21 +135,26 @@ await realtime
     ```tsx page.tsx
     "use client"
 
-    import { useRealtime } from "@upstash/realtime/client"
-    import type { RealtimeEvents } from "@/lib/realtime"
-    import { useState } from "react"
+    import { useRealtime } from "@/lib/realtime-client"
+    import { useState, useEffect } from "react"
     import z from "zod/v4"
+    import type { RealtimeEvents } from "@/lib/realtime"
 
     type Message = z.infer<RealtimeEvents["chat"]["message"]>
 
     export default function ChatRoom({ roomId }: { roomId: string }) {
       const [messages, setMessages] = useState<Message[]>([])
 
-      useRealtime<RealtimeEvents>({
+      useEffect(() => {
+        fetch(`/api/history?channel=${roomId}`)
+          .then((res) => res.json())
+          .then((history) => setMessages(history.map((m: any) => m.data)))
+      }, [roomId])
+
+      useRealtime({
         channels: [roomId],
-        event: "chat.message",
-        history: true,
-        onData(data, channel) {
+        events: ["chat.message"],
+        onData({ data }) {
           setMessages((prev) => [...prev, data])
         },
       })
@@ -182,10 +179,11 @@ await realtime
     ```tsx notifications.tsx
     "use client"
 
-    import { useRealtime } from "@upstash/realtime/client"
-    import type { RealtimeEvents } from "@/lib/realtime"
+    import { useRealtime } from "@/lib/realtime-client"
     import { useUser } from "@/hooks/auth"
-    import { useState } from "react"
+    import { useState, useEffect } from "react"
+    import z from "zod/v4"
+    import type { RealtimeEvents } from "@/lib/realtime"
 
     type Notification = z.infer<RealtimeEvents["notification"]["alert"]>
 
@@ -193,14 +191,22 @@ await realtime
       const user = useUser()
       const [notifications, setNotifications] = useState<Notification[]>([])
 
-      useRealtime<RealtimeEvents>({
+      useEffect(() => {
+        fetch(`/api/history?channel=user-${user.id}`)
+          .then((res) => res.json())
+          .then((history) => {
+            const unread = history.filter((m: any) => m.data.status === "unread")
+            setNotifications(unread.map((m: any) => m.data))
+          })
+      }, [user.id])
+
+      useRealtime({
         channels: [`user-${user.id}`],
-        event: "notification.alert",
-        history: true,
-        onData(notification, channel) {
-         if(notification.status === "unread") {
-           setNotifications((prev) => [...prev, notification])
-         }
+        events: ["notification.alert"],
+        onData({ data }) {
+          if (data.status === "unread") {
+            setNotifications((prev) => [...prev, data])
+          }
         },
       })
 
@@ -222,11 +228,11 @@ await realtime
     ```tsx activity-feed.tsx
     "use client"
 
-    import { useRealtime } from "@upstash/realtime/client"
-    import type { RealtimeEvents } from "@/lib/realtime"
+    import { useRealtime } from "@/lib/realtime-client"
     import { useTeam } from "@/hooks/team"
-    import { useState } from "react"
+    import { useState, useEffect } from "react"
     import z from "zod/v4"
+    import type { RealtimeEvents } from "@/lib/realtime"
 
     type Activity = z.infer<RealtimeEvents["activity"]["update"]>
 
@@ -234,11 +240,16 @@ await realtime
       const team = useTeam()
       const [activities, setActivities] = useState<Activity[]>([])
 
-      useRealtime<RealtimeEvents>({
+      useEffect(() => {
+        fetch(`/api/history?channel=team-${team.id}&limit=100`)
+          .then((res) => res.json())
+          .then((history) => setActivities(history.map((m: any) => m.data)))
+      }, [team.id])
+
+      useRealtime({
         channels: [`team-${team.id}`],
-        event: "activity.update",
-        history: { length: 100 },
-        onData(data, channel) {
+        events: ["activity.update"],
+        onData({ data }) {
           setActivities((prev) => [data, ...prev])
         },
       })
@@ -261,20 +272,19 @@ await realtime
 1. When you emit an event, it's stored in a Redis Stream with a unique stream ID
 2. The stream is trimmed to `maxLength` if configured
 3. The stream expires after `expireAfterSecs` if configured
-4. On connection, clients request history via query parameters
+4. History can be fetched via `channel.history()` on the server
 5. History is replayed in chronological order (oldest to newest)
 6. New events continue streaming right after history replay, no messages lost
 
 ## Performance Considerations
 
-Upstash Realtime can handle extremely large histories without problems. The bottleneck is the client who needs to handle all replayed events. 
+Upstash Realtime can handle extremely large histories without problems. The bottleneck is the client who needs to handle all replayed events.
 
 At that point you should probably consider using a database like Redis or Postgres to fetch the history once, then stream new events to the client with Upstash Realtime.
 
 <AccordionGroup>
   <Accordion title="Limit History Length">
-    For high-volume channels, limit history to prevent large initial payloads. 
-
+    For high-volume channels, limit history to prevent large initial payloads.
 
     ```typescript lib/realtime.ts
     export const realtime = new Realtime({
@@ -303,20 +313,6 @@ At that point you should probably consider using a database like Redis or Postgr
 
   </Accordion>
 
-  <Accordion title="Fetch on Demand">
-    For less critical features, fetch history only when needed:
-
-    ```tsx page.tsx
-    const [showHistory, setShowHistory] = useState(false)
-
-    useRealtime<RealtimeEvents>({
-      event: "chat.message",
-      history: showHistory ? { length: 50 } : false,
-      onData(data, channel) {},
-    })
-    ```
-
-  </Accordion>
 </AccordionGroup>
 
 ## Next Steps
