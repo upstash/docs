@@ -28,18 +28,25 @@ In a human-in-the-loop workflow:
 
 ## Event Types
 
-For human-in-the-loop workflows, add these additional event types to your `lib/realtime.ts`:
+For human-in-the-loop workflows, extend your schema in `lib/realtime.ts` with these additional event types:
 
-```typescript {7-8}
-const events = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("runStart"), workflowRunId: z.string(), timestamp: z.number() }),
-  z.object({ type: z.literal("runFinish"), workflowRunId: z.string(), timestamp: z.number(), status: z.union([z.literal("success"), z.literal("failed")]), error: z.string().optional() }),
-  z.object({ type: z.literal("stepStart"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string() }),
-  z.object({ type: z.literal("stepFinish"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string(), result: z.unknown().optional() }),
-  z.object({ type: z.literal("stepFail"), workflowRunId: z.string(), timestamp: z.number(), stepName: z.string(), error: z.string() }),
-  z.object({ type: z.literal("waitingForInput"), workflowRunId: z.string(), eventId: z.string(), message: z.string(), timestamp: z.number() }),
-  z.object({ type: z.literal("inputResolved"), workflowRunId: z.string(), eventId: z.string(), timestamp: z.number() }),
-])
+```typescript {8-14}
+const schema = {
+  workflow: {
+    runFinish: z.object({}),
+    stepFinish: z.object({
+      stepName: z.string(),
+      result: z.unknown().optional()
+    }),
+    waitingForInput: z.object({
+      eventId: z.string(),
+      message: z.string()
+    }),
+    inputResolved: z.object({
+      eventId: z.string()
+    }),
+  }
+}
 ```
 
 The new event types are:
@@ -61,154 +68,89 @@ type WorkflowPayload = {
   action: string;
 };
 
-export const { POST } = serve<WorkflowPayload>(
-  async (context) => {
-    const { userId, action } = context.requestPayload;
-    const workflowRunId = context.workflowRunId;
-    const channel = realtime.channel(workflowRunId);
+export const { POST } = serve<WorkflowPayload>(async (context) => {
+  const { userId, action } = context.requestPayload;
+  const workflowRunId = context.workflowRunId;
+  const channel = realtime.channel(workflowRunId);
 
-    // Emit run start
-    await context.run("start-workflow", () =>
-      channel.emit("workflow.update", {
-        type: "runStart",
-        workflowRunId,
-        timestamp: Date.now(),
-      })
-    );
-
-    // Step 1: Initial Processing
-    await context.run("initial-processing", async () => {
-      await channel.emit("workflow.update", {
-        type: "stepStart",
-        workflowRunId,
-        stepName: "initial-processing",
-        timestamp: Date.now(),
-      });
-
-      // Your processing logic
-      const result = {
-        preprocessed: true,
-        userId,
-        action,
-        requiresApproval: true
-      };
-
-      await channel.emit("workflow.update", {
-        type: "stepFinish",
-        workflowRunId,
-        stepName: "initial-processing",
-        timestamp: Date.now(),
-        result,
-      });
-
-      return result;
-    });
-
-    // Step 2: Wait for Human Approval
-    const eventId = `approval-${workflowRunId}`;
-
-    const [{ eventData, timeout }] = await Promise.all([
-      // Wait for approval event
-      context.waitForEvent<{ approved: boolean }>(
-        "wait-for-approval",
-        eventId,
-        { timeout: "5m" }
-      ),
-      // Notify frontend that we're waiting
-      context.run("notify-waiting", () =>
-        channel.emit("workflow.update", {
-          type: "waitingForInput",
-          workflowRunId,
-          eventId,
-          message: `Waiting for approval to process action: ${action}`,
-          timestamp: Date.now(),
-        })
-      ),
-    ]);
-
-    // Handle timeout
-    if (timeout) {
-      await channel.emit("workflow.update", {
-        type: "stepFail",
-        workflowRunId,
-        stepName: "wait-for-approval",
-        timestamp: Date.now(),
-        error: "Approval timeout - no response received within 5 minutes",
-      });
-      return { success: false, reason: "timeout" };
-    }
-
-    // Notify that input was resolved
-    await channel.emit("workflow.update", {
-      type: "inputResolved",
-      workflowRunId,
-      eventId,
-      timestamp: Date.now(),
-    });
-
-    const status = eventData.approved ? "approved" : "rejected"
-
-    // Step 3: Process based on approval
-    await context.run(`process-${status}`, async () => {
-      await channel.emit("workflow.update", {
-        type: "stepStart",
-        workflowRunId,
-        stepName: `process-${status}`,
-        timestamp: Date.now(),
-      });
-
-      const result = {
-        status,
-        processedAt: Date.now(),
-        action,
-        userId,
-      };
-
-      await channel.emit("workflow.update", {
-        type: "stepFinish",
-        workflowRunId,
-        stepName: `process-${status}`,
-        timestamp: Date.now(),
-        result,
-      });
-
-      return result;
-    });
-
-    // Step 4: Finalize (only if approved)
-    if (eventData.approved) {
-      // Additional steps...
-    }
-
-    // Emit completion
-    await channel.emit("workflow.update", {
-      type: "runFinish",
-      workflowRunId,
-      timestamp: Date.now(),
-      status: "success",
-    });
-
-    return {
-      success: true,
-      approved: eventData.approved,
-      workflowRunId
+  // Step 1: Initial Processing
+  await context.run("initial-processing", async () => {
+    // Your processing logic
+    const result = {
+      preprocessed: true,
+      userId,
+      action,
+      requiresApproval: true,
     };
-  },
-  {
-    failureFunction: async ({ context }) => {
-      const workflowRunId = context.workflowRunId;
-      const channel = realtime.channel(workflowRunId);
 
-      await channel.emit("workflow.update", {
-        type: "runFinish",
-        workflowRunId,
-        timestamp: Date.now(),
-        status: "failed",
-        error: "Workflow execution failed",
-      });
-    },
+    // Emit step completion
+    await channel.emit("workflow.stepFinish", {
+      stepName: "initial-processing",
+      result,
+    });
+    return result;
+  });
+
+  // Step 2: Wait for Human Approval
+  const eventId = `approval-${workflowRunId}`;
+
+  const [{ eventData, timeout }] = await Promise.all([
+    // Wait for approval event
+    context.waitForEvent<{ approved: boolean }>("wait-for-approval", eventId, { timeout: "5m" }),
+    // Notify frontend that we're waiting
+    context.run("notify-waiting", () =>
+      channel.emit("workflow.waitingForInput", {
+        eventId,
+        message: `Waiting for approval to process action: ${action}`,
+      })
+    ),
+  ]);
+
+  // Handle timeout
+  if (timeout) {
+    return { success: false, reason: "timeout" };
   }
-);
+
+  // Notify that input was resolved
+  await context.run("input-resolved", () =>
+    channel.emit("workflow.inputResolved", {
+      eventId,
+    })
+  );
+
+  const status = eventData.approved ? "approved" : "rejected";
+
+  // Step 3: Process based on approval
+  await context.run(`process-${status}`, async () => {
+    const result = {
+      status,
+      processedAt: Date.now(),
+      action,
+      userId,
+    };
+
+    // Emit step completion
+    await channel.emit("workflow.stepFinish", {
+      stepName: `process-${status}`,
+      result,
+    });
+    return result;
+  });
+
+  // Step 4: Finalize (only if approved)
+  if (eventData.approved) {
+    // Additional steps...
+  }
+
+  // Emit completion
+  await context.run("run-finish", () => channel.emit("workflow.runFinish", {}));
+
+  return {
+    success: true,
+    approved: eventData.approved,
+    workflowRunId,
+  };
+});
 ```
 
 **Key patterns:**
@@ -223,35 +165,32 @@ export const { POST } = serve<WorkflowPayload>(
 Create an endpoint at `app/api/notify/route.ts` to handle user input:
 
 ```typescript
+import { Client } from "@upstash/workflow";
 import { NextRequest, NextResponse } from "next/server";
-import { workflowClient } from "@/lib/workflow";
+
+const workflowClient = new Client({
+  baseUrl: process.env.QSTASH_URL!,
+  token: process.env.QSTASH_TOKEN!,
+})
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { eventId, eventData } = body;
+  const body = await request.json();
+  const { eventId, eventData } = body;
 
-    if (!eventId) {
-      return NextResponse.json(
-        { success: false, error: "eventId is required" },
-        { status: 400 }
-      );
-    }
-
-    // Notify the workflow
-    await workflowClient.notify({
-      eventId,
-      eventData,
-    });
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("Error notifying workflow:", error);
+  if (!eventId) {
     return NextResponse.json(
-      { success: false, error: "Failed to notify workflow" },
-      { status: 500 }
+      { success: false, error: "eventId is required" },
+      { status: 400 }
     );
   }
+
+  // Notify the workflow
+  await workflowClient.notify({
+    eventId,
+    eventData,
+  });
+
+  return NextResponse.json({ success: true });
 }
 ```
 
@@ -264,22 +203,17 @@ Extend your hook from the basic example to handle waiting states:
 ```typescript
 "use client";
 
-import { useRealtime } from "@upstash/realtime/client";
-import { useState, useCallback, useRef } from "react";
-import type { RealtimeEvents } from "@/lib/realtime";
+import { useRealtime } from "@/lib/realtime-client";
+import { useState, useCallback } from "react";
 
 interface WorkflowStep {
   stepName: string;
-  status: "running" | "completed" | "failed";
-  timestamp: number;
-  error?: string;
   result?: unknown;
 }
 
 interface WaitingState {
   eventId: string;
   message: string;
-  timestamp: number;
 }
 
 export function useWorkflowWithRealtime() {
@@ -287,68 +221,38 @@ export function useWorkflowWithRealtime() {
   const [steps, setSteps] = useState<WorkflowStep[]>([]);
   const [waitingState, setWaitingState] = useState<WaitingState | null>(null);
   const [isTriggering, setIsTriggering] = useState(false);
-  const [runStatus, setRunStatus] = useState<{
-    status: "running" | "success" | "failed";
-    error?: string;
-  } | null>(null);
-  
-  // Track resolved event IDs to ignore historical waiting states
-  const resolvedEventIdsRef = useRef<Set<string>>(new Set());
+  const [isRunFinished, setIsRunFinished] = useState(false);
 
-  useRealtime<RealtimeEvents>({
+  useRealtime({
     enabled: !!workflowRunId,
     channels: workflowRunId ? [workflowRunId] : [],
-    event: "workflow.update",
-    history: true,
-    onData(data) {
-      if (data.type === "runStart") {
-        setRunStatus({ status: "running" });
-      } else if (data.type === "runFinish") {
-        setRunStatus({
-          status: data.status,
-          error: data.error,
-        });
-      } else if (data.type === "inputResolved") {
-        // Mark this event as resolved
-        resolvedEventIdsRef.current.add(data.eventId);
-        // Clear waiting state if it matches
-        setWaitingState((prev) => 
-          prev?.eventId === data.eventId ? null : prev
-        );
-      } else if (data.type === "stepStart") {
+    events: [
+      "workflow.stepFinish",
+      "workflow.runFinish",
+      "workflow.waitingForInput",
+      "workflow.inputResolved",
+    ],
+    onData({ event, data }) {
+      if (event === "workflow.stepFinish") {
         setSteps((prev) => [
           ...prev,
           {
             stepName: data.stepName,
-            status: "running",
-            timestamp: data.timestamp,
+            result: data.result,
           },
         ]);
-      } else if (data.type === "stepFinish") {
-        setSteps((prev) =>
-          prev.map((step) =>
-            step.stepName === data.stepName
-              ? { ...step, status: "completed", result: data.result }
-              : step
-          )
+      } else if (event === "workflow.runFinish") {
+        setIsRunFinished(true);
+      } else if (event === "workflow.inputResolved") {
+        // Clear waiting state if it matches
+        setWaitingState((prev) => 
+          prev?.eventId === data.eventId ? null : prev
         );
-      } else if (data.type === "stepFail") {
-        setSteps((prev) =>
-          prev.map((step) =>
-            step.stepName === data.stepName
-              ? { ...step, status: "failed", error: data.error }
-              : step
-          )
-        );
-      } else if (data.type === "waitingForInput") {
-        // Only show waiting state if not already resolved
-        if (!resolvedEventIdsRef.current.has(data.eventId)) {
-          setWaitingState({
-            eventId: data.eventId,
-            message: data.message,
-            timestamp: data.timestamp,
-          });
-        }
+      } else if (event === "workflow.waitingForInput") {
+        setWaitingState({
+          eventId: data.eventId,
+          message: data.message,
+        });
       }
     },
   });
@@ -357,23 +261,17 @@ export function useWorkflowWithRealtime() {
     setIsTriggering(true);
     setSteps([]);
     setWaitingState(null);
-    setRunStatus(null);
-    resolvedEventIdsRef.current.clear();
+    setIsRunFinished(false);
 
-    try {
-      const response = await fetch("/api/trigger", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflowType: "human-in-loop" }),
-      });
+    const response = await fetch("/api/trigger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflowType: "human-in-loop" }),
+    });
 
-      const data = await response.json();
-      setWorkflowRunId(data.workflowRunId);
-    } catch (error) {
-      console.error("Error triggering workflow:", error);
-    } finally {
-      setIsTriggering(false);
-    }
+    const data = await response.json();
+    setWorkflowRunId(data.workflowRunId);
+    setIsTriggering(false);
   }, []);
 
   const continueWorkflow = useCallback(
@@ -382,25 +280,20 @@ export function useWorkflowWithRealtime() {
         throw new Error("No workflow waiting for input");
       }
 
-      try {
-        const response = await fetch("/api/notify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            eventId: waitingState.eventId,
-            eventData: data,
-          }),
-        });
+      const response = await fetch("/api/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventId: waitingState.eventId,
+          eventData: data,
+        }),
+      });
 
-        if (!response.ok) {
-          throw new Error("Failed to notify workflow");
-        }
-
-        // The waiting state will be cleared when we receive inputResolved event
-      } catch (error) {
-        console.error("Error continuing workflow:", error);
-        throw error;
+      if (!response.ok) {
+        throw new Error("Failed to notify workflow");
       }
+
+      // The waiting state will be cleared when we receive inputResolved event
     },
     [waitingState]
   );
@@ -412,15 +305,16 @@ export function useWorkflowWithRealtime() {
     workflowRunId,
     steps,
     waitingState,
-    runStatus,
+    isRunFinished,
   };
 }
 ```
 
 **Key additions:**
 - **`waitingState`**: Tracks when the workflow is waiting for input
-- **`resolvedEventIdsRef`**: Prevents showing historical waiting states when `history: true` fetches past events
 - **`continueWorkflow`**: Function to submit user decisions back to the workflow
+- **Multiple events subscription**: Uses `events` array to subscribe to multiple event types
+- **Input resolved handling**: Clears the waiting state when the workflow receives the user's input
 
 ### 2. Use the Hook with Approval UI
 
@@ -434,7 +328,7 @@ export default function WorkflowPage() {
     trigger,
     isTriggering,
     steps,
-    runStatus,
+    isRunFinished,
     waitingState,
     continueWorkflow,
   } = useWorkflowWithRealtime();
@@ -451,17 +345,17 @@ export default function WorkflowPage() {
         {isTriggering ? "Starting..." : "Click to Trigger Workflow"}
       </button>
 
-      <h3 style={{ marginTop: "20px" }}>Run Status:</h3>
-
-      {runStatus && <div>{runStatus.status}</div>}
+      {isRunFinished && (
+        <h3 style={{ marginTop: "20px" }}>✅ Workflow Finished!</h3>
+      )}
 
       {/* Show workflow steps */}
       <h3 style={{ marginTop: "20px" }}>Workflow Steps:</h3>
       <div>
         {steps.map((step, index) => (
           <div key={index}>
-            <strong>{step.stepName}</strong>: {step.status}
-            {step.error && <span> - {step.error}</span>}
+            <strong>{step.stepName}</strong>
+            {Boolean(step.result) && <span>: {JSON.stringify(step.result)}</span>}
           </div>
         ))}
       </div>
@@ -491,27 +385,17 @@ export default function WorkflowPage() {
 
 ### Timeline of Events
 
-1. **Workflow starts**: `runStart` event → Frontend shows "Running"
-2. **Initial processing**: `stepStart` → `stepFinish` events → Frontend shows progress
-3. **Waiting for approval**: `waitingForInput` event → Frontend shows approval buttons
-4. **User clicks approve/reject**: Frontend calls `/api/notify`
-5. **Workflow resumes**: `inputResolved` event → Frontend hides approval buttons
-6. **Processing continues**: More step events as workflow continues
-7. **Workflow completes**: `runFinish` event → Frontend shows final status
-
-### Handling History with `resolvedEventIdsRef`
-
-When a user refreshes the page or reconnects:
-- `history: true` replays all past events
-- Without `resolvedEventIdsRef`, a resolved approval would show again
-- By tracking resolved event IDs, we skip showing old waiting states
-- This ensures the UI only shows currently waiting approvals
+1. **Initial processing**: `stepFinish` event → Frontend shows completed step
+2. **Waiting for approval**: `waitingForInput` event → Frontend shows approval buttons
+3. **User clicks approve/reject**: Frontend calls `/api/notify`
+4. **Workflow resumes**: `inputResolved` event → Frontend hides approval buttons
+5. **Processing continues**: More `stepFinish` events as workflow continues
+6. **Workflow completes**: `runFinish` event → Frontend shows "Workflow Finished!"
 
 ## Benefits
 
 - **Real-time feedback**: Users see exactly when their approval is needed
 - **No polling**: Instant updates via Server-Sent Events
-- **Graceful reconnection**: History ensures users see full workflow state
 - **Timeout handling**: Workflows don't hang indefinitely waiting for input
 
 ## Full Example
