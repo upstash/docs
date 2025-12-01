@@ -1,0 +1,86 @@
+---
+title: "Deployment"
+---
+
+<Note>
+  Deploy Upstash Realtime to providers that bill **based on active CPU time**. Great places to
+  deploy are
+  - Vercel with Fluid Compute enabled
+  - Cloudflare
+  - Railway
+  - A personal VPS
+  - any other service that does not bill based on connection duration.
+</Note>
+
+## Deploying to Vercel
+
+To deploy Upstash Realtime to Vercel, [enable Fluid Compute](https://vercel.com/docs/fluid-compute#enable-for-entire-project) for your project. For new projects, this is enabled by default.
+
+Fluid Compute allows for less cold-starts, has much higher function timeouts compared to serverless functions, and most importantly **only bills for active CPU time**.
+
+That way, you're only billed for actual message processing time, not connection duration.
+
+<Frame>
+  <img src="/img/realtime/vercel-fluid-enabled.png" />
+</Frame>
+
+## Optional: Configure Max Duration
+
+You can configure the maximum duration for your realtime connections:
+
+```typescript lib/realtime.ts
+import { Realtime } from "@upstash/realtime"
+import { redis } from "./redis"
+
+export const realtime = new Realtime({
+  schema,
+  redis,
+  maxDurationSecs: 300,
+})
+```
+
+The default is 300 seconds (5 minutes), which works well with Vercel's Fluid Compute. After this interval, the client will automatically reconnect. Redis auto-replays all messages sent during reconnect.
+
+## Billing Example
+
+Traditional serverless connection billing:
+
+```plaintext Serverless Billing
+Connection duration: 5 minutes
+Billing: 5 minutes = $$$
+```
+
+Upstash Realtime with fluid compute:
+
+```plaintext Fluid Compute Billing
+Connection duration: 5 minutes
+Active processing: 2 seconds
+Billing: 2 seconds x CPU cost = $
+```
+
+## Automatic Reconnection
+
+The client automatically reconnects before your function timeout:
+
+```tsx page.tsx
+"use client"
+
+import { useRealtime } from "@/lib/realtime-client"
+
+export default function Component() {
+  const { status } = useRealtime({
+    events: ["notification.alert"],
+    onData({ event, data, channel }) {},
+  })
+
+  return <p>Status: {status}</p>
+}
+```
+
+## Message Delivery Guarantee
+
+Upstash Realtime is powered by Redis Streams, so no message is ever delivered twice or gets lost. Every message is guaranteed to be delivered exactly once.
+
+1. Client establishes connection and subscribes to stream
+2. Client initiates reconnection before function timeout (default every 5 mins)
+3. Redis auto-replays all messages sent during reconnect

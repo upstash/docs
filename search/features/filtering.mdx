@@ -2,9 +2,9 @@
 title: Filtering
 ---
 
-Search queries with filters only return documents which have the content matching with the filter.
+Search queries with filters only return documents which have the content or metadata matching with the filter.
 
-Upstash Search allows you to filter by content keys which have the following value types:
+Upstash Search allows you to filter by content and metadata keys which have the following value types:
 
 - string
 - number
@@ -21,8 +21,11 @@ than `topK` documents may be returned.
 
 ## Filter Syntax
 
-A filter has a syntax that resembles SQL, which consists of operators on content keys and boolean operators
+A filter has a syntax that resembles SQL, which consists of operators on content and metadata keys and boolean operators
 to combine them.
+
+To distinguish fields in content and metadata, metadata keys must be prefixed with
+the `@metadata` identifier.
 
 Assuming you have content like below:
 
@@ -37,7 +40,7 @@ Assuming you have content like below:
     warehouse_location: "A3-15",
     in_stock: 3
   },
-  // 👇 not searchable, for reference only
+  // 👇 not searchable, but filterable
   metadata: {
     sku: "AT-WH-001",
     supplier_id: "SUP-123",
@@ -52,7 +55,7 @@ Filter documents like so:
 ```py
 scores = index.search(
     query="sony headphones",
-    filter="warehouse_location = 'A3-15'",
+    filter="warehouse_location = 'A3-15' AND @metadata.supplier_id = 'SUP-123'",
 )
 ```
 </Tab>
@@ -60,7 +63,7 @@ scores = index.search(
 ```ts
 const searchResults = await index.search({
     query: "sony headphones",
-    filter: "warehouse_location = 'A3-15'",
+    filter: "warehouse_location = 'A3-15' AND @metadata.supplier_id = 'SUP-123'",
 });
 ```
 </Tab>
@@ -73,26 +76,30 @@ In our [TypeScript SDK](https://github.com/upstash/search-js), we support a type
 ```ts
 import { Search } from "@upstash/search";
 
-type IndexContent = {
-  name: string;
-  description: string;
-  brand: string;
-  category: string[];
-  warehouse_location: string;
-  in_stock: number;
-};
+type Content = { text: string }
+type Metadata = { count: number }
 
-const client = new Client({ ... });
-const index = client.index<IndexContent>("products");
+const client = Search.fromEnv()
+const searchIndex = client.index<Content, Metadata>("hello world!");
 
-const searchResults = await index.search({
-  query: "sony headphones",
-  filter: { category: { contains: 'electronics' } },
+const results = await searchIndex.search({
+  query: "hello world!",
+  limit: 2,
+  filter: {
+    AND: [
+      // filtering by content field
+      { text: { glob: "*test-data*" } }, 
+      // filtering by metadata field (add @metadata prefix)
+      { "@metadata.count": { greaterThanOrEquals: 3 } }
+    ],
+  },
 });
 ```
 
 <Note>
-  Note that we passed `IndexContent` as a type parameter to the `index` method. This allows the SDK to infer the type of the content, enabling type-safe filters.
+  You can pass type parameters to the `index` method to enable type-safe filters. The first type parameter is for [content fields](/search/features/content-and-metadata#content), and the optional second type parameter is for [metadata fields](/search/features/content-and-metadata).
+  
+  Use the `@metadata` prefix to filter by metadata fields in your filter objects. If you don't need to filter by metadata, you can omit the metadata type parameter.
 </Note>
 
 

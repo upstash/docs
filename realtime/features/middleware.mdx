@@ -1,0 +1,122 @@
+---
+title: "Authentication"
+---
+
+Protect your realtime endpoints with custom auth logic.
+
+## Basic Middleware
+
+```typescript api/realtime/route.ts
+import { handle } from "@upstash/realtime"
+import { realtime } from "@/lib/realtime"
+import { currentUser } from "@/auth"
+
+export const GET = handle({
+  realtime,
+  middleware: async ({ request, channels }) => {
+    const user = await currentUser(request)
+
+    if (!user) {
+      return new Response("Unauthorized", { status: 401 })
+    }
+  },
+})
+```
+
+## Middleware API
+
+The middleware function receives:
+
+<ParamField path="request" type="Request">
+  The incoming HTTP Request object
+</ParamField>
+
+<ParamField path="channels" type="string[]" default="['default']">
+  The channels a user is attempting to connect to
+</ParamField>
+
+<ResponseField name="return">
+  - Return `undefined` or nothing to allow the connection
+  - Return a `Response` object to block the connection with a custom error
+</ResponseField>
+
+## Authentication Patterns
+
+<AccordionGroup>
+  <Accordion title="User-Based Auth">
+    Verify users can access specific channels:
+
+    ```typescript api/realtime/route.ts
+    export const GET = handle({
+      realtime,
+      middleware: async ({ request, channels }) => {
+        const user = await currentUser(request)
+
+        for (const channel of channels) {
+          if (channel === "default") {
+            continue
+          }
+
+          if (!channel.startsWith(user.id)) {
+            return new Response("You can only access your own channels", { status: 403 })
+          }
+        }
+      },
+    })
+    ```
+
+  </Accordion>
+
+  <Accordion title="Session-Based Auth">
+    Verify user sessions before allowing connections:
+
+    ```typescript api/realtime/route.ts
+    import { getSession } from "@/auth"
+
+    export const GET = handle({
+      realtime,
+      middleware: async ({ request }) => {
+        const session = await getSession(request)
+
+        if (!session?.user) {
+          return new Response("Please sign in", { status: 401 })
+        }
+      },
+    })
+    ```
+
+  </Accordion>
+
+  <Accordion title="Role-Based Access">
+    Control access based on user roles:
+
+    ```typescript api/realtime/route.ts
+    export const GET = handle({
+      realtime,
+      middleware: async ({ request, channels }) => {
+        const user = await currentUser(request)
+
+        for (const channel of channels) {
+          if (channel === "default") {
+            continue
+          }
+
+          if (channel.startsWith("admin-") && user.role !== "admin") {
+            return new Response("Admin access required", { status: 403 })
+          }
+
+          if (channel.startsWith("team-")) {
+            const teamId = channel.replace("team-", "")
+            const isMember = await checkTeamMembership(user.id, teamId)
+
+            if (!isMember) {
+              return new Response("Not a team member", { status: 403 })
+            }
+          }
+        }
+      },
+    })
+    ```
+
+  </Accordion>
+</AccordionGroup>

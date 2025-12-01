@@ -1,0 +1,127 @@
+---
+title: "context.run"
+---
+
+`context.run()` executes a piece of custom business logic as a workflow step.
+
+It returns a `Promise`, so you can decide how steps execute:
+- **Sequentially** by awaiting them one by one.
+- **In parallel** by awaiting multiple steps together.
+
+##  Arguments
+
+<ParamField body="stepName" type="string">
+    A unique identifier for the step.
+</ParamField>
+
+<ParamField body="stepFunction" type="function">
+    The business logic to run inside this step.
+</ParamField>
+
+## Response
+
+Each step can return a JSON-serializable value—anything from simple primitives to complex objects.
+
+The value is **JSON-serialized** and automatically restored across requests.
+
+<Warning>
+    Avoid returning stateful resources such as database connections or file handles.
+
+    Instead, return plain data (numbers, strings, arrays, objects) so the result can be safely persisted and restored across workflow executions.
+</Warning>
+
+## Usage
+
+<CodeGroup>
+    ```typescript Serial execution (TypeScript) highlight={6-8, 10-12}
+    import { serve } from "@upstash/workflow/nextjs";
+
+    export const { POST } = serve<string>(async (context) => {
+      const input = context.requestPayload;
+
+      const result1 = await context.run("step-1", async () => {
+        return someWork(input);
+      });
+
+      await context.run("step-2", async () => {
+        someOtherWork(result1);
+      });
+    });
+
+    ```
+
+    ```typescript Parallel execution (TypeScript)
+    import { serve } from "@upstash/workflow/nextjs"
+
+    export const { POST } = serve<string>(
+      async (context) => {
+        const input = context.requestPayload;
+
+        const promise1 = context.run("step-1", async () => {
+          return someWork(input);
+        });
+
+        const promise2 = context.run("step-2", async () => {
+          return someOtherWork(input);
+        });
+
+        await Promise.all([promise1, promise2]);
+      },
+    );
+    ```
+
+    ```python Serial execution (Python)
+    from fastapi import FastAPI
+    from upstash_workflow.fastapi import Serve
+    from upstash_workflow import AsyncWorkflowContext
+
+    app = FastAPI()
+    serve = Serve(app)
+
+
+    @serve.post("/api/example")
+    async def example(context: AsyncWorkflowContext[str]) -> None:
+        input = context.request_payload
+
+        async def _step1():
+            return some_work(input)
+
+        result1 = await context.run("step-1", _step1)
+
+        async def _step2():
+            return some_other_work(result1)
+
+        await context.run("step-2", _step2)
+
+    ```
+</CodeGroup>
+
+
+<Info>
+    Because results are JSON-serialized, **class instances are restored as plain objects**.
+    This means instance methods will not be available unless you explicitly rehydrate the object.
+
+    To fix this, you can recreate the instance using Object.assign() or a custom factory:
+    ```typescript
+   export const { POST } = serve(
+    async (context) => {
+
+       let user = await context.run("step-1", async () => {
+         // 👇 Return a class instance from step
+         return new User("John Doe", "john.doe@example.com");
+       });
+
+       // 👇 Properties are accessible by default
+       console.log(user.name)
+
+       // 👇 Create a Proper Instance with Object.assign()
+       user = Object.assign(new User(), user);
+
+       await context.run("greet", async () => {
+         // 👇 Now instance methods are available as well
+         console.log(user.greet());
+       });
+     }
+   );
+    ```
+</Info>
