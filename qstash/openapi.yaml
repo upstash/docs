@@ -1,0 +1,2559 @@
+openapi: 3.1.0
+info:
+  title: QStash REST API
+  description: |
+    QStash is a message queue and scheduler built on top of Upstash Redis.
+  version: 2.0.0
+  contact:
+    name: Upstash
+    url: https://upstash.com
+servers:
+  - url: https://qstash.upstash.io
+security:
+  - bearerAuth: []
+  - bearerAuthQuery: []
+tags:
+  - name: Messages
+    description: Publish and manage messages
+  - name: Queues
+    description: Manage message queues
+  - name: Schedules
+    description: Create and manage scheduled messages
+  - name: URL Groups
+    description: Manage URL groups and endpoints
+  - name: DLQ
+    description: Dead Letter Queue operations
+  - name: Logs
+    description: Log operations
+  - name: Signing Keys
+    description: Manage signing keys
+  - name: Flow Control
+    description: Monitor flow control keys
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: QStash authentication token
+    bearerAuthQuery:
+      type: apiKey
+      in: query
+      name: qstash_token
+      description: QStash authentication token passed as a query parameter
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Error message
+
+    Message:
+      type: object
+      properties:
+        messageId:
+          type: string
+          description: Unique identifier for the message
+        url:
+          type: string
+          description: The URL to which the message should be delivered.
+        topicName:
+          type: string
+          description: The URL Group (a.k.a. topic) name if this message was sent to a URL Group.
+        endpointName:
+          type: string
+          description: The endpoint name of the message if the endpoint is given a name within the URL group.
+        method:
+          type: string
+          description: The HTTP method to use for the message.
+        header:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The HTTP headers sent to your API.
+        body:
+          type: string
+          description: The body of the message if it is composed of utf8 chars only, empty otherwise.
+        bodyBase64:
+          type: string
+          description: The base64 encoded body if the body contains a non-utf8 char only, empty otherwise.
+        maxRetries:
+          type: integer
+          description: The number of retries that should be attempted in case of delivery failure.
+        notBefore:
+          type: integer
+          format: int64
+          description: The unix timestamp in milliseconds before which the message should not be delivered.
+        createdAt:
+          type: integer
+          format: int64
+          description: The unix timestamp in milliseconds when the message was created.
+        callback:
+          type: string
+          description: The url where we send a callback each time the message is attempted to be delivered.
+        failureCallback:
+          type: string
+          description: The url where we send a callback to after the message is failed
+        queueName:
+          type: string
+          description: The name of the queue if the message is enqueued to a queue.
+        scheduleId:
+          type: string
+          description: The scheduleId of the message if the message is triggered by a schedule
+        callerIP:
+          type: string
+          description: IP address of the publisher of this message.
+        label:
+          type: string
+          description: The label of the message assigned by the user.
+        flowControlKey:
+          type: string
+          description: The flow control key used for rate limiting.
+        rate:
+          type: integer
+          description: The rate value used for flow control.
+        period:
+          type: integer 
+          description: The period value used for flow control.
+        parallelism:
+          type: integer
+          description: The parallelism value used for flow control.
+        
+    PublishResponse:
+      type: object
+      properties:
+        messageId:
+          type: string
+          description: Unique identifier for the published message or the old message ID if deduplicated
+        deduplicated:
+          type: boolean
+          description: Whether this message is a duplicate and was not sent to the destination.
+        
+    PublishToUrlGroupResponse:
+      type: object
+      properties:
+        messageId:
+          type: string
+          description: Unique identifier for the published message or the old message ID if deduplicated
+        deduplicated:
+          type: boolean
+          description: Whether this message is a duplicate and was not sent to the destination.
+        url:
+          type: string
+          description: Destination URL of the URL Group endpoint.
+
+    Queue:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The name of the queue.
+        createdAt:
+          type: integer
+          format: int64
+          description: The creation timestamp of the queue in Unix milliseconds
+        updatedAt:
+          type: integer
+          format: int64
+          description: The last update timestamp of the queue in Unix milliseconds
+        parallelism:
+          type: integer
+          description: The number of parallel consumers consuming from the queue
+        paused:
+          type: boolean
+          description: Whether the queue is paused
+        lag:
+          type: integer
+          description: The number of unprocessed messages that exist in the queue
+
+    Schedule:
+      type: object
+      required:
+        - scheduleId
+        - cron
+        - destination
+        - createdAt
+        - method
+        - isPaused
+      properties:
+        scheduleId:
+          type: string
+          description: Unique identifier for the schedule
+        cron:
+          type: string
+          description: The cron expression used to schedule the message
+        destination:
+          type: string
+          description: The destination URL or URL Group name
+        createdAt:
+          type: integer
+          format: int64
+          description: The creation timestamp of the schedule in unix milliseconds
+        method:
+          type: string
+          description: The HTTP method used for the scheduled message
+        header:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: Map of header names to arrays of header values
+        body:
+          type: string
+          description: The body of the scheduled message
+        retries:
+          type: integer
+          description: The number of retries for the scheduled message
+        delay:
+          type: integer
+          description: The delay in seconds before the scheduled message is sent
+        callback:
+          type: string
+          description: The callback URL for the scheduled message
+        failureCallback:
+          type: string
+          description: The failure callback URL for the scheduled message
+        callerIp:
+          type: string
+          description: The IP address of the client that created the schedule
+        isPaused:
+          type: boolean
+          description: Whether the schedule is paused
+        flowControlKey:
+          type: string
+          description: The flow control key used for rate limiting
+        parallelism:
+          type: integer
+          description: The parallelism value used for flow control
+        rate:
+          type: integer
+          description: The rate value used for flow control
+        period:
+          type: integer
+          description: The period value used for flow control
+        retryDelayExpression:
+          type: string
+          description: The retry delay expression used for calculating retry delays
+        label: 
+          type: string
+          description: The label assigned to the scheduled message
+        lastScheduleTime:
+          type: integer
+          format: int64
+          description: The last time the schedule was triggered in unix milliseconds
+        nextScheduleTime:
+          type: integer
+          format: int64
+          description: The next scheduled trigger time in unix milliseconds
+        lastScheduleStates:
+          type: object
+          description: The states of the last scheduled messages
+          additionalProperties:
+            type: string   
+
+    URLGroup:
+      type: object
+      properties:
+        name:
+          type: string
+          description: URL Group name
+        createdAt:
+          type: integer
+          description: Creation timestamp of URL Group in Unix milliseconds
+        updatedAt:
+          type: integer
+          description: Last update timestamp of URL Group in Unix milliseconds
+        endpoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/Endpoint'
+
+    Endpoint:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The name of the endpoint
+        url: 
+          type: string
+          description: The URL of the endpoint
+
+    FlowControlKey:
+      type: object
+      properties:
+        flowControlKey:
+          type: string
+          description: The flow control key name
+        waitlistSize: 
+          type: integer
+          description: The number of messages waiting due to flow control configuration.
+
+    DLQMessage:
+      type: object
+      properties:
+        messageId:
+          type: string
+          description: Unique identifier for the message
+        url:
+          type: string
+          description: The URL to which the message should be delivered.
+        topicName:
+          type: string
+          description: The URL Group (a.k.a. topic) name if this message was sent to a URL Group.
+        endpointName:
+          type: string
+          description: The endpoint name of the message if the endpoint is given a name within the URL group.
+        method:
+          type: string
+          description: The HTTP method to use for the message.
+        header:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The HTTP headers sent to your API.
+        body:
+          type: string
+          description: The body of the message if it is composed of utf8 chars only, empty otherwise.
+        bodyBase64:
+          type: string
+          description: The base64 encoded body if the body contains a non-utf8 char only, empty otherwise.
+        maxRetries:
+          type: integer
+          description: The number of retries that should be attempted in case of delivery failure.
+        notBefore:
+          type: integer
+          format: int64
+          description: The unix timestamp in milliseconds before which the message should not be delivered.
+        createdAt:
+          type: integer
+          format: int64
+          description: The unix timestamp in milliseconds when the message was created.
+        callback:
+          type: string
+          description: The url where we send a callback each time the message is attempted to be delivered.
+        failureCallback:
+          type: string
+          description: The url where we send a callback to after the message is failed
+        queueName:
+          type: string
+          description: The name of the queue if the message is enqueued to a queue.
+        scheduleId:
+          type: string
+          description: The scheduleId of the message if the message is triggered by a schedule
+        callerIP:
+          type: string
+          description: IP address of the publisher of this message.
+        label:
+          type: string
+          description: The label of the message assigned by the user.
+        flowControlKey:
+          type: string
+          description: The flow control key used for rate limiting.
+        rate:
+          type: integer
+          description: The rate value used for flow control.
+        period:
+          type: integer 
+          description: The period value used for flow control.
+        parallelism:
+          type: integer
+          description: The parallelism value used for flow control.
+        responseStatus:
+          type: integer
+          description: The HTTP status code received from the destination API.
+        responseHeader:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The HTTP response headers received from the destination API.
+        responseBody:
+          type: string
+          description: The body of the response if it is composed of utf8 chars only, empty otherwise.
+        responseBodyBase64:
+          type: string
+          description: The base64 encoded body of the response if the body contains a non-utf8 char only, empty otherwise.
+        
+    SigningKeys:
+      type: object
+      properties:
+        current:
+          type: string
+          description: The current signing key.
+        next:
+          type: string
+          description: The next signing key.
+
+    LogEntry:
+      type: object
+      properties:
+        time:
+          type: integer
+          format: int64
+          description: The timestamp of the log entry in Unix milliseconds
+        messageId:
+          type: string
+          description: The message ID associated with the log entry 
+        header:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The headers of the message.
+        body:
+          type: string
+          description: Base64 encoded body of the message.
+        state:
+          type: string
+          enum: [ CREATED, ACTIVE, RETRY, ERROR, DELIVERED, FAILED, CANCEL_REQUESTED, CANCELLED ]
+          description: The state of the message at the time of the log entry.
+        error:
+          type: string
+          description: The error message if the log entry corresponds to an error state.
+        nextDeliveryTime:
+          type: integer
+          format: int64
+          description: The next scheduled time of the message. (Unix timestamp in milliseconds)
+        url:
+          type: string
+          description: The URL to which the message is being delivered.
+        topicName:
+          type: string
+          description: The URL Group (a.k.a. topic) name if this message was sent to a URL Group.
+        endpointName:
+          type: string
+          description: The endpoint name of the message if the endpoint is given a name within the URL group.
+        scheduleId:
+          type: string
+          description: The scheduleId of the message if the message is triggered by a schedule
+        queueName:
+          type: string
+          description: The name of the queue if the message is enqueued to a queue.
+        responseStatus:
+          type: integer
+          description: The status code of the response. Only set if the state is ERROR
+        responseBody:
+          type: string
+          description: The base64 encoded body of the response. Only set if the state is ERROR
+        responseHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The headers of the response. Only set if the state is ERROR
+        timeout:
+          type: integer
+          description: The timeout(in milliseconds) of the outgoing http requests, after which Qstash cancels the request
+        method:
+          type: string
+          description: HTTP method of the message for outgoing request
+        callback:
+          type: string
+          description: Callback is the URL address where QStash sends the response of a publish
+        callbackHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The headers sent to the callback URL
+        failureCallback:
+          type: string
+          description: Failur eCallback is the URL address where QStash sends the response of a failed message after all retries are exhausted
+        failureCallbackHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The headers sent to the failure callback URL
+        maxRetries:
+          type: integer
+          description: The maximum number of retries for the message
+        retryDelayExpression:
+          type: string
+          description: The retry delay expression used for calculating retry delays
+        label:
+          type: string
+          description: The label assigned to the message
+paths:
+  /v2/publish/{destination}:
+    post:
+      summary: Publish a Message
+      description: Publish a message to the specified destination
+      tags:
+        - Messages
+      parameters:
+
+        - name: destination
+          in: path
+          required: true
+          schema:
+            type: string
+          description: | 
+            Destination can either be a valid URL where the message gets sent to, or a URL Group name. 
+            - If the destination is a URL, make sure the URL is prefixed with a valid protocol (http:// or https://)
+            - If the destination is a URL Group, a new message will be created for each endpoint in the group.
+        
+            Note that destination must be publicly accessible over the internet. If you are working with local endpoints, consider using QStash local development server or a public tunnel service.
+
+        - name: Content-Type
+          in: header
+          schema:
+            type: string
+          description: |
+            `Content-Type` is the MIME type of the message.
+
+            We highly recommend sending a `Content-Type` header along, as this will help your destination API to understand the content of the message.
+
+            Set this to whatever data you are sending through QStash, if your message is json, then use `application/json`. Some frameworks like Next.js will not parse your body correctly if the content type is not correct.
+
+            Examples:
+            - `application/json`
+            - `application/xml`
+            - `application/octet-stream`
+            - `text/plain`
+        
+        - name: Upstash-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers to your endpoint along with your message.
+
+            To send a custom header, prefix the header name with `Upstash-Forward-`. We will strip prefix and send them to the destination.
+            
+            | Header | Forwarded To Destination As |
+            |--------|--------------|
+            | Upstash-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+
+        - name: Upstash-Method
+          in: header
+          schema:
+            type: string
+            enum: [ GET, POST, PUT, PATCH, DELETE ]
+            default: POST
+          description: The HTTP method to use when sending the request to your API.
+
+        - name: Upstash-Timeout
+          in: header
+          schema:
+            type: string
+            examples:
+              - "5s"
+              - "2m"
+              - "1h"
+              - "1d1h30m"
+          description: |
+            Specifies the maximum duration the request is allowed to take before timing out.
+            
+            This parameter can be used to shorten the default allowed timeout value on your plan. See `Max HTTP Connection Timeout` on the pricing page for default [values](https://upstash.com/pricing/qstash).
+
+            The format of this header is `<value><unit>` where value is a number and unit is one of:
+            - `s` for seconds
+            - `m` for minutes
+            - `h` for hours.
+
+        - name: Upstash-Retries
+          in: header
+          schema:
+            type: integer
+          description: |
+            How many times should this message be retried in case the destination API returns an error or is not available.
+
+            The total number of deliveries is 1 (initial attempt) + retries.
+            
+            If it is not provided, the plan default retry value will be used:
+            - Free Plan: 3 retries
+            - Paid Plans: 5 retries
+
+        - name: Upstash-Retry-Delay
+          in: header
+          schema:
+            type: string
+          description: |
+            Customize the delay between retry attempts when message delivery fails.
+
+            By default, QStash uses [exponential backoff](/qstash/features/retry). You can override this by providing a mathematical expressions to compute next delay. This expression is computed after each failed attempt.
+            
+            You can use the special variable `retried`, which is how many times the message has been retried. The `retried` is 0 for the first retry.
+            
+            Supported functions: 
+            | Function    | Description                          |
+            |-------------|--------------------------------------|
+            | `pow(x, y)`| Returns x raised to the power of y|
+            | `exp(x)`| Returns e raised to the power of x|
+            | `sqrt(x)`| Takes the square root of x|
+            | `abs(x)`| Returns the absolute value of x|
+            | `floor(x)`| Returns the largest integer less than or equal to x|
+            | `ceil(x)`| Returns the smallest integer greater than or equal to x|
+            | `round(x)`| Rounds x to the nearest integer|
+            | `min(x, y)`| Returns the smaller of x and y|
+            | `max(x, y)`| Returns the larger of x and y|
+            
+            Examples:
+            - `1000`: Fixed 1 second delay
+            - `1000 * (1 + retried)`: Linear backoff
+            - `pow(2, retried) * 1000`: Exponential backoff
+            - `max(1000, pow(2, retried) * 100)`: Exponential with minimum 1s delay
+
+        - name: Upstash-Delay
+          in: header
+          schema:
+            type: string
+            examples:
+              - "50s"
+              - "1d10h30m"
+              - "10h"
+              - "1d"
+          description: |
+            Delay the message delivery.
+            
+            The format of this header is `<value><unit>` where value is a number and unit is one of:
+            - `s` for seconds
+            - `m` for minutes
+            - `h` for hours.
+            - `d` for days.
+
+        - name: Upstash-Not-Before
+          in: header
+          schema:
+            type: integer
+          description: |
+            Delay the message delivery until a certain timestamp in the future.
+
+            The format is a unix timestamp in seconds, based on the UTC timezone.
+
+            When both `Upstash-Not-Before` and `Upstash-Delay` headers are provided, `Upstash-Not-Before` will take precedence.
+
+        - name: Upstash-Label
+          in: header
+          schema:
+            type: string
+          description: |
+            Label to assign to the message for easier identification and filtering in logs and DLQ.
+
+        - name: Upstash-Flow-Control-Key
+          in: header
+          schema:
+            type: string
+          description: |
+            Flow Control Key to use for rate limiting messages.
+            
+            Make sure you pass `Upstash-Flow-Control-Value` header as well to define the limits for the key.
+
+        - name: Upstash-Flow-Control-Value
+          in: header
+          schema:
+            type: string
+          description: |
+            Flow Control parallelism, rate and period values to use for rate limiting messages for the given key.
+            
+            Make sure you pass `Upstash-Flow-Control-Key` header as well to define the key.
+
+        - name: Upstash-Deduplication-Id
+          in: header
+          schema:
+            type: string
+          description: |
+            Deduplication ID to use for de-duplicating messages.
+            
+            If a message with the same deduplication ID was published in the last 10 minutes, the new message will be ignored.
+
+        - name: Upstash-Content-Based-Deduplication
+          in: header
+          schema:
+            type: string
+            enum: [ "true", "false" ]
+            default: "false"
+          description: |
+            Enable content based deduplication.
+            
+            When enabled, QStash will compute a hash of the message body and use it as deduplication ID.
+            If a message with the same content was published in the last 10 minutes, the new message will be ignored.
+
+        - name: Upstash-Callback
+          in: header
+          schema:
+            type: string
+          description: |
+            You can define a callback url that will be called after message delivery, either success or failure. See the content of what will be delivered to a callback [here](/qstash/features/callbacks#how-do-i-use-callbacks).
+            
+            - Callback URL must be prefixed with a valid protocol (http:// or https://)
+            - Callbacks are charged as a regular message.
+            - Callbacks will use the retry setting from the original request.
+
+        - name: Upstash-Callback-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers along with your callback message.
+            To send a custom header, prefix the header name with `Upstash-Callback-Forward-`. We will strip prefix and them to the callback URL.
+            
+            | Header | Forwarded To Callback Destination As |
+            |--------|--------------|
+            | Upstash-Callback-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Callback-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+
+        - name: Upstash-Callback-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can customize the callback message configuration.
+
+            See [the Configuring Callbacks](/qstash/features/callbacks#configuring-callbacks) section to learn more.
+
+            | Header | Description |
+            |--------|--------------|
+            | Upstash-Callback-Method | HTTP method to use for the callback request. Default is POST. |
+            | Upstash-Callback-Timeout | Timeout for the callback request. Format is same as Upstash-Timeout header. |
+            | Upstash-Callback-Retries | Number of retries for the callback request. Default is same as original message retries. |
+            | Upstash-Callback-Retry-Delay | Retry delay for the callback request. Format is same as Upstash-Retry-Delay header. |
+           
+
+        - name: Upstash-Failure-Callback
+          in: header
+          schema:
+            type: string
+          description: |
+            You can define a failure callback url that will be called when a delivery is failed. That is when all the defined retries are exhausted. See the content of what will be delivered to a failure callback here
+            
+            - Failure callback URL must be prefixed with a valid protocol (http:// or https://)
+            - Failure callbacks are charged as a regular message.
+            - Failure callbacks will use the retry setting from the original request.
+
+        - name: Upstash-Failure-Callback-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers along with your failure callback message.
+            To send a custom header, prefix the header name with `Upstash-Failure-Callback-Forward-`. We will strip prefix and them to the failure callback URL.
+            
+            | Header | Forwarded To Callback Destination As |
+            |--------|--------------|
+            | Upstash-Failure-Callback-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Failure-Callback-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+            
+        - name: Upstash-Failure-Callback-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can customize the failure callback message configuration.
+
+            See [the Configuring Callbacks](/qstash/features/callbacks#configuring-callbacks) section to learn more.
+
+            | Header | Description |
+            |--------|--------------|
+            | Upstash-Failure-Callback-Method | HTTP method to use for the callback request. Default is POST. |
+            | Upstash-Failure-Callback-Timeout | Timeout for the callback request. Format is same as Upstash-Timeout header. |
+            | Upstash-Failure-Callback-Retries | Number of retries for the callback request. Default is same as original message retries. |
+            | Upstash-Failure-Callback-Retry-Delay | Retry delay for the callback request. Format is same as Upstash-Retry-Delay header. |
+           
+      requestBody:
+        description: The raw request message passed to the endpoints as is
+        content:
+          text/plain:
+            schema:
+              type: string
+          application/json:
+            schema:
+              type: object
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Message(s) published successfully
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PublishResponse'
+                    description: Published to a URL destination
+                  - type: object
+                    description: Published to URL Group and created multiple messages for each endpoint the URL Group
+                    properties:
+                      messages:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PublishToUrlGroupResponse' 
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v2/enqueue/{queueName}/{destination}:
+    post:
+      summary: Enqueue a Message
+      description: Enqueue a message to the specified queue
+      tags:
+        - Messages
+      parameters:
+        - name: queueName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the queue that message will be enqueued on. If doesn't exist, it will be created automatically with default parallelism.
+        - name: destination
+          in: path
+          required: true
+          schema:
+            type: string
+          description: | 
+            Destination can either be a valid URL where the message gets sent to, or a URL Group name. 
+            - If the destination is a URL, make sure the URL is prefixed with a valid protocol (http:// or https://)
+            - If the destination is a URL Group, a new message will be created for each endpoint in the group.
+        
+            Note that destination must be publicly accessible over the internet. If you are working with local endpoints, consider using QStash local development server or a public tunnel service.
+
+        - name: queueName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the queue to enqueue the message to.
+
+        - name: Content-Type
+          in: header
+          schema:
+            type: string
+          description: |
+            `Content-Type` is the MIME type of the message.
+
+            We highly recommend sending a `Content-Type` header along, as this will help your destination API to understand the content of the message.
+
+            Set this to whatever data you are sending through QStash, if your message is json, then use `application/json`. Some frameworks like Next.js will not parse your body correctly if the content type is not correct.
+
+            Examples:
+            - `application/json`
+            - `application/xml`
+            - `application/octet-stream`
+            - `text/plain`
+        
+        - name: Upstash-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers to your endpoint along with your message.
+
+            To send a custom header, prefix the header name with `Upstash-Forward-`. We will strip prefix and send them to the destination.
+            
+            | Header | Forwarded To Destination As |
+            |--------|--------------|
+            | Upstash-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+
+        - name: Upstash-Method
+          in: header
+          schema:
+            type: string
+            enum: [ GET, POST, PUT, PATCH, DELETE ]
+            default: POST
+          description: The HTTP method to use when sending the request to your API.
+
+        - name: Upstash-Timeout
+          in: header
+          schema:
+            type: string
+            examples:
+              - "5s"
+              - "2m"
+              - "1h"
+              - "1d1h30m"
+          description: |
+            Specifies the maximum duration the request is allowed to take before timing out.
+            
+            This parameter can be used to shorten the default allowed timeout value on your plan. See `Max HTTP Connection Timeout` on the pricing page for default [values](https://upstash.com/pricing/qstash).
+
+            The format of this header is `<value><unit>` where value is a number and unit is one of:
+            - `s` for seconds
+            - `m` for minutes
+            - `h` for hours.
+
+        - name: Upstash-Retries
+          in: header
+          schema:
+            type: integer
+          description: |
+            How many times should this message be retried in case the destination API returns an error or is not available.
+
+            The total number of deliveries is 1 (initial attempt) + retries.
+            
+            If it is not provided, the plan default retry value will be used:
+            - Free Plan: 3 retries
+            - Paid Plans: 5 retries
+
+        - name: Upstash-Retry-Delay
+          in: header
+          schema:
+            type: string
+          description: |
+            Customize the delay between retry attempts when message delivery fails.
+
+            By default, QStash uses [exponential backoff](/qstash/features/retry). You can override this by providing a mathematical expressions to compute next delay. This expression is computed after each failed attempt.
+            
+            You can use the special variable `retried`, which is how many times the message has been retried. The `retried` is 0 for the first retry.
+            
+            Supported functions: 
+            | Function    | Description                          |
+            |-------------|--------------------------------------|
+            | `pow(x, y)`| Returns x raised to the power of y|
+            | `exp(x)`| Returns e raised to the power of x|
+            | `sqrt(x)`| Takes the square root of x|
+            | `abs(x)`| Returns the absolute value of x|
+            | `floor(x)`| Returns the largest integer less than or equal to x|
+            | `ceil(x)`| Returns the smallest integer greater than or equal to x|
+            | `round(x)`| Rounds x to the nearest integer|
+            | `min(x, y)`| Returns the smaller of x and y|
+            | `max(x, y)`| Returns the larger of x and y|
+            
+            Examples:
+            - `1000`: Fixed 1 second delay
+            - `1000 * (1 + retried)`: Linear backoff
+            - `pow(2, retried) * 1000`: Exponential backoff
+            - `max(1000, pow(2, retried) * 100)`: Exponential with minimum 1s delay
+
+        - name: Upstash-Label
+          in: header
+          schema:
+            type: string
+          description: |
+            Label to assign to the message for easier identification and filtering in logs and DLQ.
+
+        - name: Upstash-Deduplication-Id
+          in: header
+          schema:
+            type: string
+          description: |
+            Deduplication ID to use for de-duplicating messages.
+            
+            If a message with the same deduplication ID was published in the last 10 minutes, the new message will be ignored.
+
+        - name: Upstash-Content-Based-Deduplication
+          in: header
+          schema:
+            type: string
+            enum: [ "true", "false" ]
+            default: "false"
+          description: |
+            Enable content based deduplication.
+            
+            When enabled, QStash will compute a hash of the message body and use it as deduplication ID.
+            If a message with the same content was published in the last 10 minutes, the new message will be ignored.
+
+        - name: Upstash-Callback
+          in: header
+          schema:
+            type: string
+          description: |
+            You can define a callback url that will be called after message delivery, either success or failure. See the content of what will be delivered to a callback [here](/qstash/features/callbacks#how-do-i-use-callbacks).
+            
+            - Callback URL must be prefixed with a valid protocol (http:// or https://)
+            - Callbacks are charged as a regular message.
+            - Callbacks will use the retry setting from the original request.
+
+        - name: Upstash-Callback-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers along with your callback message.
+            To send a custom header, prefix the header name with `Upstash-Callback-Forward-`. We will strip prefix and them to the callback URL.
+            
+            | Header | Forwarded To Callback Destination As |
+            |--------|--------------|
+            | Upstash-Callback-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Callback-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+
+        - name: Upstash-Callback-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can customize the callback message configuration.
+
+            See [the Configuring Callbacks](/qstash/features/callbacks#configuring-callbacks) section to learn more.
+
+            | Header | Description |
+            |--------|--------------|
+            | Upstash-Callback-Method | HTTP method to use for the callback request. Default is POST. |
+            | Upstash-Callback-Timeout | Timeout for the callback request. Format is same as Upstash-Timeout header. |
+            | Upstash-Callback-Retries | Number of retries for the callback request. Default is same as original message retries. |
+            | Upstash-Callback-Retry-Delay | Retry delay for the callback request. Format is same as Upstash-Retry-Delay header. |
+          
+
+        - name: Upstash-Failure-Callback
+          in: header
+          schema:
+            type: string
+          description: |
+            You can define a failure callback url that will be called when a delivery is failed. That is when all the defined retries are exhausted. See the content of what will be delivered to a failure callback here
+            
+            - Failure callback URL must be prefixed with a valid protocol (http:// or https://)
+            - Failure callbacks are charged as a regular message.
+            - Failure callbacks will use the retry setting from the original request.
+
+        - name: Upstash-Failure-Callback-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers along with your failure callback message.
+            To send a custom header, prefix the header name with `Upstash-Failure-Callback-Forward-`. We will strip prefix and them to the failure callback URL.
+            
+            | Header | Forwarded To Callback Destination As |
+            |--------|--------------|
+            | Upstash-Failure-Callback-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Failure-Callback-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+            
+        - name: Upstash-Failure-Callback-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can customize the failure callback message configuration.
+
+            See [the Configuring Callbacks](/qstash/features/callbacks#configuring-callbacks) section to learn more.
+
+            | Header | Description |
+            |--------|--------------|
+            | Upstash-Failure-Callback-Method | HTTP method to use for the callback request. Default is POST. |
+            | Upstash-Failure-Callback-Timeout | Timeout for the callback request. Format is same as Upstash-Timeout header. |
+            | Upstash-Failure-Callback-Retries | Number of retries for the callback request. Default is same as original message retries. |
+            | Upstash-Failure-Callback-Retry-Delay | Retry delay for the callback request. Format is same as Upstash-Retry-Delay header. |
+
+      requestBody:
+        description: The raw request message passed to the endpoints as is
+        content:
+          text/plain:
+            schema:
+              type: string
+          application/json:
+            schema:
+              type: object
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Message(s) enqueued successfully
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PublishResponse'
+                    description: Enqueued a message to a URL destination
+                  - type: object
+                    description: Enqueued to URL Group and created multiple messages for each endpoint the URL Group
+                    properties:
+                      messages:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PublishToUrlGroupResponse' 
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Queue not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /v2/batch:
+    post:
+      summary: Batch Messages
+      description: Send multiple messages in a single request
+      
+      tags:
+        - Messages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required:
+                  - destination
+                properties:
+                  destination:
+                    type: string
+                    description: |
+                      Destination can either be a valid URL where the message gets sent to, or a URL Group name. 
+                      - If the destination is a URL, make sure the URL is prefixed with a valid protocol (http:// or https://)
+                      - If the destination is a URL Group, a new message will be created for each endpoint in the group.
+
+                      Note that destination must be publicly accessible over the internet. If you are working with local endpoints, consider using QStash local development server or a public tunnel service.
+
+                  body:
+                    type: string
+                    description: The raw request message passed to the endpoints as is
+                  headers:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: HTTP headers of the message. You can pass all the headers supported in the single publish API.
+                  queue:
+                    type: string
+                    description: Queue name to enqueue the message to if desired.
+                 
+      responses:
+        '200':
+          description: Messages published successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PublishResponse'
+                    
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /v2/messages/{messageId}:
+    get:
+      summary: Get a Message
+      description: Retrieve details of a specific message
+      tags:
+        - Messages
+      x-mint:
+        content: |
+          <Warning>Messages are removed from the database shortly after they’re delivered, so you will not be able to retrieve a message after. This endpoint is intended to be used for accessing messages that are in the process of being delivered/retried.</Warning>
+      parameters:
+        - name:
+            messageId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The identifier of the message to retrieve.
+      responses:
+        '200':
+          description: Message details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '404':
+          description: Message not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Cancel a Message
+      description: Cancel a pending message
+      tags:
+        - Messages
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The identifier of the message to cancel.
+      responses:
+        '200':
+          description: Message canceled successfully
+        '404':
+          description: Message not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /v2/messages:
+    delete:
+      summary: Bulk Cancel Messages
+      description: Delete all pending messages
+      tags:
+        - Messages
+      x-mint:
+        content: |
+          <Note>Cancelling a message will remove it from QStash and stop it from being delivered in the future. If a message is in flight to your API, it might be too late to cancel.</Note>
+          <Warning>
+            If you provide a set of message IDs in the request, only those messages will be cancelled.
+
+            If you include filter parameters in the request, only the messages that match the filters will be canceled.
+            
+            If no filter or messageIds are sent, QStash will cancel all of your messages. We highly recommend at least providing count parameter and cancel in batches. 
+          </Warning> 
+
+          This operation scans all your messages and attempts to cancel them. If an individual message cannot be cancelled, it will not continue and will return an error message. Therefore, some messages may not be cancelled at the end. In such cases, you can run the bulk cancel operation multiple times.
+      parameters:
+        - name: messageIds
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          description: A list of message IDs to delete. If provided, other filters are ignored.
+        - name: topicName
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter messages by URL Group name.
+        - name: queueName
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter messages by Queue name.
+        - name: url
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter messages by URL.
+        - name: label
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter messages by label.
+        - name: flowControlKey
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter messages by Flow Control Key.
+        - name: fromDate
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Filter messages created after this timestamp (Unix milli, inclusive).
+        - name: toDate
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Filter messages created before this timestamp (Unix milli, inclusive).
+        - name: scheduleId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter messages by Schedule ID.
+        - name: callerIP
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter messages by Caller IP.
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Maximum number of messages to delete. There is no default value, so if not provided, all messages matching the filters will be deleted.
+      responses:
+        '200':
+          description: All messages deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: integer
+                    description: Number of messages cancelled
+
+  /v2/queues:
+    post:
+      summary: Upsert a Queue
+      description: Updates or creates a queue
+      tags:
+        - Queues
+      x-mint:
+        content: |
+          <Warning>
+            For rate-limiting use cases, we've introduced a more performant and less restrictive Flow Control feature for the Publish API. 
+            
+            We are planning to deprecate setting parallelism greater than 1 for the Queue API in future. If you're currently using Queue API with parallelism greater than 1 for rate limiting, consider using Flow Control. 
+            
+            Queues with parallelism set to 1 provide FIFO guarantees, which remains a valid use case for the Queue API.
+          </Warning>
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - queueName
+                - parallelism
+              properties:
+                queueName:
+                  type: string
+                  description: The name of the queue
+                parallelism:
+                  type: integer
+                  default: 1
+                  description: |
+                    The number of parallel consumers consuming from the queue
+      responses:
+        '200':
+          description: Queue created or updated successfully
+        '412':
+          description: Either exceeded the maximum number of queues allowed or the maximum parallelism per queue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Queue name is invalid. Queue names can only contain alphanumeric characters, hyphens, periods, and underscores.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List Queues
+      description: List all your queues
+      tags:
+        - Queues
+      responses:
+        '200':
+          description: List of queues
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Queue'      
+
+  /v2/queues/{queueName}:
+    get:
+      summary: Get a Queue
+      description: Get details of a specific queue
+      tags:
+        - Queues
+      parameters:
+        - name: queueName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the queue to retrieve.
+      responses:
+        '200':
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Queue'
+        '404':
+          description: Queue not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Queue name is invalid. Queue names can only contain alphanumeric characters, hyphens, periods, and underscores.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Delete a queue
+      description: Deletes a queue
+      tags:
+        - Queues
+      parameters:
+        - name: queueName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the queue to delete.
+      responses:
+        '200':
+          description: Queue deleted successfully
+
+  /v2/queues/{queueName}/pause:
+    post:
+      summary: Pause Queue
+      description: Pause a queue to stop the delivery of enqueued messages
+      tags:
+        - Queues
+      x-mint:
+        content: |
+          Pausing a queue stops the delivery of enqueued messages. The queue continues to accept new messages, but they will not be delivered until the queue is resumed.
+          
+          If the queue is already paused, this action has no effect.
+
+          <Warning>
+            Resuming or creating a queue may take up to a minute. Therefore, it is not recommended to pause or delete a queue during critical operations.
+          </Warning>
+      parameters:
+        - name: queueName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the queue to pause.
+      responses:
+        '200':
+          description: Queue paused successfully
+        '400':
+          description: Queue name is invalid. Queue names can only contain alphanumeric characters, hyphens, periods, and underscores.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v2/queues/{queueName}/resume:
+    post:
+      summary: Resume Queue
+      description: Resumes a queue to starts the delivery of enqueued messages
+      tags:
+        - Queues
+      x-mint:
+        content: |
+          Resuming a queue starts the delivery of enqueued messages, beginning with the earliest undelivered message. 
+          
+          If the queue is already active, this action has no effect.
+
+          <Warning>
+            Resuming or creating a queue may take up to a minute. Therefore, it is not recommended to pause or delete a queue during critical operations.
+          </Warning>
+      parameters:
+        - name: queueName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the queue to resume.
+      responses:
+        '200':
+          description: Queue resumed successfully
+        '400':
+          description: Queue name is invalid. Queue names can only contain alphanumeric characters, hyphens, periods, and underscores.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v2/schedules/{destination}:
+    post:
+      summary: Create a Schedule
+      description: Create a schedule to send messages periodically
+      tags:
+        - Schedules
+      parameters:
+        - name: destination
+          in: path
+          required: true
+          schema:
+            type: string
+          description: | 
+            Destination can either be a valid URL where the message gets sent to, or a URL Group name. 
+            - If the destination is a URL, make sure the URL is prefixed with a valid protocol (http:// or https://)
+            - If the destination is a URL Group, a new message will be created for each endpoint in the group.
+        
+        - name: Upstash-Cron
+          in: header
+          required: true
+          schema:
+            type: string
+            examples: 
+              - "*/5 * * * *"
+              - "CRON_TZ=America/New_York */5 * * * *"
+          description: |
+            Cron expression defining the schedule frequency. QStash republishes this message whenever the cron expression triggers.
+
+            Timezones are supported and can be specified with the cron expression. 
+            
+            The maximum schedule resolution is 1 minute.
+
+        - name: Upstash-Schedule-Id
+          in: header
+          schema:
+            type: string
+          description: |
+            Assign a custom schedule ID to the created schedule. This header allows you to set the schedule ID yourself instead of QStash assigning a random ID.
+            
+            If a schedule with the provided ID exists, the settings of the existing schedule will be updated with the new settings.
+
+        - name: Content-Type
+          in: header
+          schema:
+            type: string
+          description: |
+            `Content-Type` is the MIME type of the message.
+
+            We highly recommend sending a `Content-Type` header along, as this will help your destination API to understand the content of the message.
+
+            Set this to whatever data you are sending through QStash, if your message is json, then use `application/json`. Some frameworks like Next.js will not parse your body correctly if the content type is not correct.
+
+            Examples:
+            - `application/json`
+            - `application/xml`
+            - `application/octet-stream`
+            - `text/plain`
+
+        - name: Upstash-Method
+          in: header
+          schema:
+            type: string
+            enum: [ GET, POST, PUT, PATCH, DELETE ]
+            default: POST
+          description: The HTTP method to use when sending the request to your API.
+
+        - name: Upstash-Timeout
+          in: header
+          schema:
+            type: string
+            examples:
+              - "5s"
+              - "2m"
+              - "1h"
+          description: |
+            Specifies the maximum duration the request is allowed to take before timing out.
+            
+            This parameter can be used to shorten the default allowed timeout value on your plan. See Max HTTP Connection Timeout on the pricing page for default values.
+
+            The format of this header is `<value><unit>` where value is a number and unit is one of:
+            - `s` for seconds
+            - `m` for minutes
+            - `h` for hours.
+
+        - name: Upstash-Retries
+          in: header
+          schema:
+            type: integer
+          description: |
+            How many times should this message be retried in case the destination API returns an error or is not available.
+            The total number of deliveries is 1 (initial attempt) + retries.
+            
+            If it is not provided, the plan default retry value will be used:
+            - Free Plan: 3 retries
+            - Paid Plans: 5 retries
+
+        - name: Upstash-Retry-Delay
+          in: header
+          schema:
+            type: string
+          description: |
+            Customize the delay between retry attempts when message delivery fails.
+
+            By default, QStash uses exponential backoff. You can override this by providing a mathematical expressions to compute next delay. This expression is computed after each failed attempt.
+            
+            You can use the special variable `retried`, which is current retry attempt. The `retried` is 0 for the first retry. This variable is provided during computation of the expression by QStash.
+            
+            Supported functions: 
+            | Function    | Description                          |
+            |-------------|--------------------------------------|
+            | `pow(x, y)`| Returns x raised to the power of y|
+            | `exp(x)`| Returns e raised to the power of x|
+            | `sqrt(x)`| Takes the square root of x|
+            | `abs(x)`| Returns the absolute value of x|
+            | `floor(x)`| Returns the largest integer less than or equal to x|
+            | `ceil(x)`| Returns the smallest integer greater than or equal to x|
+            | `round(x)`| Rounds x to the nearest integer|
+            | `min(x, y)`| Returns the smaller of x and y|
+            | `max(x, y)`| Returns the larger of x and y|
+            
+            Examples:
+            - `1000`: Fixed 1 second delay
+            - `1000 * (1 + retried)`: Linear backoff
+            - `pow(2, retried) * 1000`: Exponential backoff
+            - `max(1000, pow(2, retried) * 100)`: Exponential with minimum 1s delay
+
+
+        - name: Upstash-Delay
+          in: header
+          schema:
+            type: string
+            examples:
+              - "50s"
+              - "1d10m"
+              - "10h"
+              - "1d"
+          description: |
+            Delay the message delivery.
+            
+            The format of this header is `<value><unit>` where value is a number and unit is one of:
+            - `s` for seconds
+            - `m` for minutes
+            - `h` for hours.
+            - `d` for days.
+
+
+
+        - name: Upstash-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers to your endpoint along with your message.
+
+            To send a custom header, prefix the header name with `Upstash-Forward-`. We will strip prefix and send them to the destination.
+            
+            | Header | Forwarded As |
+            |--------|--------------|
+            | Upstash-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+
+
+        - name: Upstash-Callback
+          in: header
+          schema:
+            type: string
+          description: |
+            You can define a callback url that will be called after each attempt. See the content of what will be delivered to a callback here
+            The callback URL must be prefixed with a valid protocol (http:// or https://)
+            
+            Callbacks are charged as a regular message.
+            Callbacks will use the retry setting from the original request.
+
+        - name: Upstash-Callback-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers along with your callback message.
+            To send a custom header, prefix the header name with `Upstash-Callback-Forward-`. We will strip prefix and them to the callback URL.
+            
+            Example: 
+            - `Upstash-Callback-Forward-My-Header: my-value` will be forwarded as `My-Header: my-value` to your callback destination.
+
+        - name: Upstash-Callback-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can customize the callback message configuration.
+
+            | Header | Description |
+            |--------|--------------|
+            | Upstash-Callback-Method | HTTP method to use for the callback request. Default is POST. |
+            | Upstash-Callback-Timeout | Timeout for the callback request. Format is same as Upstash-Timeout header. |
+            | Upstash-Callback-Retries | Number of retries for the callback request. Default is same as original message retries. |
+            | Upstash-Callback-Retry-Delay | Retry delay for the callback request. Format is same as Upstash-Retry-Delay header. |
+           
+
+        - name: Upstash-Failure-Callback
+          in: header
+          schema:
+            type: string
+          description: |
+            You can define a failure callback url that will be called when a delivery is failed. That is when all the defined retries are exhausted. See the content of what will be delivered to a failure callback here
+            The failure callback url must be prefixed with a valid protocol (http:// or https://)
+            Callbacks are charged as a regular message.
+            Callbacks will use the retry setting from the original request.
+
+        - name: Upstash-Failure-Callback-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers along with your failure callback message.
+            To send a custom header, prefix the header name with `Upstash-Failure-Callback-Forward-`. We will strip prefix and them to the failure callback URL.
+            
+            Example: 
+            - `Upstash-Failure-Callback-Forward-My-Header: my-value` will be forwarded as `My-Header: my-value` to your failure callback destination.
+
+        - name: Upstash-Failure-Callback-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can customize the failure callback message configuration.
+
+            | Header | Description |
+            |--------|--------------|
+            | Upstash-Failure-Callback-Method | HTTP method to use for the callback request. Default is POST. |
+            | Upstash-Failure-Callback-Timeout | Timeout for the callback request. Format is same as Upstash-Timeout header. |
+            | Upstash-Failure-Callback-Retries | Number of retries for the callback request. Default is same as original message retries. |
+            | Upstash-Failure-Callback-Retry-Delay | Retry delay for the callback request. Format is same as Upstash-Retry-Delay header. |
+           
+      requestBody:
+        description: The raw request message passed to the endpoints as is
+        content:
+          application/json:
+            schema:
+              type: object
+          text/plain:
+            schema:
+              type: string
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Schedule created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scheduleId:
+                    description: Unique identifier for the schedule
+                    type: string
+        '412':
+          description: Exceeded the maximum number of schedules allowed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Schedule ID is invalid. Schedule IDs can only contain alphanumeric characters, hyphens, periods, and underscores.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /v2/schedules:
+    get:
+      summary: List schedules
+      description: List all schedules
+      tags:
+        - Schedules
+      responses:
+        '200':
+          description: List of schedules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Schedule'
+  
+  /v2/schedules/{scheduleId}:
+    get:
+      summary: Get a Schedule
+      description: Get details of a specific schedule
+      tags:
+        - Schedules
+      parameters:
+        - name: scheduleId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the schedule to retrieve.
+      responses:
+        '200':
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Schedule'
+        '404':
+          description: Schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Delete a Schedule
+      description: Delete a schedule
+      tags:
+        - Schedules
+      parameters:
+        - name: scheduleId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the schedule to delete.
+      responses:
+        '200':
+          description: Schedule deleted successfully
+
+  /v2/schedules/{scheduleId}/pause:
+    post:
+      summary: Pause a Schedule
+      description: Pause a Schedule
+      tags:
+        - Schedules
+      x-mint:
+        content: |
+          When a schedule is paused, the cron trigger will simply be ignored.
+          
+          If the schedule is already paused, this action has no effect.
+      parameters:
+        - name: scheduleId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the schedule to pause.
+      responses:
+        '200':
+          description: Schedule paused successfully
+  
+  /v2/schedules/{scheduleId}/resume:
+    post:
+      summary: Resume a Schedule
+      description: Resume a paused Schedule
+      tags:
+        - Schedules
+      x-mint:
+        content: |
+          Resuming a schedule marks the schedule as active. This means the upcoming messages will be delivered and will not be ignored. 
+          
+          If the schedule is already active, this action has no effect.
+      parameters:
+        - name: scheduleId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the schedule to resume.
+      responses:
+        '200':
+          description: Schedule resumed successfully
+  
+  /v2/topics:
+    get:
+      summary: List URL Groups
+      description: List all your URL Groups
+      tags:
+        - URL Groups
+      responses:
+        '200':
+          description: ""
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/URLGroup'
+  
+  /v2/topics/{urlGroupName}:
+    get:
+      summary: Get a URL Group
+      description: Retrieve details of a specific URL Group
+      tags:
+        - URL Groups
+      parameters:
+        - name: urlGroupName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the URL Group to retrieve.
+      responses:
+        '200':
+          description: ""
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/URLGroup'
+        '404':
+          description: URL Group not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Delete a URL Group
+      description: Delete a topic and all its endpoints
+      x-mint: 
+        content: |
+          The URL Group and all its endpoints are removed.
+          In flight messages in the URL Group are not removed but you will not be able to send messages to the URL Group anymore.
+
+          <Warning>
+            If you have a schedule that is publishing to this URL Group, you need to delete the schedule first before deleting the URL Group.
+          </Warning>
+      tags:
+        - URL Groups
+      parameters:
+        - name: urlGroupName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of the URL Group to delete.
+      responses:
+        '200':
+          description: URL Group deleted successfully
+  
+  /v2/topics/{urlGroupName}/endpoints:
+    post:
+      summary: Upsert URL Group and Endpoint
+      description: Add an endpoint to a URL Group
+      tags:
+        - URL Groups
+      parameters:
+        - name: urlGroupName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of your URL Group. If it doesn't exist yet, it will be created.
+      x-mint:
+        content: |
+          Add one or multiple endpoints to a URL Group. If the URL Group does not exist, it will be created.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - endpoints
+              properties:
+                endpoints:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - url
+                    properties:
+                      url:
+                        type: string
+                        description: The URL of the endpoint
+                      name:
+                        type: string
+                        description: Optional name for the endpoint
+      responses:
+        '200':
+          description: Endpoint(s) added successfully
+  
+    delete:
+      summary: Remove Endpoints
+      description: Remove one or more endpoints from a URL Group
+      tags:
+        - URL Groups
+      x-mint:
+        content: |
+          Remove one or multiple endpoints from a URL Group. If all endpoints have been removed, the URL Group will be deleted.
+      parameters:
+        - name: urlGroupName
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The name of your URL Group.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - endpoints
+              properties:
+                endpoints:
+                  description: Then list of endpoints to remove from URL Group. Either name or url must be provided.
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Endpoint'
+
+      responses:
+        '200':
+          description: Endpoint(s) removed successfully
+  
+  /v2/dlq:
+    get:
+      summary: List DLQ messages
+      description: List and paginate through all messages currently in the DLQ
+      tags:
+        - DLQ
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: By providing a cursor you can paginate through all of the messages in the DLQ
+        - name: messageId
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by message ID
+        - name: url
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by destination URL
+        - name: topicName
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by URL Group name
+        - name: scheduleId
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by schedule ID
+        - name: queueName
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by queue name
+        - name: fromDate
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Filter DLQ messages by starting date, in milliseconds (Unix timestamp). This is inclusive.
+        - name: toDate
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Filter DLQ messages by ending date, in milliseconds (Unix timestamp). This is inclusive.
+        - name: responseStatus
+          in: query
+          schema:
+            type: integer
+          description: Filter DLQ messages by HTTP response status code of the last delivery attempt
+        - name: callerIp
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by IP address of the publisher
+        - name: label
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by the label of the message assigned by the user
+        - name: count
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 100
+          description: The number of messages to return.
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [ latestFirst, earliestFirst ]
+            default: latestFirst
+          description: The sorting order of DLQ messages by timestamp.
+      responses:
+        '200':
+          description: List of DLQ messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor:
+                    type: string
+                    description: |
+                      A cursor which you can use in subsequent requests to paginate through all messages. 
+                      If no cursor is returned, you have reached the end of the messages.
+                  messages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DLQMessage'
+    delete:
+      summary: Bulk Delete DLQ messages
+      description: Delete multiple messages from the DLQ
+      tags:
+        - DLQ
+      parameters:
+        - name: dlqIds
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+          description: List of DLQ IDs to delete. If provided, other filters are ignored.
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: By providing a cursor you can paginate through all of the messages in the DLQ
+        - name: messageId
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by message ID
+        - name: url
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by destination URL
+        - name: topicName
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by URL Group name
+        - name: scheduleId
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by schedule ID
+        - name: queueName
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by queue name
+        - name: fromDate
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Filter DLQ messages by starting date, in milliseconds (Unix timestamp). This is inclusive.
+        - name: toDate
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Filter DLQ messages by ending date, in milliseconds (Unix timestamp). This is inclusive.
+        - name: responseStatus
+          in: query
+          schema:
+            type: integer
+          description: Filter DLQ messages by HTTP response status code of the last delivery attempt
+        - name: callerIp
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by IP address of the publisher
+        - name: label
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by the label of the message assigned by the user
+        - name: count
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 100
+          description: The number of messages to delete.
+      responses:
+        '200':
+          description: DLQ messages deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor:
+                    type: string
+                    description: |
+                      A cursor which you can use in subsequent requests to paginate through all messages. 
+                      If no cursor is returned, you have reached the end of the messages.
+                  deleted:
+                    type: integer
+                    description: The number of messages that were deleted.
+  
+  /v2/dlq/{dlqId}:
+    get:
+      summary: Get a DLQ message
+      description: Get a specific message from the DLQ
+      tags:
+        - DLQ
+      parameters:
+        - name: dlqId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: |
+            The DLQ ID of the message you want to retrieve.
+      responses:
+        '200':
+          description: DLQ message details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQMessage'
+        '404':
+          description: |
+            If the message is not found in the DLQ, (either is has been removed by you, or automatically), the endpoint returns a 404 status code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      summary: Delete a DLQ message
+      description: Manually remove a message from the DLQ
+      tags:
+        - DLQ
+      parameters:
+        - name: dlqId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: |
+            The DLQ ID of the message you want to remove.
+      responses:
+        '200':
+          description: Message deleted successfully
+        '404':
+          description: |
+            If the message is not found in the DLQ, (either is has been removed by you, or automatically), the endpoint returns a 404 status code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /v2/dlq/retry/{dlqId}:
+    post:
+      summary: Retry a DLQ message
+      description: Retry delivery of a message from the DLQ
+      tags:
+        - DLQ
+      x-mint: 
+        content: |
+          When a DLQ message is retried, a new message with the same body and headers is created and scheduled for delivery.
+          The original DLQ message is then removed from the DLQ.
+
+          <Note> 
+            You can pass all configuration headers to override the configuration of the original message.
+
+            For example, if the retry count of the original message is 5, you can set it to 0 for the retried message by passing `Upstash-Retries: 0 ` header to this request. 
+            Check out publish documentation for complete list of configuration options you can pass.
+          </Note>
+      parameters:
+        - name: dlqId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: |
+            The DLQ ID of the message you want to retry.
+      responses:
+        '201':
+          description: Message retry initiated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishResponse'
+        '404':
+          description: |
+            If the message is not found in the DLQ, (either is has been removed by you, or automatically), the endpoint returns a 404 status code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'  
+  
+  /v2/dlq/retry:
+    post:
+      summary: Bulk Retry DLQ messages
+      description: Retry delivery of multiple messages from the DLQ
+      tags:
+        - DLQ
+      x-mint: 
+        content: |
+          When DLQ messages are retried, new messages with the same body and headers are created and scheduled for delivery.
+          The original DLQ messages are then removed from the DLQ.
+
+          <Note> 
+            You can pass all configuration headers to override the configuration of the original messages.
+
+            For example, if the retry count of the original messages is 5, you can set it to 0 for the retried messages by passing `Upstash-Retries: 0 ` header to this request. 
+            Check out publish documentation for complete list of configuration options you can pass.
+          </Note>
+      parameters:
+        - name: dlqIds
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+          description: List of DLQ IDs to retry. If provided, other filters are ignored.
+        - name: messageId
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by message ID
+        - name: url
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by destination URL
+        - name: topicName
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by URL Group name
+        - name: scheduleId
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by schedule ID
+        - name: queueName
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by queue name
+        - name: fromDate
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Filter DLQ messages by starting date, in milliseconds (Unix timestamp). This is inclusive.
+        - name: toDate
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Filter DLQ messages by ending date, in milliseconds (Unix timestamp). This is inclusive.
+        - name: responseStatus
+          in: query
+          schema:
+            type: integer
+          description: Filter DLQ messages by HTTP response status code of the last delivery attempt
+        - name: callerIp
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by IP address of the publisher
+        - name: label
+          in: query
+          schema:
+            type: string
+          description: Filter DLQ messages by the label of the message assigned by the user
+      responses:
+        '201':
+          description: Messages retry initiated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor: 
+                    type: string
+                    description: |
+                      A cursor which you can use in subsequent requests to paginate through all messages. 
+                      If no cursor is returned, you have reached the end of the messages.
+                  responses:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PublishResponse'
+        '404':
+          description: Some messages were not found in the DLQ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v2/flowControl:
+    get:
+      summary: List Flow Control Keys
+      description: List all Flow Control keys
+      tags:
+        - Flow Control
+      responses:
+        '200':
+          description: Flow control keys retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowControlKey'
+  
+  /v2/flowControl/{flowControlKey}:
+    get:
+      summary: Get Flow Control Key
+      description: Get details of a specific Flow Control key
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The Flow Control key to retrieve
+      responses:
+        '200':
+          description: Flow control key details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowControlKey'
+        '404':
+          description: Flow Control key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /v2/keys:
+    get:
+      summary: Get Signing Keys
+      description: Retrieve your current and next signing keys
+      tags:
+        - Signing Keys
+      responses:
+        '200':
+          description: Signing keys retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SigningKeys'
+
+  /v2/keys/rotate:
+    post:
+      summary: Rotate Signing Keys
+      description: Rotate your signing keys
+      x-mint: 
+        content: |
+          Rotating signing keys lets you switch the keys used to sign messages without causing downtime.
+          This ensures that signatures remain valid and that the application can continue verifying new messages seamlessly.
+
+          During a rotation, the next key becomes the new current key, and a fresh next key is generated.
+
+          Make sure to update your application to use the new current and next keys after rotation.
+      tags:
+        - Signing Keys
+      responses:
+        '200':
+          description: Keys rotated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SigningKeys'
+
+  /v2/logs:
+    get:
+      summary: List Logs
+      description: Paginate through logs of published messages
+      tags:
+        - Logs
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: By providing a cursor you can paginate through all of the logs
+        - name: messageId
+          in: query
+          schema:
+            type: string    
+          description: Filter logs by message ID
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [ CREATED, ACTIVE, RETRY, ERROR, IN_PROGRESS, DELIVERED, CANCEL_REQUESTED, CANCELLED ]
+          description: |
+            Filter logs by message state
+
+            |Value	|Description|
+            |-------|------------|
+            | CREATED	|The message has been accepted and stored in QStash|
+            | ACTIVE	|The task is currently being processed by a worker.|
+            | RETRY	|The task has been scheduled to retry.|
+            | ERROR	|The execution threw an error and the task is waiting to be retried or failed.|
+            | IN_PROGRESS	|The task is in one of ACTIVE, RETRY or ERROR state.|
+            | DELIVERED	|The message was successfully delivered.|
+            | FAILED	|The task has errored too many times or encountered an error that it cannot recover from.|
+            | CANCEL_REQUESTED	|The cancel request from the user is recorded.|
+            | CANCELLED	|The cancel request from the user is honored.|
+        - name: url
+          in: query
+          schema:
+            type: string
+          description: Filter logs by destination URL
+        - name: topicName
+          in: query
+          schema:
+            type: string
+          description: Filter logs by URL Group name
+        - name: scheduleId
+          in: query
+          schema:
+            type: string   
+          description: Filter logs by schedule ID
+        - name: queueName
+          in: query
+          schema:
+            type: string
+          description: Filter logs by queue name
+        - name: fromDate
+          in: query
+          schema:       
+            type: integer
+            format: int64   
+          description: Filter logs by starting date, in milliseconds (Unix timestamp). This is inclusive.
+        - name: toDate
+          in: query   
+          schema:
+            type: integer
+            format: int64
+          description: Filter logs by ending date, in milliseconds (Unix timestamp). This is inclusive.
+        - name: count
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 100
+          description: The number of log entries to return.
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [ latestFirst, earliestFirst ]
+            default: latestFirst
+          description: The sorting order of logs by timestamp.
+        - name: label
+          in: query
+          schema:
+            type: string
+          description: Filter logs by the label of the message assigned by the user
+      responses:
+        '200':
+          description: List of logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor:
+                    type: string
+                    description: |
+                      A cursor which you can use in subsequent requests to paginate through all logs. 
+                      If no cursor is returned, you have reached the end of the logs.
+                  logs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LogEntry'
