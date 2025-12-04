@@ -1,0 +1,116 @@
+---
+title: "Webhooks"
+---
+
+The Webhook feature allows you to pause workflow execution and wait for a webhook URL to be called, enabling seamless integration with third-party APIs and asynchronous operations.
+
+This feature is perfect for scenarios where you need to:
+- Wait for external API processing to complete
+- Integrate with services that use callback URLs
+- Receive notifications from external webhooks
+
+## How Webhooks Work
+
+When you use webhooks in your workflow, Upstash Workflow:
+
+1. **Creates a unique webhook URL** via `context.createWebhook()`
+2. **Provides the URL to external services** (typically through `context.call()`)
+3. **Pauses execution** via `context.waitForWebhook()` until the webhook is called
+4. **Resumes workflow** when the webhook receives a request or timeout is reached
+
+This happens without keeping your serverless function running, making it cost-effective for long-running integrations.
+
+## Examples
+
+### Basic Usage
+
+```typescript
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve(async (context) => {
+  // Step 1: Create webhook
+  const webhook = await context.createWebhook("create webhook");
+
+  // Step 2: Call an external endpoint, which calls the webhookUrl upon completion
+  const callResult = await context.call("call webhook caller", {
+    url: "https://webhook/caller",
+    method: "POST",
+    body: {
+      webhookUrl: webhook.webhookUrl,
+    },
+  });
+
+  // Step 3: Wait for the webhook to be called
+  const webhookResponse = await context.waitForWebhook(
+    "wait for webhook",
+    webhook,
+    "30s" // timeout
+  );
+
+  if (webhookResponse.timeout) {
+    console.log("Webhook was not called in time");
+    // Handle timeout scenario
+  } else {
+    console.log("Webhook received:", webhookResponse.request);
+    // Process the webhook data
+  }
+});
+```
+
+### Waiting for Multiple Calls
+
+Some services send multiple progress updates to a webhook URL as processing continues. You can wait for the same webhook multiple times in a loop until you receive a final "finished" signal:
+
+```typescript
+while (true) {
+  const webhookResponse = await context.waitForWebhook(
+    `wait for progress update ${stepCount}`,
+    webhook,
+    "5m" // 5 minute timeout between updates
+  );
+
+  if (webhookResponse.timeout) {
+    console.log("No progress update received in time, exiting");
+    break;
+  } else {
+    const request = webhookResponse.request;
+    console.log("Progress update received:", await request.json());
+
+    if (request.headers.get("x-task-finished") === "true") {
+      console.log("Task finished, exiting loop");
+      break;
+    }
+  }
+}
+```
+
+## Race Condition Safety
+
+Webhooks have built-in **lookback** protection, making them safer against race conditions. If an external service calls the webhook URL before `context.waitForWebhook()` is executed, the webhook call is stored and will be returned when `waitForWebhook` is called.
+
+This means you don't need to worry about timing issues between creating the webhook and waiting for it - the workflow will always receive the callback even if it arrives early.
+
+## Comparison with Wait for Event
+
+Webhooks and [Wait for Event](/workflow/features/wait-for-event) serve similar purposes but with different approaches:
+
+| Feature | Webhooks | Wait for Event |
+|---------|----------|----------------|
+| **Trigger** | External HTTP call to unique URL | Notify via Upstash Workflow Client |
+| **Setup** | Create webhook, pass URL to external service | Share event ID with external service |
+| **Integration** | Easy with callback-based APIs | Requires Workflow Client integration |
+| **Lookback** | ✅ Yes - safe against race conditions | ❌ No - notify before wait will be lost |
+| **Best For** | Third-party API callbacks | Internal event notifications |
+
+Choose webhooks when integrating with external services that support callback URLs, or when you need protection against race conditions. Choose Wait for Event when you have control over the notification mechanism and can use the Workflow Client.
+
+## API Reference
+
+<CardGroup cols={2}>
+  <Card title="context.createWebhook" icon="webhook" href="/workflow/basics/context/createWebhook">
+    Create a unique webhook URL for external services to call
+  </Card>
+  <Card title="context.waitForWebhook" icon="clock" href="/workflow/basics/context/waitForWebhook">
+    Wait for the webhook to be called or timeout
+  </Card>
+</CardGroup>
