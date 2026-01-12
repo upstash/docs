@@ -14,16 +14,20 @@ and tracks changes to keys matching the prefixes defined during index creation.
 
 <Tab title="TypeScript">
 ```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
 // Basic index on JSON data
 const users = await redis.search.createIndex({
   name: "users",
   dataType: "json",
   prefix: "user:",
-  schema: {
-    name: "TEXT",
-    email: "TEXT",
-    age: "U64",
-  },
+  schema: s.object({
+    name: s.string(),
+    email: s.string(),
+    age: s.number("U64"),
+  }),
 });
 ```
 </Tab>
@@ -49,29 +53,23 @@ can be indexed, similar to JSON indexes.
 
 <Tab title="TypeScript">
 ```ts
+import { Redis, s } from "@upstash/redis";
+const redis = Redis.fromEnv();
+
 // String index with nested schema fields
 const comments = await redis.search.createIndex({
   name: "comments",
   dataType: "string",
   prefix: "comment:",
-  schema: {
-    user: {
-      name: "TEXT",
-      email: {
-        type: "TEXT",
-        noTokenize: true,
-      },
-    },
-    comment: "TEXT",
-    upvotes: {
-      type: "U64",
-      fast: true,
-    },
-    commentedAt: {
-      type: "DATE",
-      fast: true,
-    },
-  },
+  schema: s.object({
+    user: s.object({
+      name: s.string(),
+      email: s.string().noTokenize(),
+    }),
+    comment: s.string(),
+    upvotes: s.number("U64"),
+    commentedAt: s.date().fast(),
+  }),
 });
 ```
 </Tab>
@@ -96,27 +94,21 @@ multiple prefixes:
 
 <Tab title="TypeScript">
 ```ts
+import { Redis, s } from "@upstash/redis";
+const redis = Redis.fromEnv();
+
 // JSON index with multiple prefixes
 const articles = await redis.search.createIndex({
   name: "articles",
   dataType: "json",
   prefix: ["article:", "blog:", "news:"],
-  schema: {
-    title: "TEXT",
-    body: "TEXT",
-    author: {
-      type: "TEXT",
-      noStem: true,
-    },
-    publishedAt: {
-      type: "DATE",
-      fast: true,
-    },
-    viewCount: {
-      type: "U64",
-      fast: true,
-    },
-  },
+  schema: s.object({
+    title: s.string(),
+    body: s.string(),
+    author: s.string().noStem(),
+    publishedAt: s.date().fast(),
+    viewCount: s.number("U64"),
+  }),
 });
 ```
 </Tab>
@@ -183,19 +175,20 @@ Currently, the following languages are supported:
 
 <Tab title="TypeScript">
 ```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
 // Turkish language index
 const addresses = await redis.search.createIndex({
   name: "addresses",
   dataType: "json",
   prefix: "address:",
   language: "turkish",
-  schema: {
-    address: {
-      type: "TEXT",
-      noStem: true,
-    },
-    description: "TEXT",
-  },
+  schema: s.object({
+    address: s.string().noStem(),
+    description: s.string(),
+  }),
 });
 ```
 </Tab>
@@ -231,6 +224,58 @@ SEARCH.CREATE cache ON STRING PREFIX 1 cache: EXISTSOK SCHEMA content TEXT
 </Tabs>
 
 For the schema definition of the index, see the [Schema Definition](./schema-definition) section.
+
+### Getting an Index Client
+
+The `redis.search.index()` method creates a client for an existing index without making a Redis call. This is useful when you want to query or manage an index that already exists, without the overhead of creating it.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+// Get a client for an existing index
+const users = redis.search.index("users");
+
+// Query the index
+const results = await users.query({
+  filter: { name: "John" },
+});
+
+// With schema for type safety
+const schema = s.object({
+  name: s.string(),
+  email: s.string(),
+  age: s.number("U64"),
+});
+
+const typedUsers = redis.search.index("users", schema);
+
+// Now queries are type-safe
+const typedResults = await typedUsers.query({
+  filter: { name: "John" },
+});
+```
+</Tab>
+
+</Tabs>
+
+This method is different from `redis.search.createIndex()` which:
+- Creates a new index if it doesn't exist
+- Makes a Redis call to create the index
+- Returns an error if the index already exists (unless `EXISTOK` is used)
+
+Use `redis.search.index()` when:
+- The index already exists
+- You want to avoid unnecessary Redis calls
+- You're querying or managing an existing index
+
+Use `redis.search.createIndex()` when:
+- You need to create a new index
+- You're setting up your application for the first time
 
 ### Describing an Index
 

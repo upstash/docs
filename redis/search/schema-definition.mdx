@@ -5,6 +5,145 @@ title: Schema Definition
 Every index requires a schema that defines the structure of searchable documents.
 The schema enforces type safety and enables query optimization.
 
+## Schema Builder Utility
+
+The TypeScript SDK provides a convenient schema builder utility `s` that makes it easy to define schemas with type safety and better developer experience.
+
+### Importing the Schema Builder
+
+```ts
+import { Redis, s } from "@upstash/redis";
+```
+
+### Basic Usage
+
+The schema builder provides methods for each field type:
+
+```ts
+const schema = s.object({
+  // Text fields
+  name: s.string(),
+  description: s.string(),
+  
+  // Numeric fields
+  age: s.number("U64"),      // Unsigned 64-bit integer
+  price: s.number("F64"),    // 64-bit floating point
+  count: s.number("I64"),    // Signed 64-bit integer
+  
+  // Date fields
+  createdAt: s.date(),       // RFC 3339 timestamp
+  
+  // Boolean fields
+  active: s.boolean(),
+});
+```
+
+### Field Options
+
+The schema builder supports chaining field options:
+
+```ts
+const schema = s.object({
+  // Text field without tokenization
+  sku: s.string().noTokenize(),
+  
+  // Text field without stemming
+  brand: s.string().noStem(),
+  
+  // Numeric field with fast storage for sorting
+  price: s.number("F64"),
+  
+  // Combining multiple options is not supported yet
+});
+```
+
+### Nested Objects
+
+The schema builder supports nested object structures:
+
+```ts
+const schema = s.object({
+  title: s.string(),
+  author: s.object({
+    name: s.string(),
+    email: s.string().noTokenize(),
+  }),
+  stats: s.object({
+    views: s.number("U64"),
+    likes: s.number("U64"),
+  }),
+});
+```
+
+### Using Schema with Index Creation
+
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const schema = s.object({
+  name: s.string(),
+  description: s.string(),
+  category: s.string().noTokenize(),
+  price: s.number("F64"),
+  inStock: s.boolean(),
+});
+
+const products = await redis.search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema,
+});
+```
+
+### Schema Builder vs. Plain Objects
+
+You can define schemas using either the schema builder or plain objects:
+
+<Tabs>
+
+<Tab title="Schema Builder (Recommended)">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const schema = s.object({
+  name: s.string(),
+  price: s.number("F64"),
+  category: s.string().noTokenize(),
+});
+```
+</Tab>
+
+<Tab title="Plain Object">
+```ts
+const schema = {
+  name: "TEXT",
+  price: {
+    type: "F64",
+    fast: true,
+  },
+  category: {
+    type: "TEXT",
+    noTokenize: true,
+  },
+};
+```
+</Tab>
+
+</Tabs>
+
+The schema builder provides:
+- Better type safety
+- Autocomplete support
+- More readable and maintainable code
+- Easier refactoring
+
+## Field Types
+
 | Type | Description | Example Values |
 |------|-------------|----------------|
 | `TEXT` | Full-text searchable string | `"hello world"`, `"The quick brown fox"` |
@@ -109,47 +248,39 @@ matches for the missing fields.
 <Tab title="TypeScript">
 
 ```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
 const products = await redis.search.createIndex({
   name: "products",
   dataType: "hash",
   prefix: "product:",
-  schema: {
+  schema: s.object({
     // Searchable product name with stemming
-    name: "TEXT",
+    name: s.string(),
 
     // Exact-match SKU codes
-    sku: {
-      type: "TEXT",
-      noTokenize: true,
-    },
+    sku: s.string().noTokenize(),
 
     // Brand names without stemming
-    brand: {
-      type: "TEXT",
-      noStem: true,
-    },
+    brand: s.string().noStem(),
 
     // Full-text description
-    description: "TEXT",
+    description: s.string(),
 
     // Sortable price
-    price: {
-      type: "F64",
-      fast: true,
-    },
+    price: s.number("F64"),
 
     // Sortable rating
-    rating: {
-      type: "F64",
-      fast: true,
-    },
+    rating: s.number("F64"),
 
     // Non-sortable review count
-    reviewCount: "U64",
+    reviewCount: s.number("U64"),
 
     // Filterable stock status
-    inStock: "BOOL",
-  },
+    inStock: s.boolean(),
+  }),
 });
 ```
 </Tab>
@@ -168,44 +299,36 @@ SEARCH.CREATE products ON HASH PREFIX 1 product: SCHEMA name TEXT sku TEXT NOTOK
 
 <Tab title="TypeScript">
 ```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
 const users = await redis.search.createIndex({
   name: "users",
   dataType: "json",
   prefix: "user:",
-  schema: {
+  schema: s.object({
     // Exact username matches
-    username: {
-      type: "TEXT",
-      noTokenize: true,
-    },
+    username: s.string().noTokenize(),
 
     // Nested schema fields
-    profile: {
+    profile: s.object({
       // Name search without stemming
-      displayName: {
-        type: "TEXT",
-        noStem: true,
-      },
+      displayName: s.string().noStem(),
 
       // Full-text bio search
-      bio: "TEXT",
+      bio: s.string(),
 
       // Exact email matches
-      email: {
-        type: "TEXT",
-        noTokenize: true,
-      },
-    },
+      email: s.string().noTokenize(),
+    }),
 
     // Join date for sorting
-    createdAt: {
-      type: "DATE",
-      fast: true,
-    },
+    createdAt: s.date().fast(),
 
     // Filter by verification status
-    verified: "BOOL",
-  },
+    verified: s.boolean(),
+  }),
 });
 ```
 </Tab>
