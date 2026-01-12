@@ -1,0 +1,219 @@
+---
+title: Schema Definition
+---
+
+Every index requires a schema that defines the structure of searchable documents.
+The schema enforces type safety and enables query optimization.
+
+| Type | Description | Example Values |
+|------|-------------|----------------|
+| `TEXT` | Full-text searchable string | `"hello world"`, `"The quick brown fox"` |
+| `U64` | Unsigned 64-bit integer | `0`, `42`, `18446744073709551615` |
+| `I64` | Signed 64-bit integer | `-100`, `0`, `9223372036854775807` |
+| `F64` | 64-bit floating point | `3.14`, `-0.001`, `1e10` |
+| `BOOL` | Boolean | `true`, `false` |
+| `DATE` | RFC 3339 timestamp | `"2024-01-15T09:30:00Z"`, `"1985-04-12T23:20:50.52Z"` |
+
+### Field Options
+
+Options modify field behavior and enable additional features.
+
+#### Text Field Options
+
+By default, text fields are tokenized and stemmed.
+
+Stemming reduces words to their root form, enabling searches for "running" to match "run," "runs," and "runner."
+This is controlled per-field with `NOSTEM` and globally with the `LANGUAGE` option.
+
+| Language | Example Stemming |
+|----------|------------------|
+| `english` | "running" → "run", "studies" → "studi" |
+| `turkish` | "koşuyorum" → "koş" |
+
+All languages use the same tokenizer, which splits text into tokens of consecutive alphanumeric characters.
+This might change in the future when support for Asian languages is added.
+
+It is possible to configure this behavior using the following options:
+
+| Option | Description | Use Case |
+|--------|-------------|----------|
+| `NOSTEM` | Disable word stemming | Names, proper nouns, technical terms |
+| `NOTOKENIZE` | Treat entire value as single token | URLs, UUIDs, email addresses, category codes |
+
+When using [`$fuzzy`](./query-operators/field-operators/fuzzy) or [`$regex`](./query-operators/field-operators/regex),
+be aware of stemming behavior:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// With stemming enabled (default), "experiment" is stored as "experi"
+// This regex won't match:
+await products.query({
+  filter: {
+    description: {
+      $regex: "experiment.*",
+    },
+  },
+});
+
+// This will match:
+await products.query({
+  filter: {
+    description: {
+      $regex: "experi.*",
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# With stemming enabled (default), "experiment" is stored as "experi"
+# This regex won't match:
+SEARCH.QUERY products '{"description": {"$regex": "experiment.*"}}'
+
+# This will match:
+SEARCH.QUERY articles '{"description": {"$regex": "experi.*"}}'
+```
+</Tab>
+
+</Tabs>
+
+To avoid stemming issues, use `NOSTEM` on fields where you need exact regex/fuzzy matching
+
+#### Numeric, Boolean, and Date Field Options
+
+| Option | Description | Use Case |
+|--------|-------------|----------|
+| `FAST` | Enable fast field storage | Sorting, fast range queries, field retrieval |
+
+### Nested Fields
+
+You can define fields at arbitrary nesting levels using the `.` character as a separator.
+
+### Non-Indexed Fields
+
+Although the schema definition is strict, documents do not have to match with the schema exactly. There might be missing
+or extra fields in the documents. In that case, extra fields are not part of the index, and missing fields are not indexed
+for that document at all. So, documents with missing fields won't be part of the result set, where there are required
+matches for the missing fields.
+
+### Schema Examples
+
+**E-commerce product schema**
+
+<Tabs>
+
+<Tab title="TypeScript">
+
+```ts
+const products = await redis.search.createIndex({
+  name: "products",
+  dataType: "hash",
+  prefix: "product:",
+  schema: {
+    // Searchable product name with stemming
+    name: "TEXT",
+
+    // Exact-match SKU codes
+    sku: {
+      type: "TEXT",
+      noTokenize: true,
+    },
+
+    // Brand names without stemming
+    brand: {
+      type: "TEXT",
+      noStem: true,
+    },
+
+    // Full-text description
+    description: "TEXT",
+
+    // Sortable price
+    price: {
+      type: "F64",
+      fast: true,
+    },
+
+    // Sortable rating
+    rating: {
+      type: "F64",
+      fast: true,
+    },
+
+    // Non-sortable review count
+    reviewCount: "U64",
+
+    // Filterable stock status
+    inStock: "BOOL",
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE products ON HASH PREFIX 1 product: SCHEMA name TEXT sku TEXT NOTOKENIZE brand TEXT NOSTEM description TEXT price F64 FAST rating F64 FAST reviewCount U64 inStock BOOL FAST
+```
+</Tab>
+
+</Tabs>
+
+**User directory schema**
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const users = await redis.search.createIndex({
+  name: "users",
+  dataType: "json",
+  prefix: "user:",
+  schema: {
+    // Exact username matches
+    username: {
+      type: "TEXT",
+      noTokenize: true,
+    },
+
+    // Nested schema fields
+    profile: {
+      // Name search without stemming
+      displayName: {
+        type: "TEXT",
+        noStem: true,
+      },
+
+      // Full-text bio search
+      bio: "TEXT",
+
+      // Exact email matches
+      email: {
+        type: "TEXT",
+        noTokenize: true,
+      },
+    },
+
+    // Join date for sorting
+    createdAt: {
+      type: "DATE",
+      fast: true,
+    },
+
+    // Filter by verification status
+    verified: "BOOL",
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE users ON JSON PREFIX 1 users: SCHEMA username TEXT NOTOKENIZE profile.displayName TEXT NOSTEM profile.bio TEXT contact.email TEXT NOTOKENIZE createdAt DATE FAST verified BOOL
+```
+</Tab>
+
+</Tabs>

@@ -1,0 +1,117 @@
+---
+title: $fuzzy
+---
+
+The `$fuzzy` operator matches terms that are similar but not identical to the search term.
+This is useful for handling typos, misspellings, and minor variations in user input.
+
+### Levenshtein Distance
+
+Fuzzy matching uses Levenshtein distance (also called edit distance) to measure similarity between terms.
+The distance is the minimum number of single-character edits needed to transform one word into another.
+These edits include:
+
+- **Insertions:** Adding a character ("headphone" → "headphones")
+- **Deletions:** Removing a character ("headphones" → "headphone")
+- **Substitutions:** Replacing a character ("headphones" → "headphonez")
+
+For example, the Levenshtein distance between "headphons" and "headphones" is 1 (one insertion needed).
+
+### Distance Parameter
+
+The `distance` parameter sets the maximum Levenshtein distance allowed for a match.
+The default is 1, and the maximum allowed value is 2.
+
+| Distance | Matches |
+|----------|---------|
+| 1 | Words with 1 edit (handles most single typos) |
+| 2 | Words with up to 2 edits (handles more severe misspellings) |
+
+Higher distances match more terms but may include unintended matches, so use distance 2 only when needed.
+
+### Transposition Cost
+
+A transposition swaps two adjacent characters (e.g., "teh" → "the").
+By default, a transposition counts as 2 edits (one deletion + one insertion).
+Setting `transpositionCostOne: true` counts transpositions as a single edit instead.
+
+For example, searching for "haedphone" to find "headphone":
+- Without `transpositionCostOne`: Distance is 2 (swap "ae" → "ea" costs 2)
+- With `transpositionCostOne: true`: Distance is 1 (swap counts as 1)
+
+This is useful when users commonly transpose characters while typing quickly.
+
+### Stemming Behavior
+
+On fields with stemming enabled (the default), fuzzy matching operates on the stemmed form of terms.
+For example, "running" is stored as "run", so searching for "runing" (one typo) would match.
+
+For predictable fuzzy matching, consider using `NOSTEM` on fields where you need to match the original word forms.
+See [Text Field Options](../../schema-definition#text-field-options) for more details.
+
+### Compatibility
+
+| Field Type | Supported |
+|------------|-----------|
+| TEXT | Yes |
+| U64/I64/F64 | No |
+| DATE | No |
+| BOOL | No |
+
+### Examples
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Simple fuzzy (distance 1, handles single typos)
+// Matches "headphones" even with the typo "headphons"
+await products.query({
+  filter: {
+    name: { $fuzzy: "headphons" },
+  },
+});
+
+// Custom distance for more tolerance
+// "hedphone" is 2 edits away from "headphone"
+await products.query({
+  filter: {
+    name: {
+      $fuzzy: {
+        value: "hedphone",
+        distance: 2,
+      },
+    },
+  },
+});
+
+// Handle character transpositions efficiently
+// "haedphone" has swapped "ae", with transpositionCostOne this is 1 edit
+await products.query({
+  filter: {
+    name: {
+      $fuzzy: {
+        value: "haedphone",
+        distance: 1,
+        transpositionCostOne: true,
+      },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Simple fuzzy (distance 1, handles single typos)
+SEARCH.QUERY products '{"name": {"$fuzzy": "headphons"}}'
+
+# Custom distance for more tolerance
+SEARCH.QUERY products '{"name": {"$fuzzy": {"value": "hedphone", "distance": 2}}}'
+
+# Handle character transpositions efficiently
+SEARCH.QUERY products '{"name": {"$fuzzy": {"value": "haedphone", "distance": 1, "transpositionCostOne": true}}}'
+```
+</Tab>
+
+</Tabs>

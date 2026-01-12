@@ -1,0 +1,520 @@
+---
+title: User Directory
+---
+
+This recipe demonstrates building a searchable employee directory with autocomplete,
+fuzzy name matching, and department filtering.
+
+### Schema Design
+
+The schema uses nested fields for profile data and exact matching for identifiers:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const users = await redis.search.createIndex({
+  name: "users",
+  dataType: "json",
+  prefix: "user:",
+  schema: {
+    // Exact username matching (no tokenization)
+    username: {
+      type: "TEXT",
+      noTokenize: true,
+    },
+
+    // Nested profile fields
+    profile: {
+      // Name search without stemming (proper nouns)
+      firstName: {
+        type: "TEXT",
+        noStem: true,
+      },
+      lastName: {
+        type: "TEXT",
+        noStem: true,
+      },
+      displayName: {
+        type: "TEXT",
+        noStem: true,
+      },
+
+      // Email as exact match (contains special characters)
+      email: {
+        type: "TEXT",
+        noTokenize: true,
+      },
+
+      // Searchable bio/about text
+      bio: "TEXT",
+    },
+
+    // Department and role for filtering
+    department: {
+      type: "TEXT",
+      noTokenize: true,
+    },
+    role: {
+      type: "TEXT",
+      noTokenize: true,
+    },
+    title: "TEXT",
+
+    // Boolean flags
+    isActive: "BOOL",
+    isAdmin: "BOOL",
+
+    // Dates for filtering
+    hiredAt: {
+      type: "DATE",
+      fast: true,
+    },
+    lastActiveAt: {
+      type: "DATE",
+      fast: true,
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE users ON JSON PREFIX 1 user: SCHEMA username TEXT NOTOKENIZE profile.firstName TEXT NOSTEM profile.lastName TEXT NOSTEM profile.displayName TEXT NOSTEM profile.email TEXT NOTOKENIZE profile.bio TEXT department TEXT NOTOKENIZE role TEXT NOTOKENIZE title TEXT isActive BOOL isAdmin BOOL hiredAt DATE FAST lastActiveAt DATE FAST
+```
+</Tab>
+
+</Tabs>
+
+### Sample Data
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.json.set("user:1", "$", {
+  username: "jsmith",
+  profile: {
+    firstName: "Jane",
+    lastName: "Smith",
+    displayName: "Jane Smith",
+    email: "jane.smith@company.com",
+    bio: "Senior software engineer focused on backend systems and distributed computing.",
+  },
+  department: "Engineering",
+  role: "Individual Contributor",
+  title: "Senior Software Engineer",
+  isActive: true,
+  isAdmin: false,
+  hiredAt: "2021-03-15T00:00:00Z",
+  lastActiveAt: "2024-03-25T14:30:00Z",
+});
+
+await redis.json.set("user:2", "$", {
+  username: "mjohnson",
+  profile: {
+    firstName: "Michael",
+    lastName: "Johnson",
+    displayName: "Mike Johnson",
+    email: "michael.johnson@company.com",
+    bio: "Engineering manager leading the platform team. Passionate about developer experience.",
+  },
+  department: "Engineering",
+  role: "Manager",
+  title: "Engineering Manager",
+  isActive: true,
+  isAdmin: true,
+  hiredAt: "2019-06-01T00:00:00Z",
+  lastActiveAt: "2024-03-25T16:45:00Z",
+});
+
+await redis.json.set("user:3", "$", {
+  username: "swilliams",
+  profile: {
+    firstName: "Sarah",
+    lastName: "Williams",
+    displayName: "Sarah Williams",
+    email: "sarah.williams@company.com",
+    bio: "Product designer specializing in user research and interaction design.",
+  },
+  department: "Design",
+  role: "Individual Contributor",
+  title: "Senior Product Designer",
+  isActive: true,
+  isAdmin: false,
+  hiredAt: "2022-01-10T00:00:00Z",
+  lastActiveAt: "2024-03-24T11:20:00Z",
+});
+
+await redis.json.set("user:4", "$", {
+  username: "rbrown",
+  profile: {
+    firstName: "Robert",
+    lastName: "Brown",
+    displayName: "Rob Brown",
+    email: "robert.brown@company.com",
+    bio: "Former engineering lead, now focused on technical writing and documentation.",
+  },
+  department: "Engineering",
+  role: "Individual Contributor",
+  title: "Staff Engineer",
+  isActive: false,
+  isAdmin: false,
+  hiredAt: "2018-09-20T00:00:00Z",
+  lastActiveAt: "2023-12-15T09:00:00Z",
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+JSON.SET user:1 $ '{"username": "jsmith", "profile": {"firstName": "Jane", "lastName": "Smith", "displayName": "Jane Smith", "email": "jane.smith@company.com", "bio": "Senior software engineer focused on backend systems and distributed computing."}, "department": "Engineering", "role": "Individual Contributor", "title": "Senior Software Engineer", "isActive": true, "isAdmin": false, "hiredAt": "2021-03-15T00:00:00Z", "lastActiveAt": "2024-03-25T14:30:00Z"}'
+
+JSON.SET user:2 $ '{"username": "mjohnson", "profile": {"firstName": "Michael", "lastName": "Johnson", "displayName": "Mike Johnson", "email": "michael.johnson@company.com", "bio": "Engineering manager leading the platform team. Passionate about developer experience."}, "department": "Engineering", "role": "Manager", "title": "Engineering Manager", "isActive": true, "isAdmin": true, "hiredAt": "2019-06-01T00:00:00Z", "lastActiveAt": "2024-03-25T16:45:00Z"}'
+
+JSON.SET user:3 $ '{"username": "swilliams", "profile": {"firstName": "Sarah", "lastName": "Williams", "displayName": "Sarah Williams", "email": "sarah.williams@company.com", "bio": "Product designer specializing in user research and interaction design."}, "department": "Design", "role": "Individual Contributor", "title": "Senior Product Designer", "isActive": true, "isAdmin": false, "hiredAt": "2022-01-10T00:00:00Z", "lastActiveAt": "2024-03-24T11:20:00Z"}'
+
+JSON.SET user:4 $ '{"username": "rbrown", "profile": {"firstName": "Robert", "lastName": "Brown", "displayName": "Rob Brown", "email": "robert.brown@company.com", "bio": "Former engineering lead, now focused on technical writing and documentation."}, "department": "Engineering", "role": "Individual Contributor", "title": "Staff Engineer", "isActive": false, "isAdmin": false, "hiredAt": "2018-09-20T00:00:00Z", "lastActiveAt": "2023-12-15T09:00:00Z"}'
+```
+</Tab>
+
+</Tabs>
+
+### Waiting for Indexing
+
+Index updates are batched for performance, so newly added data may not appear in search results immediately.
+Use `SEARCH.WAITINDEXING` to ensure all pending updates are processed before querying:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await users.waitIndexing();
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.WAITINDEXING users
+```
+</Tab>
+
+</Tabs>
+
+### Autocomplete Search
+
+Use `$contains` for search-as-you-type functionality:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// As user types "ja" in the search box
+const suggestions = await users.query({
+  filter: {
+    "profile.displayName": {
+      $contains: "ja",
+    },
+  },
+  limit: 5,
+});
+// Matches "Jane Smith", "James Wilson", etc.
+
+// As user types "jane sm"
+const refinedSuggestions = await users.query({
+  filter: {
+    "profile.displayName": {
+      $contains: "jane sm",
+    },
+  },
+  limit: 5,
+});
+// Matches "Jane Smith", "Jane Smithson", etc.
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# As user types "ja"
+SEARCH.QUERY users '{"profile.displayName": {"$contains": "ja"}}' LIMIT 5
+
+# As user types "jane sm"
+SEARCH.QUERY users '{"profile.displayName": {"$contains": "jane sm"}}' LIMIT 5
+```
+</Tab>
+
+</Tabs>
+
+### Fuzzy Name Search
+
+Handle typos and misspellings in name searches:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// User types "Micheal" (common misspelling of "Michael")
+const results = await users.query({
+  filter: {
+    "profile.firstName": {
+      $fuzzy: "Micheal",
+    },
+  },
+});
+// Matches "Michael Johnson"
+
+// Search with more tolerance for longer names
+const fuzzyResults = await users.query({
+  filter: {
+    "profile.lastName": {
+      $fuzzy: {
+        value: "Willaims",  // Typo in "Williams"
+        distance: 2,
+      },
+    },
+  },
+});
+
+// Search across first and last name with fuzzy matching
+const combinedFuzzy = await users.query({
+  filter: {
+    $should: [
+      { "profile.firstName": { $fuzzy: "Srah" } },  // Typo
+      { "profile.lastName": { $fuzzy: "Srah" } },
+    ],
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Fuzzy first name search
+SEARCH.QUERY users '{"profile.firstName": {"$fuzzy": "Micheal"}}'
+
+# Fuzzy with higher distance tolerance
+SEARCH.QUERY users '{"profile.lastName": {"$fuzzy": {"value": "willaims", "distance": 2}}}'
+
+# Search both first and last name
+SEARCH.QUERY users '{"$should": [{"profile.firstName": {"$fuzzy": "srah"}}, {"profile.lastName": {"$fuzzy": "srah"}}]}'
+```
+</Tab>
+
+</Tabs>
+
+### Exact Username/Email Lookup
+
+Find users by exact username or email:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Exact username lookup
+const user = await users.query({
+  filter: {
+    username: "jsmith",
+  },
+});
+
+// Exact email lookup
+const userByEmail = await users.query({
+  filter: {
+    "profile.email": "jane.smith@company.com",
+  },
+});
+
+// Find users with email at specific domain
+const companyUsers = await users.query({
+  filter: {
+    "profile.email": {
+      $regex: "jane.*@company\\.com",
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Exact username lookup
+SEARCH.QUERY users '{"username": "jsmith"}'
+
+# Exact email lookup
+SEARCH.QUERY users '{"profile.email": "jane.smith@company.com"}'
+
+# Users with specific email domain
+SEARCH.QUERY users '{"profile.email": {"$regex": "jane.*@company\\.com"}}'
+```
+</Tab>
+
+</Tabs>
+
+### Department and Role Filtering
+
+Filter users by department, role, or both:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// All users in Engineering
+const engineers = await users.query({
+  filter: {
+    department: "Engineering",
+    isActive: true,
+  },
+});
+
+// All managers across departments
+const managers = await users.query({
+  filter: {
+    role: "Manager",
+    isActive: true,
+  },
+});
+
+// Engineers who are managers
+const engineeringManagers = await users.query({
+  filter: {
+    $must: {
+      department: "Engineering",
+      role: "Manager",
+      isActive: true,
+    },
+  },
+});
+
+// Users in Engineering or Design
+const productTeam = await users.query({
+  filter: {
+    department: {
+      $in: ["Engineering", "Design", "Product"],
+    },
+    isActive: true,
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# All users in Engineering
+SEARCH.QUERY users '{"department": "Engineering", "isActive": true}'
+
+# All managers
+SEARCH.QUERY users '{"role": "Manager", "isActive": true}'
+
+# Engineering managers
+SEARCH.QUERY users '{"$must": {"department": "Engineering", "role": "Manager", "isActive": true}}'
+
+# Users in multiple departments
+SEARCH.QUERY users '{"department": {"$in": ["Engineering", "Design", "Product"]}, "isActive": true}'
+```
+</Tab>
+
+</Tabs>
+
+### Search by Skills in Bio
+
+Find users with specific skills or expertise:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Find users who mention "distributed" in their bio
+const distributedExperts = await users.query({
+  filter: {
+    "profile.bio": "distributed",
+    isActive: true,
+  },
+});
+
+// Find users with multiple skills
+const backendEngineers = await users.query({
+  filter: {
+    $must: {
+      "profile.bio": "backend",
+      department: "Engineering",
+    },
+  },
+});
+
+// Search for phrase in bio
+const uxResearchers = await users.query({
+  filter: {
+    "profile.bio": {
+      $phrase: "user research",
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Find users mentioning "distributed" in bio
+SEARCH.QUERY users '{"profile.bio": "distributed", "isActive": true}'
+
+# Backend engineers
+SEARCH.QUERY users '{"$must": {"profile.bio": "backend", "department": "Engineering"}}'
+
+# Phrase search in bio
+SEARCH.QUERY users '{"profile.bio": {"$phrase": "user research"}}'
+```
+</Tab>
+
+</Tabs>
+
+### Admin User Search
+
+Find administrators or users with specific permissions:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// All admin users
+const admins = await users.query({
+  filter: {
+    isAdmin: true,
+    isActive: true,
+  },
+});
+
+// Active non-admin users in Engineering
+const regularEngineers = await users.query({
+  filter: {
+    $must: {
+      department: "Engineering",
+      isActive: true,
+    },
+    $mustNot: {
+      isAdmin: true,
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# All admin users
+SEARCH.QUERY users '{"isAdmin": true, "isActive": true}'
+
+# Active non-admin engineers
+SEARCH.QUERY users '{"$must": {"department": "Engineering", "isActive": true}, "$mustNot": {"isAdmin": true}}'
+```
+</Tab>
+
+</Tabs>
+
+### Key Takeaways
+
+- Use `NOTOKENIZE` for usernames, emails, and exact-match identifiers
+- Use `NOSTEM` for proper nouns like names to prevent incorrect stemming
+- Use `$contains` for search-as-you-type autocomplete functionality
+- Use `$fuzzy` to handle typos in name searches
+- Combine nested field paths (e.g., `profile.firstName`) for structured data
