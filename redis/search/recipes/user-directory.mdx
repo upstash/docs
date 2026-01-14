@@ -181,7 +181,8 @@ SEARCH.WAITINDEXING users
 
 ### Autocomplete Search
 
-Use `$contains` for search-as-you-type functionality:
+Use `$fuzzy` with `prefix: true` for search-as-you-type functionality. This approach handles
+both incomplete words and typos, providing a more forgiving autocomplete experience:
 
 <Tabs>
 
@@ -191,22 +192,39 @@ Use `$contains` for search-as-you-type functionality:
 const suggestions = await users.query({
   filter: {
     "profile.displayName": {
-      $contains: "ja",
+      $fuzzy: {
+        value: "ja",
+        prefix: true,
+      },
     },
   },
   limit: 5,
 });
 // Matches "Jane Smith", "James Wilson", etc.
 
-// As user types "jane sm"
-const refinedSuggestions = await users.query({
+// As user types "jn" (typo for "ja")
+const typoSuggestions = await users.query({
   filter: {
     "profile.displayName": {
-      $contains: "jane sm",
+      $fuzzy: {
+        value: "jn",
+        prefix: true,
+        transpositionCostOne: true,
+      },
     },
   },
   limit: 5,
 });
+// Still matches "Jane Smith", "James Wilson", etc.
+
+// As user types "jane smi"
+const refinedSuggestions = await users.query({
+  filter: {
+    "profile.displayName": "jane smi",
+  },
+  limit: 5,
+});
+// Smart matching applies fuzzy prefix to last word automatically
 // Matches "Jane Smith", "Jane Smithson", etc.
 ```
 </Tab>
@@ -214,10 +232,13 @@ const refinedSuggestions = await users.query({
 <Tab title="Redis CLI">
 ```bash
 # As user types "ja"
-SEARCH.QUERY users '{"profile.displayName": {"$contains": "ja"}}' LIMIT 5
+SEARCH.QUERY users '{"profile.displayName": {"$fuzzy": {"value": "ja", "prefix": true}}}' LIMIT 5
 
-# As user types "jane sm"
-SEARCH.QUERY users '{"profile.displayName": {"$contains": "jane sm"}}' LIMIT 5
+# As user types "jn" (typo)
+SEARCH.QUERY users '{"profile.displayName": {"$fuzzy": {"value": "jn", "prefix": true, "transpositionCostOne": true}}}' LIMIT 5
+
+# As user types "jane smi" (smart matching handles fuzzy prefix on last word)
+SEARCH.QUERY users '{"profile.displayName": "jane smi"}' LIMIT 5
 ```
 </Tab>
 
@@ -492,6 +513,6 @@ SEARCH.QUERY users '{"$must": {"department": "Engineering", "isActive": true}, "
 
 - Use `NOTOKENIZE` for usernames, emails, and exact-match identifiers
 - Use `NOSTEM` for proper nouns like names to prevent incorrect stemming
-- Use `$contains` for search-as-you-type autocomplete functionality
+- Use `$fuzzy` with `prefix: true` for search-as-you-type autocomplete with typo tolerance
 - Use `$fuzzy` to handle typos in name searches
 - Combine nested field paths (e.g., `profile.firstName`) for structured data

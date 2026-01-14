@@ -8,15 +8,24 @@ This behavior varies based on the input format.
 
 ### Single-Word Values
 
-For single-word searches, the engine performs a straightforward term search.
-The word is matched against individual tokens in the field.
+For single-word searches, the engine runs multiple matching strategies and combines their scores:
+
+1. **Exact term match** (high boost): Documents containing the exact token score highest.
+
+2. **Fuzzy match** (no boost): Documents containing terms within Levenshtein distance 1
+   (with transpositions counting as a single edit) are included.
+
+3. **Fuzzy prefix match** (no boost): Documents containing terms that start with a fuzzy
+   variation of the search term are included. This handles incomplete words during typing.
 
 ```
-{ name: "headphones" }
+{ name: "tabletop" }
 ```
 
-This finds all documents where the `name` field contains the token "headphones".
-Due to stemming (enabled by default), this also matches variations like "headphone".
+This query returns results in roughly this order:
+- "**tabletop**" (exact match)
+- "**tabeltop**" (fuzzy match, 1 edit away)
+- "**tabeltopping**" (fuzzy prefix match, incomplete word with typos matches full term)
 
 ### Multi-Word Values
 
@@ -27,18 +36,26 @@ their scores to surface the most relevant results:
    score highest. Searching for `wireless headphones` ranks documents containing
    "wireless headphones" as a phrase above those with the words scattered.
 
-2. **All terms match** (medium boost): Documents containing all the search terms, regardless of
+2. **Exact phrase match with slop** (medium boost): Documents where all the query terms appear in
+   order but not necessarily adjacent, allowing for a small number of intervening words—receive a boost.
+   Searching for wireless headphones would rank documents containing `wireless bluetooth headphones`
+   above those where the words are far apart, but below an exact phrase match (`wireless headphones`).
+
+3. **Terms match** (medium boost): Documents containing all or some of the search terms, regardless of
    position or order, receive a moderate score boost.
 
-3. **Fuzzy matching** (lower boost): Documents containing terms similar to the search terms
+3. **Fuzzy matching** (no boost): Documents containing terms similar to the search terms
    (accounting for typos) are included with a lower score.
 
+4. **Fuzzy prefix on last word** (no boost): The last word is also matched with fuzzy prefix,
+   handling incomplete words during search-as-you-type scenarios.
+
 ```
-{ description: "wireless headphones" }
+{ description: "wireless headphon" }
 ```
 
 This query returns results in roughly this order:
-- "Premium **wireless headphones** with noise cancellation" (exact phrase)
+- "Premium **wireless headphones** with noise cancellation" (phrase match with fuzzy prefix on last word)
 - "**Headphones** with **wireless** connectivity" (all terms present, different order)
 - "**Wireles headphone** with long battery" (fuzzy match for typos)
 
