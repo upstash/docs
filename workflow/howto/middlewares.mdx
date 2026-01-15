@@ -1,0 +1,290 @@
+---
+title: "Middlewares"
+---
+
+Middlewares allow you to intercept and respond to workflow lifecycle events and debug messages. They're useful for logging, monitoring, error tracking, and custom integrations.
+
+## Overview
+
+A middleware can hook into:
+- **Lifecycle Events**: Run started, run completed, before/after step execution
+- **Debug Events**: Errors, warnings, and info messages
+
+## Built-in Middleware
+
+Upstash Workflow provides a built-in logging middleware that you can use out of the box:
+
+```typescript
+import { serve } from "@upstash/workflow/nextjs";
+import { loggingMiddleware } from "@upstash/workflow";
+
+export const { POST } = serve(
+  async (context) => {
+    await context.run("step-1", () => {
+      return "Hello World";
+    });
+  },
+  {
+    middlewares: [loggingMiddleware]
+  }
+);
+```
+
+The logging middleware outputs detailed execution logs to your application's console, including:
+- When workflow runs start and complete
+- Before and after each step execution
+- Error, warning, and info messages
+
+## Creating Custom Middleware
+
+You can create your own middleware by instantiating a `WorkflowMiddleware` class.
+
+### Using Direct Callbacks
+
+The simplest way to create a middleware is by providing callbacks directly:
+
+```typescript
+import { WorkflowMiddleware } from "@upstash/workflow";
+
+const customMiddleware = new WorkflowMiddleware({
+  name: "custom-logger",
+  callbacks: {
+    // Lifecycle events
+    runStarted: async ({ context }) => {
+      console.log(`Workflow ${context.workflowRunId} started`);
+    },
+    beforeExecution: async ({ context, stepName }) => {
+      console.log(`Executing step: ${stepName}`);
+    },
+    afterExecution: async ({ context, stepName, result }) => {
+      console.log(`Step ${stepName} completed with result:`, result);
+    },
+    runCompleted: async ({ context, result }) => {
+      console.log(`Workflow ${context.workflowRunId} completed:`, result);
+    },
+
+    // Debug events
+    onError: async ({ workflowRunId, error }) => {
+      console.error(`Error in ${workflowRunId}:`, error);
+    },
+    onWarning: async ({ workflowRunId, warning }) => {
+      console.warn(`Warning in ${workflowRunId}:`, warning);
+    },
+    onInfo: async ({ workflowRunId, info }) => {
+      console.info(`Info from ${workflowRunId}:`, info);
+    }
+  }
+});
+```
+
+### Using Init Function
+
+For middlewares that need to initialize resources (like database connections or external clients), use the `init` pattern:
+
+```typescript
+import { WorkflowMiddleware } from "@upstash/workflow";
+
+const databaseMiddleware = new WorkflowMiddleware({
+  name: "database-logger",
+  init: async () => {
+    // Initialize your resources
+    const db = await connectToDatabase();
+
+    // Return the callbacks that use the initialized resources
+    return {
+      runStarted: async ({ context }) => {
+        await db.insert({ workflowRunId: context.workflowRunId, status: 'started' });
+      },
+      runCompleted: async ({ context, result }) => {
+        await db.update({ workflowRunId: context.workflowRunId, status: 'completed', result });
+      },
+      onError: async ({ workflowRunId, error }) => {
+        await db.insert({ workflowRunId, level: 'error', message: error.message });
+      }
+    };
+  }
+});
+```
+
+## Event Types
+
+### Lifecycle Events
+
+<ParamField path="runStarted" type="function">
+  Called when a workflow run begins.
+
+  **Parameters:**
+  - `context`: The workflow context
+
+  ```typescript
+  runStarted: async ({ context }) => {
+    // Handle run start
+  }
+  ```
+</ParamField>
+
+<ParamField path="beforeExecution" type="function">
+  Called before each step executes.
+
+  **Parameters:**
+  - `context`: The workflow context
+  - `stepName`: Name of the step about to execute
+
+  ```typescript
+  beforeExecution: async ({ context, stepName }) => {
+    // Handle step start
+  }
+  ```
+</ParamField>
+
+<ParamField path="afterExecution" type="function">
+  Called after each step completes.
+
+  **Parameters:**
+  - `context`: The workflow context
+  - `stepName`: Name of the completed step
+  - `result`: The result returned by the step
+
+  ```typescript
+  afterExecution: async ({ context, stepName, result }) => {
+    // Handle step completion
+  }
+  ```
+</ParamField>
+
+<ParamField path="runCompleted" type="function">
+  Called when the entire workflow run finishes.
+
+  **Parameters:**
+  - `context`: The workflow context
+  - `result`: The final result of the workflow
+
+  ```typescript
+  runCompleted: async ({ context, result }) => {
+    // Handle run completion
+  }
+  ```
+</ParamField>
+
+### Debug Events
+
+<ParamField path="onError" type="function">
+  Called when an error occurs.
+
+  **Parameters:**
+  - `workflowRunId`: The workflow run ID (optional)
+  - `error`: The error object
+
+  ```typescript
+  onError: async ({ workflowRunId, error }) => {
+    // Handle error
+  }
+  ```
+</ParamField>
+
+<ParamField path="onWarning" type="function">
+  Called when a warning is logged.
+
+  **Parameters:**
+  - `workflowRunId`: The workflow run ID (optional)
+  - `warning`: The warning message
+
+  ```typescript
+  onWarning: async ({ workflowRunId, warning }) => {
+    // Handle warning
+  }
+  ```
+</ParamField>
+
+<ParamField path="onInfo" type="function">
+  Called when an info message is logged.
+
+  **Parameters:**
+  - `workflowRunId`: The workflow run ID (optional)
+  - `info`: The info message
+
+  ```typescript
+  onInfo: async ({ workflowRunId, info }) => {
+    // Handle info
+  }
+  ```
+</ParamField>
+
+## Examples
+
+### Error Tracking Middleware
+
+Send errors to an external monitoring service:
+
+```typescript
+import { WorkflowMiddleware } from "@upstash/workflow";
+
+const errorTrackingMiddleware = new WorkflowMiddleware({
+  name: "error-tracking",
+  callbacks: {
+    onError: async ({ workflowRunId, error }) => {
+      await fetch("https://your-monitoring-service.com/errors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workflowRunId,
+          error: error.message,
+          stack: error.stack,
+          timestamp: new Date().toISOString()
+        })
+      });
+    }
+  }
+});
+```
+
+### Performance Monitoring Middleware
+
+Track execution times for each step:
+
+```typescript
+import { WorkflowMiddleware } from "@upstash/workflow";
+
+const timings = new Map<string, number>();
+
+const performanceMiddleware = new WorkflowMiddleware({
+  name: "performance",
+  callbacks: {
+    beforeExecution: async ({ stepName }) => {
+      timings.set(stepName, Date.now());
+    },
+    afterExecution: async ({ stepName }) => {
+      const startTime = timings.get(stepName);
+      if (startTime) {
+        const duration = Date.now() - startTime;
+        console.log(`Step ${stepName} took ${duration}ms`);
+        timings.delete(stepName);
+      }
+    }
+  }
+});
+```
+
+### Multiple Middlewares
+
+You can use multiple middlewares together:
+
+```typescript
+import { serve } from "@upstash/workflow/nextjs";
+import { loggingMiddleware } from "@upstash/workflow";
+
+export const { POST } = serve(
+  async (context) => {
+    // Your workflow logic
+  },
+  {
+    middlewares: [
+      loggingMiddleware,
+      errorTrackingMiddleware,
+      performanceMiddleware
+    ]
+  }
+);
+```
+
+Middlewares are executed in the order they're provided in the array.
