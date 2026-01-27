@@ -1,18 +1,13 @@
 ---
-title: Schema Definition
+title: Schemas
 ---
 
-Every index requires a schema that defines the structure of searchable documents.
-The schema enforces type safety and enables query optimization.
+Every search index requires a schema that defines the structure of searchable documents. The schema allows for type-safety and allows us to optimize your data for very fast queries.
 
-## Schema Builder Utility
-
-The TypeScript SDK provides a convenient schema builder utility `s` that makes it easy to define schemas with type safety and better developer experience.
-
-### Importing the Schema Builder
+We provide a schema builder utility called `s` that makes it easy to define a schema.
 
 ```ts
-import { Redis, s } from "@upstash/redis";
+import { Redis, s } from "@upstash/redis"
 ```
 
 ### Basic Usage
@@ -21,40 +16,21 @@ The schema builder provides methods for each field type:
 
 ```ts
 const schema = s.object({
-  // Text fields
   name: s.string(),
-  description: s.string(),
-  
-  // Numeric fields
-  age: s.number("U64"),      // Unsigned 64-bit integer
-  price: s.number("F64"),    // 64-bit floating point
-  count: s.number("I64"),    // Signed 64-bit integer
-  
-  // Date fields
-  createdAt: s.date(),       // RFC 3339 timestamp
-  
-  // Boolean fields
+  age: s.number(),
+  createdAt: s.date(),
   active: s.boolean(),
-});
+})
 ```
 
-### Field Options
+The schema builder also supports chaining field options. We'll see what `noTokenize()` and `noStem()` are used for in the section below.
 
-The schema builder supports chaining field options:
-
-```ts
+```ts {2,3}
 const schema = s.object({
-  // Text field without tokenization
   sku: s.string().noTokenize(),
-  
-  // Text field without stemming
   brand: s.string().noStem(),
-  
-  // Numeric field with fast storage for sorting
-  price: s.number("F64"),
-  
-  // Combining multiple options is not supported yet
-});
+  price: s.number(),
+})
 ```
 
 ### Nested Objects
@@ -66,21 +42,23 @@ const schema = s.object({
   title: s.string(),
   author: s.object({
     name: s.string(),
-    email: s.string().noTokenize(),
+    email: s.string(),
   }),
   stats: s.object({
-    views: s.number("U64"),
-    likes: s.number("U64"),
+    views: s.number(),
+    likes: s.number(),
   }),
-});
+})
 ```
 
-### Using Schema with Index Creation
+### Where to use the Schema
+
+We need the schema when creating or querying an index:
 
 ```ts
-import { Redis, s } from "@upstash/redis";
+import { Redis, s } from "@upstash/redis"
 
-const redis = Redis.fromEnv();
+const redis = Redis.fromEnv()
 
 const schema = s.object({
   name: s.string(),
@@ -88,150 +66,82 @@ const schema = s.object({
   category: s.string().noTokenize(),
   price: s.number("F64"),
   inStock: s.boolean(),
-});
+})
 
 const products = await redis.search.createIndex({
   name: "products",
   dataType: "json",
   prefix: "product:",
   schema,
-});
+})
 ```
 
-### Schema Builder vs. Plain Objects
+---
 
-You can define schemas using either the schema builder or plain objects:
+## Tokenization & Stemming
 
-<Tabs>
+When you store text in a search index, it goes through two transformations: **Tokenization** and **Stemming**. By default, text fields are both tokenized and stemmed. Understanding these helps you configure fields correctly.
 
-<Tab title="Schema Builder (Recommended)">
+### Tokenization
+
+Tokenization splits text into individual searchable words (tokens) by breaking on spaces and punctuation.
+
+| Original Text        | Tokens                       |
+| -------------------- | ---------------------------- |
+| `"hello world"`      | `["hello", "world"]`         |
+| `"user@example.com"` | `["user", "example", "com"]` |
+| `"SKU-12345-BLK"`    | `["SKU", "12345", "BLK"]`    |
+
+This is great for natural language because searching for "world" will match "hello world". But it breaks values that should stay together.
+
+**When to disable tokenization** with `.noTokenize()`:
+
+- Email addresses (`user@example.com`)
+- URLs (`https://example.com/page`)
+- Product codes and SKUs (`SKU-12345-BLK`)
+- UUIDs (`550e8400-e29b-41d4-a716-446655440000`)
+- Category slugs (`electronics/phones/android`)
+
 ```ts
-import { Redis, s } from "@upstash/redis";
-
-const redis = Redis.fromEnv();
-
 const schema = s.object({
-  name: s.string(),
-  price: s.number("F64"),
-  category: s.string().noTokenize(),
-});
+  title: s.string(),
+  email: s.string().noTokenize(),
+  sku: s.string().noTokenize(),
+})
 ```
-</Tab>
 
-<Tab title="Plain Object">
+---
+
+### Stemming
+
+Stemming reduces words to their root form so different variations match the same search.
+
+| Word                                   | Stemmed Form |
+| -------------------------------------- | ------------ |
+| `"running"`, `"runs"`, `"runner"`      | `"run"`      |
+| `"studies"`, `"studying"`, `"studied"` | `"studi"`    |
+| `"experiments"`, `"experimenting"`     | `"experi"`   |
+
+This way, a user searching for "running shoes" will also find "run shoes" and "runner shoes".
+
+**When to disable stemming** with `.noStem()`:
+
+- Brand names (`Nike` shouldn't match `Nik`)
+- Proper nouns and names (`Johnson` shouldn't become `John`)
+- Technical terms (`React` shouldn't match `Reac`)
+- When using regex patterns (stemmed text won't match your expected patterns)
+
 ```ts
-const schema = {
-  name: "TEXT",
-  price: {
-    type: "F64",
-    fast: true,
-  },
-  category: {
-    type: "TEXT",
-    noTokenize: true,
-  },
-};
+const schema = s.object({
+  description: s.string(),
+  brand: s.string().noStem(),
+  authorName: s.string().noStem(),
+})
 ```
-</Tab>
 
-</Tabs>
+---
 
-The schema builder provides:
-- Better type safety
-- Autocomplete support
-- More readable and maintainable code
-- Easier refactoring
-
-## Field Types
-
-| Type | Description | Example Values |
-|------|-------------|----------------|
-| `TEXT` | Full-text searchable string | `"hello world"`, `"The quick brown fox"` |
-| `U64` | Unsigned 64-bit integer | `0`, `42`, `18446744073709551615` |
-| `I64` | Signed 64-bit integer | `-100`, `0`, `9223372036854775807` |
-| `F64` | 64-bit floating point | `3.14`, `-0.001`, `1e10` |
-| `BOOL` | Boolean | `true`, `false` |
-| `DATE` | RFC 3339 timestamp | `"2024-01-15T09:30:00Z"`, `"1985-04-12T23:20:50.52Z"` |
-
-### Field Options
-
-Options modify field behavior and enable additional features.
-
-#### Text Field Options
-
-By default, text fields are tokenized and stemmed.
-
-Stemming reduces words to their root form, enabling searches for "running" to match "run," "runs," and "runner."
-This is controlled per-field with `NOSTEM` and globally with the `LANGUAGE` option.
-
-| Language | Example Stemming |
-|----------|------------------|
-| `english` | "running" → "run", "studies" → "studi" |
-| `turkish` | "koşuyorum" → "koş" |
-
-All languages use the same tokenizer, which splits text into tokens of consecutive alphanumeric characters.
-This might change in the future when support for Asian languages is added.
-
-It is possible to configure this behavior using the following options:
-
-| Option | Description | Use Case |
-|--------|-------------|----------|
-| `NOSTEM` | Disable word stemming | Names, proper nouns, technical terms |
-| `NOTOKENIZE` | Treat entire value as single token | URLs, UUIDs, email addresses, category codes |
-
-When using [`$regex`](./query-operators/field-operators/regex), be aware of stemming behavior:
-
-<Tabs>
-
-<Tab title="TypeScript">
-```ts
-// With stemming enabled (default), "experiment" is stored as "experi"
-// This regex won't match:
-await products.query({
-  filter: {
-    description: {
-      $regex: "experiment.*",
-    },
-  },
-});
-
-// This will match:
-await products.query({
-  filter: {
-    description: {
-      $regex: "experi.*",
-    },
-  },
-});
-```
-</Tab>
-
-<Tab title="Redis CLI">
-```bash
-# With stemming enabled (default), "experiment" is stored as "experi"
-# This regex won't match:
-SEARCH.QUERY products '{"description": {"$regex": "experiment.*"}}'
-
-# This will match:
-SEARCH.QUERY articles '{"description": {"$regex": "experi.*"}}'
-```
-</Tab>
-
-</Tabs>
-
-To avoid stemming issues, use `NOSTEM` on fields where you need exact regex matching
-
-#### Numeric, Boolean, and Date Field Options
-
-| Option | Description | Use Case |
-|--------|-------------|----------|
-| `FAST` | Enable fast field storage | Sorting, fast range queries, field retrieval |
-
-### Nested Fields
-
-You can define fields at arbitrary nesting levels using the `.` character as a separator.
-
-### Aliased Fields
+## Aliased Fields
 
 Aliased fields allow you to index the same document field multiple times with different settings,
 or to create shorter names for complex nested paths.
@@ -250,15 +160,13 @@ const products = await redis.search.createIndex({
   dataType: "json",
   prefix: "product:",
   schema: s.object({
-    // Index 'description' twice: once with stemming (default), once without
     description: s.string(),
     descriptionExact: s.string().noStem().from("description"),
-
-    // Create a short alias for a deeply nested field
     authorName: s.string().from("metadata.author.displayName"),
   }),
 });
 ```
+
 </Tab>
 
 <Tab title="Redis CLI">
@@ -267,6 +175,7 @@ const products = await redis.search.createIndex({
 # Create a short alias for a deeply nested field
 SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA description TEXT descriptionExact TEXT FROM description NOSTEM authorName TEXT FROM metadata.author.displayName
 ```
+
 </Tab>
 
 </Tabs>
@@ -282,16 +191,21 @@ When using aliased fields:
 - Use the **actual field name** when selecting fields to return (e.g., `description`, `metadata.author.displayName`)
 
 This is because aliasing happens at the index level and does not modify the underlying documents.
+
 </Note>
 
-### Non-Indexed Fields
+---
 
-Although the schema definition is strict, documents do not have to match with the schema exactly. There might be missing
-or extra fields in the documents. In that case, extra fields are not part of the index, and missing fields are not indexed
-for that document at all. So, documents with missing fields won't be part of the result set, where there are required
-matches for the missing fields.
+## Non-Indexed Fields
 
-### Schema Examples
+Documents don't need to match the schema exactly:
+
+- **Extra fields**: Fields in your document that aren't defined in the schema are simply ignored. They won't be indexed or searchable.
+- **Missing fields**: If a document is missing a field defined in the schema, that document won't appear in search results that filter on the missing field.
+
+---
+
+## Schema Examples
 
 **E-commerce product schema**
 
@@ -300,41 +214,27 @@ matches for the missing fields.
 <Tab title="TypeScript">
 
 ```ts
-import { Redis, s } from "@upstash/redis";
+import { Redis, s } from "@upstash/redis"
 
-const redis = Redis.fromEnv();
+const redis = Redis.fromEnv()
 
 const products = await redis.search.createIndex({
   name: "products",
   dataType: "hash",
   prefix: "product:",
   schema: s.object({
-    // Searchable product name with stemming
     name: s.string(),
-
-    // Exact-match SKU codes
-    sku: s.string().noTokenize(),
-
-    // Brand names without stemming
-    brand: s.string().noStem(),
-
-    // Full-text description
+    sku: s.string().noTokenize(), // Exact-match SKU codes
+    brand: s.string().noStem(), // Brand names without stemming
     description: s.string(),
-
-    // Sortable price
-    price: s.number("F64"),
-
-    // Sortable rating
-    rating: s.number("F64"),
-
-    // Non-sortable review count
-    reviewCount: s.number("U64"),
-
-    // Filterable stock status
+    price: s.number("F64"), // Sortable (F64) price
+    rating: s.number("F64"), // Sortable (F64) rating
+    reviewCount: s.number("U64"),  // Non-sortable (U64) review count
     inStock: s.boolean(),
   }),
-});
+})
 ```
+
 </Tab>
 
 <Tab title="Redis CLI">
@@ -360,29 +260,18 @@ const users = await redis.search.createIndex({
   dataType: "json",
   prefix: "user:",
   schema: s.object({
-    // Exact username matches
     username: s.string().noTokenize(),
-
-    // Nested schema fields
     profile: s.object({
-      // Name search without stemming
       displayName: s.string().noStem(),
-
-      // Full-text bio search
       bio: s.string(),
-
-      // Exact email matches
       email: s.string().noTokenize(),
     }),
-
-    // Join date for sorting
     createdAt: s.date().fast(),
-
-    // Filter by verification status
     verified: s.boolean(),
   }),
 });
 ```
+
 </Tab>
 
 <Tab title="Redis CLI">
