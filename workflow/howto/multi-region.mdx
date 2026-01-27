@@ -1,0 +1,148 @@
+---
+title: Multi-Region Setup
+---
+
+## Overview
+
+Upstash Workflow operates on top of QStash, which is available in two distinct regions: **EU region** and **US region**. Each region is completely independent with its own infrastructure, pricing, resources, and workflow runs.
+
+## Regional URLs
+
+- **EU Region**: `https://qstash-eu-central-1.upstash.io`, or `https://qstash.upstash.io`
+- **US Region**: `https://qstash-us-east-1.upstash.io`
+
+## Key Concepts
+
+### Separate Regions
+
+Each region maintains:
+- **Separate pricing and billing**: Usage in each region is tracked and billed independently
+- **Separate resources**: Workflow runs, events, and configurations are region-specific
+- **Separate credentials**: Each region has its own API tokens and signing keys
+
+### Migration Between Regions
+
+If you don't have any active resources (active workflow runs, schedules, url groups etc), you can simply update your environment variables with the new region to migrate. If you have active resources, you will need to migrate more gracefully, as described below.
+
+You can migrate your Workflow resources from one region to another using the Upstash Console:
+
+1. Navigate to the [Workflow tab on Upstash Console](https://console.upstash.com/workflow)
+2. Click the **Migrate** button
+3. Follow the guided migration process
+
+<img src="/img/workflow/local-mode-workflow.png" />
+
+The migration tool will:
+- Help you set up multi-region environment variables
+- Copy and update your QStash resources (schedules, url groups, queues)
+
+Your workflow logs or DLQ aren't part of the migration. They will remain in the old region.
+
+<Info>
+After migration, your app will be able to handle requests from both regions simultaneously to ensure a smooth transition.
+</Info>
+
+## Operating Modes
+
+Workflow SDK supports two modes of operation:
+
+### Single-Region Mode (Default)
+
+When `QSTASH_REGION` environment variable is **not set**, the SDK operates in single-region mode:
+
+- Uses `QSTASH_TOKEN` and `QSTASH_URL` (or defaults to EU region)
+- All workflow triggers are sent through the configured region
+- Incoming workflow requests are verified using default signing keys
+
+```bash
+# Single-region configuration (EU)
+QSTASH_URL="https://qstash.upstash.io"
+QSTASH_TOKEN="your_eu_token"
+QSTASH_CURRENT_SIGNING_KEY="your_eu_current_key"
+QSTASH_NEXT_SIGNING_KEY="your_eu_next_key"
+```
+
+### Multi-Region Mode
+
+When `QSTASH_REGION` is set to `US_EAST_1` or `EU_CENTRAL_1`, the SDK enables multi-region mode:
+
+- Uses region-specific credentials for the primary region
+- Automatically handles region detection for incoming workflow requests
+- Supports receiving workflow calls from multiple regions simultaneously
+
+```bash
+# Multi-region configuration with US as primary
+QSTASH_REGION="US_EAST_1"
+
+US_EAST_1_QSTASH_URL="https://qstash-us-east-1.upstash.io"
+US_EAST_1_QSTASH_TOKEN="your_us_token"
+US_EAST_1_QSTASH_CURRENT_SIGNING_KEY="your_us_current_key"
+US_EAST_1_QSTASH_NEXT_SIGNING_KEY="your_us_next_key"
+
+EU_CENTRAL_1_QSTASH_URL="https://qstash-eu-central-1.upstash.io"
+EU_CENTRAL_1_QSTASH_TOKEN="your_eu_token"
+EU_CENTRAL_1_QSTASH_CURRENT_SIGNING_KEY="your_eu_current_key"
+EU_CENTRAL_1_QSTASH_NEXT_SIGNING_KEY="your_eu_next_key"
+```
+
+<Note>
+Multi-region mode relies on environment variables being available via `process.env`. It won't work on platforms where `process.env` is not available, such as Cloudflare Workers.
+</Note>
+
+## SDK Requirements
+
+Multi-region support requires:
+- `@upstash/workflow` >= 1.1.0
+- `@upstash/qstash` >= 2.9.0
+
+Update your dependencies:
+
+```bash
+npm install @upstash/workflow@latest @upstash/qstash@latest
+```
+
+## Outgoing Requests (Triggering Workflows)
+
+### How the SDK Selects a Region
+
+For **outgoing requests** ([triggering workflows using the client](/workflow/basics/client/trigger)), the SDK determines which region to use based on the `QSTASH_REGION` environment variable:
+
+**Single-Region Mode** (`QSTASH_REGION` not set):
+1. SDK reads `QSTASH_TOKEN` and `QSTASH_URL`
+2. If `QSTASH_URL` is not set, defaults to EU region
+3. All workflow triggers are sent through this region
+
+**Multi-Region Mode** (`QSTASH_REGION` set):
+1. SDK reads the `QSTASH_REGION` value (e.g., `US_EAST_1`)
+2. Uses region-specific credentials: `{QSTASH_REGION}_QSTASH_TOKEN` and `{QSTASH_REGION}_QSTASH_URL`
+3. All workflow triggers are sent through the specified region
+4. Falls back to default credentials if region-specific ones are missing
+
+## Incoming Requests (Workflow Execution)
+
+### Understanding the Region Header
+
+QStash includes an `upstash-region` header with every workflow request to indicate the source region:
+
+```
+upstash-region: US-EAST-1
+```
+
+### How the SDK Verifies and Routes Incoming Requests
+
+The Workflow SDK has a sophisticated routing mechanism for incoming requests:
+
+**Single-Region Mode**:
+- Uses default signing keys: `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`
+- All workflow context operations use the default client
+- Ignores the `upstash-region` header
+
+**Multi-Region Mode**:
+
+For **incoming workflow requests**, the SDK routes based on the `upstash-region` header:
+
+1. Checks the `upstash-region` header from the incoming request
+2. Uses the **region-specific client** based on the header value
+3. Falls back to the `QSTASH_REGION` if no `upstash-region` header is present
+
+This means: If a workflow run was started in one region, all its steps will execute in that region
