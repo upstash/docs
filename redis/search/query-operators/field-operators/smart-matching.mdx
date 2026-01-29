@@ -1,0 +1,86 @@
+---
+title: Smart Matching
+---
+
+When you provide a value directly to a text field (without explicit operators like `$phrase` or `$fuzzy`),
+the search engine applies smart matching to find the most relevant results.
+This behavior varies based on the input format.
+
+### Single-Word Values
+
+For single-word searches, the engine runs multiple matching strategies and combines their scores:
+
+1. **Exact term match** (high boost): Documents containing the exact token score highest.
+
+2. **Fuzzy match** (no boost): Documents containing terms within Levenshtein distance 1
+   (with transpositions counting as a single edit) are included.
+
+3. **Fuzzy prefix match** (no boost): Documents containing terms that start with a fuzzy
+   variation of the search term are included. This handles incomplete words during typing.
+
+```
+{ name: "tabletop" }
+```
+
+This query returns results in roughly this order:
+- "**tabletop**" (exact match)
+- "**tabeltop**" (fuzzy match, 1 edit away)
+- "**tabeltopping**" (fuzzy prefix match, incomplete word with typos matches full term)
+
+### Multi-Word Values
+
+For multi-word searches, the engine runs multiple matching strategies simultaneously and combines
+their scores to surface the most relevant results:
+
+1. **Exact phrase match** (highest boost): Documents where all words appear adjacent and in order
+   score highest. Searching for `wireless headphones` ranks documents containing
+   "wireless headphones" as a phrase above those with the words scattered.
+
+2. **Exact phrase match with slop** (medium boost): Documents where all the query terms appear in
+   order but not necessarily adjacent, allowing for a small number of intervening words—receive a boost.
+   Searching for wireless headphones would rank documents containing `wireless bluetooth headphones`
+   above those where the words are far apart, but below an exact phrase match (`wireless headphones`).
+
+3. **Terms match** (medium boost): Documents containing all or some of the search terms, regardless of
+   position or order, receive a moderate score boost.
+
+3. **Fuzzy matching** (no boost): Documents containing terms similar to the search terms
+   (accounting for typos) are included with a lower score.
+
+4. **Fuzzy prefix on last word** (no boost): The last word is also matched with fuzzy prefix,
+   handling incomplete words during search-as-you-type scenarios.
+
+```
+{ description: "wireless headphon" }
+```
+
+This query returns results in roughly this order:
+- "Premium **wireless headphones** with noise cancellation" (phrase match with fuzzy prefix on last word)
+- "**Headphones** with **wireless** connectivity" (all terms present, different order)
+- "**Wireles headphone** with long battery" (fuzzy match for typos)
+
+### Double-Quoted Phrases
+
+Wrapping your search value in double quotes forces exact phrase matching.
+The words must appear adjacent and in the exact order specified.
+
+```
+{ description: "\"noise cancelling\"" }
+```
+
+This matches only documents containing "noise cancelling" as an exact phrase.
+It will NOT match:
+- "noise and cancelling" (words not adjacent)
+- "cancelling noise" (wrong order)
+- "noise-cancelling" (hyphenated, tokenized differently)
+
+This is useful when you need precise matching without the fuzzy tolerance of smart matching.
+
+### When to Use Explicit Operators
+
+Smart matching works well for general search scenarios, but consider using explicit operators when you need:
+
+- **Typo tolerance only**: Use [`$fuzzy`](./fuzzy) with specific distance settings
+- **Phrase with gaps**: Use [`$phrase`](./phrase) with the `slop` parameter
+- **Autocomplete**: Use [`$contains`](./contains) for prefix matching on the last term
+- **Pattern matching**: Use [`$regex`](./regex) for regular expression patterns
