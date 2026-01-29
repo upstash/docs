@@ -1,0 +1,124 @@
+---
+title: XACKDEL
+description: Acknowledge and delete stream entries atomically.
+---
+
+The `XACKDEL` command acknowledges and deletes stream entries atomically in a single operation. This is useful for consumer groups where you want to acknowledge message processing and remove the entries from the stream simultaneously.
+
+## Arguments
+
+<ParamField body="key" type="str" required>
+  The key of the stream.
+</ParamField>
+
+<ParamField body="group" type="str" required>
+  The consumer group name.
+</ParamField>
+
+<ParamField body="ids" type="*List[str]" required>
+  One or more stream entry IDs to acknowledge and delete.
+</ParamField>
+
+## Response
+
+<ResponseField type="int" required>
+  The number of messages successfully acknowledged and deleted.
+</ResponseField>
+
+<RequestExample>
+```py Single Entry
+# Acknowledge and delete a single entry
+result = redis.xackdel("mystream", "mygroup", "1638360173533-0")
+assert result == 1  # If entry was acknowledged and deleted
+```
+
+```py Multiple Entries
+# Acknowledge and delete multiple entries
+result = redis.xackdel(
+    "mystream",
+    "mygroup",
+    "1638360173533-0",
+    "1638360173533-1",
+    "1638360173533-2"
+)
+assert result == 3  # If all entries were acknowledged and deleted
+```
+
+```py Consumer Group Processing
+# Create a consumer group
+redis.xgroup_create("orders", "processors", "0", mkstream=True)
+
+# Add some orders to the stream
+redis.xadd("orders", "*", {"order_id": "123", "status": "pending"})
+redis.xadd("orders", "*", {"order_id": "124", "status": "pending"})
+
+# Read messages as a consumer
+messages = redis.xreadgroup(
+    "processors", "consumer1", {"orders": ">"},
+    count=2
+)
+
+# Process messages and acknowledge + delete them
+for stream_name, entries in messages:
+    for entry_id, fields in entries:
+        # Process the order...
+        print(f"Processing order {fields['order_id']}")
+        
+        # Acknowledge and delete the entry
+        redis.xackdel("orders", "processors", entry_id)
+```
+
+```py Batch Processing
+# Read pending messages
+pending = redis.xreadgroup(
+    "tasks", "worker1", {"task-queue": ">"},
+    count=10
+)
+
+if pending:
+    stream_name, entries = pending[0]
+    processed_ids = []
+    
+    # Process each task
+    for entry_id, fields in entries:
+        try:
+            # Process task...
+            print(f"Processing task {entry_id}")
+            processed_ids.append(entry_id)
+        except Exception as error:
+            print(f"Failed to process {entry_id}: {error}")
+    
+    # Acknowledge and delete all successfully processed tasks
+    if processed_ids:
+        result = redis.xackdel("task-queue", "tasks", *processed_ids)
+        print(f"Acknowledged and deleted {result} tasks")
+```
+</RequestExample>
+
+## Use Cases
+
+- **Message Queue Cleanup**: Process messages and remove them from the stream in one operation
+- **Event Processing**: Acknowledge event handling and clean up the stream
+- **Task Queue Management**: Complete tasks and remove them atomically
+- **Memory Optimization**: Reduce stream memory usage by removing processed entries
+
+## Comparison with XACK + XDEL
+
+Traditional approach (two operations):
+```py
+# Acknowledge the message
+redis.xack("mystream", "mygroup", "123-0")
+# Then delete it
+redis.xdel("mystream", "123-0")
+```
+
+With XACKDEL (single atomic operation):
+```py
+# Acknowledge and delete in one operation
+redis.xackdel("mystream", "mygroup", "123-0")
+```
+
+<Note>
+This command is available in Redis 8.2.0 and later. It combines XACK and XDEL into a single atomic operation, which is more efficient and ensures consistency.
+</Note>
+

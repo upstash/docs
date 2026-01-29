@@ -3,13 +3,25 @@ title: BITOP
 description: Perform bitwise operations between strings.
 ---
 
-The `BITOP` command in Redis is used to perform bitwise operations on multiple keys (or Redis strings) and store the result in a destination key. It is primarily used for performing logical AND, OR, XOR, and NOT operations on binary data stored in Redis.
+The `BITOP` command in Redis is used to perform bitwise operations on multiple keys (or Redis strings) and store the result in a destination key. It supports standard logical operations (AND, OR, XOR, NOT) and advanced operations (DIFF, DIFF1, ANDOR, ONE) for complex bit manipulation.
 
 
 ## Arguments
 
-<ParamField body="operation" type="AND | OR | XOR | NOT" required>
-   Specifies the type of bitwise operation to perform, which can be one of the following: `AND`, `OR`, `XOR`, or `NOT`.
+<ParamField body="operation" type="AND | OR | XOR | NOT | DIFF | DIFF1 | ANDOR | ONE" required>
+   Specifies the type of bitwise operation to perform:
+   
+   **Standard Operations:**
+   - `AND`: Bitwise AND
+   - `OR`: Bitwise OR
+   - `XOR`: Bitwise XOR
+   - `NOT`: Bitwise NOT
+   
+   **Advanced Operations (Redis 8.2+):**
+   - `DIFF`: A bit is set only if it's set in all source bitmaps
+   - `DIFF1`: A bit is set if it's set in the first key but not in any of the other keys
+   - `ANDOR`: A bit is set if it's set in X and also in one or more of Y1, Y2, ...
+   - `ONE`: A bit is set if it's set in exactly one source key
 </ParamField>
 
 <ParamField body="destinationKey" type="string" required>
@@ -27,7 +39,104 @@ The `BITOP` command in Redis is used to perform bitwise operations on multiple k
 </ResponseField>
 
 <RequestExample>
-```ts Example
- await redis.bitop("AND", "destKey", "sourceKey1", "sourceKey2");
+```ts Standard Operations
+// AND operation
+await redis.bitop("AND", "destKey", "sourceKey1", "sourceKey2");
+
+// OR operation
+await redis.bitop("OR", "destKey", "sourceKey1", "sourceKey2");
+
+// XOR operation
+await redis.bitop("XOR", "destKey", "sourceKey1", "sourceKey2");
+
+// NOT operation (only accepts one source key)
+await redis.bitop("NOT", "destKey", "sourceKey");
+```
+
+```ts DIFF Operation (Redis 8.2+)
+// Set bits in multiple bitmaps
+await redis.setbit("bitmap1", 0, 1);
+await redis.setbit("bitmap1", 1, 1);
+await redis.setbit("bitmap2", 1, 1);
+await redis.setbit("bitmap2", 2, 1);
+
+// DIFF: bits set in all sources
+await redis.bitop("DIFF", "result", "bitmap1", "bitmap2");
+// Result: bit 1 is set (only bit present in both)
+```
+
+```ts DIFF1 Operation (Redis 8.2+)
+// Set bits in bitmaps
+await redis.setbit("exclude", 0, 1);
+await redis.setbit("exclude", 1, 1);
+await redis.setbit("include1", 1, 1);
+await redis.setbit("include2", 2, 1);
+
+// DIFF1: bits in first key but not in others
+await redis.bitop("DIFF1", "result", "exclude", "include1", "include2");
+// Result: bit 0 is set (only in exclude, not in include1 or include2)
+```
+
+```ts ANDOR Operation (Redis 8.2+)
+// Set bits in bitmaps
+await redis.setbit("required", 0, 1);
+await redis.setbit("required", 1, 1);
+await redis.setbit("option1", 1, 1);
+await redis.setbit("option2", 2, 1);
+
+// ANDOR: bits in required AND in at least one option
+await redis.bitop("ANDOR", "result", "required", "option1", "option2");
+// Result: bit 1 is set (in required AND in option1)
+```
+
+```ts ONE Operation (Redis 8.2+)
+// Set bits in multiple sources
+await redis.setbit("source1", 0, 1);
+await redis.setbit("source1", 1, 1);
+await redis.setbit("source2", 1, 1);
+await redis.setbit("source2", 2, 1);
+await redis.setbit("source3", 2, 1);
+
+// ONE: bits set in exactly one source
+await redis.bitop("ONE", "result", "source1", "source2", "source3");
+// Result: bit 0 is set (only in source1)
 ```
 </RequestExample>
+
+## Advanced Operations Details (Redis 8.2+)
+
+### DIFF
+A bit in the destination is set if it is set in **all** source bitmaps. This is equivalent to the intersection of all source bitmaps.
+
+**Use Cases:**
+- Finding common features across multiple datasets
+- Identifying users present in all segments
+- Intersection of multiple filters
+
+### DIFF1
+A bit in the destination is set if it is set in the **first key** but **not in any of the other keys**. This finds bits unique to the first bitmap.
+
+**Use Cases:**
+- Finding exclusive features
+- Identifying users in one segment but not in others
+- Exclusion filtering
+
+### ANDOR
+A bit in the destination is set if it is set in **X and also in one or more of Y1, Y2, ...**. This implements "X AND (Y1 OR Y2 OR ...)" logic.
+
+**Use Cases:**
+- Required condition with optional alternatives
+- Users with a required attribute and at least one optional attribute
+- Complex filtering with mandatory and optional criteria
+
+### ONE
+A bit in the destination is set if it is set in **exactly one** of the source keys. This finds bits that are unique to a single source.
+
+**Use Cases:**
+- Finding unique occurrences
+- Identifying exclusive memberships
+- Detecting singular conditions across multiple sets
+
+<Note>
+The advanced operations (DIFF, DIFF1, ANDOR, ONE) are available in Redis 8.2.0 and later.
+</Note>

@@ -1,0 +1,132 @@
+---
+title: XACKDEL
+description: Acknowledge and delete stream entries atomically.
+---
+
+The `XACKDEL` command acknowledges and deletes stream entries atomically in a single operation. This is useful for consumer groups where you want to acknowledge message processing and remove the entries from the stream simultaneously.
+
+## Arguments
+
+<ParamField body="key" type="string" required>
+  The key of the stream.
+</ParamField>
+
+<ParamField body="group" type="string" required>
+  The consumer group name.
+</ParamField>
+
+<ParamField body="ids" type="...string[]" required>
+  One or more stream entry IDs to acknowledge and delete.
+</ParamField>
+
+## Response
+
+<ResponseField type="number" required>
+  The number of messages successfully acknowledged and deleted.
+</ResponseField>
+
+<RequestExample>
+```ts Single Entry
+// Acknowledge and delete a single entry
+const result = await redis.xackdel("mystream", "mygroup", "1638360173533-0");
+console.log(result); // 1 (if entry was acknowledged and deleted)
+```
+
+```ts Multiple Entries
+// Acknowledge and delete multiple entries
+const result = await redis.xackdel(
+  "mystream", 
+  "mygroup",
+  "1638360173533-0",
+  "1638360173533-1",
+  "1638360173533-2"
+);
+console.log(result); // 3 (if all entries were acknowledged and deleted)
+```
+
+```ts Consumer Group Processing
+// Create a consumer group
+await redis.xgroup("CREATE", "orders", "processors", "0", "MKSTREAM");
+
+// Add some orders to the stream
+await redis.xadd("orders", "*", { order_id: "123", status: "pending" });
+await redis.xadd("orders", "*", { order_id: "124", status: "pending" });
+
+// Read messages as a consumer
+const messages = await redis.xreadgroup(
+  "GROUP", "processors", "consumer1",
+  "COUNT", 2,
+  "STREAMS", "orders", ">"
+);
+
+// Process messages and acknowledge + delete them
+for (const [stream, entries] of messages) {
+  for (const [id, fields] of entries) {
+    // Process the order...
+    console.log(`Processing order ${fields.order_id}`);
+    
+    // Acknowledge and delete the entry
+    await redis.xackdel("orders", "processors", id);
+  }
+}
+```
+
+```ts Batch Processing
+// Read pending messages
+const pending = await redis.xreadgroup(
+  "GROUP", "tasks", "worker1",
+  "COUNT", 10,
+  "STREAMS", "task-queue", ">"
+);
+
+if (pending && pending.length > 0) {
+  const [stream, entries] = pending[0];
+  const processedIds: string[] = [];
+  
+  // Process each task
+  for (const [id, fields] of entries) {
+    try {
+      // Process task...
+      console.log(`Processing task ${id}`);
+      processedIds.push(id);
+    } catch (error) {
+      console.error(`Failed to process ${id}:`, error);
+    }
+  }
+  
+  // Acknowledge and delete all successfully processed tasks
+  if (processedIds.length > 0) {
+    const result = await redis.xackdel("task-queue", "tasks", ...processedIds);
+    console.log(`Acknowledged and deleted ${result} tasks`);
+  }
+}
+```
+</RequestExample>
+
+## Use Cases
+
+- **Message Queue Cleanup**: Process messages and remove them from the stream in one operation
+- **Event Processing**: Acknowledge event handling and clean up the stream
+- **Task Queue Management**: Complete tasks and remove them atomically
+- **Memory Optimization**: Reduce stream memory usage by removing processed entries
+
+## Comparison with XACK + XDEL
+
+Traditional approach (two operations):
+```ts
+// Acknowledge the message
+await redis.xack("mystream", "mygroup", "123-0");
+// Then delete it
+await redis.xdel("mystream", "123-0");
+```
+
+With XACKDEL (single atomic operation):
+```ts
+// Acknowledge and delete in one operation
+await redis.xackdel("mystream", "mygroup", "123-0");
+```
+
+<Note>
+This command is available in Redis 8.2.0 and later. It combines XACK and XDEL into a single atomic operation, which is more efficient and ensures consistency.
+</Note>
+
