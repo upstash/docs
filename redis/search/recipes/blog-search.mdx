@@ -1,0 +1,453 @@
+---
+title: Blog Search
+---
+
+This recipe demonstrates building a full-text blog search with highlighted snippets,
+phrase matching, and date filtering.
+
+### Schema Design
+
+The schema prioritizes full-text search capabilities with date-based filtering:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const articles = await redis.search.createIndex({
+  name: "articles",
+  dataType: "hash",
+  prefix: "article:",
+  schema: s.object({
+    // Full-text searchable content
+    title: s.string(),
+    body: s.string(),
+    summary: s.string(),
+
+    // Author name without stemming
+    author: s.string().noStem(),
+
+    // Date fields for filtering and sorting
+    publishedAt: s.date().fast(),
+    updatedAt: s.date().fast(),
+
+    // Status for draft/published filtering
+    published: s.boolean(),
+
+    // View count for popularity sorting
+    viewCount: s.number("U64"),
+  }),
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE articles ON HASH PREFIX 1 article: SCHEMA title TEXT body TEXT summary TEXT author TEXT NOSTEM publishedAt DATE FAST updatedAt DATE FAST published BOOL viewCount U64 FAST
+```
+</Tab>
+
+</Tabs>
+
+### Sample Data
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.hset("article:1", {
+  title: "Getting Started with Redis Search",
+  body: "Redis Search provides powerful full-text search capabilities directly in Redis. In this tutorial, we'll explore how to create indexes, define schemas, and write queries. Full-text search allows you to find documents based on their content rather than just their keys. This is essential for building search features in modern applications.",
+  summary: "Learn how to add full-text search to your Redis application with practical examples.",
+  author: "Jane Smith",
+  tags: "redis,search,tutorial",
+  publishedAt: "2024-03-15T10:00:00Z",
+  updatedAt: "2024-03-15T10:00:00Z",
+  published: "true",
+  viewCount: "1542",
+});
+
+await redis.hset("article:2", {
+  title: "Advanced Query Techniques for Search",
+  body: "Once you've mastered the basics, it's time to explore advanced query techniques. Boolean operators let you combine conditions with AND, OR, and NOT logic. Phrase matching ensures words appear in sequence. Fuzzy matching handles typos gracefully. Together, these features enable sophisticated search experiences.",
+  summary: "Master boolean operators, phrase matching, and fuzzy search for better results.",
+  author: "John Doe",
+  tags: "redis,search,advanced",
+  publishedAt: "2024-03-20T14:30:00Z",
+  updatedAt: "2024-03-22T09:15:00Z",
+  published: "true",
+  viewCount: "892",
+});
+
+await redis.hset("article:3", {
+  title: "Building Real-Time Search with Redis",
+  body: "Real-time search requires instant indexing and low-latency queries. Redis excels at both. When you write data to Redis, the search index updates automatically. Queries execute in milliseconds, even with millions of documents. This makes Redis ideal for applications where search results must reflect the latest data.",
+  summary: "Build search features that update instantly as data changes.",
+  author: "Jane Smith",
+  tags: "redis,real-time,performance",
+  publishedAt: "2024-03-25T08:00:00Z",
+  updatedAt: "2024-03-25T08:00:00Z",
+  published: "true",
+  viewCount: "2103",
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+HSET article:1 title "Getting Started with Redis Search" body "Redis Search provides powerful full-text search capabilities directly in Redis. In this tutorial, we will explore how to create indexes, define schemas, and write queries. Full-text search allows you to find documents based on their content rather than just their keys. This is essential for building search features in modern applications." summary "Learn how to add full-text search to your Redis application with practical examples." author "Jane Smith" tags "redis,search,tutorial" publishedAt "2024-03-15T10:00:00Z" updatedAt "2024-03-15T10:00:00Z" published "true" viewCount "1542"
+
+HSET article:2 title "Advanced Query Techniques for Search" body "Once you have mastered the basics, it is time to explore advanced query techniques. Boolean operators let you combine conditions with AND, OR, and NOT logic. Phrase matching ensures words appear in sequence. Fuzzy matching handles typos gracefully. Together, these features enable sophisticated search experiences." summary "Master boolean operators, phrase matching, and fuzzy search for better results." author "John Doe" tags "redis,search,advanced" publishedAt "2024-03-20T14:30:00Z" updatedAt "2024-03-22T09:15:00Z" published "true" viewCount "892"
+
+HSET article:3 title "Building Real-Time Search with Redis" body "Real-time search requires instant indexing and low-latency queries. Redis excels at both. When you write data to Redis, the search index updates automatically. Queries execute in milliseconds, even with millions of documents. This makes Redis ideal for applications where search results must reflect the latest data." summary "Build search features that update instantly as data changes." author "Jane Smith" tags "redis,real-time,performance" publishedAt "2024-03-25T08:00:00Z" updatedAt "2024-03-25T08:00:00Z" published "true" viewCount "2103"
+```
+</Tab>
+
+</Tabs>
+
+### Waiting for Indexing
+
+Index updates are batched for performance, so newly added data may not appear in search results immediately.
+Use `SEARCH.WAITINDEXING` to ensure all pending updates are processed before querying:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await articles.waitIndexing();
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.WAITINDEXING articles
+```
+</Tab>
+
+</Tabs>
+
+### Basic Full-Text Search
+
+Smart matching handles natural language queries across title and body:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Search across title and body
+const results = await articles.query({
+  filter: {
+    $should: [
+      { title: "redis search" },
+      { body: "redis search" },
+    ],
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY articles '{"$should": [{"title": "redis search"}, {"body": "redis search"}]}'
+```
+</Tab>
+
+</Tabs>
+
+### Search with Highlighted Results
+
+Highlighting shows users why each result matched their query:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Search with highlighted matches in title and body
+const results = await articles.query({
+  filter: {
+    $should: [
+      { title: "full-text search" },
+      { body: "full-text search" },
+    ],
+  },
+  highlight: {
+    fields: ["title", "body"],
+  },
+});
+
+// Results include highlighted text like:
+// "Redis Search provides powerful <em>full-text</em> <em>search</em> capabilities..."
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY articles '{"$should": [{"title": "full-text search"}, {"body": "full-text search"}]}' HIGHLIGHT FIELDS 2 title body
+```
+</Tab>
+
+</Tabs>
+
+### Custom Highlight Tags
+
+Use custom tags for different rendering contexts:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Markdown-style highlighting
+const results = await articles.query({
+  filter: {
+    body: "redis",
+  },
+  highlight: {
+    fields: ["body"],
+    preTag: "**",
+    postTag: "**",
+  },
+});
+
+// HTML with custom class
+const htmlResults = await articles.query({
+  filter: {
+    body: "redis",
+  },
+  highlight: {
+    fields: ["body"],
+    preTag: "<mark class='search-match'>",
+    postTag: "</mark>",
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Markdown-style highlighting
+SEARCH.QUERY articles '{"body": "redis"}' HIGHLIGHT FIELDS 1 body TAGS ** **
+
+# HTML with custom class
+SEARCH.QUERY articles '{"body": "redis"}' HIGHLIGHT FIELDS 1 body TAGS "<mark class='search-match'>" "</mark>"
+```
+</Tab>
+
+</Tabs>
+
+### Exact Phrase Search
+
+Find articles containing exact phrases using double quotes or the `$phrase` operator:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Using double quotes for exact phrase
+const results = await articles.query({
+  filter: {
+    body: "\"full-text search\"",
+  },
+});
+
+// Using $phrase operator
+const phraseResults = await articles.query({
+  filter: {
+    body: {
+      $phrase: "boolean operators",
+    },
+  },
+});
+
+// Phrase with slop (allow words between)
+// Matches "search results" or "search the results" or "search for better results"
+const slopResults = await articles.query({
+  filter: {
+    body: {
+      $phrase: {
+        value: "search results",
+        slop: 3,
+      },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Using double quotes for exact phrase
+SEARCH.QUERY articles '{"body": "\"full-text search\""}'
+
+# Using $phrase operator
+SEARCH.QUERY articles '{"body": {"$phrase": "boolean operators"}}'
+
+# Phrase with slop
+SEARCH.QUERY articles '{"body": {"$phrase": {"value": "search results", "slop": 3}}}'
+```
+</Tab>
+
+</Tabs>
+
+### Filter by Author
+
+Find all articles by a specific author:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// All articles by Jane Smith
+const results = await articles.query({
+  filter: {
+    author: "Jane Smith",
+    published: true,
+  },
+  orderBy: {
+    publishedAt: "DESC",
+  },
+});
+
+// Search within a specific author's articles
+const authorSearch = await articles.query({
+  filter: {
+    $must: {
+      author: "Jane Smith",
+      body: "redis",
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# All articles by Jane Smith
+SEARCH.QUERY articles '{"author": "Jane Smith", "published": true}' ORDERBY publishedAt DESC
+
+# Search within a specific author's articles
+SEARCH.QUERY articles '{"$must": {"author": "Jane Smith", "body": "redis"}}'
+```
+</Tab>
+
+</Tabs>
+
+### Date Range Queries
+
+Find articles published within a specific time period:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Articles from a specific month
+const marchArticles = await articles.query({
+  filter: {
+    publishedAt: {
+      $gte: "2026-01-01T00:00:00Z",
+      $lt: "2026-02-01T00:00:00Z",
+    },
+  },
+  orderBy: {
+    publishedAt: "DESC",
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Articles from a specific month
+SEARCH.QUERY articles '{"publishedAt": {"$gte": "2026-01-01T00:00:00Z", "$lt": "2026-02-01T00:00:00Z"}}' ORDERBY publishedAt DESC
+```
+</Tab>
+
+</Tabs>
+
+### Popular Articles
+
+Sort by view count to find popular content:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Most popular articles
+const popular = await articles.query({
+  filter: {
+    published: true,
+  },
+  orderBy: {
+    viewCount: "DESC",
+  },
+  limit: 10,
+});
+
+// Popular articles about a topic
+const popularRedis = await articles.query({
+  filter: {
+    $must: {
+      body: "redis",
+      published: true,
+    },
+  },
+  orderBy: {
+    viewCount: "DESC",
+  },
+  limit: 5,
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Most popular articles
+SEARCH.QUERY articles '{"published": true}' ORDERBY viewCount DESC LIMIT 10
+
+# Popular articles about a topic
+SEARCH.QUERY articles '{"$must": {"body": "redis", "published": true}}' ORDERBY viewCount DESC LIMIT 5
+```
+</Tab>
+
+</Tabs>
+
+### Boosting Title Matches
+
+Prioritize matches in the title over body text:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Boost title matches for better relevance
+const results = await articles.query({
+  filter: {
+    $should: [
+      { title: "redis search", $boost: 5.0 }, // Title matches score 5x higher
+      { body: "redis search" },
+      { summary: "redis search", $boost: 2.0 },
+    ],
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY articles '{"$should": [{"title": "redis search", "$boost": 5.0}, {"body": "redis search"}, {"summary": "redis search", "$boost": 2.0}]}'
+```
+</Tab>
+
+</Tabs>
+
+### Key Takeaways
+
+- Hash storage works well for flat document structures like blog articles
+- Use highlighting to show users why results matched their query
+- Boost title matches over body text for better relevance
+- Use `$phrase` with `slop` for flexible phrase matching
+- Combine date ranges with text search for temporal filtering
+- Mark `viewCount` as `FAST` to enable popularity sorting
+- Filter drafts using `published: true` in `$must` conditions
