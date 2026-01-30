@@ -19,17 +19,24 @@ The `XACKDEL` command acknowledges and deletes stream entries atomically in a si
   One or more stream entry IDs to acknowledge and delete.
 </ParamField>
 
+<ParamField body="option" type="Literal['KEEPREF', 'DELREF', 'ACKED', 'keepref', 'delref', 'acked']">
+  Optional deletion behavior (case-insensitive):
+  - `KEEPREF` or `keepref`: Keep consumer group references
+  - `DELREF` or `delref`: Delete consumer group references
+  - `ACKED` or `acked`: Only acknowledge messages (don't delete)
+</ParamField>
+
 ## Response
 
-<ResponseField type="int" required>
-  The number of messages successfully acknowledged and deleted.
+<ResponseField type="List[int]" required>
+  A list of integers indicating the result for each ID in the same order as provided.
 </ResponseField>
 
 <RequestExample>
 ```py Single Entry
 # Acknowledge and delete a single entry
 result = redis.xackdel("mystream", "mygroup", "1638360173533-0")
-assert result == 1  # If entry was acknowledged and deleted
+print(result)  # List of results for each ID
 ```
 
 ```py Multiple Entries
@@ -41,7 +48,46 @@ result = redis.xackdel(
     "1638360173533-1",
     "1638360173533-2"
 )
-assert result == 3  # If all entries were acknowledged and deleted
+print(result)  # List of results for each ID
+```
+
+```py With KEEPREF Option
+# Keep consumer group references when deleting entries
+# Useful when you want to delete entries but maintain group tracking
+result = redis.xackdel(
+    "mystream",
+    "mygroup",
+    "1638360173533-0",
+    "1638360173533-1",
+    option="KEEPREF"
+)
+print(result)  # List of results for each ID
+```
+
+```py With DELREF Option
+# Delete consumer group references along with entries
+# Useful for complete cleanup of processed messages
+result = redis.xackdel(
+    "mystream",
+    "mygroup",
+    "1638360173533-0",
+    "1638360173533-1",
+    option="DELREF"
+)
+print(result)  # List of results for each ID
+```
+
+```py With ACKED Option
+# Only acknowledge messages without deleting them
+# Useful when you want to mark as processed but keep for audit/debugging
+result = redis.xackdel(
+    "mystream",
+    "mygroup",
+    "1638360173533-0",
+    option="ACKED"
+)
+print(result)  # List of results for each ID
+# Entry remains in stream but is acknowledged
 ```
 
 ```py Consumer Group Processing
@@ -64,8 +110,11 @@ for stream_name, entries in messages:
         # Process the order...
         print(f"Processing order {fields['order_id']}")
         
-        # Acknowledge and delete the entry
+        # Acknowledge and delete the entry (default behavior)
         redis.xackdel("orders", "processors", entry_id)
+        
+        # Or use DELREF for complete cleanup
+        # redis.xackdel("orders", "processors", entry_id, option="DELREF")
 ```
 
 ```py Batch Processing
@@ -89,9 +138,30 @@ if pending:
             print(f"Failed to process {entry_id}: {error}")
     
     # Acknowledge and delete all successfully processed tasks
+    # Using DELREF to completely remove references
     if processed_ids:
-        result = redis.xackdel("task-queue", "tasks", *processed_ids)
-        print(f"Acknowledged and deleted {result} tasks")
+        result = redis.xackdel("task-queue", "tasks", *processed_ids, option="DELREF")
+        print(f"Results: {result}")  # List of results for each ID
+```
+
+```py Audit Mode with ACKED
+# Process messages but keep them for audit/debugging purposes
+messages = redis.xreadgroup(
+    "audit", "auditor1", {"events": ">"},
+    count=5
+)
+
+for stream_name, entries in messages:
+    entry_ids = [entry_id for entry_id, _ in entries]
+    
+    # Process and acknowledge but don't delete
+    for entry_id, fields in entries:
+        # Audit the event...
+        print(f"Auditing event {fields}")
+    
+    # Acknowledge without deleting (keep for audit trail)
+    result = redis.xackdel("events", "audit", *entry_ids, option="ACKED")
+    print(f"Acknowledged {len(result)} events (kept in stream)")
 ```
 </RequestExample>
 
@@ -114,8 +184,12 @@ redis.xdel("mystream", "123-0")
 
 With XACKDEL (single atomic operation):
 ```py
-# Acknowledge and delete in one operation
+# Acknowledge and delete in one operation (default)
 redis.xackdel("mystream", "mygroup", "123-0")
+
+# With options for fine-grained control
+redis.xackdel("mystream", "mygroup", "123-0", option="DELREF")  # Complete cleanup
+redis.xackdel("mystream", "mygroup", "123-0", option="ACKED")   # Acknowledge only
 ```
 
 <Note>

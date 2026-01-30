@@ -11,14 +11,24 @@ The `HSETEX` command sets the specified fields with their values and optionally 
   The key of the hash.
 </ParamField>
 
-<ParamField body="values" type="Dict[str, Any]" required>
-  A dictionary of fields and their values to set.
+<ParamField body="field" type="str">
+  A single field name to set. Use with `value` parameter.
 </ParamField>
 
-<ParamField body="conditional" type="str">
-  Conditional setting options:
-  - `"FNX"`: Only set fields if the hash does not exist
-  - `"FXX"`: Only set fields if the hash already exists
+<ParamField body="value" type="Any">
+  A single value to set. Use with `field` parameter.
+</ParamField>
+
+<ParamField body="values" type="Dict[str, Any]">
+  A dictionary of fields and their values to set. Either use `field`/`value` or `values`, but not both.
+</ParamField>
+
+<ParamField body="fnx" type="bool">
+  Only set fields if the hash does not exist.
+</ParamField>
+
+<ParamField body="fxx" type="bool">
+  Only set fields if the hash already exists.
 </ParamField>
 
 <ParamField body="ex" type="int">
@@ -37,14 +47,24 @@ The `HSETEX` command sets the specified fields with their values and optionally 
   Set expiration as Unix timestamp in milliseconds.
 </ParamField>
 
+<ParamField body="keepttl" type="bool">
+  Retain the existing time to live (TTL) associated with the hash key when setting fields. If the hash has an expiration, it will be preserved.
+</ParamField>
+
 ## Response
 
 <ResponseField type="int" required>
-  The number of fields that were added.
+  0 if no fields were set, 1 if all the fields were set.
 </ResponseField>
 
 <RequestExample>
-```py Basic Example
+```py Single Field
+# Set a single field with expiration
+result = redis.hsetex("myhash", "field1", "Hello", ex=60)
+assert result == 1
+```
+
+```py Multiple Fields
 # Set fields with 1 hour expiration
 result = redis.hsetex(
     "user:123",
@@ -59,7 +79,7 @@ assert result == 2
 result = redis.hsetex(
     "user:456",
     values={"name": "Jane", "age": "25"},
-    conditional="FNX"
+    fnx=True
 )
 assert result == 2
 
@@ -67,7 +87,7 @@ assert result == 2
 result = redis.hsetex(
     "user:456",
     values={"email": "jane@example.com"},
-    conditional="FNX"
+    fnx=True
 )
 assert result == 0
 ```
@@ -80,7 +100,7 @@ redis.hset("session:abc", "token", "xyz")
 result = redis.hsetex(
     "session:abc",
     values={"user": "john"},
-    conditional="FXX"
+    fxx=True
 )
 assert result == 1  # Hash exists, field added
 
@@ -88,7 +108,7 @@ assert result == 1  # Hash exists, field added
 result = redis.hsetex(
     "session:nonexistent",
     values={"user": "jane"},
-    conditional="FXX"
+    fxx=True
 )
 assert result == 0  # Hash doesn't exist
 ```
@@ -142,10 +162,23 @@ result = redis.hsetex(
         "email": "alice@example.com",
         "created": str(int(time.time()))
     },
-    conditional="FNX",
+    fnx=True,
     ex=3600
 )
 assert result == 3
+```
+
+```py With KEEPTTL
+# First set fields with expiration
+redis.hsetex("cache:data", values={"value": "cached"}, ex=300)
+
+# Later update fields while retaining the existing TTL
+result = redis.hsetex("cache:data", values={"updated": "yes"}, keepttl=True)
+assert result == 1
+
+# Verify TTL is still 300 seconds (or less if time passed)
+ttl = redis.ttl("cache:data")
+assert ttl > 0 and ttl <= 300  # TTL was retained
 ```
 
 ```py Without Options
