@@ -1,0 +1,401 @@
+---
+title: Indices
+---
+
+An index is a data structure that enables **fast full-text search and filtering across your Redis data**. Without an index, searching requires scanning every key in your database: an operation that becomes very slow as your data grows.
+
+When you create a search index, Upstash Redis builds an optimized lookup structure for the schema you specify. This allows queries to find matching documents in milliseconds, regardless of dataset size. The index automatically stays in sync with your data: any keys matching the index prefix are indexed when created, updated when modified, and removed from the index when deleted.
+
+You define an index once by specifying:
+
+- A **name** to identify the index
+- A **prefix** pattern to determine which keys to track (e.g., `user:`)
+- A **schema** describing which fields to index and their types
+
+---
+
+### Creating an Index
+
+An index is identified by its name, which must be a unique key in Redis. Each index works with a single key type (JSON, hash, or string).
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+// Basic index on JSON data
+const users = await redis.search.createIndex({
+  name: "users",
+  dataType: "json",
+  prefix: "user:",
+  schema: s.object({
+    name: s.string(),
+    email: s.string(),
+    age: s.number(),
+  }),
+});
+
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Basic index on hash data
+SEARCH.CREATE users on JSON PREFIX 1 user: SCHEMA name TEXT email TEXT age u64
+```
+
+</Tab>
+
+</Tabs>
+
+**We only create an index once**, for example inside of a script we run once. We do not recommend creating an index at runtime, for example inside of a serverless function.
+
+- For **JSON** indices, an index field can be specified for fields on various nested levels.
+
+- For **hash** indices, an index field can be specified for fields. As hash fields cannot have
+  nesting on their own, for this kind of indices, only top-level schema fields can be used.
+
+- For **string** indices, indexed keys must be valid JSON strings. A field on any nesting level
+  can be indexed, similar to JSON indices.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+const redis = Redis.fromEnv();
+
+// String index with nested schema fields
+const comments = await redis.search.createIndex({
+  name: "comments",
+  dataType: "string",
+  prefix: "comment:",
+  schema: s.object({
+    user: s.object({
+      name: s.string(),
+      email: s.string().noTokenize(),
+    }),
+    comment: s.string(),
+    upvotes: s.number(),
+    commentedAt: s.date().fast(),
+  }),
+});
+
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# String index with nested schema fields
+SEARCH.CREATE comments ON STRING PREFIX 1 comment: SCHEMA user.name TEXT user.email TEXT NOTOKENIZE comment TEXT upvotes U64 FAST commentedAt DATE FAST
+```
+
+</Tab>
+
+</Tabs>
+
+It is possible to define an index for more than one prefix. However, there are some rules concerning the usage of
+multiple prefixes:
+
+- Prefixes must not contain duplicates.
+- No prefix should cover another prefix (e.g., `user:` and `user:admin:` are not allowed together).
+- Multiple distinct prefixes are allowed (e.g., `article:` and `blog:` are valid together).
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+const redis = Redis.fromEnv();
+
+// JSON index with multiple prefixes
+const articles = await redis.search.createIndex({
+  name: "articles",
+  dataType: "json",
+  prefix: ["article:", "blog:", "news:"],
+  schema: s.object({
+    title: s.string(),
+    body: s.string(),
+    author: s.string().noStem(),
+    publishedAt: s.date().fast(),
+    viewCount: s.number(),
+  }),
+});
+
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# String index with nested schema fields
+SEARCH.CREATE comments ON STRING PREFIX 1 comment: SCHEMA user.name TEXT user.email TEXT NOTOKENIZE comment TEXT upvotes U64 FAST commentedAt DATE FAST
+```
+
+</Tab>
+
+</Tabs>
+
+By default, when an index is created, all existing keys matching the specified type and prefixes are scanned and indexed.
+Use `SKIPINITIALSCAN` to defer indexing, which is useful for large datasets where you want to start fresh or handle
+existing data differently.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Skipping initial scan and indexing of keys with SKIPINITIALSCAN
+// TODO: TS SDK does not support SKIPINITIALSCAN for now
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Skipping initial scan and indexing of keys with SKIPINITIALSCAN
+SEARCH.CREATE profiles ON STRING PREFIX 1 profiles: SKIPINITIALSCAN SCHEMA name TEXT
+```
+</Tab>
+
+</Tabs>
+
+It is possible to specify the language of the text fields, so that an appropriate tokenizer
+and stemmer can be used. For more on tokenization and stemming, see the
+[Text Field Options](./schema-definition#text-field-options) section.
+
+When not specified, language defaults to `english`.
+
+Currently, the following languages are supported:
+
+- `english`
+- `arabic`
+- `danish`
+- `dutch`
+- `finnish`
+- `french`
+- `german`
+- `greek`
+- `hungarian`
+- `italian`
+- `norwegian`
+- `portuguese`
+- `romanian`
+- `russian`
+- `spanish`
+- `swedish`
+- `tamil`
+- `turkish`
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+// Turkish language index
+const addresses = await redis.search.createIndex({
+  name: "addresses",
+  dataType: "json",
+  prefix: "address:",
+  language: "turkish",
+  schema: s.object({
+    address: s.string().noStem(),
+    description: s.string(),
+  }),
+});
+
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Turkish language index
+SEARCH.CREATE addresses ON JSON PREFIX 1 address: LANGUAGE turkish SCHEMA address TEXT NOSTEM description TEXT
+```
+
+</Tab>
+
+</Tabs>
+
+Finally, it is possible safely create an index only if it does not exist, using
+the `EXISTOK` option.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Safe creation with EXISTOK
+// TODO: TS SDK does not support EXISTSOK for now
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Safe creation with EXISTOK
+SEARCH.CREATE cache ON STRING PREFIX 1 cache: EXISTSOK SCHEMA content TEXT
+```
+</Tab>
+
+</Tabs>
+
+For the schema definition of the index, see the [Schema Definition](./schema-definition) section.
+
+### Getting an Index Client
+
+The `redis.search.index()` method creates a client for an existing index without making a Redis call. This is useful when you want to query or manage an index that already exists, without the overhead of creating it.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+// Get a client for an existing index
+const users = redis.search.index({ name: "users" });
+
+// Query the index
+const results = await users.query({
+  filter: { name: "John" },
+});
+
+// With schema for type safety
+const userSchema = s.object({
+  name: s.string(),
+  email: s.string(),
+  age: s.number(),
+});
+
+// Note: The schema parameter provides TypeScript type safety
+// for queries and results. It does not validate against the
+// server-side index schema.
+const typedUsers = redis.search.index({ name: "users", schema: userSchema });
+
+// Now queries are type-safe
+const typedResults = await typedUsers.query({
+  filter: { name: "John" },
+});
+
+```
+</Tab>
+
+</Tabs>
+
+This method is different from `redis.search.createIndex()` which:
+- Creates a new index if it doesn't exist
+- Makes a Redis call to create the index
+- Returns an error if the index already exists (unless `EXISTOK` is used)
+
+Use `redis.search.index()` when:
+- The index already exists
+- You want to avoid unnecessary Redis calls
+- You're querying or managing an existing index
+
+Use `redis.search.createIndex()` when:
+- You need to create a new index
+- You're setting up your application for the first time
+
+### Describing an Index
+
+The `SEARCH.DESCRIBE` command returns detailed information about an index.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+let description = await index.describe();
+console.log(description);
+```
+
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.DESCRIBE index
+```
+</Tab>
+
+</Tabs>
+
+On response, the following information is returned:
+
+| Field      | Description                              |
+| ---------- | ---------------------------------------- |
+| `name`     | Index name                               |
+| `type`     | Data type (`STRING`, `HASH`, or `JSON`)  |
+| `prefixes` | List of tracked key prefixes             |
+| `language` | Stemming language                        |
+| `schema`   | Field definitions with types and options |
+
+### Dropping an Index
+
+The `SEARCH.DROP` command removes an index and stops tracking associated keys.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await index.drop();
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.DROP index
+```
+</Tab>
+
+</Tabs>
+
+Note that, dropping an index only removes the search index. The underlying Redis keys are not affected.
+
+### Waiting for Indexing
+
+For adequate performance, index updates are batched and committed periodically. This means recent writes may not
+immediately appear in search results. Use `SEARCH.WAITINDEXING` when you need to ensure queries reflect recent changes.
+
+The `SEARCH.WAITINDEXING` command blocks until all pending index updates are processed and visible to queries.
+We recommend **not to** call this command each time you perform a write operation on the index. For optimal indexing and
+query performance, batch updates are necessary.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Add new document
+await redis.json.set("product:new", "$", { name: "New Product", price: 49.99 });
+
+// Ensure it's searchable before querying
+await index.waitIndexing();
+
+// Now the query will include the new product
+const products = await index.query({
+  filter: { name: "new" },
+});
+
+for (const product of products) {
+  console.log(product);
+}
+
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Add new document
+JSON.SET product:new $ '{"name": "New Product", "price": 49.99}'
+
+# Ensure it's searchable before querying
+SEARCH.WAITINDEXING products
+
+# Now the query will include the new product
+SEARCH.QUERY products '{"name": "new"}'
+```
+
+</Tab>
+
+</Tabs>

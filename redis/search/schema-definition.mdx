@@ -1,0 +1,283 @@
+---
+title: Schemas
+---
+
+Every search index requires a schema that defines the structure of searchable documents. The schema allows for type-safety and allows us to optimize your data for very fast queries.
+
+We provide a schema builder utility called `s` that makes it easy to define a schema.
+
+```ts
+import { Redis, s } from "@upstash/redis"
+```
+
+### Basic Usage
+
+The schema builder provides methods for each field type:
+
+```ts
+const schema = s.object({
+  name: s.string(),
+  age: s.number(),
+  createdAt: s.date(),
+  active: s.boolean(),
+})
+```
+
+The schema builder also supports chaining field options. We'll see what `noTokenize()` and `noStem()` are used for in the section below.
+
+```ts {2,3}
+const schema = s.object({
+  sku: s.string().noTokenize(),
+  brand: s.string().noStem(),
+  price: s.number(),
+})
+```
+
+### Nested Objects
+
+The schema builder supports nested object structures:
+
+```ts
+const schema = s.object({
+  title: s.string(),
+  author: s.object({
+    name: s.string(),
+    email: s.string(),
+  }),
+  stats: s.object({
+    views: s.number(),
+    likes: s.number(),
+  }),
+})
+```
+
+### Where to use the Schema
+
+We need the schema when creating or querying an index:
+
+```ts
+import { Redis, s } from "@upstash/redis"
+
+const redis = Redis.fromEnv()
+
+const schema = s.object({
+  name: s.string(),
+  description: s.string(),
+  category: s.string().noTokenize(),
+  price: s.number("F64"),
+  inStock: s.boolean(),
+})
+
+const products = await redis.search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema,
+})
+```
+
+---
+
+## Tokenization & Stemming
+
+When you store text in a search index, it goes through two transformations: **Tokenization** and **Stemming**. By default, text fields are both tokenized and stemmed. Understanding these helps you configure fields correctly.
+
+### Tokenization
+
+Tokenization splits text into individual searchable words (tokens) by breaking on spaces and punctuation.
+
+| Original Text        | Tokens                       |
+| -------------------- | ---------------------------- |
+| `"hello world"`      | `["hello", "world"]`         |
+| `"user@example.com"` | `["user", "example", "com"]` |
+| `"SKU-12345-BLK"`    | `["SKU", "12345", "BLK"]`    |
+
+This is great for natural language because searching for "world" will match "hello world". But it breaks values that should stay together.
+
+**When to disable tokenization** with `.noTokenize()`:
+
+- Email addresses (`user@example.com`)
+- URLs (`https://example.com/page`)
+- Product codes and SKUs (`SKU-12345-BLK`)
+- UUIDs (`550e8400-e29b-41d4-a716-446655440000`)
+- Category slugs (`electronics/phones/android`)
+
+```ts
+const schema = s.object({
+  title: s.string(),
+  email: s.string().noTokenize(),
+  sku: s.string().noTokenize(),
+})
+```
+
+---
+
+### Stemming
+
+Stemming reduces words to their root form so different variations match the same search.
+
+| Word                                   | Stemmed Form |
+| -------------------------------------- | ------------ |
+| `"running"`, `"runs"`, `"runner"`      | `"run"`      |
+| `"studies"`, `"studying"`, `"studied"` | `"studi"`    |
+| `"experiments"`, `"experimenting"`     | `"experi"`   |
+
+This way, a user searching for "running shoes" will also find "run shoes" and "runner shoes".
+
+**When to disable stemming** with `.noStem()`:
+
+- Brand names (`Nike` shouldn't match `Nik`)
+- Proper nouns and names (`Johnson` shouldn't become `John`)
+- Technical terms (`React` shouldn't match `Reac`)
+- When using regex patterns (stemmed text won't match your expected patterns)
+
+```ts
+const schema = s.object({
+  description: s.string(),
+  brand: s.string().noStem(),
+  authorName: s.string().noStem(),
+})
+```
+
+---
+
+## Aliased Fields
+
+Aliased fields allow you to index the same document field multiple times with different settings,
+or to create shorter names for complex nested paths.
+Use the `FROM` keyword to specify which document field the alias points to.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const products = await redis.search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema: s.object({
+    description: s.string(),
+    descriptionExact: s.string().noStem().from("description"),
+    authorName: s.string().from("metadata.author.displayName"),
+  }),
+});
+```
+
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Index 'description' twice with different settings
+# Create a short alias for a deeply nested field
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA description TEXT descriptionExact TEXT FROM description NOSTEM authorName TEXT FROM metadata.author.displayName
+```
+
+</Tab>
+
+</Tabs>
+
+Common use cases for aliased fields:
+
+- **Same field with different settings**: Index a text field both with and without stemming. Use the stemmed version for general searches and the non-stemmed version for exact matching or regex queries.
+- **Shorter query paths**: Create concise aliases for deeply nested fields like `metadata.author.displayName` to simplify queries.
+
+<Note>
+When using aliased fields:
+- Use the **alias name** in queries and highlighting (e.g., `descriptionExact`, `authorName`)
+- Use the **actual field name** when selecting fields to return (e.g., `description`, `metadata.author.displayName`)
+
+This is because aliasing happens at the index level and does not modify the underlying documents.
+
+</Note>
+
+---
+
+## Non-Indexed Fields
+
+Documents don't need to match the schema exactly:
+
+- **Extra fields**: Fields in your document that aren't defined in the schema are simply ignored. They won't be indexed or searchable.
+- **Missing fields**: If a document is missing a field defined in the schema, that document won't appear in search results that filter on the missing field.
+
+---
+
+## Schema Examples
+
+**E-commerce product schema**
+
+<Tabs>
+
+<Tab title="TypeScript">
+
+```ts
+import { Redis, s } from "@upstash/redis"
+
+const redis = Redis.fromEnv()
+
+const products = await redis.search.createIndex({
+  name: "products",
+  dataType: "hash",
+  prefix: "product:",
+  schema: s.object({
+    name: s.string(),
+    sku: s.string().noTokenize(), // Exact-match SKU codes
+    brand: s.string().noStem(), // Brand names without stemming
+    description: s.string(),
+    price: s.number("F64"), // Sortable (F64) price
+    rating: s.number("F64"), // Sortable (F64) rating
+    reviewCount: s.number("U64"),  // Non-sortable (U64) review count
+    inStock: s.boolean(),
+  }),
+})
+```
+
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE products ON HASH PREFIX 1 product: SCHEMA name TEXT sku TEXT NOTOKENIZE brand TEXT NOSTEM description TEXT price F64 FAST rating F64 FAST reviewCount U64 inStock BOOL FAST
+```
+</Tab>
+
+</Tabs>
+
+**User directory schema**
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const users = await redis.search.createIndex({
+  name: "users",
+  dataType: "json",
+  prefix: "user:",
+  schema: s.object({
+    username: s.string().noTokenize(),
+    profile: s.object({
+      displayName: s.string().noStem(),
+      bio: s.string(),
+      email: s.string().noTokenize(),
+    }),
+    createdAt: s.date().fast(),
+    verified: s.boolean(),
+  }),
+});
+```
+
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE users ON JSON PREFIX 1 users: SCHEMA username TEXT NOTOKENIZE profile.displayName TEXT NOSTEM profile.bio TEXT contact.email TEXT NOTOKENIZE createdAt DATE FAST verified BOOL
+```
+</Tab>
+
+</Tabs>
