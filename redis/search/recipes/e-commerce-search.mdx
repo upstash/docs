@@ -1,0 +1,446 @@
+---
+title: E-commerce Search
+---
+
+This recipe demonstrates building a product catalog search with filtering, sorting,
+typo tolerance, and relevance boosting.
+
+### Schema Design
+
+The schema balances searchability with filtering and sorting capabilities:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const products = await redis.search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema: s.object({
+    // Full-text searchable fields
+    name: s.string(),
+    description: s.string(),
+    brand: s.string().noStem(), // "Nike" shouldn't stem to "Nik"
+
+    // Exact-match category for filtering
+    category: s.string().noTokenize(), // "Electronics > Audio" as single token
+
+    // Numeric fields for filtering and sorting
+    price: s.number("F64"), // Enable sorting by price
+    rating: s.number("F64"), // Enable sorting by rating
+    reviewCount: s.number("U64"),
+
+    // Boolean for stock filtering
+    inStock: s.boolean(),
+
+    // Date for "new arrivals" queries
+    createdAt: s.date().fast(),
+  }),
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description TEXT brand TEXT NOSTEM category TEXT NOTOKENIZE price F64 FAST rating F64 FAST reviewCount U64 inStock BOOL createdAt DATE FAST
+```
+</Tab>
+
+</Tabs>
+
+### Sample Data
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.json.set("product:1", "$", {
+  name: "Sony WH-1000XM5 Wireless Headphones",
+  description: "Industry-leading noise cancellation with premium sound quality. 30-hour battery life with quick charging.",
+  brand: "Sony",
+  category: "Electronics > Audio > Headphones",
+  price: 349.99,
+  rating: 4.8,
+  reviewCount: 2847,
+  inStock: true,
+  createdAt: "2024-01-15T00:00:00Z",
+});
+
+await redis.json.set("product:2", "$", {
+  name: "Apple AirPods Pro 2nd Generation",
+  description: "Active noise cancellation, transparency mode, and spatial audio. MagSafe charging case included.",
+  brand: "Apple",
+  category: "Electronics > Audio > Earbuds",
+  price: 249.99,
+  rating: 4.7,
+  reviewCount: 5621,
+  inStock: true,
+  createdAt: "2024-02-20T00:00:00Z",
+});
+
+await redis.json.set("product:3", "$", {
+  name: "Bose QuietComfort Ultra Headphones",
+  description: "World-class noise cancellation with immersive spatial audio. Luxurious comfort for all-day wear.",
+  brand: "Bose",
+  category: "Electronics > Audio > Headphones",
+  price: 429.99,
+  rating: 4.6,
+  reviewCount: 1253,
+  inStock: false,
+  createdAt: "2024-03-10T00:00:00Z",
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+JSON.SET product:1 $ '{"name": "Sony WH-1000XM5 Wireless Headphones", "description": "Industry-leading noise cancellation with premium sound quality. 30-hour battery life with quick charging.", "brand": "Sony", "category": "Electronics > Audio > Headphones", "price": 349.99, "rating": 4.8, "reviewCount": 2847, "inStock": true, "createdAt": "2024-01-15T00:00:00Z"}'
+
+JSON.SET product:2 $ '{"name": "Apple AirPods Pro 2nd Generation", "description": "Active noise cancellation, transparency mode, and spatial audio. MagSafe charging case included.", "brand": "Apple", "category": "Electronics > Audio > Earbuds", "price": 249.99, "rating": 4.7, "reviewCount": 5621, "inStock": true, "createdAt": "2024-02-20T00:00:00Z"}'
+
+JSON.SET product:3 $ '{"name": "Bose QuietComfort Ultra Headphones", "description": "World-class noise cancellation with immersive spatial audio. Luxurious comfort for all-day wear.", "brand": "Bose", "category": "Electronics > Audio > Headphones", "price": 429.99, "rating": 4.6, "reviewCount": 1253, "inStock": false, "createdAt": "2024-03-10T00:00:00Z"}'
+```
+</Tab>
+
+</Tabs>
+
+### Waiting for Indexing
+
+Index updates are batched for performance, so newly added data may not appear in search results immediately.
+Use `SEARCH.WAITINDEXING` to ensure all pending updates are processed before querying:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Wait for all pending index updates to complete
+await products.waitIndexing();
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.WAITINDEXING products
+```
+</Tab>
+
+</Tabs>
+
+This is especially useful in scripts or tests where you need to query immediately after inserting data.
+In production, the slight indexing delay is usually acceptable and calling this after every write is not recommended.
+
+### Basic Product Search
+
+The simplest search uses smart matching for natural language queries:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// User types "wireless headphones" in search box
+const results = await products.query({
+  filter: {
+    name: "wireless headphones",
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"name": "wireless headphones"}'
+```
+</Tab>
+
+</Tabs>
+
+Smart matching automatically handles this by:
+1. Prioritizing exact phrase matches ("wireless headphones" adjacent)
+2. Including documents with both terms in any order
+3. Finding fuzzy matches for typos
+
+### Search with Typo Tolerance
+
+Users often misspell product names. Use fuzzy matching to handle typos:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// User types "wireles headphons" (two typos)
+const results = await products.query({
+  filter: {
+    $should: [
+      { name: { $fuzzy: "wireles" } },
+      { name: { $fuzzy: "headphons" } },
+    ],
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$should": [{"name": {"$fuzzy": "wireles"}}, {"name": {"$fuzzy": "headphons"}}]}'
+```
+</Tab>
+
+</Tabs>
+
+### Filtered Search
+
+Combine text search with filters for category, price, and availability:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Search within a category, price range, and only in-stock items
+const results = await products.query({
+  filter: {
+    $must: {
+      description: "noise cancellation",
+      category: "Electronics > Audio > Headphones",
+      inStock: true,
+      price: { $gte: 200, $lte: 400 },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$must": {"description": "noise cancellation", "category": "Electronics > Audio > Headphones", "inStock": true, "price": {"$gte": 200, "$lte": 400}}}'
+```
+</Tab>
+
+</Tabs>
+
+### Boosting Premium Results
+
+Promote featured products or preferred brands using score boosting:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Search for headphones, boosting Sony and in-stock items
+const results = await products.query({
+  filter: {
+    $must: {
+      name: "headphones",
+    },
+    $should: [
+      { brand: "Sony", $boost: 5.0 }, // Preferred brand
+      { inStock: true, $boost: 10.0 }, // Strongly prefer in-stock
+      { description: "premium", $boost: 2.0 },
+    ],
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$must": {"name": "headphones"}, "$should": [{"brand": "Sony", "$boost": 5.0}, {"inStock": true, "$boost": 10.0}, {"description": "premium", "$boost": 2.0}]}'
+```
+</Tab>
+
+</Tabs>
+
+### Sorting and Pagination
+
+Sort results by price or rating, with pagination for large result sets:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Page 1: Top-rated headphones, 20 per page
+const page1 = await products.query({
+  filter: {
+    category: "Electronics > Audio > Headphones",
+  },
+  orderBy: {
+    rating: "DESC",
+  },
+  limit: 20,
+});
+
+// Page 2
+const page2 = await products.query({
+  filter: {
+    category: "Electronics > Audio > Headphones",
+  },
+  orderBy: {
+    rating: "DESC",
+  },
+  limit: 20,
+  offset: 20,
+});
+
+// Sort by price, cheapest first
+const cheapest = await products.query({
+  filter: {
+    name: "headphones",
+    inStock: true,
+  },
+  orderBy: {
+    price: "ASC",
+  },
+  limit: 10,
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Page 1: Top-rated headphones
+SEARCH.QUERY products '{"category": "Electronics > Audio > Headphones"}' ORDERBY rating DESC LIMIT 20
+
+# Page 2
+SEARCH.QUERY products '{"category": "Electronics > Audio > Headphones"}' ORDERBY rating DESC LIMIT 20 OFFSET 20
+
+# Sort by price, cheapest first
+SEARCH.QUERY products '{"name": "headphones", "inStock": true}' ORDERBY price ASC LIMIT 10
+```
+</Tab>
+
+</Tabs>
+
+### New Arrivals
+
+Find recently added products using date range queries:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Products added after a specific date
+const newArrivals = await products.query({
+  filter: {
+    createdAt: { $gte: "2026-01-01T00:00:00Z" },
+    inStock: true,
+  },
+  orderBy: {
+    createdAt: "DESC",
+  },
+  limit: 10,
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Products added after a specific date
+SEARCH.QUERY products '{"createdAt": {"$gte": "2026-01-01T00:00:00Z"}, "inStock": true}' ORDERBY createdAt DESC LIMIT 10
+```
+</Tab>
+
+</Tabs>
+
+### Excluding Out-of-Stock Items
+
+Use `$mustNot` to filter out unavailable products:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Search results excluding out-of-stock items
+const results = await products.query({
+  filter: {
+    $must: {
+      name: "headphones",
+    },
+    $mustNot: {
+      inStock: false,
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$must": {"name": "headphones"}, "$mustNot": {"inStock": false}}'
+```
+</Tab>
+
+</Tabs>
+
+### Multi-Category Search
+
+Search across multiple categories using `$in`:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Find products in either headphones or earbuds categories
+const results = await products.query({
+  filter: {
+    $must: {
+      description: "noise cancellation",
+      category: {
+        $in: [
+          "Electronics > Audio > Headphones",
+          "Electronics > Audio > Earbuds",
+        ],
+      },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$must": {"description": "noise cancellation", "category": {"$in": ["Electronics > Audio > Headphones", "Electronics > Audio > Earbuds"]}}}'
+```
+</Tab>
+
+</Tabs>
+
+### Counting Results
+
+Use `SEARCH.COUNT` to get the number of matching documents without retrieving them.
+This is useful for pagination UI ("Showing 1-20 of 156 results") or analytics:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Count all products in a category
+const totalHeadphones = await products.count({
+  filter: {
+    category: "Electronics > Audio > Headphones",
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Count all products in a category
+SEARCH.COUNT products '{"category": "Electronics > Audio > Headphones"}'
+```
+</Tab>
+
+</Tabs>
+
+### Key Takeaways
+
+- Use `NOTOKENIZE` for categories and codes that should match exactly
+- Use `NOSTEM` for brand names to prevent unwanted stemming
+- Mark price, rating, and date fields as `FAST` for sorting
+- Combine `$must`, `$should`, and `$mustNot` for complex filtering
+- Use `$boost` to promote featured or preferred items
+- Use `SEARCH.COUNT` to get result counts for pagination UI
+- Smart matching handles most natural language queries automatically
