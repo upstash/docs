@@ -1,0 +1,392 @@
+---
+title: Queries
+---
+
+Queries are JSON strings that describe which documents to return.
+
+We recommend searching by field values directly because we automatically provide intelligent matching behavior out of the box:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Basic search
+await index.query({
+  filter: { name: "headphones" },
+});
+
+// Search across multiple fields (implicit AND)
+await index.query({
+  filter: { name: "wireless", category: "electronics" },
+});
+
+// Search with exact values for non-text fields
+await index.query({
+  filter: { inStock: true, price: 199.99 },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Search for a term in a specific field
+SEARCH.QUERY products '{"name": "headphones"}'
+
+# Search across multiple fields (implicit AND)
+SEARCH.QUERY products '{"name": "wireless", "category": "electronics"}'
+
+# Search with exact values for non-text fields
+SEARCH.QUERY products '{"inStock": true, "price": 199.99}'
+```
+</Tab>
+
+</Tabs>
+
+---
+
+### Smart Matching
+
+When you provide a value directly to a field (without explicit operators),
+we automatically apply [smart matching](./query-operators/field-operators/smart-matching).
+For numeric, boolean, and date fields, this performs an exact equality check.
+For text fields, it works like this:
+
+- **Single-word values**: Performs a term search, matching the word against tokens in the field.
+- **Multi-word values**: Combines phrase matching, term matching, and fuzzy matching with
+  different boost weights to rank exact phrases highest while still finding partial matches.
+- **Double-quoted phrases**: Forces exact phrase matching (e.g., `"\"noise cancelling\""` matches
+  only those words adjacent and in order).
+
+For more control, use explicit operators like [`$phrase`](./query-operators/field-operators/phrase),
+or [`$fuzzy`](./query-operators/field-operators/fuzzy).
+
+---
+
+## Query Options
+
+### 1. Pagination with Limit and Offset
+
+Limit controls how many results to return. Offset controls how many results to skip. Together, they provide a way to paginate results.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Page 1: first 10 results (with optional offset)
+const page1 = await index.query({
+  filter: { description: "wireless" },
+  limit: 10,
+});
+
+// Page 2: results 11-20
+const page2 = await index.query({
+  filter: { description: "wireless" },
+  limit: 10,
+  offset: 10,
+});
+
+// Page 3: results 21-30
+const page3 = await index.query({
+  filter: { description: "wireless" },
+  limit: 10,
+  offset: 20,
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Page 1: first 10 results (with optional offset)
+SEARCH.QUERY products '{"description": "wireless"}' LIMIT 10
+
+# Page 2: results 11-20
+SEARCH.QUERY products '{"description": "wireless"}' LIMIT 10 OFFSET 10
+
+# Page 3: results 21-30
+SEARCH.QUERY products '{"description": "wireless"}' LIMIT 10 OFFSET 20
+```
+</Tab>
+
+</Tabs>
+
+### 2. Sorting Results
+
+Normally, search results are sorted in descending order of query relevance.
+
+It is possible to override this, and sort the results by a certain field
+in ascending or descending order.
+
+Only fields defined as `.fast()` in the schema can be used as the sort field (enabled by default).
+
+When using `orderBy`, the score in results reflects the sort field's value rather than relevance.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Sort by price, cheapest first
+await products.query({
+  filter: { category: "electronics" },
+  orderBy: { price: "ASC" },
+});
+
+// Sort by date, newest first
+await articles.query({
+  filter: { author: "john" },
+  orderBy: { publishedAt: "DESC" },
+});
+
+// Sort by rating, highest first, which can be combined with LIMIT and OFFSET
+await products.query({
+  filter: { inStock: true },
+  orderBy: { rating: "DESC" },
+  limit: 5,
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Sort by price, cheapest first
+SEARCH.QUERY products '{"category": "electronics"}' ORDERBY price ASC
+
+# Sort by date, newest first
+SEARCH.QUERY articles '{"author": "john"}' ORDERBY publishedAt DESC
+
+# Sort by rating, highest first, which can be combined with LIMIT and OFFSET
+SEARCH.QUERY products '{"inStock": true}' ORDERBY rating DESC LIMIT 5
+```
+</Tab>
+
+</Tabs>
+
+### 3. Controlling Output
+
+By default, search results include document key, relevance score, and the contents of the document
+(including the non-indexed fields).
+
+For JSON and string indexes, that means the stored JSON objects as whole. For hash indexes, it means all fields and values.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts {3}
+// Example: Return documents without content
+await products.query({
+  select: {},
+  filter: { name: "headphones" },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Return only keys and scores
+SEARCH.QUERY products '{"name": "headphones"}' NOCONTENT
+```
+</Tab>
+
+</Tabs>
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts {3}
+// Example: Return only `name` and `price`
+await products.query({
+  select: { name: true, price: true },
+  filter: { name: "headphones" },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Return specific fields only
+SEARCH.QUERY products '{"name": "headphones"}' SELECT 2 name price
+```
+</Tab>
+
+</Tabs>
+
+<Note>
+When using [aliased fields](/redis/search/schema-definition#aliased-fields),
+use the **actual document field name** (not the alias) when selecting fields to return.
+This is because aliasing happens at the index level and does not modify the underlying documents.
+</Note>
+
+---
+
+### 4. Score Function
+
+Score function lets you tweak the relevance scores of search results using numeric field values from your documents.
+This is useful when you want to incorporate signals like popularity, recency, or price into the final ranking.
+
+Only `.fast()` fields of type `i64`, `u64`, or `f64` can be used with score function.
+
+#### Field Values
+
+Each `FIELDVALUE` entry references a numeric field and optionally configures
+how its value is transformed before being applied to the score:
+
+- **`MODIFIER`** (default: `none`) — A mathematical transformation applied to the field value before use:
+
+| Modifier     | Description                                          |
+| ------------ | ---------------------------------------------------- |
+| `none`       | Use the field value as-is, with no transformation.   |
+| `log`        | Common logarithm (log base 10).                      |
+| `log1p`      | Common logarithm of `1 + value`.                     |
+| `log2p`      | Common logarithm of `2 + value`.                     |
+| `ln`         | Natural logarithm (log base e).                      |
+| `ln1p`       | Natural logarithm of `1 + value`.                    |
+| `ln2p`       | Natural logarithm of `2 + value`.                    |
+| `square`     | Square of the value (`value²`).                      |
+| `sqrt`       | Square root of the value.                            |
+| `reciprocal` | Reciprocal of the value (`1 / value`).               |
+
+- **`FACTOR`** (default: `1.0`) — A float multiplier applied **after** the modifier transformation.
+- **`MISSING`** (default: `0.0`) — A float fallback value used when:
+  - The field value is missing from the document.
+  - The field value is invalid for the chosen modifier (e.g., a negative value with `log`).
+
+  If both the field value and the missing value are invalid for the modifier, the final contribution is `MISSING * FACTOR`.
+
+#### Combine Mode
+
+When multiple `FIELDVALUE` entries are specified, `COMBINEMODE` controls how their results are combined:
+
+- **`multiply`** (default) — Multiply all field value results together.
+- **`sum`** — Add all field value results together.
+
+#### Score Mode
+
+`SCOREMODE` controls how the combined field value result is applied to the original query relevance score:
+
+- **`multiply`** (default) — Multiply the original score by the combined result.
+- **`sum`** — Add the combined result to the original score.
+- **`replace`** — Replace the original score with the combined result entirely.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Boost results by a popularity field
+await products.query({
+  filter: { name: "headphones" },
+  scoreFunc: "popularity",
+});
+
+// Use log1p modifier to dampen high popularity values, with a factor of 2
+await products.query({
+  filter: { name: "headphones" },
+  scoreFunc: {
+    field: "popularity",
+    modifier: "log1p",
+    factor: 2.0,
+  },
+});
+
+// Fallback to 1.0 when the field is missing or invalid
+await products.query({
+  filter: { name: "headphones" },
+  scoreFunc: {
+    field: "popularity",
+    modifier: "log1p",
+    missing: 1.0,
+  },
+});
+
+// Combine two field values: boost by popularity and recency
+await products.query({
+  filter: { name: "headphones" },
+  scoreFunc: {
+    fields: [
+      { field: "popularity", modifier: "log1p" },
+      { field: "recencyScore", modifier: "sqrt" },
+    ],
+    combineMode: "sum",
+  },
+});
+
+// Replace the original score entirely with the combined result
+await products.query({
+  filter: { name: "headphones" },
+  scoreFunc: {
+    field: "rating",
+    scoreMode: "replace",
+  },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Boost results by a popularity field
+SEARCH.QUERY products '{"name": "headphones"}' SCOREFUNC FIELDVALUE popularity
+
+# Use log1p modifier to dampen high popularity values, with a factor of 2
+SEARCH.QUERY products '{"name": "headphones"}' SCOREFUNC FIELDVALUE popularity MODIFIER log1p FACTOR 2.0
+
+# Fallback to 1.0 when the field is missing or invalid
+SEARCH.QUERY products '{"name": "headphones"}' SCOREFUNC FIELDVALUE popularity MODIFIER log1p MISSING 1.0
+
+# Combine two field values: boost by popularity and recency
+SEARCH.QUERY products '{"name": "headphones"}' SCOREFUNC COMBINEMODE sum FIELDVALUE popularity MODIFIER log1p FIELDVALUE recencyScore MODIFIER sqrt
+
+# Replace the original score entirely with the combined result
+SEARCH.QUERY products '{"name": "headphones"}' SCOREFUNC SCOREMODE replace FIELDVALUE rating
+```
+</Tab>
+
+</Tabs>
+
+<Warning>
+`SCOREFUNC` cannot be used together with `ORDERBY`. Since `ORDERBY` overrides the relevance
+score with the sort field's value, combining it with score function is not supported.
+</Warning>
+
+---
+
+### 5. Highlighting
+
+Highlighting allows you to see why a document matched the query by marking the matching portions of the document's fields.
+
+By default, `<em>` and `</em>` are used as the highlight tags.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Highlight matching terms
+await products.query({
+  filter: { description: "wireless noise cancelling" },
+  highlight: { fields: ["description"] },
+});
+
+// Custom open and close highlight tags
+await products.query({
+  filter: { description: "wireless" },
+  highlight: { fields: ["description"], preTag: "!!", postTag: "**" },
+});
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+# Highlight matching terms
+SEARCH.QUERY products '{"description": "wireless noise cancelling"}' HIGHLIGHT FIELDS 1 description
+
+# Custom open and close highlight tags
+SEARCH.QUERY products '{"description": "wireless"}' HIGHLIGHT FIELDS 1 description TAGS !! **
+```
+</Tab>
+
+</Tabs>
+
+Note that highlighting only works for operators that resolve to terms, such as term or phrase queries.
+
+<Note>
+When using [aliased fields](/redis/search/schema-definition#aliased-fields),
+use the **alias name** (not the actual document field name) when specifying fields to highlight.
+The highlighting feature works with indexed field names, which are the aliases.
+</Note>
