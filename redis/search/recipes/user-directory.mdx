@@ -56,6 +56,49 @@ const users = await redis.search.createIndex({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+users = redis.search.create_index(
+    name="users",
+    data_type="json",
+    prefix="user:",
+    schema={
+        # Exact username matching (no tokenization)
+        "username": {"type": "TEXT", "notokenize": True},
+
+        # Nested profile fields
+        # Name search without stemming (proper nouns)
+        "profile.firstName": {"type": "TEXT", "nostem": True},
+        "profile.lastName": {"type": "TEXT", "nostem": True},
+        "profile.displayName": {"type": "TEXT", "nostem": True},
+
+        # Email as exact match (contains special characters)
+        "profile.email": {"type": "TEXT", "notokenize": True},
+
+        # Searchable bio/about text
+        "profile.bio": "TEXT",
+
+        # Department and role for filtering
+        "department": {"type": "TEXT", "notokenize": True},
+        "role": {"type": "TEXT", "notokenize": True},
+        "title": "TEXT",
+
+        # Boolean flags
+        "isActive": "BOOL",
+        "isAdmin": "BOOL",
+
+        # Dates for filtering
+        "hiredAt": {"type": "DATE", "fast": True},
+        "lastActiveAt": {"type": "DATE", "fast": True},
+    },
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.CREATE users ON JSON PREFIX 1 user: SCHEMA username TEXT NOTOKENIZE profile.firstName TEXT NOSTEM profile.lastName TEXT NOSTEM profile.displayName TEXT NOSTEM profile.email TEXT NOTOKENIZE profile.bio TEXT department TEXT NOTOKENIZE role TEXT NOTOKENIZE title TEXT isActive BOOL isAdmin BOOL hiredAt DATE FAST lastActiveAt DATE FAST
@@ -144,6 +187,82 @@ await redis.json.set("user:4", "$", {
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+redis.json().set("user:1", "$", {
+    "username": "jsmith",
+    "profile": {
+        "firstName": "Jane",
+        "lastName": "Smith",
+        "displayName": "Jane Smith",
+        "email": "jane.smith@company.com",
+        "bio": "Senior software engineer focused on backend systems and distributed computing.",
+    },
+    "department": "Engineering",
+    "role": "Individual Contributor",
+    "title": "Senior Software Engineer",
+    "isActive": True,
+    "isAdmin": False,
+    "hiredAt": "2021-03-15T00:00:00Z",
+    "lastActiveAt": "2024-03-25T14:30:00Z",
+})
+
+redis.json().set("user:2", "$", {
+    "username": "mjohnson",
+    "profile": {
+        "firstName": "Michael",
+        "lastName": "Johnson",
+        "displayName": "Mike Johnson",
+        "email": "michael.johnson@company.com",
+        "bio": "Engineering manager leading the platform team. Passionate about developer experience.",
+    },
+    "department": "Engineering",
+    "role": "Manager",
+    "title": "Engineering Manager",
+    "isActive": True,
+    "isAdmin": True,
+    "hiredAt": "2019-06-01T00:00:00Z",
+    "lastActiveAt": "2024-03-25T16:45:00Z",
+})
+
+redis.json().set("user:3", "$", {
+    "username": "swilliams",
+    "profile": {
+        "firstName": "Sarah",
+        "lastName": "Williams",
+        "displayName": "Sarah Williams",
+        "email": "sarah.williams@company.com",
+        "bio": "Product designer specializing in user research and interaction design.",
+    },
+    "department": "Design",
+    "role": "Individual Contributor",
+    "title": "Senior Product Designer",
+    "isActive": True,
+    "isAdmin": False,
+    "hiredAt": "2022-01-10T00:00:00Z",
+    "lastActiveAt": "2024-03-24T11:20:00Z",
+})
+
+redis.json().set("user:4", "$", {
+    "username": "rbrown",
+    "profile": {
+        "firstName": "Robert",
+        "lastName": "Brown",
+        "displayName": "Rob Brown",
+        "email": "robert.brown@company.com",
+        "bio": "Former engineering lead, now focused on technical writing and documentation.",
+    },
+    "department": "Engineering",
+    "role": "Individual Contributor",
+    "title": "Staff Engineer",
+    "isActive": False,
+    "isAdmin": False,
+    "hiredAt": "2018-09-20T00:00:00Z",
+    "lastActiveAt": "2023-12-15T09:00:00Z",
+})
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 JSON.SET user:1 $ '{"username": "jsmith", "profile": {"firstName": "Jane", "lastName": "Smith", "displayName": "Jane Smith", "email": "jane.smith@company.com", "bio": "Senior software engineer focused on backend systems and distributed computing."}, "department": "Engineering", "role": "Individual Contributor", "title": "Senior Software Engineer", "isActive": true, "isAdmin": false, "hiredAt": "2021-03-15T00:00:00Z", "lastActiveAt": "2024-03-25T14:30:00Z"}'
@@ -168,6 +287,12 @@ Use `SEARCH.WAITINDEXING` to ensure all pending updates are processed before que
 <Tab title="TypeScript">
 ```ts
 await users.waitIndexing();
+```
+</Tab>
+
+<Tab title="Python">
+```python
+users.wait_indexing()
 ```
 </Tab>
 
@@ -229,6 +354,36 @@ const refinedSuggestions = await users.query({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+# As user types "ja" in the search box
+suggestions = users.query(
+    filter={"profile.displayName": {"$fuzzy": {"value": "ja", "prefix": True}}},
+    limit=5,
+)
+# Matches "Jane Smith", "James Wilson", etc.
+
+# As user types "jn" (typo for "ja")
+typo_suggestions = users.query(
+    filter={
+        "profile.displayName": {
+            "$fuzzy": {"value": "jn", "prefix": True, "transpositionCostOne": True}
+        }
+    },
+    limit=5,
+)
+# Still matches "Jane Smith", "James Wilson", etc.
+
+# As user types "jane smi"
+refined_suggestions = users.query(
+    filter={"profile.displayName": "jane smi"},
+    limit=5,
+)
+# Smart matching applies fuzzy prefix to last word automatically
+# Matches "Jane Smith", "Jane Smithson", etc.
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # As user types "ja"
@@ -286,6 +441,31 @@ const combinedFuzzy = await users.query({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+# User types "Micheal" (common misspelling of "Michael")
+results = users.query(
+    filter={"profile.firstName": {"$fuzzy": "Micheal"}},
+)
+# Matches "Michael Johnson"
+
+# Search with more tolerance for longer names
+fuzzy_results = users.query(
+    filter={"profile.lastName": {"$fuzzy": {"value": "Willaims", "distance": 2}}},  # Typo in "Williams"
+)
+
+# Search across first and last name with fuzzy matching
+combined_fuzzy = users.query(
+    filter={
+        "$should": [
+            {"profile.firstName": {"$fuzzy": "Srah"}},  # Typo
+            {"profile.lastName": {"$fuzzy": "Srah"}},
+        ]
+    },
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # Fuzzy first name search
@@ -331,6 +511,25 @@ const companyUsers = await users.query({
     },
   },
 });
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Exact username lookup
+user = users.query(
+    filter={"username": "jsmith"},
+)
+
+# Exact email lookup
+user_by_email = users.query(
+    filter={"profile.email": "jane.smith@company.com"},
+)
+
+# Find users with email at specific domain
+company_users = users.query(
+    filter={"profile.email": {"$regex": "jane.*@company\\.com"}},
+)
 ```
 </Tab>
 
@@ -396,6 +595,39 @@ const productTeam = await users.query({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+# All users in Engineering
+engineers = users.query(
+    filter={"department": "Engineering", "isActive": True},
+)
+
+# All managers across departments
+managers = users.query(
+    filter={"role": "Manager", "isActive": True},
+)
+
+# Engineers who are managers
+engineering_managers = users.query(
+    filter={
+        "$must": {
+            "department": "Engineering",
+            "role": "Manager",
+            "isActive": True,
+        }
+    },
+)
+
+# Users in Engineering or Design
+product_team = users.query(
+    filter={
+        "department": {"$in": ["Engineering", "Design", "Product"]},
+        "isActive": True,
+    },
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # All users in Engineering
@@ -451,6 +683,25 @@ const uxResearchers = await users.query({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+# Find users who mention "distributed" in their bio
+distributed_experts = users.query(
+    filter={"profile.bio": "distributed", "isActive": True},
+)
+
+# Find users with multiple skills
+backend_engineers = users.query(
+    filter={"$must": {"profile.bio": "backend", "department": "Engineering"}},
+)
+
+# Search for phrase in bio
+ux_researchers = users.query(
+    filter={"profile.bio": {"$phrase": "user research"}},
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # Find users mentioning "distributed" in bio
@@ -494,6 +745,23 @@ const regularEngineers = await users.query({
     },
   },
 });
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# All admin users
+admins = users.query(
+    filter={"isAdmin": True, "isActive": True},
+)
+
+# Active non-admin users in Engineering
+regular_engineers = users.query(
+    filter={
+        "$must": {"department": "Engineering", "isActive": True},
+        "$mustNot": {"isAdmin": True},
+    },
+)
 ```
 </Tab>
 

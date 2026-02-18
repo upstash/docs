@@ -44,6 +44,39 @@ const articles = await redis.search.createIndex({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+articles = redis.search.create_index(
+    name="articles",
+    data_type="hash",
+    prefix="article:",
+    schema={
+        # Full-text searchable content
+        "title": "TEXT",
+        "body": "TEXT",
+        "summary": "TEXT",
+
+        # Author name without stemming
+        "author": {"type": "TEXT", "nostem": True},
+
+        # Date fields for filtering and sorting
+        "publishedAt": {"type": "DATE", "fast": True},
+        "updatedAt": {"type": "DATE", "fast": True},
+
+        # Status for draft/published filtering
+        "published": "BOOL",
+
+        # View count for popularity sorting
+        "viewCount": "U64",
+    },
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.CREATE articles ON HASH PREFIX 1 article: SCHEMA title TEXT body TEXT summary TEXT author TEXT NOSTEM publishedAt DATE FAST updatedAt DATE FAST published BOOL viewCount U64 FAST
@@ -96,6 +129,46 @@ await redis.hset("article:3", {
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+redis.hset("article:1", {
+    "title": "Getting Started with Redis Search",
+    "body": "Redis Search provides powerful full-text search capabilities directly in Redis. In this tutorial, we'll explore how to create indexes, define schemas, and write queries. Full-text search allows you to find documents based on their content rather than just their keys. This is essential for building search features in modern applications.",
+    "summary": "Learn how to add full-text search to your Redis application with practical examples.",
+    "author": "Jane Smith",
+    "tags": "redis,search,tutorial",
+    "publishedAt": "2024-03-15T10:00:00Z",
+    "updatedAt": "2024-03-15T10:00:00Z",
+    "published": "true",
+    "viewCount": "1542",
+})
+
+redis.hset("article:2", {
+    "title": "Advanced Query Techniques for Search",
+    "body": "Once you've mastered the basics, it's time to explore advanced query techniques. Boolean operators let you combine conditions with AND, OR, and NOT logic. Phrase matching ensures words appear in sequence. Fuzzy matching handles typos gracefully. Together, these features enable sophisticated search experiences.",
+    "summary": "Master boolean operators, phrase matching, and fuzzy search for better results.",
+    "author": "John Doe",
+    "tags": "redis,search,advanced",
+    "publishedAt": "2024-03-20T14:30:00Z",
+    "updatedAt": "2024-03-22T09:15:00Z",
+    "published": "true",
+    "viewCount": "892",
+})
+
+redis.hset("article:3", {
+    "title": "Building Real-Time Search with Redis",
+    "body": "Real-time search requires instant indexing and low-latency queries. Redis excels at both. When you write data to Redis, the search index updates automatically. Queries execute in milliseconds, even with millions of documents. This makes Redis ideal for applications where search results must reflect the latest data.",
+    "summary": "Build search features that update instantly as data changes.",
+    "author": "Jane Smith",
+    "tags": "redis,real-time,performance",
+    "publishedAt": "2024-03-25T08:00:00Z",
+    "updatedAt": "2024-03-25T08:00:00Z",
+    "published": "true",
+    "viewCount": "2103",
+})
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 HSET article:1 title "Getting Started with Redis Search" body "Redis Search provides powerful full-text search capabilities directly in Redis. In this tutorial, we will explore how to create indexes, define schemas, and write queries. Full-text search allows you to find documents based on their content rather than just their keys. This is essential for building search features in modern applications." summary "Learn how to add full-text search to your Redis application with practical examples." author "Jane Smith" tags "redis,search,tutorial" publishedAt "2024-03-15T10:00:00Z" updatedAt "2024-03-15T10:00:00Z" published "true" viewCount "1542"
@@ -118,6 +191,12 @@ Use `SEARCH.WAITINDEXING` to ensure all pending updates are processed before que
 <Tab title="TypeScript">
 ```ts
 await articles.waitIndexing();
+```
+</Tab>
+
+<Tab title="Python">
+```python
+articles.wait_indexing()
 ```
 </Tab>
 
@@ -146,6 +225,20 @@ const results = await articles.query({
     ],
   },
 });
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Search across title and body
+results = articles.query(
+    filter={
+        "$should": [
+            {"title": "redis search"},
+            {"body": "redis search"},
+        ],
+    },
+)
 ```
 </Tab>
 
@@ -180,6 +273,24 @@ const results = await articles.query({
 
 // Results include highlighted text like:
 // "Redis Search provides powerful <em>full-text</em> <em>search</em> capabilities..."
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Search with highlighted matches in title and body
+results = articles.query(
+    filter={
+        "$should": [
+            {"title": "full-text search"},
+            {"body": "full-text search"},
+        ],
+    },
+    highlight={"fields": ["title", "body"]},
+)
+
+# Results include highlighted text like:
+# "Redis Search provides powerful <em>full-text</em> <em>search</em> capabilities..."
 ```
 </Tab>
 
@@ -222,6 +333,22 @@ const htmlResults = await articles.query({
     postTag: "</mark>",
   },
 });
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Markdown-style highlighting
+results = articles.query(
+    filter={"body": "redis"},
+    highlight={"fields": ["body"], "preTag": "**", "postTag": "**"},
+)
+
+# HTML with custom class
+html_results = articles.query(
+    filter={"body": "redis"},
+    highlight={"fields": ["body"], "preTag": "<mark class='search-match'>", "postTag": "</mark>"},
+)
 ```
 </Tab>
 
@@ -276,6 +403,33 @@ const slopResults = await articles.query({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+# Using double quotes for exact phrase
+results = articles.query(
+    filter={"body": '"full-text search"'},
+)
+
+# Using $phrase operator
+phrase_results = articles.query(
+    filter={"body": {"$phrase": "boolean operators"}},
+)
+
+# Phrase with slop (allow words between)
+# Matches "search results" or "search the results" or "search for better results"
+slop_results = articles.query(
+    filter={
+        "body": {
+            "$phrase": {
+                "value": "search results",
+                "slop": 3,
+            },
+        },
+    },
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # Using double quotes for exact phrase
@@ -322,6 +476,26 @@ const authorSearch = await articles.query({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+# All articles by Jane Smith
+results = articles.query(
+    filter={"author": "Jane Smith", "published": True},
+    order_by={"publishedAt": "DESC"},
+)
+
+# Search within a specific author's articles
+author_search = articles.query(
+    filter={
+        "$must": {
+            "author": "Jane Smith",
+            "body": "redis",
+        },
+    },
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # All articles by Jane Smith
@@ -354,6 +528,21 @@ const marchArticles = await articles.query({
     publishedAt: "DESC",
   },
 });
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Articles from a specific month
+march_articles = articles.query(
+    filter={
+        "publishedAt": {
+            "$gte": "2026-01-01T00:00:00Z",
+            "$lt": "2026-02-01T00:00:00Z",
+        },
+    },
+    order_by={"publishedAt": "DESC"},
+)
 ```
 </Tab>
 
@@ -401,6 +590,29 @@ const popularRedis = await articles.query({
 ```
 </Tab>
 
+<Tab title="Python">
+```python
+# Most popular articles
+popular = articles.query(
+    filter={"published": True},
+    order_by={"viewCount": "DESC"},
+    limit=10,
+)
+
+# Popular articles about a topic
+popular_redis = articles.query(
+    filter={
+        "$must": {
+            "body": "redis",
+            "published": True,
+        },
+    },
+    order_by={"viewCount": "DESC"},
+    limit=5,
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # Most popular articles
@@ -431,6 +643,21 @@ const results = await articles.query({
     ],
   },
 });
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Boost title matches for better relevance
+results = articles.query(
+    filter={
+        "$should": [
+            {"title": "redis search", "$boost": 5.0},  # Title matches score 5x higher
+            {"body": "redis search"},
+            {"summary": "redis search", "$boost": 2.0},
+        ],
+    },
+)
 ```
 </Tab>
 

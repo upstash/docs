@@ -20,6 +20,8 @@ const schema = s.object({
   age: s.number(),
   createdAt: s.date(),
   active: s.boolean(),
+  tag: s.keyword(),
+  category: s.facet(),
 })
 ```
 
@@ -141,6 +143,116 @@ const schema = s.object({
 
 ---
 
+## Keyword Fields
+
+The `KEYWORD` field type is for exact-match strings. Unlike `TEXT` fields, keywords are not tokenized or stemmed — the entire value is treated as a single token.
+
+KEYWORD fields support numeric query operators (`$eq`, `$ne`, `$in`, `$gt`, `$gte`, `$lt`, `$lte`), which are not available on `TEXT` fields.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const schema = s.object({
+  tag: s.keyword(),
+})
+```
+</Tab>
+
+<Tab title="Python">
+```python
+schema = {
+    "tag": "KEYWORD",
+}
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE idx ON JSON PREFIX 1 prefix: SCHEMA tag KEYWORD
+```
+</Tab>
+
+</Tabs>
+
+**When to use KEYWORD instead of TEXT:**
+
+- When you need range operators (`$gt`, `$gte`, `$lt`, `$lte`) on string values
+- When the entire string should be treated as a single unit (no word splitting)
+- For tags, labels, status codes, or any string that should match exactly
+
+---
+
+## Facet Fields
+
+The `FACET` field type is for hierarchical path-based faceted search. Values must be `/`-delimited paths starting with `/`.
+
+FACET fields only support `$eq` and `$in` operators. They are primarily used with the [`$facet` aggregation](/redis/search/aggregations#facet) to build category trees and faceted navigation.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const schema = s.object({
+  category: s.facet(),
+})
+```
+</Tab>
+
+<Tab title="Python">
+```python
+schema = {
+    "category": "FACET",
+}
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE idx ON JSON PREFIX 1 prefix: SCHEMA category FACET
+```
+</Tab>
+
+</Tabs>
+
+**Example — querying facet fields:**
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: { category: { $eq: "/category/books/fiction" } },
+});
+
+await index.query({
+  filter: {
+    category: { $in: ["/category/books", "/category/electronics"] },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(filter={"category": {"$eq": "/category/books/fiction"}})
+
+index.query(filter={"category": {"$in": ["/category/books", "/category/electronics"]}})
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"category": {"$eq": "/category/books/fiction"}}'
+
+SEARCH.QUERY products '{"category": {"$in": ["/category/books", "/category/electronics"]}}'
+```
+</Tab>
+
+</Tabs>
+
+---
+
 ## Aliased Fields
 
 Aliased fields allow you to index the same document field multiple times with different settings,
@@ -165,6 +277,26 @@ const products = await redis.search.createIndex({
     authorName: s.string().from("metadata.author.displayName"),
   }),
 });
+```
+
+</Tab>
+
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+products = redis.search.create_index(
+    name="products",
+    data_type="json",
+    prefix="product:",
+    schema={
+        "description": "TEXT",
+        "descriptionExact": {"type": "TEXT", "nostem": True, "from": "description"},
+        "authorName": {"type": "TEXT", "from": "metadata.author.displayName"},
+    },
+)
 ```
 
 </Tab>
@@ -237,6 +369,31 @@ const products = await redis.search.createIndex({
 
 </Tab>
 
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+products = redis.search.create_index(
+    name="products",
+    data_type="hash",
+    prefix="product:",
+    schema={
+        "name": "TEXT",
+        "sku": {"type": "TEXT", "notokenize": True},
+        "brand": {"type": "TEXT", "nostem": True},
+        "description": "TEXT",
+        "price": "F64",
+        "rating": "F64",
+        "reviewCount": "U64",
+        "inStock": "BOOL",
+    },
+)
+```
+
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.CREATE products ON HASH PREFIX 1 product: SCHEMA name TEXT sku TEXT NOTOKENIZE brand TEXT NOSTEM description TEXT price F64 FAST rating F64 FAST reviewCount U64 inStock BOOL FAST
@@ -270,6 +427,29 @@ const users = await redis.search.createIndex({
     verified: s.boolean(),
   }),
 });
+```
+
+</Tab>
+
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+users = redis.search.create_index(
+    name="users",
+    data_type="json",
+    prefix="user:",
+    schema={
+        "username": {"type": "TEXT", "notokenize": True},
+        "profile.displayName": {"type": "TEXT", "nostem": True},
+        "profile.bio": "TEXT",
+        "profile.email": {"type": "TEXT", "notokenize": True},
+        "createdAt": {"type": "DATE", "fast": True},
+        "verified": "BOOL",
+    },
+)
 ```
 
 </Tab>
