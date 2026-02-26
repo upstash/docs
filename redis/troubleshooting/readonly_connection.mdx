@@ -1,0 +1,90 @@
+---
+title: Connecting with Read-Only Access
+---
+
+### Symptom
+
+You are trying to connect to your Upstash Redis database using a read-only token via a TCP client (such as `redis-cli`, `ioredis`, or `redis-py`), but you receive an authentication error similar to:
+
+```
+WRONGPASS invalid username-password pair or user is disabled
+```
+
+### Diagnosis
+
+When you enable the **Read-Only Token** toggle in the [Upstash Console](https://console.upstash.com), the TCP connection strings update the username from `default` to `default_ro`. This change can be easy to miss.
+
+If you copied the read-only password but are still connecting with the `default` username (or omitting the username entirely), authentication will fail because the read-only password is associated with the `default_ro` user.
+
+### Solution 1: Use the `default_ro` Username
+
+The simplest approach is to use the built-in `default_ro` user. When you enable the **Read-Only Token** in the console, the connection strings automatically switch to use this user.
+
+Make sure your connection includes both the `default_ro` username **and** the read-only password:
+
+**redis-cli:**
+
+```bash
+redis-cli --tls -u rediss://default_ro:READ_ONLY_PASSWORD@YOUR_ENDPOINT:YOUR_PORT
+```
+
+**Node.js (ioredis):**
+
+```javascript
+const Redis = require("ioredis");
+
+const client = new Redis("rediss://default_ro:READ_ONLY_PASSWORD@YOUR_ENDPOINT:YOUR_PORT");
+```
+
+**Python (redis-py):**
+
+```python
+import redis
+
+r = redis.Redis(
+    host="YOUR_ENDPOINT",
+    port=YOUR_PORT,
+    username="default_ro",
+    password="READ_ONLY_PASSWORD",
+    ssl=True,
+)
+```
+
+<Tip>
+  The easiest way to get the correct connection string is to enable the **Read-Only Token** toggle in the console and copy the connection string directly. The username and password will be pre-filled for you.
+</Tip>
+
+### Solution 2: Create a Custom Read-Only ACL User
+
+If you need more control over permissions, you can create a custom user with read-only access using [Redis ACL](https://redis.io/docs/latest/operate/oss_and_stack/management/security/acl/).
+
+**1. Connect with your admin credentials:**
+
+```bash
+redis-cli --tls -u rediss://default:YOUR_PASSWORD@YOUR_ENDPOINT:YOUR_PORT
+```
+
+**2. Create a read-only user:**
+
+```
+ACL SETUSER myreadonlyuser on >somesecurepassword ~* &* +@read -@dangerous
+```
+
+This command:
+- `on` — enables the user
+- `>somesecurepassword` — sets the password
+- `~*` — allows access to all keys
+- `&*` — allows access to all pub/sub channels
+- `+@read` — grants all read commands
+- `-@dangerous` — revokes dangerous commands (such as `KEYS`, `SCAN`)
+
+You can further restrict key access by replacing `~*` with a pattern like `~cache:*` to only allow reading keys that match that prefix.
+
+**3. Connect with the new user:**
+
+```bash
+redis-cli --tls -u rediss://myreadonlyuser:somesecurepassword@YOUR_ENDPOINT:YOUR_PORT
+```
+
+
+If you want to use the REST API with your custom ACL user, you can generate a REST token for it. See [REST Token for ACL Users](/redis/features/restapi#rest-token-for-acl-users) for details.
