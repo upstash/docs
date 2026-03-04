@@ -1,0 +1,136 @@
+---
+title: "Shell"
+---
+
+Every box has a full Linux shell. `box.exec()` runs OS-level commands directly inside the box and returns the output, exit status, and cost. 
+
+---
+
+### Run a command
+
+Pass a command string to `box.exec()`. The call resolves when the command finishes and gives you back the result and status.
+
+```typescript
+const run = await box.exec("echo hello")
+
+console.log(run.result) // "hello"
+console.log(run.status) // "completed"
+```
+
+---
+
+### Check exit status
+
+If the command fails, `run.status` will be `"failed"` and `run.result` contains the stderr output.
+
+```typescript
+const run = await box.exec("node -e 'process.exit(1)'")
+
+console.log(run.status) // "failed"
+```
+
+---
+
+### Chain commands
+
+Pass a full shell expression. Pipes, redirects, and chained commands all work as expected.
+
+```typescript
+const run = await box.exec("cd /work && npm install && npm test")
+
+console.log(run.result)
+```
+
+---
+
+### Cancel a long-running command
+
+Call `cancel()` on the run to abort early. The status becomes `"cancelled"`.
+
+```typescript
+const run = await box.exec("sleep 3600")
+await run.cancel()
+
+console.log(run.status) // "cancelled"
+```
+
+---
+
+### Retrieve logs
+
+After a command finishes, call `logs()` to get the full timestamped output for debugging or auditing.
+
+```typescript
+const run = await box.exec("npm test")
+const logs = await run.logs()
+
+console.log(logs)
+// [
+//   { timestamp: "2026-02-23T...", level: "info", message: "PASS src/auth.test.ts" },
+//   { timestamp: "2026-02-23T...", level: "info", message: "Tests: 12 passed, 12 total" },
+// ]
+```
+
+---
+
+## Patterns
+
+### Install dependencies before an agent run
+
+Set up the environment with `exec()`, then hand off to the agent.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: { model: ClaudeCode.Opus_4_6, apiKey: process.env.ANTHROPIC_API_KEY },
+  git: { token: process.env.GITHUB_TOKEN },
+})
+
+await box.git.clone({ repo: "github.com/your-org/your-api" })
+await box.exec("npm install")
+
+await box.agent.run({
+  prompt: "Run the test suite and fix any failing tests",
+})
+```
+
+### Run a build and extract artifacts
+
+Execute a build command, then download the output.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "node" })
+
+await box.files.upload([
+  { path: "./src", destination: "/work/src" },
+  { path: "./package.json", destination: "/work/package.json" },
+])
+
+await box.exec("cd /work && npm install && npm run build")
+await box.files.download({ path: "/work/dist" })
+await box.delete()
+```
+
+### Health-check before handing off
+
+Verify the environment is usable before starting a longer agent task.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "python",
+  agent: { model: ClaudeCode.Opus_4_6, apiKey: process.env.ANTHROPIC_API_KEY },
+})
+
+const check = await box.exec("python3 --version && pip list")
+console.log(check.result)
+
+await box.agent.run({
+  prompt: "Write a data pipeline that reads /work/raw.csv, cleans it, and saves /work/clean.parquet",
+})
+```

@@ -1,0 +1,124 @@
+---
+title: "Snapshots"
+---
+
+Snapshots capture the full workspace state of a box (filesystem, installed packages, and environment) at a point in time. You can restore any snapshot into a new box to create checkpoints or a reusable environment.
+
+---
+
+## Create a snapshot
+
+Call `snapshot()` on a running or paused box. The returned `Snapshot` object contains the ID you need to restore later.
+
+```typescript
+const snapshot = await box.snapshot({ name: "after-setup" })
+
+console.log(snapshot)
+// {
+//   id: "snap_x7f...",
+//   name: "after-setup",
+//   boxId: "box_abc123",
+//   sizeBytes: 52428800,
+//   createdAt: "2026-02-23T..."
+// }
+```
+
+<Note>
+Snapshots are independent of the source box. Deleting the original box does not delete its snapshots. They remain available for restore at any time.
+</Note>
+
+---
+
+## Restore from a snapshot
+
+`Box.fromSnapshot()` provisions a new box with the exact state from the snapshot. The original box is unaffected. You can branch into multiple boxes from the same checkpoint.
+
+```typescript
+const restored = await Box.fromSnapshot(snapshot.id)
+
+const files = await restored.files.list("/work")
+console.log(files)
+```
+
+---
+
+## Patterns
+
+### Checkpoint before risky operations
+
+Snapshot your working state, then let the agent attempt a large refactor. If the result is bad, we restore the original state and try a different prompt.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: { model: ClaudeCode.Opus_4_6, apiKey: process.env.ANTHROPIC_API_KEY },
+  git: { token: process.env.GITHUB_TOKEN },
+})
+
+await box.git.clone({ repo: "github.com/my-org/my-repo" })
+const checkpoint = await box.snapshot({ name: "pre-refactor" })
+
+const run = await box.agent.run({
+  // 👇 Potentially difficult task
+  prompt: "Rewrite the database layer to use connection pooling",
+})
+
+if (run.status === "failed") {
+  const fallback = await Box.fromSnapshot(checkpoint.id)
+  await fallback.agent.run({
+    prompt: "Add connection pooling to the existing database layer without rewriting it",
+  })
+}
+```
+
+### Reusable base environments
+
+Install dependencies once, snapshot, then spawn boxes from the snapshot to skip setup time.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const base = await Box.create({ runtime: "node" })
+await base.exec("npm install -g typescript eslint prettier")
+const baseSnap = await base.snapshot({ name: "node-toolchain" })
+await base.delete()
+
+const boxes = await Promise.all(
+  tasks.map(async (task) => {
+    const box = await Box.fromSnapshot(baseSnap.id)
+    await box.agent.run({ prompt: task })
+    return box
+  })
+)
+```
+
+### Fan-out from a single state
+
+Clone a repo once, snapshot, then run different agents or prompts in parallel from the same starting point.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const seed = await Box.create({
+  runtime: "node",
+  git: { token: process.env.GITHUB_TOKEN },
+})
+await seed.git.clone({ repo: "github.com/your-org/monorepo" })
+const snap = await seed.snapshot({ name: "repo-cloned" })
+await seed.delete()
+
+const [security, performance, docs] = await Promise.all([
+  Box.fromSnapshot(snap.id),
+  Box.fromSnapshot(snap.id),
+  Box.fromSnapshot(snap.id),
+])
+
+await Promise.all([
+  security.agent.run({ prompt: "Audit src/ for SQL injection vulnerabilities" }),
+  performance.agent.run({ prompt: "Profile the hot paths in src/api/ and optimize" }),
+  docs.agent.run({ prompt: "Generate API documentation for all public exports" }),
+])
+```
+
