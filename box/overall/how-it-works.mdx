@@ -1,0 +1,138 @@
+---
+title: "How it works"
+---
+
+Upstash Box is a **durable execution environment** for AI workloads. Each box is an isolated container with its own filesystem, shell, network stack, and optional coding agent. You send prompts or commands, the box executes them, and you get back structured results without managing infrastructure.
+
+Boxes are billed per active CPU time (not idle time), state persists across runs, and you can choose from Node, Python, Go or other runtimes.
+
+---
+
+## Architecture
+
+Every box is a self-contained environment with four capabilities:
+
+| Capability     | Description                                                  | Learn more                       |
+| -------------- | ------------------------------------------------------------ | -------------------------------- |
+| **Shell**      | Execute OS-level commands directly via `box.exec.command()`          | [Shell](/box/overall/shell)      |
+| **Filesystem** | Upload, write, read, list, and download files inside the box | [Filesystem](/box/overall/files) |
+| **Git**        | Clone repos, inspect diffs, and open pull requests           | [Git](/box/overall/git)          |
+| **Agent**      | Run a coding agent (Claude Code) with `run()` or `stream()`  | [Agent](/box/overall/agent) |
+
+The agent has full access to the shell, filesystem, and git inside its box. It can install packages, write files, run tests, and interact with the network.
+
+---
+
+## Lifecycle
+
+<Frame>
+  <img src="/img/box/lifecycle.png" />
+</Frame>
+
+### 1. Created
+
+When you create a box, a new isolated container is provisioned with its own filesystem, shell, and network stack. You can optionally restore from a [snapshot](/box/overall/snapshots) at this point. The box is ready to receive commands immediately.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  // 👇 optional: spawn box with a coding agent
+  agent: {
+    model: ClaudeCode.Opus_4_6,
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  },
+})
+```
+
+### 2. Running
+
+The box automatically enters Running state after creation. Your agent can run bash commands, read and write files, interact with git, and make outbound network requests. `stdout` and `stderr` stream back in real-time.
+
+From Running, you can:
+
+```typescript
+// 👇 Pause a box
+await box.pause()
+
+// 👇 Create a snapshot
+const snapshot = await box.snapshot({ name: "my-snapshot" })
+
+// 👇 Delete a box
+await box.delete()
+```
+
+If the box sits idle with no active commands, it automatically transitions to Paused after 30 minutes.
+
+### 3. Paused
+
+The box releases its compute resources but the filesystem and environment are preserved. You can resume the box by running `resume()` or sending any command.
+
+From Paused, you can also call `delete()` to destroy the box. Because we bill Upstash Box only on active CPU time, billing drops to an idle rate while paused.
+
+### 4. Snapshot
+
+Snapshots capture the full workspace state of a box (e.g. filesystem, installed packages, and environment) at a point in time. You can restore any snapshot into a new box to create checkpoints or a reusable environment. Learn more in [Snapshots](/box/overall/snapshots).
+
+### 5. Deleted
+
+Calling `delete()` permanently destroys the box and all its state. This is irreversible. If you need to preserve state, take a snapshot before deleting.
+
+Any existing snapshots taken from the box are not affected by deletion.
+
+---
+
+## Security & Isolation
+
+Every box runs as its own Docker container with an independent filesystem, process tree, and network stack. Boxes cannot communicate with or observe each other. There is no shared state between them.
+
+<Frame>
+  <img src="/img/box/routing.png" />
+</Frame>
+
+Your app makes SDK calls to the Upstash API gateway, which authenticates the request and routes it to the correct box. Each box has a unique ID, and all communication between your app and the box is encrypted in transit.
+
+Inside a box, the agent, shell, filesystem, and git all share the same isolated environment. The agent can install packages, write files, spawn processes, and make outbound HTTP requests, but only within its own container boundary. It cannot access the host, other boxes, or any Upstash-internal infrastructure.
+
+| Boundary       | Guarantee                                                                               |
+| -------------- | --------------------------------------------------------------------------------------- |
+| **Filesystem** | Each box has its own filesystem. No shared volumes between boxes.                       |
+| **Processes**  | Process trees are fully isolated. One box cannot signal or inspect another's processes. |
+| **Network**    | Boxes can make outbound requests (HTTP, DNS) but cannot reach other boxes.              |
+
+---
+
+## Networking
+
+Every box has full outbound network access. HTTP, HTTPS, DNS, WebSockets, and raw TCP are all available. Agents can call external APIs, download packages, pull container images, and interact with any public endpoint.
+
+Boxes run on AWS infrastructure with **22.5 Gbps** network bandwidth per host. This means large file transfers, dataset downloads, and parallel API calls are fast by default.
+
+| Property      | Detail                                                     |
+| ------------- | ---------------------------------------------------------- |
+| **Bandwidth** | 22.5 Gbps per host                                         |
+| **Outbound**  | Full access, HTTP, HTTPS, DNS, WebSockets, TCP             |
+| **Inbound**   | Not exposed. Boxes are not publicly addressable.           |
+| **Inter-box** | Isolated. Boxes cannot reach each other.                   |
+| **Latency**   | Single-digit ms to major cloud services (S3, GitHub, etc.) |
+
+---
+
+## Agent
+
+Every Upstash Box comes with built-in coding agent harnesses. You don't need to bring your own agent framework or wire up tool calls. The box already knows how to give an agent access to its shell, filesystem, and git, and how to stream output back to you.
+
+We currently support Claude Code and Codex as native agents inside of a box. You choose a model when creating a box.
+
+For more details, see the [Agent](/box/overall/agent) page.
+
+<Frame>
+  <img src="/img/box/agent.png" />
+</Frame>
+
+Each iteration builds on the last. If a test fails, the agent sees the error output and corrects. If a file is missing, it discovers that during the read phase and adapts. The loop continues until the task is complete or the agent determines it cannot make further progress.
+
+You control what goes in (the prompt) and what comes out (raw text or a structured response). The agent handles reasoning and tool selection within its box, using the same [shell](/box/overall/shell), [filesystem](/box/overall/files), and [git](/box/overall/git) available to you through the SDK.
+
+A box retains its full state between runs (files, installed packages, git history, etc.). You can send multiple prompts to the same box and the agent picks up exactly where it left off.

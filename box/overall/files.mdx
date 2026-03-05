@@ -1,0 +1,163 @@
+---
+title: "Filesystem"
+---
+
+Every box has its own isolated filesystem. The `box.files` namespace lets you upload, write, read, list, and download files inside the box.
+
+---
+
+## Upload files
+
+Push local files into the box. Each entry maps a local path to a destination inside the box workspace.
+
+```typescript
+await box.files.upload([
+  { path: "./data/report.csv", destination: "/work/report.csv" },
+  { path: "./config.json", destination: "/work/config.json" },
+])
+```
+
+You can upload multiple files in a single call. All uploads run in parallel.
+
+---
+
+## Write files
+
+Create or overwrite a file directly from a string. Useful when you want to inject configuration, scripts, or generated content without a local file.
+
+```typescript
+await box.files.write({
+  path: "/work/script.js",
+  content: `console.log("hello from box")`,
+})
+```
+
+---
+
+## Read files
+
+Read the contents of a file as a string.
+
+```typescript
+const content = await box.files.read("/work/output.json")
+console.log(JSON.parse(content))
+```
+
+---
+
+## List files
+
+List the entries in a directory. Each entry includes the path, size, type, and last modified timestamp.
+
+```typescript
+const files = await box.files.list("/work")
+
+console.log(files)
+// [
+//   { path: "/work/report.csv", size: 1024, type: "file", modifiedAt: "2026-02-23T..." },
+//   { path: "/work/output", size: 4096, type: "directory", modifiedAt: "2026-02-23T..." },
+// ]
+```
+
+---
+
+## Download files
+
+Pull files from the box back to your local machine. Call with no arguments to download the entire workspace, or pass a `path` to download a specific file or directory.
+
+```typescript
+await box.files.download()
+await box.files.download({ path: "/work/output" })
+```
+
+---
+
+## Patterns
+
+### Feed data to an agent
+
+Upload input files, run the agent, then read back the structured result.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+import { z } from "zod"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: { model: ClaudeCode.Opus_4_6, apiKey: process.env.ANTHROPIC_API_KEY },
+})
+
+await box.files.upload([
+  { path: "./resumes/candidate.pdf", destination: "/work/resume.pdf" },
+])
+
+const run = await box.agent.run({
+  prompt: "Read /work/resume.pdf. Extract the candidate's name, email, and skills.",
+  responseSchema: z.object({
+    name: z.string(),
+    email: z.string(),
+    skills: z.array(z.string()),
+  }),
+})
+
+console.log(run.result)
+// { name: "Jane Doe", email: "jane@example.com", skills: ["TypeScript", "PostgreSQL"] }
+
+await box.delete()
+```
+
+### Inject config before a run
+
+Write environment-specific configuration into the box, then let the agent use it.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: { model: ClaudeCode.Opus_4_6, apiKey: process.env.ANTHROPIC_API_KEY },
+  git: { token: process.env.GITHUB_TOKEN },
+})
+
+await box.git.clone({ repo: "github.com/your-org/your-api" })
+
+await box.files.write({
+  path: "/work/your-api/.env.test",
+  content: `DATABASE_URL=postgres://localhost:5432/test\nREDIS_URL=redis://localhost:6379`,
+})
+
+await box.agent.run({
+  prompt: "Run the integration test suite using the config in .env.test",
+})
+```
+
+### Collect outputs from parallel boxes
+
+Fan out work across multiple boxes, then download each result locally.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+
+const prompts = [
+  "Analyze /work/data.csv and write a summary to /work/summary.md",
+  "Generate charts from /work/data.csv and save PNGs to /work/charts/",
+  "Find anomalies in /work/data.csv and write a report to /work/anomalies.md",
+]
+
+const results = await Promise.all(
+  prompts.map(async (prompt) => {
+    const box = await Box.create({
+      runtime: "node",
+      agent: { model: ClaudeCode.Opus_4_6, apiKey: process.env.ANTHROPIC_API_KEY },
+    })
+
+    await box.files.upload([
+      { path: "./data.csv", destination: "/work/data.csv" },
+    ])
+
+    await box.agent.run({ prompt })
+    await box.files.download({ path: "/work" })
+    await box.delete()
+  })
+)
+```

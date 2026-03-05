@@ -1,0 +1,159 @@
+---
+title: "Shell"
+---
+
+Every box has a full Linux shell and runs on Alpine Linux by default.
+
+---
+
+### Run a shell command
+
+A shell command resolves when the command finishes and gives you back the result and status.
+
+```typescript
+const run = await box.exec.command("echo hello")
+
+console.log(run.result) // "hello"
+console.log(run.status) // "completed"
+```
+
+If you need additional system tools, install them with Alpine's package manager inside the box.
+
+```typescript
+await box.exec.command("sudo apk add <package>")
+```
+
+---
+
+### Run a code snippet
+
+You can execute code inside of a box:
+
+```typescript
+const run = await box.exec.code({
+  code: "console.log('hello')",
+  lang: "js",
+  timeout: 10_000,
+})
+
+console.log(run.output) // "hello"
+console.log(run.exit_code) // "0"
+```
+
+---
+
+### Check exit status
+
+If the command fails, the run status will be `"failed"` and its result contains the stderr output.
+
+```typescript
+const run = await box.exec.command("node -e 'process.exit(1)'")
+
+console.log(run.status) // "failed"
+```
+
+---
+
+### Chain commands
+
+Pass a full shell expression. Pipes, redirects, and chained commands all work as expected.
+
+```typescript
+const run = await box.exec.command("cd /work && npm install && npm test")
+
+console.log(run.result)
+```
+
+---
+
+### Cancel a long-running command
+
+You can cancel a run to abort it. The status becomes `"cancelled"`.
+
+```typescript
+const run = await box.exec.command("sleep 10")
+await run.cancel()
+
+console.log(run.status) // "cancelled"
+```
+
+---
+
+### Retrieve logs
+
+After a command finishes, call `logs()` to get the full timestamped output for debugging or auditing.
+
+```typescript
+const run = await box.exec.command("npm test")
+const logs = await run.logs()
+
+console.log(logs)
+// [
+//   { timestamp: "2026-02-23T...", level: "info", message: "PASS src/auth.test.ts" },
+//   { timestamp: "2026-02-23T...", level: "info", message: "Tests: 12 passed, 12 total" },
+// ]
+```
+
+---
+
+## Patterns
+
+### Install dependencies before an agent run
+
+Set up the environment with `box.exec.command()`, then hand off to the agent.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: { model: ClaudeCode.Opus_4_6, apiKey: process.env.ANTHROPIC_API_KEY },
+  git: { token: process.env.GITHUB_TOKEN },
+})
+
+await box.git.clone({ repo: "github.com/your-org/your-api" })
+await box.exec.command("npm install")
+
+await box.agent.run({
+  prompt: "Run the test suite and fix any failing tests",
+})
+```
+
+### Run a build and extract artifacts
+
+Execute a build command, then download the output.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "node" })
+
+await box.files.upload([
+  { path: "./src", destination: "/work/src" },
+  { path: "./package.json", destination: "/work/package.json" },
+])
+
+await box.exec.command("cd /work && npm install && npm run build")
+await box.files.download({ path: "/work/dist" })
+await box.delete()
+```
+
+### Health-check before handing off
+
+Verify the environment is usable before starting a longer agent task.
+
+```typescript
+import { Box, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "python",
+  agent: { model: ClaudeCode.Opus_4_6, apiKey: process.env.ANTHROPIC_API_KEY },
+})
+
+const check = await box.exec.command("python3 --version && pip list")
+console.log(check.result)
+
+await box.agent.run({
+  prompt: "Write a data pipeline that reads /work/raw.csv, cleans it, and saves /work/clean.parquet",
+})
+```

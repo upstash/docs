@@ -1,0 +1,150 @@
+---
+title: "Build a Code Review Agent"
+---
+
+In this guide, we're building a code review agent (like CodeRabbit or Greptile) with Upstash Box. It works like a first-pass reviewer: clone a repo, inspect the PR diff, and return structured findings with severity and suggested fixes.
+
+---
+
+## Install
+
+```bash
+npm install @upstash/box zod
+```
+
+Set your environment variables:
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=abx_xxxxxxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+```
+
+---
+
+## Create the reviewer
+
+```typescript title="scripts/review-pr.ts"
+import { Box, Runtime, ClaudeCode } from "@upstash/box"
+import { writeFile } from "node:fs/promises"
+import { z } from "zod"
+
+const responseSchema = z.object({
+  verdict: z.enum(["approved", "changes_requested"]),
+  summary: z.string(),
+  findings: z.array(
+    z.object({
+      severity: z.enum(["high", "medium", "low"]),
+      file: z.string(),
+      line: z.number().nullable(),
+      issue: z.string(),
+      suggestion: z.string(),
+    }),
+  ),
+})
+
+type ReviewResult = z.infer<typeof responseSchema>
+
+const getRepoDir = (repo: string) =>
+  repo
+    .split("/")
+    .at(-1)!
+    .replace(/\.git$/, "")
+
+type PullRequestInput = {
+  repo: string
+  base: string
+  head: string
+}
+
+export async function reviewPullRequest(input: PullRequestInput): Promise<ReviewResult> {
+  const box = await Box.create({
+    runtime: "node",
+    agent: {
+      model: ClaudeCode.Opus_4_5,
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    },
+    git: { token: process.env.GITHUB_TOKEN },
+  })
+
+  try {
+    await box.git.clone({ repo: input.repo })
+
+    const repoDir = getRepoDir(input.repo)
+
+    const reviewRun = await box.agent.run({
+      responseSchema,
+      prompt: `
+Repository path: /work/${repoDir}
+Base branch: ${input.base}
+Head branch: ${input.head}
+
+Fetch both branches from origin, check out the head branch, and review only the code
+changed in origin/${input.base}...HEAD.
+
+Focus on:
+- correctness bugs
+- security issues
+- performance regressions
+- missing edge-case tests
+
+Rules:
+- Ignore style-only feedback.
+- Report only issues caused by changed code.
+- Keep each finding concrete and actionable.
+- Set verdict to "changes_requested" if there is at least one high severity issue.
+- If there are no meaningful issues, return verdict "approved" with empty findings.
+      `.trim(),
+    })
+
+    return reviewRun.result
+  } finally {
+    await box.delete()
+  }
+}
+
+const result = await reviewPullRequest({
+  repo: "github.com/your-org/your-repo",
+  base: "main",
+  head: "feature/my-change",
+})
+
+await writeFile("./review-result.json", JSON.stringify(result, null, 2))
+console.log(`Verdict: ${result.verdict}`)
+console.log(result.summary)
+
+for (const finding of result.findings) {
+  const line = finding.line === null ? "-" : String(finding.line)
+  console.log(`[${finding.severity}] ${finding.file}:${line}`)
+  console.log(`Issue: ${finding.issue}`)
+  console.log(`Suggestion: ${finding.suggestion}`)
+}
+```
+
+---
+
+## Run
+
+```bash
+npx tsx scripts/review-pr.ts
+```
+
+---
+
+## Use in CI
+
+Save the JSON result from your reviewer script, then fail the CI job when changes are required.
+
+```typescript title="scripts/check-review-result.ts"
+import { readFileSync } from "node:fs"
+
+const result = JSON.parse(readFileSync("./review-result.json", "utf8")) as {
+  verdict: "approved" | "changes_requested"
+}
+
+if (result.verdict === "changes_requested") {
+  process.exit(1)
+}
+```
+
+This gives you an automated gate similar to CodeRabbit or Greptile, running inside an isolated, durable Box.
