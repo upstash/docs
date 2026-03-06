@@ -1,3 +1,269 @@
 ---
 title: "Git"
 ---
+
+Clone a repository, inspect changes, commit work, push a branch, or open a pull request from inside a box.
+
+---
+
+## Configure Git Access
+
+If you want to work with private repositories, push changes, or create pull requests, create the box with a GitHub token.
+
+```bash title=".env" {2}
+UPSTASH_BOX_API_KEY=abx_xxxxxxxxxxxxxxxxxxxxxxxx
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+```tsx {5-7}
+import { Box, Runtime } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  git: {
+    token: process.env.GITHUB_TOKEN,
+  },
+})
+```
+
+---
+
+## Quickstart
+
+### Clone a repository
+
+```tsx
+await box.git.clone({
+  repo: "https://github.com/acme/web-app",
+  branch: "main",
+})
+
+await box.cd("web-app")
+
+await box.git.exec({
+  args: ["checkout", "-b", "fix/empty-state"],
+})
+```
+
+### Inspect what changed
+
+Use `status()` for a compact summary and `diff()` to diff the repo's uncommitted changes against the initial state.
+
+```tsx
+const status = await box.git.status()
+const diff = await box.git.diff()
+
+console.log(status)
+console.log(diff)
+```
+
+### Commit and push
+
+After your code changes are ready, create a commit and push the branch.
+
+```tsx
+const commit = await box.git.commit({
+  message: "fix: handle empty state in dashboard",
+})
+
+await box.git.push({ branch: "fix/empty-state" })
+
+console.log(commit.sha)
+console.log(commit.message)
+```
+
+### Open a pull request
+
+Create a PR once your branch is pushed.
+
+```tsx
+const pr = await box.git.createPR({
+  title: "fix: handle empty state in dashboard",
+  body: "Improves the dashboard empty state and avoids a broken loading flow.",
+  base: "main",
+})
+
+console.log(pr.url)
+```
+
+---
+
+## API
+
+### Clone
+
+Clones a repository into the current working directory in the box.
+
+```tsx
+await box.git.clone({
+  repo: "https://github.com/acme/api",
+})
+
+// 👇 you can also select a branch during clone:
+await box.git.clone({
+  repo: "https://github.com/acme/api",
+  branch: "develop",
+})
+```
+
+### Status
+
+Returns the Git status output for the repository in the current working directory.
+
+- See what files changed
+- See if there are there untracked files
+
+```tsx
+const status = await box.git.status()
+```
+
+### Diff
+
+Returns the current Git diff as a string.
+
+- Useful to display a patch in your UI
+- Review what an agent changed
+
+```tsx
+const diff = await box.git.diff()
+```
+
+### Commit
+
+Creates a commit and returns commit information including the SHA and message.
+
+```tsx
+const commit = await box.git.commit({
+  message: "feat: add onboarding checklist",
+})
+```
+
+### Push
+
+Pushes the current branch. You can also provide a branch name explicitly.
+
+```tsx
+// 👇 push to default branch
+await box.git.push()
+
+// 👇 or to a specific branch
+await box.git.push({
+  branch: "feature/onboarding-checklist",
+})
+```
+
+### Create a PR
+
+Creates a pull request and returns the PR URL and metadata.
+
+```tsx
+const pr = await box.git.createPR({
+  title: "feat: add onboarding checklist",
+  body: "Adds a simple onboarding checklist to improve first-run guidance.",
+  base: "main",
+})
+```
+
+### Checkout
+
+Switches to another branch in the current repository.
+
+```tsx
+await box.git.checkout({
+  branch: "release/v1.2.0",
+})
+```
+
+### Run a custom Git command
+
+Runs a raw Git command and returns the command output. Useful escape hatch if the built-in helpers don't cover a use case.
+
+```tsx
+const result = await box.git.exec({
+  args: ["branch", "--show-current"],
+})
+```
+
+---
+
+## Examples
+
+### Use Git with an agent
+
+If you configured a box agent, it also has full git access.
+
+This is especially useful when the exact git steps are not known ahead of time. For example, if the user sends an open-ended request, you may not know in advance what branch name, commit message, or final push flow makes sense.
+
+In that case, you can let the agent inspect the repository, decide what changes are needed, and handle the git workflow itself.
+
+```tsx
+import { Box, Runtime, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    model: ClaudeCode.Opus_4_6,
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  },
+  git: {
+    token: process.env.GITHUB_TOKEN,
+  },
+})
+
+await box.git.clone({
+  repo: "https://github.com/acme/web-app",
+  branch: "main",
+})
+
+await box.cd("web-app")
+
+const run = await box.agent.run({
+  prompt: `
+Inspect this repository and fix the broken mobile navigation.
+
+Create a branch with a sensible name, make the necessary code and test changes, commit the changes, then push the branch and open a pull request against main.`,
+})
+```
+
+### End-to-end PR automation
+
+```tsx
+import { Box, Runtime, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    model: ClaudeCode.Opus_4_6,
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  },
+  git: {
+    token: process.env.GITHUB_TOKEN,
+  },
+})
+
+await box.git.clone({
+  repo: "https://github.com/acme/docs-site",
+  branch: "main",
+})
+
+await box.cd("docs-site")
+
+await box.git.exec({
+  args: ["checkout", "-b", "docs/deployment-troubleshooting"],
+})
+
+await box.agent.run({
+  prompt: "Add a troubleshooting section to the deployment guide.",
+})
+
+await box.git.commit({
+  message: "docs: add deployment troubleshooting section",
+})
+
+await box.git.push({ branch: "docs/deployment-troubleshooting" })
+
+const pr = await box.git.createPR({
+  title: "docs: add deployment troubleshooting section",
+  base: "main",
+})
+```
