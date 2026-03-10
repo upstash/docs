@@ -166,7 +166,7 @@ components:
       type: object
       properties:
         waiter:
-          $ref: '#/components/schemas/Waiter'
+          $ref: "#/components/schemas/Waiter"
           description: The waiter that was notified.
         messageId:
           type: string
@@ -206,7 +206,7 @@ components:
           format: int64
           description: The timestamp when the workflow run was created (Unix timestamp in milliseconds).
         stepInfo:
-          $ref: '#/components/schemas/StepInfo'
+          $ref: "#/components/schemas/StepInfo"
         nextDeliveryTime:
           type: integer
           format: int64
@@ -342,7 +342,7 @@ components:
         steps:
           type: array
           items:
-            $ref: '#/components/schemas/StepInfo'
+            $ref: "#/components/schemas/StepInfo"
           description: Array of steps in this group.
         type:
           type: string
@@ -434,21 +434,21 @@ components:
         steps:
           type: array
           items:
-            $ref: '#/components/schemas/GroupedSteps'
+            $ref: "#/components/schemas/GroupedSteps"
           description: The workflow steps grouped by execution pattern.
         rawSteps:
           type: array
           items:
-            $ref: '#/components/schemas/StepInfo'
+            $ref: "#/components/schemas/StepInfo"
           description: Raw list of all steps (only included if rawSteps parameter is true).
         workflowRunResponse:
           type: string
           description: The response returned by the workflow run.
         invoker:
-          $ref: '#/components/schemas/InvokerContext'
+          $ref: "#/components/schemas/InvokerContext"
           description: Information about the workflow that invoked this one.
         failureFunction:
-          $ref: '#/components/schemas/FailureFunction'
+          $ref: "#/components/schemas/FailureFunction"
           description: Information about the failure callback if configured.
         dlqId:
           type: string
@@ -477,6 +477,19 @@ paths:
           schema:
             type: string
           description: Optional custom run ID for the workflow run. A random ID will be generated if not provided.
+        - name: Upstash-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers to your workflow.
+
+            To send a custom header, prefix the header name with `Upstash-Forward-`. We will strip prefix and send them to the destination.
+
+            | Header | Forwarded To Destination As |
+            |--------|--------------|
+            | Upstash-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
         - in: header
           name: Upstash-Retries
           required: false
@@ -484,19 +497,47 @@ paths:
             type: integer
             default: 3
           description: Number of retries for the workflow steps in case of failure.
-        - in: header
-          name: Upstash-Delay
-          required: false
+        - name: Upstash-Delay
+          in: header
+          schema:
+            type: string
+            examples:
+              - "50s"
+              - "1d10h30m"
+              - "10h"
+              - "1d"
+          description: |
+            Delay the message delivery.
+
+            The format of this header is `<value><unit>` where value is a number and unit is one of:
+            - `s` for seconds
+            - `m` for minutes
+            - `h` for hours.
+            - `d` for days.
+        - name: Upstash-Not-Before
+          in: header
           schema:
             type: integer
-            default: 0
-          description: Delay in seconds before starting the workflow run.
+          description: |
+            Delay the message delivery until a certain timestamp in the future.
+
+            The format is a unix timestamp in seconds, based on the UTC timezone.
+
+            When both `Upstash-Not-Before` and `Upstash-Delay` headers are provided, `Upstash-Not-Before` will take precedence.
+        - in: header
+          name: Upstash-Label
+          required: false
+          schema:
+            type: string
+          description: Optional label to attach to the workflow run for easier identification in logs and DLQ.    
         - in: header
           name: Upstash-Flow-Control-Key
           required: false
           schema:
             type: string
           description: Flow control key to manage concurrency for the workflow run. Steps with the same key will respect the same concurrency limit.
+
+           Make sure you pass `Upstash-Flow-Control-Value` header as well to define the limits for the key.
         - in: header
           name: Upstash-Flow-Control-Value
           required: false
@@ -505,18 +546,30 @@ paths:
           description: |
             Parallelism and rate limit configuration for the flow control key in the format:
              `parallelism=<value>, rate=<value>, period=<value>`.
-        - in: header
-          name: Upstash-Label
-          required: false
-          schema:
-            type: string
-          description: Optional label to attach to the workflow run for easier identification in logs and DLQ.
+            See [flow control](/workflow/features/flow-control) for details.
         - in: header
           name: Upstash-Failure-Callback
           required: false
           schema:
             type: string
-          description: Failure callback URL to be called if the workflow run fails after all retries.
+          description: |
+            Failure callback URL to be called if the workflow run fails after all retries. That is when all the defined retries are exhausted. To call the failure function defined on server, this options should be left empty. A url should be given with this header only to call a different endpoint on failure. See [failureUrl](https://upstash.com/docs/workflow/features/failureFunction/advanced).
+            
+            - Failure callback URL must be prefixed with a valid protocol (http:// or https://)
+            - Failure callbacks are charged as a regular message.
+            - Failure callbacks will use the retry setting from the original request.
+        - name: Upstash-Failure-Callback-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers along with your failure callback message.
+            To send a custom header, prefix the header name with `Upstash-Failure-Callback-Forward-`. We will strip prefix and them to the failure callback URL.
+            
+            | Header | Forwarded To Callback Destination As |
+            |--------|--------------|
+            | Upstash-Failure-Callback-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Failure-Callback-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
         - name: Upstash-Retry-Delay
           in: header
           schema:
@@ -525,9 +578,9 @@ paths:
             Customize the delay between retry attempts when step delivery fails.
 
             By default, Upstash Workflow uses [exponential backoff](/qstash/features/retry). You can override this by providing a mathematical expressions to compute next delay. This expression is computed after each failed attempt.
-            
+
             You can use the special variable `retried`, which is how many times the message has been retried. The `retried` is 0 for the first retry.
-            
+
             Supported functions: 
             | Function    | Description                          |
             |-------------|--------------------------------------|
@@ -540,7 +593,7 @@ paths:
             | `round(x)`| Rounds x to the nearest integer|
             | `min(x, y)`| Returns the smaller of x and y|
             | `max(x, y)`| Returns the larger of x and y|
-            
+
             Examples:
             - `1000`: Fixed 1 second delay
             - `1000 * (1 + retried)`: Linear backoff
@@ -561,7 +614,7 @@ paths:
               type: string
               format: binary
       responses:
-        '200':
+        "200":
           description: Workflow triggered successfully
           content:
             application/json:
@@ -575,24 +628,24 @@ paths:
                     type: number
                     format: date-time
                     description: The timestamp when the workflow run was created.
-        '400':
+        "400":
           description: Bad Request
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/workflows/runs/{workflowRunId}:
     delete:
       tags:
@@ -607,7 +660,7 @@ paths:
             type: string
           description: The ID of the workflow run to cancel.
       responses:
-        '200':
+        "200":
           description: Workflow run cancelled successfully
   /v2/workflows/runs:
     delete:
@@ -671,7 +724,7 @@ paths:
           description: Maximum number of workflow runs to cancel. Default is 100.
 
       responses:
-        '200':
+        "200":
           description: All workflow runs cancelled successfully
           content:
             application/json:
@@ -746,7 +799,7 @@ paths:
             type: string
           description: Override the failure callback URL for the remaining workflow steps.
       responses:
-        '200':
+        "200":
           description: Workflow resumed successfully
           content:
             application/json:
@@ -760,30 +813,30 @@ paths:
                     type: integer
                     format: int64
                     description: The timestamp when the resumed workflow run was created (Unix timestamp in milliseconds).
-        '400':
+        "400":
           description: Bad Request - Invalid DLQ ID, not a workflow message, or workflow doesn't support resume
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: DLQ message not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/workflows/dlq/resume:
     post:
       tags:
@@ -920,7 +973,7 @@ paths:
             type: string
           description: Override the failure callback URL for the remaining workflow steps.
       responses:
-        '200':
+        "200":
           description: Workflows resumed successfully
           content:
             application/json:
@@ -943,30 +996,30 @@ paths:
                   cursor:
                     type: string
                     description: Pagination cursor to use in subsequent requests. If empty, all matching workflows have been processed.
-        '400':
+        "400":
           description: Bad Request
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: Some DLQ messages were not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/workflows/dlq/restart/{dlqId}:
     post:
       tags:
@@ -1032,7 +1085,7 @@ paths:
             type: string
           description: Override the failure callback URL for the workflow.
       responses:
-        '200':
+        "200":
           description: Workflow restarted successfully
           content:
             application/json:
@@ -1046,30 +1099,30 @@ paths:
                     type: integer
                     format: int64
                     description: The timestamp when the restarted workflow run was created (Unix timestamp in milliseconds).
-        '400':
+        "400":
           description: Bad Request - Invalid DLQ ID, not a workflow message, or workflow doesn't support restart
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: DLQ message not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/workflows/dlq/restart:
     post:
       tags:
@@ -1206,7 +1259,7 @@ paths:
             type: string
           description: Override the failure callback URL for the workflows.
       responses:
-        '200':
+        "200":
           description: Workflows restarted successfully
           content:
             application/json:
@@ -1229,30 +1282,30 @@ paths:
                   cursor:
                     type: string
                     description: Pagination cursor to use in subsequent requests. If empty, all matching workflows have been processed.
-        '400':
+        "400":
           description: Bad Request
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: Some DLQ messages were not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/workflows/dlq:
     get:
       tags:
@@ -1345,7 +1398,7 @@ paths:
             type: string
           description: Filter by Flow Control Key.
       responses:
-        '200':
+        "200":
           description: List of failed workflow runs
           content:
             application/json:
@@ -1358,26 +1411,26 @@ paths:
                   messages:
                     type: array
                     items:
-                      $ref: '#/components/schemas/WorkflowDLQMessage'
+                      $ref: "#/components/schemas/WorkflowDLQMessage"
                     description: Array of failed workflow messages.
-        '400':
+        "400":
           description: Bad Request
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
     delete:
       tags:
         - DLQ
@@ -1466,7 +1519,7 @@ paths:
             type: string
           description: Filter by Flow Control Key.
       responses:
-        '200':
+        "200":
           description: Workflows deleted successfully
           content:
             application/json:
@@ -1480,24 +1533,24 @@ paths:
                   cursor:
                     type: string
                     description: Pagination cursor for the next batch. Only present when using filters without DLQ IDs.
-        '400':
+        "400":
           description: Bad Request
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/workflows/dlq/{dlqId}:
     get:
       tags:
@@ -1513,36 +1566,36 @@ paths:
             type: string
           description: The DLQ ID of the failed workflow run.
       responses:
-        '200':
+        "200":
           description: Failed workflow run details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WorkflowDLQMessage'
-        '400':
+                $ref: "#/components/schemas/WorkflowDLQMessage"
+        "400":
           description: Bad Request - Invalid DLQ ID
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: DLQ message not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
     delete:
       tags:
         - DLQ
@@ -1560,28 +1613,28 @@ paths:
             type: string
           description: The DLQ ID of the failed workflow run to delete.
       responses:
-        '200':
+        "200":
           description: Workflow deleted successfully
-        '400':
+        "400":
           description: Bad Request - Invalid DLQ ID
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: DLQ message not found
-        '500':
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/workflows/dlq/callback/{dlqId}:
     post:
       tags:
@@ -1604,7 +1657,7 @@ paths:
             type: string
           description: The DLQ ID of the failed workflow run whose failure callback should be retried.
       responses:
-        '200':
+        "200":
           description: Failure callback retried successfully
           content:
             application/json:
@@ -1618,30 +1671,30 @@ paths:
                     type: integer
                     format: int64
                     description: The timestamp when the workflow run was created (Unix timestamp in milliseconds).
-        '400':
+        "400":
           description: Bad Request. Workflow doesn't have a failed callback, callback is already in-progress, succeeded, or was canceled
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: DLQ message not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
     delete:
       tags:
         - DLQ
@@ -1662,32 +1715,32 @@ paths:
             type: string
           description: The DLQ ID of the workflow run whose in-progress failure callback should be canceled.
       responses:
-        '302':
+        "302":
           description: Failure callback canceled successfully
-        '400':
+        "400":
           description: Bad Request - No in-progress failure callback to cancel, or callback information is invalid
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: Failure callback not found or message not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/flowControl:
     get:
       tags:
@@ -1707,33 +1760,33 @@ paths:
             type: string
           description: Optional search string to filter flow control keys by name. Only keys containing this string will be returned.
       responses:
-        '200':
+        "200":
           description: Flow control keys retrieved successfully
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/FlowControlKey'
+                  $ref: "#/components/schemas/FlowControlKey"
                 description: Array of flow control keys sorted by waitlist size in descending order, limited to 1000 results.
-        '400':
+        "400":
           description: Bad Request
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/flowControl/{flowControlKey}:
     get:
       tags:
@@ -1753,36 +1806,36 @@ paths:
             type: string
           description: The Flow Control key to retrieve.
       responses:
-        '200':
+        "200":
           description: Flow control key details
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FlowControlKey'
-        '400':
+                $ref: "#/components/schemas/FlowControlKey"
+        "400":
           description: Bad Request
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '404':
+                $ref: "#/components/schemas/Error"
+        "404":
           description: Flow Control key not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/notify/{eventId}:
     post:
       tags:
@@ -1821,39 +1874,39 @@ paths:
               type: string
               format: binary
       responses:
-        '201':
+        "201":
           description: Event notification sent successfully
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/NotifyResponse'
+                  $ref: "#/components/schemas/NotifyResponse"
                 description: Array of notification results, one for each notified waiter.
-        '400':
+        "400":
           description: Bad Request - Invalid event ID
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '429':
+                $ref: "#/components/schemas/Error"
+        "429":
           description: Rate Limit Exceeded
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/notify/{workflowRunId}/{eventId}:
     post:
       tags:
@@ -1901,36 +1954,36 @@ paths:
               type: string
               format: binary
       responses:
-        '201':
+        "201":
           description: Event notification sent or saved successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NotifyResponse'
-        '400':
+                $ref: "#/components/schemas/NotifyResponse"
+        "400":
           description: Bad Request - Invalid workflow run ID or event ID
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '429':
+                $ref: "#/components/schemas/Error"
+        "429":
           description: Rate Limit Exceeded
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/waiters/{eventId}:
     get:
       tags:
@@ -1948,33 +2001,33 @@ paths:
             type: string
           description: The event ID to list waiters for.
       responses:
-        '200':
+        "200":
           description: List of active waiters
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Waiter'
+                  $ref: "#/components/schemas/Waiter"
                 description: Array of waiters currently listening for this event.
-        '400':
+        "400":
           description: Bad Request - Invalid event ID
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
   /v2/workflows/logs:
     get:
       tags:
@@ -2087,7 +2140,7 @@ paths:
             Include raw, ungrouped step list in workflow runs (only applies when groupBy=workflowRunId).
             By default, steps are grouped by execution pattern (parallel/sequential).
       responses:
-        '200':
+        "200":
           description: Workflow logs retrieved successfully
           content:
             application/json:
@@ -2102,7 +2155,7 @@ paths:
                       events:
                         type: array
                         items:
-                          $ref: '#/components/schemas/WorkflowEvent'
+                          $ref: "#/components/schemas/WorkflowEvent"
                         description: Array of workflow events (state transitions, step completions, errors).
                   - type: object
                     title: Run Mode Response (groupBy=workflowRunId)
@@ -2113,29 +2166,29 @@ paths:
                       runs:
                         type: array
                         items:
-                          $ref: '#/components/schemas/WorkflowRun'
+                          $ref: "#/components/schemas/WorkflowRun"
                         description: Array of complete workflow runs with all steps and metadata.
-        '400':
+        "400":
           description: Bad Request - Invalid parameters (e.g., invalid cursor, state, or groupBy value)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '401':
+                $ref: "#/components/schemas/Error"
+        "401":
           description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '429':
+                $ref: "#/components/schemas/Error"
+        "429":
           description: Too Many Requests - Rate limit exceeded
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
+                $ref: "#/components/schemas/Error"
+        "500":
           description: Internal Server Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
