@@ -662,19 +662,25 @@ paths:
       responses:
         "200":
           description: Workflow run cancelled successfully
+        "404":
+          description: A workflow run is not found with the given id. 
+        "500":
+          description: An unexpected error occured.
   /v2/workflows/runs:
     delete:
-      tags:
-        - Runs
       summary: Bulk Cancel Workflow Runs
       description: Cancel all matching workflow runs.
+      tags:
+        - Runs
+      x-mint:      
+        content: |
+          <Warning>If you provide a list of workflow run IDs in the request body, only those specific workflow runs will be canceled. If you include the workflow URL parameter, all workflow runs matching the URL filter will be canceled. If the request body is empty, all workflow runs will be canceled.</Warning>
+
+          This operation scans all your workflow runs and attempts to cancel them.
+          If a specific workflow run cannot be canceled, it will return an error message.
+          Therefore, some workflow runs may not be cancelled at the end. 
+          In such cases, you can run the bulk cancel operation multiple times.
       parameters:
-        - in: query
-          name: workflowUrl
-          required: true
-          schema:
-            type: string
-          description: The URL of the workflow whose runs to cancel.
         - in: query
           name: workflowRunIds
           required: false
@@ -683,6 +689,19 @@ paths:
             items:
               type: string
           description: Optional list of specific workflow run IDs to cancel. If provided, the other filters are ignored.
+        - in: query
+          name: workflowUrl
+          required: true
+          schema:
+            type: string
+          description: The URL of the workflow whose runs to cancel.
+        - in: query
+          name: workflowUrlExactMatch
+          required: false
+          schema:
+            type: bool
+            default: false
+          description: workflow url is searched as a prefix by default. To make it exact match, `workflowUrlExactMatch` can be set to true.
         - in: query
           name: fromDate
           required: false
@@ -739,16 +758,23 @@ paths:
       tags:
         - DLQ
       summary: Resume Workflow from DLQ
-      description: |
-        Resume a failed workflow run from the DLQ. The workflow will continue from where it failed.
+      x-mint:      
+        content: |
+          When a workflow run fails, it's automatically moved to the DLQ (Dead Letter Queue) where it can be analyzed and resumed. 
+          The resume feature allows you to continue a failed workflow run from exactly where it failed, without re-executing successfully completed steps.
 
-        When a workflow is resumed, it continues execution from the last failed step. A new workflow run ID is generated,
-        but the workflow maintains the state and results from previously completed steps.
+          This is particularly useful for long-running workflows where you don't want to lose progress from successful steps when a single step fails.
 
-        You can pass configuration headers (with `Upstash-` prefix) to override the configuration of the workflow steps.
-        For example, to change the retry count for remaining steps, pass `Upstash-Retries: 5` header.
-        Available configuration headers include: `Upstash-Retries`, `Upstash-Delay`, `Upstash-Retry-Delay`,
-        `Upstash-Flow-Control-Key`, `Upstash-Flow-Control-Value`, `Upstash-Label`, and `Upstash-Failure-Callback`.
+          When a workflow is resumed, it continues execution from the last failed step. A new workflow run ID is generated,
+          but the workflow maintains the state and results from previously completed steps.
+
+          <Note>
+            You can make changes to the workflow code as long as these changes come after the failed steps. 
+            However, making changes before the failed step will break the code and is not allowed.
+
+            For more details, check out [Handle workflow route code changes](/workflow/howto/changes) page.
+          </Note>
+
       parameters:
         - in: path
           name: dlqId
@@ -843,15 +869,20 @@ paths:
         - DLQ
       summary: Bulk Resume Workflows from DLQ
       description: |
-        Resume multiple failed workflow runs from the DLQ. Each workflow will continue from where it failed.
+        When a workflow run fails, it's automatically moved to the DLQ (Dead Letter Queue) where it can be analyzed and resumed. 
+          The resume feature allows you to continue a failed workflow run from exactly where it failed, without re-executing successfully completed steps.
 
-        When workflows are resumed, they continue execution from their last failed step. New workflow run IDs are generated,
-        but the workflows maintain the state and results from previously completed steps.
+          This is particularly useful for long-running workflows where you don't want to lose progress from successful steps when a single step fails.
 
-        You can pass configuration headers (with `Upstash-` prefix) to override the configuration of the workflow steps.
-        For example, to change the retry count for remaining steps, pass `Upstash-Retries: 5` header.
-        Available configuration headers include: `Upstash-Retries`, `Upstash-Delay`, `Upstash-Retry-Delay`,
-        `Upstash-Flow-Control-Key`, `Upstash-Flow-Control-Value`, `Upstash-Label`, and `Upstash-Failure-Callback`.
+          When a workflow is resumed, it continues execution from the last failed step. A new workflow run ID is generated,
+          but the workflow maintains the state and results from previously completed steps.
+
+          <Note>
+            You can make changes to the workflow code as long as these changes come after the failed steps. 
+            However, making changes before the failed step will break the code and is not allowed.
+
+            For more details, check out [Handle workflow route code changes](/workflow/howto/changes) page.
+          </Note>
       parameters:
         - in: query
           name: dlqIds
@@ -917,7 +948,15 @@ paths:
           required: false
           schema:
             type: string
-          description: Filter workflows by failure function state.
+          description: |
+            Filter workflows by failure function state.
+
+            | State | Description |
+            |--------|--------------|
+            | CALLBACK_INPROGRESS | The failure function is in progress. |
+            | CALLBACK_SUCCESS | The failure function run successfully. |
+            | CALLBACK_FAIL | The failure function failed to run. |
+            | CALLBACK_CANCELED | The failure function was manually canceled |
         - in: query
           name: callerIp
           required: false
@@ -1030,11 +1069,6 @@ paths:
 
         Unlike resume, which continues from where the workflow failed, restart executes the entire workflow
         from the first step. A new workflow run ID is generated and all steps will be executed again.
-
-        You can pass configuration headers (with `Upstash-` prefix) to override the configuration of the workflow.
-        For example, to change the retry count, pass `Upstash-Retries: 5` header.
-        Available configuration headers include: `Upstash-Retries`, `Upstash-Delay`, `Upstash-Retry-Delay`,
-        `Upstash-Flow-Control-Key`, `Upstash-Flow-Control-Value`, `Upstash-Label`, and `Upstash-Failure-Callback`.
       parameters:
         - in: path
           name: dlqId
@@ -1134,10 +1168,8 @@ paths:
         Unlike resume, which continues from where workflows failed, restart executes the entire workflows
         from the first step. New workflow run IDs are generated and all steps will be executed again.
 
-        You can pass configuration headers (with `Upstash-` prefix) to override the configuration of the workflows.
-        For example, to change the retry count, pass `Upstash-Retries: 5` header.
-        Available configuration headers include: `Upstash-Retries`, `Upstash-Delay`, `Upstash-Retry-Delay`,
-        `Upstash-Flow-Control-Key`, `Upstash-Flow-Control-Value`, `Upstash-Label`, and `Upstash-Failure-Callback`.
+        A maximum of 50 workflow runs can be restarted per request. If more runs are available, a cursor is returned, which can be used in subsequent requests to continue the operation. When no cursor is returned, all entries have been processed.
+        Each restarted workflow run is assigned a new random Run ID.
       parameters:
         - in: query
           name: dlqIds
@@ -1203,7 +1235,15 @@ paths:
           required: false
           schema:
             type: string
-          description: Filter workflows by failure function state.
+          description: |
+            Filter workflows by failure function state.
+
+            | State | Description |
+            |--------|--------------|
+            | CALLBACK_INPROGRESS | The failure function is in progress. |
+            | CALLBACK_SUCCESS | The failure function run successfully. |
+            | CALLBACK_FAIL | The failure function failed to run. |
+            | CALLBACK_CANCELED | The failure function was manually canceled |
         - in: query
           name: callerIp
           required: false
