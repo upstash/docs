@@ -419,7 +419,15 @@ components:
           description: The URL of the workflow.
         workflowState:
           type: string
-          description: The current state of the workflow run (e.g., RUNNING, SUCCESS, FAILED).
+          description: |
+            The current state of the workflow run 
+
+            | Value          | Description                                                    |
+              | -------------- | -------------------------------------------------------------- |
+              | `RUN_STARTED`  | The workflow has started to run and currently in progress.     |
+              | `RUN_SUCCESS`  | The workflow run has completed succesfully.                    |
+              | `RUN_FAILED`   | Some errors has occured and workflow failed after all retries. |
+              | `RUN_CANCELED` | The workflow run has canceled upon user request.               |
         workflowRunCreatedAt:
           type: integer
           format: int64
@@ -435,12 +443,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/GroupedSteps"
-          description: The workflow steps grouped by execution pattern.
-        rawSteps:
-          type: array
-          items:
-            $ref: "#/components/schemas/StepInfo"
-          description: Raw list of all steps (only included if rawSteps parameter is true).
+          description: The workflow steps grouped by execution pattern.       
         workflowRunResponse:
           type: string
           description: The response returned by the workflow run.
@@ -456,6 +459,9 @@ components:
         label:
           type: string
           description: Label assigned to the workflow run.
+        flowControlKey:
+          type: string
+          description: Flow Control Key assigned to the workflow run.  
 
 paths:
   /v2/trigger/{workflowUrl}:
@@ -529,15 +535,16 @@ paths:
           required: false
           schema:
             type: string
-          description: Optional label to attach to the workflow run for easier identification in logs and DLQ.    
+          description: Optional label to attach to the workflow run for easier identification in logs and DLQ.
         - in: header
           name: Upstash-Flow-Control-Key
           required: false
           schema:
             type: string
-          description: Flow control key to manage concurrency for the workflow run. Steps with the same key will respect the same concurrency limit.
+          description:
+            Flow control key to manage concurrency for the workflow run. Steps with the same key will respect the same concurrency limit.
 
-           Make sure you pass `Upstash-Flow-Control-Value` header as well to define the limits for the key.
+            Make sure you pass `Upstash-Flow-Control-Value` header as well to define the limits for the key.
         - in: header
           name: Upstash-Flow-Control-Value
           required: false
@@ -554,7 +561,7 @@ paths:
             type: string
           description: |
             Failure callback URL to be called if the workflow run fails after all retries. That is when all the defined retries are exhausted. To call the failure function defined on server, this options should be left empty. A url should be given with this header only to call a different endpoint on failure. See [failureUrl](https://upstash.com/docs/workflow/features/failureFunction/advanced).
-            
+
             - Failure callback URL must be prefixed with a valid protocol (http:// or https://)
             - Failure callbacks are charged as a regular message.
             - Failure callbacks will use the retry setting from the original request.
@@ -565,7 +572,7 @@ paths:
           description: |
             You can send custom headers along with your failure callback message.
             To send a custom header, prefix the header name with `Upstash-Failure-Callback-Forward-`. We will strip prefix and them to the failure callback URL.
-            
+
             | Header | Forwarded To Callback Destination As |
             |--------|--------------|
             | Upstash-Failure-Callback-Forward-My-Header: my-value | My-Header: my-value |
@@ -663,16 +670,171 @@ paths:
         "200":
           description: Workflow run cancelled successfully
         "404":
-          description: A workflow run is not found with the given id. 
+          description: A workflow run is not found with the given id.
         "500":
           description: An unexpected error occured.
+  /v2/workflows/logs:
+    get:
+      tags:
+        - Runs
+      summary: List Workflow Run Logs
+      x-mint: content |
+        You can fetch details about workflow runs, including their state, completed and in-progress steps, and step details.
+
+        The retention duration for completed workflow runs depends on your quota. Please check the [pricing](https://upstash.com/pricing/workflow) page for details.
+        <Note>
+        If you have executed multiple workflow runs with the same workflowRunId, the `workflowRunId` filter will return all of them.
+
+        To uniquely identify a single workflow run, include the `workflowCreatedAt` timestamp in your filter.
+        </Note>
+      parameters:
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor for fetching the next page of results.
+        - in: query
+          name: workflowUrl
+          required: false
+          schema:
+            type: string
+          description: Filter by workflow URL (exact match). Must start with http:// or https://.
+        - in: query
+          name: workflowRunId
+          required: false
+          schema:
+            type: string
+          description: Filter by specific workflow run ID..
+        - in: query
+          name: workflowCreatedAt
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter by workflow creation timestamp in milliseconds (Unix timestamp).
+        - in: query
+          name: state
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter by workflow or step state. Common states include:
+
+            | Value          | Description                                                    |
+            | -------------- | -------------------------------------------------------------- |
+            | `RUN_STARTED`  | The workflow has started to run and currently in progress.     |
+            | `RUN_SUCCESS`  | The workflow run has completed succesfully.                    |
+            | `RUN_FAILED`   | Some errors has occured and workflow failed after all retries. |
+            | `RUN_CANCELED` | The workflow run has canceled upon user request.               |
+            | `STEP_SUCCESS` | The step succesfully fnished.               |
+            | `STEP_RETRY` | The step is being retried.               |
+            | `STEP_FAILED` | The step is failed.               |
+            | `STEP_PROGRESS` | The step is in progress.                |
+            | `STEP_CANCELED` | The step is cancelled manually.               |
+        - in: query
+          name: fromDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter events from this date onwards in milliseconds (Unix timestamp). Inclusive.
+        - in: query
+          name: toDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter events up to this date in milliseconds (Unix timestamp). Inclusive.
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: integer
+            default: 1000
+            maximum: 1000
+          description: |
+            Maximum number of results to return per page.
+            - Event mode: Max 1000 (default 1000)
+            - Run mode (groupBy=workflowRunId): Max 10 (default 10)
+        - in: query
+          name: trimBody
+          required: false
+          schema:
+            type: integer
+            default: -1
+          description: |
+            Trim request/response bodies to this many bytes. Use -1 to exclude bodies entirely.
+            Useful for reducing response size when bodies are large.
+        - in: query
+          name: label
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter workflow run by the label assigned by the user.
+        - in: query
+          name: flowControlKey
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter workflow run by the flow control key assigned by the user on trigger.
+
+        - in: query
+          name: callerIp
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter workflow run by the callerIp that started to workflow run.
+      responses:
+        "200":
+          description: Workflow logs retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor:
+                    type: string
+                    description: Pagination cursor for the next page. Empty if no more results.
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowRun"
+                    description: Array of complete workflow runs with all steps and metadata.
+        "400":
+          description: Bad Request - Invalid parameters (e.g., invalid cursor, state, or groupBy value)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too Many Requests - Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v2/workflows/runs:
     delete:
       summary: Bulk Cancel Workflow Runs
       description: Cancel all matching workflow runs.
       tags:
         - Runs
-      x-mint:      
+      x-mint:
         content: |
           <Warning>If you provide a list of workflow run IDs in the request body, only those specific workflow runs will be canceled. If you include the workflow URL parameter, all workflow runs matching the URL filter will be canceled. If the request body is empty, all workflow runs will be canceled.</Warning>
 
@@ -699,7 +861,7 @@ paths:
           name: workflowUrlExactMatch
           required: false
           schema:
-            type: bool
+            type: boolean
             default: false
           description: workflow url is searched as a prefix by default. To make it exact match, `workflowUrlExactMatch` can be set to true.
         - in: query
@@ -758,7 +920,7 @@ paths:
       tags:
         - DLQ
       summary: Resume Workflow from DLQ
-      x-mint:      
+      x-mint:
         content: |
           When a workflow run fails, it's automatically moved to the DLQ (Dead Letter Queue) where it can be analyzed and resumed. 
           The resume feature allows you to continue a failed workflow run from exactly where it failed, without re-executing successfully completed steps.
@@ -2058,170 +2220,6 @@ paths:
                 $ref: "#/components/schemas/Error"
         "401":
           description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500":
-          description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-  /v2/workflows/logs:
-    get:
-      tags:
-        - Logs
-      summary: List Workflow Run Logs
-      description: |
-        List and filter workflow run logs with detailed execution information.
-
-        This endpoint provides comprehensive visibility into workflow executions. It supports two modes:
-
-        **Event Mode (default):** Returns individual workflow events (state transitions, step completions, errors).
-        Use this mode to track detailed execution history and debug specific steps.
-
-        **Run Mode (groupBy=workflowRunId):** Returns complete workflow runs with all steps grouped together.
-        Use this mode to get a holistic view of workflow executions and their final states.
-
-        The endpoint supports powerful filtering by workflow URL, run ID, state, date range, and more.
-        Results are paginated using a cursor for efficient browsing of large datasets.
-      parameters:
-        - in: query
-          name: cursor
-          required: false
-          schema:
-            type: string
-          description: Pagination cursor for fetching the next page of results.
-        - in: query
-          name: groupBy
-          required: false
-          schema:
-            type: string
-            enum: [workflowRunId]
-          description: |
-            Group results by workflow run. When set to "workflowRunId", returns complete workflow runs
-            instead of individual events. Maximum 10 runs per page when grouped (vs 1000 events in event mode).
-        - in: query
-          name: workflowUrl
-          required: false
-          schema:
-            type: string
-          description: Filter by workflow URL (exact match). Must start with http:// or https://.
-        - in: query
-          name: workflowRunId
-          required: false
-          schema:
-            type: string
-          description: Filter by specific workflow run ID. When used with groupBy=workflowRunId, count must be 1.
-        - in: query
-          name: workflowCreatedAt
-          required: false
-          schema:
-            type: integer
-            format: int64
-          description: Filter by workflow creation timestamp in milliseconds (Unix timestamp).
-        - in: query
-          name: messageId
-          required: false
-          schema:
-            type: string
-          description: Filter by specific message ID.
-        - in: query
-          name: state
-          required: false
-          schema:
-            type: string
-          description: |
-            Filter by workflow or step state. Common states include:
-            - RUN_STARTED, RUN_SUCCESS, RUN_FAILED, RUN_CANCELED
-            - STEP_SUCCESS, STEP_RETRY, STEP_FAILED, STEP_PROGRESS, STEP_CANCELED
-        - in: query
-          name: fromDate
-          required: false
-          schema:
-            type: integer
-            format: int64
-          description: Filter events from this date onwards in milliseconds (Unix timestamp). Inclusive.
-        - in: query
-          name: toDate
-          required: false
-          schema:
-            type: integer
-            format: int64
-          description: Filter events up to this date in milliseconds (Unix timestamp). Inclusive.
-        - in: query
-          name: count
-          required: false
-          schema:
-            type: integer
-            default: 1000
-            maximum: 1000
-          description: |
-            Maximum number of results to return per page.
-            - Event mode: Max 1000 (default 1000)
-            - Run mode (groupBy=workflowRunId): Max 10 (default 10)
-        - in: query
-          name: trimBody
-          required: false
-          schema:
-            type: integer
-            default: -1
-          description: |
-            Trim request/response bodies to this many bytes. Use -1 to exclude bodies entirely.
-            Useful for reducing response size when bodies are large.
-        - in: query
-          name: rawSteps
-          required: false
-          schema:
-            type: boolean
-            default: false
-          description: |
-            Include raw, ungrouped step list in workflow runs (only applies when groupBy=workflowRunId).
-            By default, steps are grouped by execution pattern (parallel/sequential).
-      responses:
-        "200":
-          description: Workflow logs retrieved successfully
-          content:
-            application/json:
-              schema:
-                oneOf:
-                  - type: object
-                    title: Event Mode Response
-                    properties:
-                      cursor:
-                        type: string
-                        description: Pagination cursor for the next page. Empty if no more results.
-                      events:
-                        type: array
-                        items:
-                          $ref: "#/components/schemas/WorkflowEvent"
-                        description: Array of workflow events (state transitions, step completions, errors).
-                  - type: object
-                    title: Run Mode Response (groupBy=workflowRunId)
-                    properties:
-                      cursor:
-                        type: string
-                        description: Pagination cursor for the next page. Empty if no more results.
-                      runs:
-                        type: array
-                        items:
-                          $ref: "#/components/schemas/WorkflowRun"
-                        description: Array of complete workflow runs with all steps and metadata.
-        "400":
-          description: Bad Request - Invalid parameters (e.g., invalid cursor, state, or groupBy value)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "429":
-          description: Too Many Requests - Rate limit exceeded
           content:
             application/json:
               schema:
