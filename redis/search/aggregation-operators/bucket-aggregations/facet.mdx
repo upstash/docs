@@ -1,0 +1,170 @@
+---
+title: $facet
+---
+
+`$facet` builds a hierarchical bucket tree from FACET field paths.
+
+Use it for category navigation and drill-down style faceting.
+
+### Compatibility
+
+| Field Type | Supported |
+|------------|-----------|
+| TEXT | No |
+| U64/I64/F64 | No |
+| DATE | No |
+| BOOL | No |
+| KEYWORD | No |
+| FACET | Yes |
+
+### Arguments
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `field` | `string` | Yes | FACET field name. |
+| `path` | `string` | Yes | Root path to expand. Must start with `/`. |
+| `depth` | `number` | No | Levels to traverse (`>= 1`). Default: `1`. |
+| `size` | `number` | No | Max children per level. Default: `10`. |
+| `minDocCount` | `number` | No | Minimum docs required for a child bucket. Default: `1`. |
+| `order` | `object` | No | One-key order object: `{ "count": "asc\|desc" }` or `{ "path": "asc\|desc" }`. Default: `{ "count": "desc" }`. |
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await index.aggregate({
+  aggregations: {
+    by_category: {
+      $facet: {
+        field: "category",
+        path: "/category",
+      },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.aggregate(
+    aggregations={
+        "by_category": {
+            "$facet": {
+                "field": "category",
+                "path": "/category",
+            }
+        }
+    }
+)
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.AGGREGATE products '{}' '{"by_category": {"$facet": {"field": "category", "path": "/category"}}}'
+```
+</Tab>
+
+</Tabs>
+
+### Output
+
+```json
+{
+  "by_category": {
+    "path": "/category",
+    "sumOtherDocCount": 0,
+    "children": [
+      { "path": "/category/books", "docCount": 12, "sumOtherDocCount": 0 },
+      { "path": "/category/electronics", "docCount": 9, "sumOtherDocCount": 0 }
+    ]
+  }
+}
+```
+
+- Increase `depth` for multi-level facet trees.
+- Use `size` and `minDocCount` to control noise and response size.
+- Use `order` to sort by count or by path.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await index.aggregate({
+  aggregations: {
+    category_tree: {
+      $facet: {
+        field: "category",
+        path: "/category",
+        depth: 2,
+        size: 10,
+        minDocCount: 1,
+        order: { count: "desc" },
+      },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.aggregate(
+    aggregations={
+        "category_tree": {
+            "$facet": {
+                "field": "category",
+                "path": "/category",
+                "depth": 2,
+                "size": 10,
+                "minDocCount": 1,
+                "order": {"count": "desc"},
+            }
+        }
+    }
+)
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.AGGREGATE products '{}' '{"category_tree": {"$facet": {"field": "category", "path": "/category", "depth": 2, "size": 10, "minDocCount": 1, "order": {"count": "desc"}}}}'
+```
+</Tab>
+
+</Tabs>
+
+With `depth: 2`, the response includes nested children:
+
+```json
+{
+  "by_cat": {
+    "path": "/category",
+    "sumOtherDocCount": 0,
+    "children": [
+      {
+        "docCount": 2,
+        "path": "/category/books",
+        "sumOtherDocCount": 0,
+        "children": [
+          { "docCount": 1, "path": "/category/books/fiction", "sumOtherDocCount": 0 },
+          { "docCount": 1, "path": "/category/books/nonfiction", "sumOtherDocCount": 0 }
+        ]
+      },
+      {
+        "docCount": 2,
+        "path": "/category/electronics",
+        "sumOtherDocCount": 0,
+        "children": [
+          { "docCount": 1, "path": "/category/electronics/laptops", "sumOtherDocCount": 0 },
+          { "docCount": 1, "path": "/category/electronics/phones", "sumOtherDocCount": 0 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- `$facet` cannot contain `$aggs`.
+- `$facet` cannot be used as a sub-aggregation inside another `$aggs` block.
