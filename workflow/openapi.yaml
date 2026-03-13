@@ -1949,54 +1949,290 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/Error" 
   /v2/flowControl:
     get:
+      summary: List Flow Control Keys
+      description: List all Flow Control keys
       tags:
         - Flow Control
-      summary: List Flow Control Keys
-      description: |
-        List all Flow Control keys used in workflows.
-
-        Flow Control keys are used to manage concurrency and rate limiting for workflow steps.
-        This endpoint returns all active flow control keys with their current waitlist sizes,
-        sorted by waitlist size in descending order. Results are limited to 1000 keys.
-      parameters:
-        - in: query
-          name: search
-          required: false
-          schema:
-            type: string
-          description: Optional search string to filter flow control keys by name. Only keys containing this string will be returned.
       responses:
-        "200":
+        '200':
           description: Flow control keys retrieved successfully
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/FlowControlKey"
-                description: Array of flow control keys sorted by waitlist size in descending order, limited to 1000 results.
-        "400":
-          description: Bad Request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500":
-          description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+                  $ref: '#/components/schemas/FlowControlKey'
   /v2/flowControl/{flowControlKey}:
+    get:
+      summary: Get Flow Control Key
+      description: Get details of a specific Flow Control key
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The Flow Control key to retrieve
+      responses:
+        '200':
+          description: Flow control key details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowControlKey'
+        '404':
+          description: Flow Control key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/pause:
+    post:
+      summary: Pause Flow Control Key
+      description: Pauses the delivery of messages associated with a specific flow-control key.
+      x-mint: 
+        content: |
+          When a flow-control key is paused, messages associated with that key will not be delivered until the key is resumed.
+          
+          Messages that are already in the waitlist will remain there. New incoming messages will be added directly to the waitlist.
+  
+          While the key is paused, the current rate period continues to elapse and the existing rate count is preserved for that period.
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key to pause.
+      responses:
+        '200':
+          description: The flow-control key has been paused.
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/resume:
+    post:
+      summary: Resume Flow Control Key
+      description: Resumes the delivery of messages associated with a specific flow-control key.
+      x-mint: 
+        content: |
+          When a flow-control key is resumed, messages associated with that key will begin to be delivered again.
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key to resume.
+      responses:
+        '200':
+          description: The flow-control key has been resumed.
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/pin:
+    post:
+      summary: Pin Configuration for Flow Control Key
+      description: Pins a processing configuration for a specific flow-control key.
+      x-mint: 
+        content: |
+          Normally, each message sent to QStash includes a flow-control configuration for the corresponding flow-control key. 
+          The processing configuration is updated based on configurations provided by incoming messages.
+
+          This means that if you want to change the configuration, you typically need to update it in your code and wait until a new message with the updated configuration is sent.
+
+          By pinning a configuration, you can enforce a fixed configuration for a flow-control key. 
+          While pinned, the system ignores configurations provided by incoming messages and continues using the pinned configuration until it is explicitly unpinned.
+
+          This allows you to increase or decrease processing throughput without requiring code changes or waiting for new messages with updated configurations.
+          For example, you can temporarily increase the processing speed to clear a backlog of pending messages, or decrease it when a downstream dependency is experiencing issues.
+
+          <Warning>Pinning a configuration resets the current state (rate count and period) of the flow-control key.</Warning>
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key for which the configuration will be pinned.
+        - name: parallelism
+          in: query
+          schema:
+            type: integer
+          description: The parallelism value to apply to the flow-control key.
+        - name: rate
+          in: query
+          schema:
+            type: integer
+          description: The rate value to apply to the flow-control key.
+        - name: period
+          in: query
+          schema:
+            type: integer
+          description: The period value to apply to the flow-control key, in seconds.
+      responses:
+        '200':
+          description: The flow-control key configuration has been pinned.
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided, or when the parallelism, rate or period values are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/unpin:
+    post:
+      summary: Unpin Configuration for Flow Control Key
+      description: Removes the pinned configuration for a specific flow-control key.
+      x-mint: 
+        content: |
+          Normally, each message sent to QStash includes a flow-control configuration for the corresponding flow-control key, and the processing configuration is updated according to incoming messages.
+
+          When a configuration is pinned, the system ignores configurations provided by incoming messages and continues using the pinned configuration.
+
+          Calling this endpoint removes the pinned configuration. After unpinning, the system resumes the default behavior and updates the configuration based on configurations provided by incoming messages.
+
+          Message delivery will initially continue using the last pinned configuration. Once a new message with a different configuration is received, the system updates the configuration accordingly.
+
+          Use this API when you want to return to the default flow-control behavior after temporarily pinning a configuration.
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key for which the configuration will be unpinned.
+        - name: parallelism
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: The flag to indicate whether to unpin the parallelism configuration.
+        - name: rate
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: The flag to indicate whether to unpin the rate configuration.
+      responses:
+        '200':
+          description: The flow-control key configuration is pinned
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/resetRate:
+    post:
+      summary: Reset Rate for Flow Control Key
+      description: Resets the rate configuration state for a specific flow-control key.
+      x-mint: 
+        content: |
+          Rate configuration limits the number of messages delivered within a given time period for messages sharing the same flow-control key.
+
+          When the rate limit is reached, subsequent messages with the same flow-control key are placed in the waitlist and are not delivered until the next time period begins.
+
+          In some situations, you may want to immediately resume message delivery without waiting for the current period to expire. Resetting the rate configuration clears the current rate count and immediately ends the current period.
+
+          After the reset, the current timestamp becomes the start of the new rate period.
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key for which the rate state will be reset.
+      responses:
+        '200':
+          description: The rate state for the flow-control key has been reset.
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error. Returned when an unexpected error occurs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/globalParallelism:
+    get:
+      summary: Get Global Parallelism
+      description: Returns the current global parallelism usage across all flow control keys
+      tags:
+        - Flow Control
+      responses:
+        '200':
+          description: Global parallelism info retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  parallelismMax:
+                    type: integer
+                    description: The configured maximum global parallelism
+                  parallelismCount:
+                    type: integer
+                    description: The current number of messages running globally in parallel
+  /v2/keys:
+    get:
+      summary: Get Signing Keys
+      description: Retrieve your current and next signing keys
+      tags:
+        - Signing Keys
+      responses:
+        '200':
+          description: Signing keys retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SigningKeys'
+  /v2/keys/rotate:
+    post:
+      summary: Rotate Signing Keys
+      description: Rotate your signing keys
+      x-mint: 
+        content: |
+          Rotating signing keys lets you switch the keys used to sign messages without causing downtime.
+          This ensures that signatures remain valid and that the application can continue verifying new messages seamlessly.
+
+          During a rotation, the next key becomes the new current key, and a fresh next key is generated.
+
+          Make sure to update your application to use the new current and next keys after rotation.
+      tags:
+        - Signing Keys
+      responses:
+        '200':
+          description: Keys rotated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SigningKeys'
+
     get:
       tags:
         - Flow Control
@@ -2045,6 +2281,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  
   /v2/notify/{eventId}:
     post:
       tags:
