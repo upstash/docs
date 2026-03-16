@@ -1,0 +1,75 @@
+---
+title: "Redact Private Data"
+description: "How to redact private data in your workflow runs"
+---
+
+Workflow runs can contain private data that you don't want visible in the Upstash Console or API responses.
+
+Upstash Workflow allows you to redact specific fields so they appear as `REDACTED:<SHA256>` in the dashboard and API. The original values are still used when delivering requests to your workflow endpoint. The SHA256 hash lets you verify the data without revealing the original values.
+
+To redact fields, pass the `redactFields` option when triggering a workflow run.
+
+Available options:
+| Option | Description |
+|--|--|
+| body | Redact the body of the workflow steps |
+| headers | Redact the headers of the workflow steps |
+| headers[header_name] | Redact a specific header (e.g., `headers[Authorization]`) |
+
+<Info>
+Redaction is one-way. Once a field is redacted, the original value cannot be retrieved from the API or dashboard.
+</Info>
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+const { workflowRunId } = await client.trigger({
+  url: "https://my-app.com/api/workflow",
+  body: { hello: "world" },
+  redactFields: {
+    body: true,
+    header: ["Authorization"]
+  },
+});
+```
+
+```python Python
+from upstash_workflow import Client
+
+client = Client("<QSTASH_TOKEN>")
+client.trigger(
+    url="https://my-app.com/api/workflow",
+    body={
+        "hello": "world",
+    },
+    redact_fields={
+        "body": True,
+        "header": ["Authorization"]
+    },
+)
+```
+
+```bash cURL
+curl -XPOST \
+    -H 'Authorization: Bearer XXX' \
+    -H "Content-Type: application/json" \
+    -H "Upstash-Redact-Fields: body, header[Authorization]" \
+    -d '{ "hello": "world" }' \
+    'https://qstash.upstash.io/v2/publish/https://my-app.com/api/workflow'
+```
+</CodeGroup>
+
+<Frame caption="Logs of a workflow run with `body` and header[My-Secret-Header] redacted">
+  <img src="/img/qstash/redact-workflow.png" />
+</Frame>
+
+
+Redaction is configured per workflow run, so you can redact different fields for different runs.
+
+When `body` is redacted, the step outputs in the dashboard and API will show `REDACTED:<SHA256>` instead of the actual values. The workflow still executes with the original data.
+
+If a workflow run fails and moves to the DLQ, the redacted fields remain redacted in the DLQ.
+However, when you retry, resume or restart a workflow run from DLQ, Workflow delivers the original values to your endpoint.
