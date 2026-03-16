@@ -1,0 +1,138 @@
+---
+title: Troubleshooting
+---
+
+Common errors and how to resolve them when working with Upstash Redis Search.
+
+## Index Errors
+
+### `ERR Index <name> already exists`
+
+You tried to create an index that already exists.
+
+**Fix:** Use the `existsOk` option (SDK) or `EXISTSOK` flag (CLI) to skip creation if the index already exists:
+
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: EXISTSOK SCHEMA name TEXT
+```
+
+Or drop the existing index first with `SEARCH.DROP <name>`.
+
+---
+
+## Query Errors
+
+### `ERR limit should be a positive number less than 1000`
+
+The `LIMIT` value must be between 1 and 1000.
+
+**Common causes:**
+- Using `LIMIT 0` — the minimum is 1
+- Using `LIMIT` greater than 1000
+- Using RediSearch-style `LIMIT <offset> <count>` syntax — Upstash uses separate `LIMIT` and `OFFSET` keywords
+
+**Fix:**
+```bash
+# Correct
+SEARCH.QUERY products '{}' LIMIT 10 OFFSET 20
+
+# Incorrect (RediSearch style)
+SEARCH.QUERY products '{}' LIMIT 20 10
+```
+
+### `ERR Unknown field operator: $not`
+
+There is no `$not` operator. Use `$mustNot` for exclusion filtering:
+
+```bash
+# Correct
+SEARCH.QUERY products '{"$mustNot": [{"status": "discontinued"}]}'
+
+# Incorrect
+SEARCH.QUERY products '{"status": {"$not": "discontinued"}}'
+```
+
+---
+
+## Aggregation Errors
+
+### Aggregation operator requires field to be FAST
+
+```
+Aggregation '<name>' operator '$avg' requires field '<field>' to be FAST
+```
+
+All metric aggregation operators (`$avg`, `$sum`, `$min`, `$max`, `$count`, `$cardinality`, `$stats`, `$extendedStats`, `$percentiles`) require the target field to be defined as `FAST` in the index schema.
+
+**Fix:** Recreate the index with the field marked as `FAST`:
+
+```bash
+# Ensure 'price' has the FAST flag
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST
+```
+
+In the TypeScript SDK, numeric fields (`s.number("F64")`) and date fields (`s.date()`) are FAST by default. Boolean fields (`s.boolean()`) are also FAST by default. If you explicitly called `.fast(false)`, remove it.
+
+### Missing required 'field' property
+
+```
+Aggregation '<name>' is missing required 'field' property
+```
+
+Every metric aggregation operator requires a `field` property pointing to the field to aggregate.
+
+**Fix:** Pass `field` as an object property, not a bare string:
+
+```json
+// Correct
+{"avg_price": {"$avg": {"field": "price"}}}
+
+// Incorrect
+{"avg_price": {"$avg": "price"}}
+```
+
+### Type key value must be an object
+
+```
+Aggregation '<name>' type key value must be an object
+```
+
+The aggregation operator value must be a JSON object, not a string or number.
+
+**Fix:**
+```json
+// Correct
+{"avg_price": {"$avg": {"field": "price"}}}
+
+// Incorrect
+{"avg_price": {"$avg": "price"}}
+```
+
+---
+
+## Schema Errors
+
+### Field type mismatches
+
+If a document field's value doesn't match the schema type (e.g., a string value `"abc"` for a numeric field), that document is silently skipped during indexing for that field. It will not appear in queries that filter on the mismatched field.
+
+### Missing document fields
+
+If a document doesn't have a field defined in the schema, it simply won't match queries filtering on that field. No error is raised.
+
+---
+
+## Upstash Redis Search vs RediSearch
+
+Upstash Redis Search uses `SEARCH.*` commands and is a separate implementation from the
+open-source RediSearch module which uses `FT.*` commands. The two are **not** compatible.
+
+| | Upstash Redis Search | RediSearch |
+|---|---|---|
+| Command prefix | `SEARCH.*` | `FT.*` |
+| Engine | Tantivy (Rust) | RediSearch (C) |
+| Query syntax | JSON-based filters | RediSearch query syntax |
+| Pagination | `LIMIT <count> OFFSET <offset>` (separate keywords) | `LIMIT <offset> <count>` (combined) |
+| Hosting | Serverless (Upstash) | Self-hosted or Redis Cloud |
+
+If you are migrating from RediSearch, you will need to rewrite your queries to use the JSON filter syntax and `SEARCH.*` commands.
