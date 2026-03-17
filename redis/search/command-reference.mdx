@@ -25,7 +25,7 @@ SEARCH.CREATE <name> ON <JSON|HASH|STRING>
   SCHEMA <field> <type> [FAST] [NOSTEM] [NOTOKENIZE] [FROM <source_field>] ...
 ```
 
-**Returns:** `1` on success. Returns an error if the index already exists (unless `EXISTSOK` is used).
+**Returns:** `1` on success. With `EXISTSOK`, returns `0` if an identical index already exists. Returns an error if the existing index has a different configuration.
 
 <Tabs>
 <Tab title="Redis CLI">
@@ -107,7 +107,7 @@ SEARCH.QUERY <name> '<json_filter>'
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `LIMIT` | Maximum number of results to return. Must be between 1 and 999. | 10 |
+| `LIMIT` | Maximum number of results to return. Must be between 1 and 1000. | 10 |
 | `OFFSET` | Number of results to skip (for pagination). | 0 |
 | `ORDERBY` | Sort by a FAST field in `ASC` or `DESC` order. | Sort by relevance score (descending) |
 | `SELECT` | Return only specific fields. Prefix with count of fields. | All fields |
@@ -126,8 +126,8 @@ SEARCH.QUERY <name> '<json_filter>'
 
 Each result is an array of `[key, score, content]` where:
 - `key` — the Redis key of the matching document
-- `score` — relevance score (float as string)
-- `content` — array of field-value pairs (for JSON: `[["$", "<json_string>"]]`)
+- `score` — relevance score (float)
+- `content` — array of field-value pairs (for JSON indexes: `[["$", "<json_string>"]]`; for HASH indexes: `[["field", "value"], ...]`)
 
 When `NOCONTENT` is used, the content element is omitted.
 When `SELECT` is used, only the selected fields appear in the content.
@@ -186,15 +186,16 @@ SEARCH.AGGREGATE <name> '<json_filter>' '<json_aggregations>'
 
 **Response format (Redis CLI):**
 
-The response is a flat array of alternating alias-value pairs:
+In `redis-cli --json`, the response is an object keyed by alias:
 
-```
-["alias1", <value1>, "alias2", <value2>, ...]
+```json
+{
+  "avg_price": { "value": 49.99 },
+  "by_category": { "buckets": [{ "key": "electronics", "docCount": 42 }] }
+}
 ```
 
-Where each value depends on the aggregation type:
-- **Metric operators** (`$avg`, `$sum`, etc.) — a single number or stats object
-- **Bucket operators** (`$terms`, `$range`, etc.) — nested arrays of key-value pairs (SDKs parse these into objects)
+Raw RESP output may be rendered differently by client/protocol settings, but semantically each top-level alias maps to its aggregation result.
 
 <Tabs>
 <Tab title="Redis CLI">
