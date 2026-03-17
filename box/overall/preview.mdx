@@ -1,0 +1,334 @@
+---
+title: "Preview URLs"
+---
+
+Share live previews of web applications running inside a box. Each preview URL exposes a specific port with optional authentication.
+
+---
+
+## Quickstart
+
+### Create a public preview
+
+Start a web server inside your box and create a preview URL to access it.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "node" })
+
+// Start a web server on port 3000
+await box.exec.command("cd /work && npm install express")
+await box.files.write({
+  path: "/work/server.js",
+  content: `
+    const express = require('express')
+    const app = express()
+    app.get('/', (req, res) => res.send('Hello from Box!'))
+    app.listen(3000)
+  `,
+})
+await box.exec.command("node /work/server.js &")
+
+// Create a preview URL
+const preview = await box.preview.create({ port: 3000 })
+
+console.log(preview.url)
+// → https://{BOX_ID}-3000.preview.box.upstash.com
+```
+
+### Add authentication
+
+Protect your preview URL with bearer token or basic authentication.
+
+```typescript
+// With bearer token
+const preview = await box.preview.create({
+  port: 3000,
+  bearerToken: true,
+})
+
+console.log(preview.token) // Use this in Authorization header
+// → "63d8b153..."
+
+// With basic auth
+const preview = await box.preview.create({
+  port: 8080,
+  basicAuth: true,
+})
+
+console.log(preview.username) // → "user"
+console.log(preview.password) // → "f0f145f0..."
+```
+
+---
+
+## API
+
+### Create Preview
+
+Creates a preview URL that exposes a port on your box. Returns the public URL and authentication credentials if requested.
+
+```typescript
+const preview = await box.preview.create({
+  port: 3000,
+})
+
+console.log(preview.url)
+// → https://{BOX_ID}-3000.preview.box.upstash.com
+```
+
+#### With Bearer Token
+
+Add `bearerToken: true` to require an authorization header when accessing the preview.
+
+```typescript
+const preview = await box.preview.create({
+  port: 3000,
+  bearerToken: true,
+})
+
+console.log(preview.token)
+// → "63d8b153..."
+
+// Access the preview:
+// curl -H "Authorization: Bearer 63d8b153..." https://{BOX_ID}-3000.preview.box.upstash.com
+```
+
+#### With Basic Authentication
+
+Add `basicAuth: true` to require username and password when accessing the preview.
+
+```typescript
+const preview = await box.preview.create({
+  port: 8080,
+  basicAuth: true,
+})
+
+console.log(preview.username) // → "user"
+console.log(preview.password) // → "f0f145f0..."
+
+// Access the preview:
+// curl -u user:f0f145f0... https://{BOX_ID}-8080.preview.box.upstash.com
+```
+
+#### With Both Auth Methods
+
+Enable both authentication methods. Either one will work when accessing the preview.
+
+```typescript
+const preview = await box.preview.create({
+  port: 8080,
+  bearerToken: true,
+  basicAuth: true,
+})
+
+console.log(preview.token) // → "63d8b153..."
+console.log(preview.username) // → "user"
+console.log(preview.password) // → "f0f145f0..."
+```
+
+---
+
+### List Previews
+
+Get all active preview URLs for this box.
+
+```typescript
+const { previews } = await box.preview.list()
+
+console.log(previews)
+// [
+//   { url: "https://{BOX_ID}-3000.preview.box.upstash.com", port: 3000 },
+//   { url: "https://{BOX_ID}-8080.preview.box.upstash.com", port: 8080 },
+// ]
+```
+
+---
+
+### Delete Preview
+
+Remove a preview URL by port number.
+
+```typescript
+await box.preview.delete(3000)
+```
+
+---
+
+## Behavior
+
+### One Preview Per Port
+
+Creating a preview for a port that already has one will overwrite the previous preview (including any auth credentials).
+
+```typescript
+// First preview
+const preview1 = await box.preview.create({ port: 3000 })
+
+// Second preview overwrites the first one
+const preview2 = await box.preview.create({ port: 3000, bearerToken: true })
+
+// preview1.url is no longer accessible
+```
+
+### Preview Lifecycle
+
+Preview URLs expire automatically when:
+- The box is paused
+- The box is deleted
+
+### Auto-Resume
+
+Creating a preview on a paused box automatically resumes it.
+
+```typescript
+await box.pause()
+
+// This will resume the box
+const preview = await box.preview.create({ port: 3000 })
+```
+
+---
+
+## Examples
+
+### Preview an agent-built app
+
+Let an agent build a web app, then create a preview URL to test it.
+
+```typescript
+import { Box, Agent, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    provider: Agent.ClaudeCode,
+    model: ClaudeCode.Opus_4_6,
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  },
+})
+
+await box.agent.run({
+  prompt: `
+Create a simple Express web server that:
+- Listens on port 3000
+- Has a / route that returns "Hello World"
+- Has a /health route that returns {"status": "ok"}
+- Start the server in the background
+  `,
+})
+
+const preview = await box.preview.create({ port: 3000 })
+console.log(`Preview available at: ${preview.url}`)
+
+// Test the endpoints
+const response = await fetch(`${preview.url}/health`)
+console.log(await response.json()) // { status: "ok" }
+```
+
+### Share a secure preview
+
+Create a preview with authentication for sharing with team members.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "python" })
+
+// Set up a Flask app
+await box.files.write({
+  path: "/work/app.py",
+  content: `
+from flask import Flask
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return 'Internal Dashboard'
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
+  `,
+})
+
+await box.exec.command("pip install flask && python /work/app.py &")
+
+// Create authenticated preview
+const preview = await box.preview.create({
+  port: 8080,
+  basicAuth: true,
+})
+
+console.log(`Preview URL: ${preview.url}`)
+console.log(`Username: ${preview.username}`)
+console.log(`Password: ${preview.password}`)
+
+// Share these credentials with your team
+```
+
+### Multi-port application
+
+Create multiple preview URLs for different services in the same box.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "node" })
+
+// Start frontend on port 3000
+await box.files.write({
+  path: "/work/frontend.js",
+  content: `
+const express = require('express')
+const app = express()
+app.get('/', (req, res) => res.send('Frontend'))
+app.listen(3000)
+  `,
+})
+
+// Start API on port 8080
+await box.files.write({
+  path: "/work/api.js",
+  content: `
+const express = require('express')
+const app = express()
+app.get('/api/status', (req, res) => res.json({ status: 'ok' }))
+app.listen(8080)
+  `,
+})
+
+await box.exec.command("npm install express")
+await box.exec.command("node /work/frontend.js & node /work/api.js &")
+
+// Create preview for each service
+const frontendPreview = await box.preview.create({ port: 3000 })
+const apiPreview = await box.preview.create({ port: 8080 })
+
+console.log(`Frontend: ${frontendPreview.url}`)
+console.log(`API: ${apiPreview.url}`)
+```
+
+### Temporary testing preview
+
+Create a preview, run tests against it, then clean up.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "node" })
+
+// Start test server
+await box.exec.command("npx http-server /work -p 3000 &")
+
+// Create public preview for testing
+const preview = await box.preview.create({ port: 3000 })
+
+// Run your tests against the preview URL
+const response = await fetch(preview.url)
+console.log(response.status) // 200
+
+// Clean up
+await box.preview.delete(3000)
+await box.delete()
+```
