@@ -155,7 +155,10 @@ console.log(info);
 //   rateMax: 100,
 //   rateCount: 42,
 //   ratePeriod: 60,
-//   ratePeriodStart: 1708000000
+//   ratePeriodStart: 1708000000,
+//   isPaused: false,
+//   isPinnedParallelism: false,
+//   isPinnedRate: false
 // }
 ```
 
@@ -174,7 +177,10 @@ print(info)
 #   rate_max=100,
 #   rate_count=42,
 #   rate_period=60,
-#   rate_period_start=1708000000
+#   rate_period_start=1708000000,
+#   is_paused=False,
+#   is_pinned_parallelism=False,
+#   is_pinned_rate=False
 # )
 ```
 
@@ -196,6 +202,149 @@ The response fields are:
 | `rateCount` | Number of messages dispatched in the current rate period |
 | `ratePeriod` | Rate period length in seconds |
 | `ratePeriodStart` | Unix timestamp when the current rate period started |
+| `isPaused` | Whether delivery is currently paused for this key |
+| `isPinnedParallelism` | Whether the parallelism configuration is pinned |
+| `isPinnedRate` | Whether the rate configuration is pinned |
+
+### Pause and resume
+
+You can pause delivery for a flow control key. While paused, messages are held in the waitlist and no new deliveries are made. Resume to continue delivery.
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+// Pause delivery
+await client.flowControl.pause("USER_GIVEN_KEY");
+
+// Check status
+const info = await client.flowControl.get("USER_GIVEN_KEY");
+console.log(info.isPaused); // true
+
+// Resume delivery
+await client.flowControl.resume("USER_GIVEN_KEY");
+```
+
+```python Python
+from qstash import QStash
+
+client = QStash("<QSTASH-TOKEN>")
+
+# Pause delivery
+client.flow_control.pause("USER_GIVEN_KEY")
+
+# Check status
+info = client.flow_control.get("USER_GIVEN_KEY")
+print(info.is_paused)  # True
+
+# Resume delivery
+client.flow_control.resume("USER_GIVEN_KEY")
+```
+
+```bash cURL
+# Pause delivery
+curl -X POST https://qstash.upstash.io/v2/flowControl/USER_GIVEN_KEY/pause \
+     -H "Authorization: Bearer <token>"
+
+# Resume delivery
+curl -X POST https://qstash.upstash.io/v2/flowControl/USER_GIVEN_KEY/resume \
+     -H "Authorization: Bearer <token>"
+```
+</CodeGroup>
+
+### Pin and unpin
+
+Pinning locks a flow control key's configuration so that incoming messages cannot override it. This is useful when you want to enforce a fixed rate or parallelism regardless of what individual messages request.
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+// Pin a fixed configuration
+await client.flowControl.pin("USER_GIVEN_KEY", {
+  parallelism: 3,
+  rate: 20,
+  period: 120, // seconds
+});
+
+// Check pinned status
+const info = await client.flowControl.get("USER_GIVEN_KEY");
+console.log(info.isPinnedParallelism); // true
+console.log(info.isPinnedRate);        // true
+
+// Unpin specific configs
+await client.flowControl.unpin("USER_GIVEN_KEY", {
+  parallelism: true,
+  rate: true,
+});
+```
+
+```python Python
+from qstash import QStash
+
+client = QStash("<QSTASH-TOKEN>")
+
+# Pin a fixed configuration
+client.flow_control.pin(
+    "USER_GIVEN_KEY",
+    {"parallelism": 3, "rate": 20, "period": 120},
+)
+
+# Check pinned status
+info = client.flow_control.get("USER_GIVEN_KEY")
+print(info.is_pinned_parallelism)  # True
+print(info.is_pinned_rate)         # True
+
+# Unpin specific configs
+client.flow_control.unpin(
+    "USER_GIVEN_KEY",
+    {"parallelism": True, "rate": True},
+)
+```
+
+```bash cURL
+# Pin a fixed configuration
+curl -X POST "https://qstash.upstash.io/v2/flowControl/USER_GIVEN_KEY/pin?parallelism=3&rate=20&period=120" \
+     -H "Authorization: Bearer <token>"
+
+# Unpin specific configs
+curl -X POST "https://qstash.upstash.io/v2/flowControl/USER_GIVEN_KEY/unpin?parallelism=true&rate=true" \
+     -H "Authorization: Bearer <token>"
+```
+</CodeGroup>
+
+You can pin only parallelism, only rate, or both. When pinning rate, you can optionally include a `period` (in seconds). Similarly, you can unpin them independently.
+
+### Reset rate
+
+Resets the rate count and ends the current rate period for a flow control key. The next message delivery will start a fresh rate period.
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+await client.flowControl.resetRate("USER_GIVEN_KEY");
+```
+
+```python Python
+from qstash import QStash
+
+client = QStash("<QSTASH-TOKEN>")
+
+client.flow_control.reset_rate("USER_GIVEN_KEY")
+```
+
+```bash cURL
+curl -X POST https://qstash.upstash.io/v2/flowControl/USER_GIVEN_KEY/resetRate \
+     -H "Authorization: Bearer <token>"
+```
+</CodeGroup>
 
 ### Get global parallelism
 
@@ -241,13 +390,13 @@ curl -X GET https://qstash.upstash.io/v2/globalParallelism \
 
 ## Monitor
 
-You can monitor wait list size of your flow control key's from the console `FlowControl` tab.
+You can monitor wait list size of your flow control key's from the console `FlowControl` tab. The console also allows you to pin, unpin, and reset rate for flow control keys directly.
 
 <Frame>
   <img src="/img/qstash/flowcontrol.png" />
 </Frame>
 
 Also you can get the same info using the REST API.
-- [List All Flow Control Keys](/qstash/api/flow-control/list).
-- [Single Flow Control Key](/qstash/api/flow-control/get).
-- [Global Parallelism](/qstash/api/flow-control/global-parallelism).
+- [List All Flow Control Keys](/qstash/api-refence/flow-control/list-flow-control-keys).
+- [Single Flow Control Key](/qstash/api-refence/flow-control/get-flow-control-key).
+- [Global Parallelism](/qstash/api-refence/flow-control/get-global-parallelism).
