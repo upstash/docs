@@ -22,6 +22,12 @@ It is typically used in combination with [`context.waitForEvent`](/workflow/basi
     This value will be returned in `eventData` from the corresponding `waitForEvent` call.
 </ParamField>
 
+<ParamField body="workflowRunId" type="string" optional>
+    The workflow run ID to notify. When provided, enables **lookback functionality** - the notification will be stored and delivered even if `notify` is called before `waitForEvent`.
+
+    This solves race conditions where notifications might be sent before a workflow reaches its wait step.
+</ParamField>
+
 ## Response
 
 `context.notify()` returns a list of waiters describing the workflows that were notified.
@@ -51,6 +57,8 @@ It is typically used in combination with [`context.waitForEvent`](/workflow/basi
 
 ## Usage
 
+### Basic Notification
+
 ```javascript
 import { serve } from "@upstash/workflow/nextjs";
 
@@ -61,5 +69,32 @@ export const { POST } = serve<{ topic: string }>(async (context) => {
     notifyResponse, // result of notify, which is a list of notified waiters
   } = await context.notify("notify step", "my-event-Id", payload);
 });
-
 ```
+
+### Notification with Lookback
+
+To prevent race conditions, you can provide a `workflowRunId`. This enables lookback - the notification will be stored and delivered even if sent before the target workflow reaches `waitForEvent`:
+
+```javascript
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve<{ orderId: string }>(async (context) => {
+  const { orderId } = context.requestPayload;
+
+  // Process payment
+  await context.run("process-payment", async () => {
+    return processPayment(orderId);
+  });
+
+  // Notify a specific workflow run with lookback support
+  const {
+    notifyResponse,
+  } = await context.notify(
+    "notify payment complete",
+    "payment-processed",
+    { orderId, status: "success" },
+    "wfr_order_processor_123" // Enables lookback for this workflow run
+  );
+});
+```
+
