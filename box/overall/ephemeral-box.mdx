@@ -1,0 +1,105 @@
+---
+title: "Ephemeral Box"
+---
+
+`EphemeralBox` is a lightweight, short-lived sandbox that provides only **exec** and **file** operations. It's designed for quick, disposable compute tasks where a full Box (with agent, git, snapshots, etc.) is unnecessary.
+
+---
+
+## Creation
+
+```typescript
+import { EphemeralBox } from "@upstash/box"
+
+const box = await EphemeralBox.create({
+  runtime: "node",  // "node" | "python" | "golang" | "ruby" | "rust"
+  ttl: 3600,        // seconds, max 259200 (3 days), default 259200
+})
+```
+
+**Key difference from `Box.create()`:** Ephemeral boxes are ready immediately — no polling. The API returns with `status: "idle"` and the box is usable right away.
+
+The request sends `{ ephemeral: true, ttl?, runtime? }` to `POST /v2/box`.
+
+---
+
+## Available API
+
+| Feature | Box | EphemeralBox |
+|---|---|---|
+| `exec.command()` | Yes | Yes |
+| `exec.code()` | Yes | Yes |
+| `exec.stream()` | Yes | Yes |
+| `exec.streamCode()` | Yes | Yes |
+| `files.read/write/list/upload/download` | Yes | Yes |
+| `cd()` / `cwd` | Yes | Yes |
+| `getStatus()` | Yes | Yes |
+| `delete()` | Yes | Yes |
+| `expiresAt` | No | Yes |
+| `agent.run()` / `agent.stream()` | Yes | **No** |
+| `git.*` | Yes | **No** |
+| `preview.*` | Yes | **No** |
+| `fork()` / `snapshot()` / `fromSnapshot()` | Yes | **No** |
+| `pause()` / `resume()` | Yes | **No** |
+| `configureModel()` | Yes | **No** |
+| `logs()` / `listRuns()` | Yes | **No** |
+
+---
+
+## Properties
+
+- **`id`** — box identifier (e.g. `"sweet-shark-26021"`)
+- **`expiresAt`** — Unix timestamp (seconds) when the box auto-deletes
+
+---
+
+## How it differs from Box
+
+1. **Instant creation** — no polling loop; the response is the ready box
+2. **Auto-expiry** — boxes are automatically deleted after TTL; `expiresAt` tracks this
+3. **Reduced surface** — only exec + files; no agent, git, preview, snapshots, fork, pause/resume
+4. **Simpler config** — `EphemeralBoxConfig` has only `apiKey`, `runtime`, `ttl`, `baseUrl`, `timeout`, `debug` (no agent, git, env, skills, mcpServers)
+5. **Composition over inheritance** — `EphemeralBox` wraps an internal `Box` and exposes only the relevant subset, so agent/git/etc. are not accessible even at runtime
+
+---
+
+## Examples
+
+### Run a shell command
+
+```typescript
+const run = await box.exec.command("echo hello")
+console.log(run.result) // "hello"
+```
+
+### Execute inline code
+
+```typescript
+const result = await box.exec.code({
+  code: 'console.log(JSON.stringify({ sum: 1 + 2 }))',
+  lang: "js",
+})
+```
+
+### File operations
+
+```typescript
+await box.files.write({ path: "data.json", content: '{"key":"value"}' })
+const content = await box.files.read("data.json")
+```
+
+### Clean up early
+
+Otherwise the box auto-deletes at `expiresAt`.
+
+```typescript
+await box.delete()
+```
+
+---
+
+## Exported types
+
+- `EphemeralBox` — the class
+- `EphemeralBoxConfig` — config for `EphemeralBox.create()`
+- `EphemeralBoxData` — extends `BoxData` with `ephemeral: boolean` and `expires_at: number`
