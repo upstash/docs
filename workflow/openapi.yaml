@@ -1,0 +1,2472 @@
+openapi: 3.1.0
+info:
+  title: Upstash Workflow REST API
+  description: |
+    Upstash Workflow is a serverless workflow orchestration service built on top of Upstash QStash and Upstash Redis.
+  version: 2.0.0
+  contact:
+    name: Upstash
+    url: https://upstash.com
+servers:
+  - url: https://qstash.upstash.io
+security:
+  - bearerAuth: []
+  - bearerAuthQuery: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: QStash authentication token
+    bearerAuthQuery:
+      type: apiKey
+      in: query
+      name: qstash_token
+      description: QStash authentication token passed as a query parameter
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Error message
+
+    FlowControlKey:
+      type: object
+      properties:
+        flowControlKey:
+          type: string
+          description: The flow control key name
+        waitlistSize:
+          type: integer
+          description: The number of messages waiting due to flow control configuration.
+
+    SigningKeys:
+      type: object
+      properties:
+        current:
+          type: string
+          description: The current signing key.
+        next:
+          type: string
+          description: The next signing key.
+
+    WorkflowDLQMessage:
+      type: object
+      properties:
+        dlqId:
+          type: string
+          description: The DLQ ID of the failed workflow message.
+        workflowUrl:
+          type: string
+          description: The URL of the workflow.
+        workflowRunId:
+          type: string
+          description: The ID of the workflow run.
+        workflowCreatedAt:
+          type: integer
+          format: int64
+          description: The timestamp when the workflow run was created (Unix timestamp in milliseconds).
+        url:
+          type: string
+          description: The URL of the failed workflow step.
+        method:
+          type: string
+          description: The HTTP method used for the workflow step.
+        header:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The HTTP headers sent to the workflow step.
+        body:
+          type: string
+          description: The body of the message if it is composed of utf8 chars only, empty otherwise.
+        bodyBase64:
+          type: string
+          description: The base64 encoded body if the body contains a non-utf8 char only, empty otherwise.
+        maxRetries:
+          type: integer
+          description: The number of retries that should be attempted in case of delivery failure.
+        createdAt:
+          type: integer
+          format: int64
+          description: The unix timestamp in milliseconds when the message was created.
+        failureCallback:
+          type: string
+          description: The url where we send a callback to after the workflow fails.
+        callerIP:
+          type: string
+          description: IP address of the publisher of this workflow.
+        label:
+          type: string
+          description: The label assigned to the workflow run.
+        flowControlKey:
+          type: string
+          description: The flow control key used for rate limiting.
+        failureFunctionState:
+          type: string
+          description: The state of the failure function if applicable.
+        responseStatus:
+          type: integer
+          description: The HTTP status code received from the destination API.
+        responseHeader:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The HTTP response headers received from the destination API.
+        responseBody:
+          type: string
+          description: The body of the response if it is composed of utf8 chars only, empty otherwise.
+        responseBodyBase64:
+          type: string
+          description: The base64 encoded body of the response if the body contains a non-utf8 char only, empty otherwise.
+
+    Waiter:
+      type: object
+      properties:
+        url:
+          type: string
+          description: The URL that is waiting for the event notification.
+        headers:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The HTTP headers to send with the notification.
+        deadline:
+          type: integer
+          format: int64
+          description: The Unix timestamp in seconds when the wait operation times out.
+        timeoutBody:
+          type: string
+          format: byte
+          description: The body to send if the wait times out.
+        timeoutUrl:
+          type: string
+          description: The URL to call if the wait times out.
+        timeoutHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The HTTP headers to send with the timeout callback.
+
+    NotifyResponse:
+      type: object
+      properties:
+        waiter:
+          $ref: "#/components/schemas/Waiter"
+          description: The waiter that was notified.
+        messageId:
+          type: string
+          description: The ID of the notification message that was published.
+        deduplicated:
+          type: boolean
+          description: Whether this notification was deduplicated.
+        error:
+          type: string
+          description: Error message if the notification failed.
+        workflowRunId:
+          type: string
+          description: The workflow run ID if the notification was sent within a workflow.
+        workflowCreatedAt:
+          type: integer
+          format: int64
+          description: The timestamp when the workflow run was created (Unix timestamp in milliseconds).
+
+    WorkflowEvent:
+      type: object
+      properties:
+        time:
+          type: integer
+          format: int64
+          description: The timestamp of the event (Unix timestamp in milliseconds).
+        state:
+          type: string
+          description: The state of the workflow or step (e.g., RUN_STARTED, STEP_SUCCESS, RUN_FAILED).
+        workflowRunId:
+          type: string
+          description: The ID of the workflow run.
+        workflowUrl:
+          type: string
+          description: The URL of the workflow.
+        workflowCreatedAt:
+          type: integer
+          format: int64
+          description: The timestamp when the workflow run was created (Unix timestamp in milliseconds).
+        stepInfo:
+          $ref: "#/components/schemas/StepInfo"
+        nextDeliveryTime:
+          type: integer
+          format: int64
+          description: The next scheduled delivery time for a retrying step (Unix timestamp in milliseconds).
+        error:
+          type: string
+          description: Error message if the state is error.
+        responseStatus:
+          type: integer
+          description: HTTP status code of the response for error states.
+        responseBody:
+          type: string
+          description: Response body for error states.
+        responseHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: Response headers for error states.
+        headers:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The headers of the message.
+        invokerWorkflowRunId:
+          type: string
+          description: The run ID of the workflow that started this workflow (only in RUN_STARTED).
+        invokerWorkflowUrl:
+          type: string
+          description: The URL of the workflow that started this workflow (only in RUN_STARTED).
+        invokerWorkflowCreatedAt:
+          type: integer
+          format: int64
+          description: The creation timestamp of the invoker workflow (only in RUN_STARTED).
+        workflowRunResponse:
+          type: string
+          description: The response returned by the workflow run (only in RUN_SUCCESS).
+        dlqId:
+          type: string
+          description: The DLQ ID if the workflow run failed (only in RUN_FAILED).
+        label:
+          type: string
+          description: Label of the workflow run.
+        callerIp:
+          type: string
+          description: IP address of the client who submitted the workflow.
+
+    StepInfo:
+      type: object
+      properties:
+        stepId:
+          type: integer
+          format: int64
+          description: The unique identifier for this step.
+        stepName:
+          type: string
+          description: The name of the step.
+        stepType:
+          type: string
+          description: The type of step (e.g., call, wait, sleep, invoke).
+        callType:
+          type: string
+          description: The call type (e.g., step, parallelPlan, parallelResult).
+        messageId:
+          type: string
+          description: The message ID for this step.
+        state:
+          type: string
+          description: The state of the step (STEP_SUCCESS, STEP_RETRY, STEP_FAILED, STEP_PROGRESS, STEP_CANCELED).
+        createdAt:
+          type: integer
+          format: int64
+          description: When the step was created (Unix timestamp in milliseconds).
+        out:
+          type: string
+          description: The output/result of the step.
+        callUrl:
+          type: string
+          description: The URL called in this step.
+        callMethod:
+          type: string
+          description: The HTTP method used.
+        callBody:
+          type: string
+          description: The request body sent.
+        callHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The request headers sent.
+        callResponseStatus:
+          type: integer
+          format: int64
+          description: The HTTP status code received.
+        callResponseBody:
+          type: string
+          description: The response body received.
+        callResponseHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The response headers received.
+        waitEventId:
+          type: string
+          description: The event ID being waited for (wait steps only).
+        waitTimeout:
+          type: boolean
+          description: Whether the wait timed out.
+        invokedWorkflowRunId:
+          type: string
+          description: The run ID of the invoked workflow (invoke steps only).
+        invokedWorkflowUrl:
+          type: string
+          description: The URL of the invoked workflow.
+        retries:
+          type: integer
+          description: Maximum number of retries configured.
+        nextDeliveryTime:
+          type: integer
+          format: int64
+          description: Next scheduled retry time (Unix timestamp in milliseconds).
+
+    GroupedSteps:
+      type: object
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/StepInfo"
+          description: Array of steps in this group.
+        type:
+          type: string
+          enum: [parallel, sequential, next]
+          description: The type of grouping (parallel, sequential, or next).
+
+    InvokerContext:
+      type: object
+      properties:
+        workflowRunId:
+          type: string
+          description: The workflow run ID of the invoker.
+        workflowUrl:
+          type: string
+          description: The workflow URL of the invoker.
+        workflowRunCreatedAt:
+          type: integer
+          format: int64
+          description: The creation timestamp of the invoker workflow run.
+
+    FailureFunction:
+      type: object
+      properties:
+        messageId:
+          type: string
+          description: The message ID of the failure callback.
+        url:
+          type: string
+          description: The URL of the failure callback.
+        state:
+          type: string
+          description: The state of the failure callback.
+        dlqId:
+          type: string
+          description: The DLQ ID of the failure callback if it failed.
+        failHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The headers from the failed workflow step.
+        failStatus:
+          type: integer
+          description: The status code from the failed workflow step.
+        failResponse:
+          type: string
+          description: The response body from the failed workflow step.
+        responseBody:
+          type: string
+          description: The response body from the failure callback attempt.
+        responseHeaders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The response headers from the failure callback attempt.
+        responseStatus:
+          type: integer
+          description: The response status from the failure callback attempt.
+        maxRetries:
+          type: integer
+          description: Maximum number of retries configured for the failure callback.
+
+    WorkflowRun:
+      type: object
+      properties:
+        workflowRunId:
+          type: string
+          description: The unique identifier for this workflow run.
+        workflowUrl:
+          type: string
+          description: The URL of the workflow.
+        workflowState:
+          type: string
+          description: |
+            The current state of the workflow run 
+
+            | Value          | Description                                                    |
+              | -------------- | -------------------------------------------------------------- |
+              | `RUN_STARTED`  | The workflow has started to run and currently in progress.     |
+              | `RUN_SUCCESS`  | The workflow run has completed succesfully.                    |
+              | `RUN_FAILED`   | Some errors has occured and workflow failed after all retries. |
+              | `RUN_CANCELED` | The workflow run has canceled upon user request.               |
+        workflowRunCreatedAt:
+          type: integer
+          format: int64
+          description: When the workflow run was created (Unix timestamp in milliseconds).
+        workflowRunCompletedAt:
+          type: integer
+          format: int64
+          description: When the workflow run completed (Unix timestamp in milliseconds).
+        workflowRunCallerIp:
+          type: string
+          description: IP address of the client who triggered the workflow.
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/GroupedSteps"
+          description: The workflow steps grouped by execution pattern.       
+        workflowRunResponse:
+          type: string
+          description: The response returned by the workflow run.
+        invoker:
+          $ref: "#/components/schemas/InvokerContext"
+          description: Information about the workflow that invoked this one.
+        failureFunction:
+          $ref: "#/components/schemas/FailureFunction"
+          description: Information about the failure callback if configured.
+        dlqId:
+          type: string
+          description: The DLQ ID if the workflow run failed.
+        label:
+          type: string
+          description: Label assigned to the workflow run.
+        flowControlKey:
+          type: string
+          description: Flow Control Key assigned to the workflow run.  
+
+paths:
+  /v2/trigger/{workflowUrl}:
+    post:
+      tags:
+        - Runs
+      summary: Trigger Workflow Run
+      description: Start a new workflow run.
+      parameters:
+        - in: path
+          name: workflowUrl
+          required: true
+          schema:
+            type: string
+          description: The URL of the workflow to trigger.
+        - in: header
+          name: Upstash-Workflow-RunId
+          required: false
+          schema:
+            type: string
+          description: Optional custom run ID for the workflow run. A random ID will be generated if not provided.
+        - name: Upstash-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers to your workflow.
+
+            To send a custom header, prefix the header name with `Upstash-Forward-`. We will strip prefix and send them to the destination.
+
+            | Header | Forwarded To Destination As |
+            |--------|--------------|
+            | Upstash-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+        - in: header
+          name: Upstash-Retries
+          required: false
+          schema:
+            type: integer
+            default: 3
+          description: Number of retries for the workflow steps in case of failure.
+        - name: Upstash-Delay
+          in: header
+          schema:
+            type: string
+            examples:
+              - "50s"
+              - "1d10h30m"
+              - "10h"
+              - "1d"
+          description: |
+            Delay the message delivery.
+
+            The format of this header is `<value><unit>` where value is a number and unit is one of:
+            - `s` for seconds
+            - `m` for minutes
+            - `h` for hours.
+            - `d` for days.
+        - name: Upstash-Not-Before
+          in: header
+          schema:
+            type: integer
+          description: |
+            Delay the message delivery until a certain timestamp in the future.
+
+            The format is a unix timestamp in seconds, based on the UTC timezone.
+
+            When both `Upstash-Not-Before` and `Upstash-Delay` headers are provided, `Upstash-Not-Before` will take precedence.
+        - in: header
+          name: Upstash-Label
+          required: false
+          schema:
+            type: string
+          description: Optional label to attach to the workflow run for easier identification in logs and DLQ.
+        - in: header
+          name: Upstash-Flow-Control-Key
+          required: false
+          schema:
+            type: string
+          description:
+            Flow control key to manage concurrency for the workflow run. Steps with the same key will respect the same concurrency limit.
+
+            Make sure you pass `Upstash-Flow-Control-Value` header as well to define the limits for the key.
+        - in: header
+          name: Upstash-Flow-Control-Value
+          required: false
+          schema:
+            type: string
+          description: |
+            Parallelism and rate limit configuration for the flow control key in the format:
+             `parallelism=<value>, rate=<value>, period=<value>`.
+            See [flow control](/workflow/features/flow-control) for details.
+        - in: header
+          name: Upstash-Failure-Callback
+          required: false
+          schema:
+            type: string
+          description: |
+            Failure callback URL to be called if the workflow run fails after all retries. That is when all the defined retries are exhausted. To call the failure function defined on server, this options should be left empty. A url should be given with this header only to call a different endpoint on failure. See [failureUrl](https://upstash.com/docs/workflow/features/failureFunction/advanced).
+
+            - Failure callback URL must be prefixed with a valid protocol (http:// or https://)
+            - Failure callbacks are charged as a regular message.
+            - Failure callbacks will use the retry setting from the original request.
+        - name: Upstash-Failure-Callback-Forward-*
+          in: header
+          schema:
+            type: string
+          description: |
+            You can send custom headers along with your failure callback message.
+            To send a custom header, prefix the header name with `Upstash-Failure-Callback-Forward-`. We will strip prefix and them to the failure callback URL.
+
+            | Header | Forwarded To Callback Destination As |
+            |--------|--------------|
+            | Upstash-Failure-Callback-Forward-My-Header: my-value | My-Header: my-value |
+            | Upstash-Failure-Callback-Forward-Authorization: Bearer <token> | Authorization: Bearer <token> |
+        - name: Upstash-Retry-Delay
+          in: header
+          schema:
+            type: string
+          description: |
+            Customize the delay between retry attempts when step delivery fails.
+
+            By default, Upstash Workflow uses [exponential backoff](/qstash/features/retry). You can override this by providing a mathematical expressions to compute next delay. This expression is computed after each failed attempt.
+
+            You can use the special variable `retried`, which is how many times the message has been retried. The `retried` is 0 for the first retry.
+
+            Supported functions: 
+            | Function    | Description                          |
+            |-------------|--------------------------------------|
+            | `pow(x, y)`| Returns x raised to the power of y|
+            | `exp(x)`| Returns e raised to the power of x|
+            | `sqrt(x)`| Takes the square root of x|
+            | `abs(x)`| Returns the absolute value of x|
+            | `floor(x)`| Returns the largest integer less than or equal to x|
+            | `ceil(x)`| Returns the smallest integer greater than or equal to x|
+            | `round(x)`| Rounds x to the nearest integer|
+            | `min(x, y)`| Returns the smaller of x and y|
+            | `max(x, y)`| Returns the larger of x and y|
+
+            Examples:
+            - `1000`: Fixed 1 second delay
+            - `1000 * (1 + retried)`: Linear backoff
+            - `pow(2, retried) * 1000`: Exponential backoff
+            - `max(1000, pow(2, retried) * 100)`: Exponential with minimum 1s delay
+
+      requestBody:
+        description: The raw request payload passed to the workflow endpoints as is. You can access it via requestPayload parameter on the context object.
+        content:
+          text/plain:
+            schema:
+              type: string
+          application/json:
+            schema:
+              type: object
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Workflow triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflowRunId:
+                    type: string
+                    description: The ID of the triggered workflow run.
+                  workflowCreatedAt:
+                    type: number
+                    format: date-time
+                    description: The timestamp when the workflow run was created.
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/runs/{workflowRunId}:
+    delete:
+      tags:
+        - Runs
+      summary: Cancel Workflow Run
+      description: Cancel an ongoing workflow run.
+      parameters:
+        - in: path
+          name: workflowRunId
+          required: true
+          schema:
+            type: string
+          description: The ID of the workflow run to cancel.
+      responses:
+        "200":
+          description: Workflow run cancelled successfully
+        "404":
+          description: A workflow run is not found with the given id.
+        "500":
+          description: An unexpected error occured.
+  /v2/workflows/runs:
+    delete:
+      summary: Bulk Cancel Workflow Runs
+      description: Cancel all matching workflow runs.
+      tags:
+        - Runs
+      x-mint:
+        content: |
+          <Warning>If you provide a list of workflow run IDs in the request body, only those specific workflow runs will be canceled. If you include the workflow URL parameter, all workflow runs matching the URL filter will be canceled. If the request body is empty, all workflow runs will be canceled.</Warning>
+
+          This operation scans all your workflow runs and attempts to cancel them.
+          If a specific workflow run cannot be canceled, it will return an error message.
+          Therefore, some workflow runs may not be cancelled at the end. 
+          In such cases, you can run the bulk cancel operation multiple times.
+      parameters:
+        - in: query
+          name: workflowRunIds
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          description: Optional list of specific workflow run IDs to cancel. If provided, the other filters are ignored.
+        - in: query
+          name: workflowUrl
+          required: true
+          schema:
+            type: string
+          description: The URL of the workflow whose runs to cancel.
+        - in: query
+          name: workflowUrlExactMatch
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: workflow url is searched as a prefix by default. To make it exact match, `workflowUrlExactMatch` can be set to true.
+        - in: query
+          name: fromDate
+          required: false
+          schema:
+            type: number
+            format: date-time
+          description: Optional start date to filter workflow runs to cancel. Unix timestamp in milliseconds.
+        - in: query
+          name: toDate
+          required: false
+          schema:
+            type: number
+            format: date-time
+          description: Optional end date to filter workflow runs to cancel. Unix timestamp in milliseconds.
+        - in: query
+          name: callerIp
+          required: false
+          schema:
+            type: string
+          description: Optional caller IP address to filter workflow runs to cancel.
+        - in: query
+          name: flowControlKey
+          required: false
+          schema:
+            type: string
+          description: Optional flow control key to filter workflow runs to cancel.
+        - in: query
+          name: label
+          required: false
+          schema:
+            type: string
+          description: Optional label to filter workflow runs to cancel.
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: integer
+            default: 100
+          description: Maximum number of workflow runs to cancel. Default is 100.
+
+      responses:
+        "200":
+          description: All workflow runs cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: integer
+                    description: The number of workflow runs that were cancelled.
+  /v2/workflows/logs:
+    get:
+      tags:
+        - Logs
+      summary: List Workflow Run Logs
+      x-mint: content |
+        You can fetch details about workflow runs, including their state, completed and in-progress steps, and step details.
+
+        The retention duration for completed workflow runs depends on your quota. Please check the [pricing](https://upstash.com/pricing/workflow) page for details.
+        <Note>
+        If you have executed multiple workflow runs with the same workflowRunId, the `workflowRunId` filter will return all of them.
+
+        To uniquely identify a single workflow run, include the `workflowCreatedAt` timestamp in your filter.
+        </Note>
+      parameters:
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor for fetching the next page of results.
+        - in: query
+          name: workflowUrl
+          required: false
+          schema:
+            type: string
+          description: Filter by workflow URL (exact match). Must start with http:// or https://.
+        - in: query
+          name: workflowRunId
+          required: false
+          schema:
+            type: string
+          description: Filter by specific workflow run ID..
+        - in: query
+          name: workflowCreatedAt
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter by workflow creation timestamp in milliseconds (Unix timestamp).
+        - in: query
+          name: state
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter by workflow or step state. Common states include:
+
+            | Value          | Description                                                    |
+            | -------------- | -------------------------------------------------------------- |
+            | `RUN_STARTED`  | The workflow has started to run and currently in progress.     |
+            | `RUN_SUCCESS`  | The workflow run has completed succesfully.                    |
+            | `RUN_FAILED`   | Some errors has occured and workflow failed after all retries. |
+            | `RUN_CANCELED` | The workflow run has canceled upon user request.               |
+            | `STEP_SUCCESS` | The step succesfully fnished.               |
+            | `STEP_RETRY` | The step is being retried.               |
+            | `STEP_FAILED` | The step is failed.               |
+            | `STEP_PROGRESS` | The step is in progress.                |
+            | `STEP_CANCELED` | The step is cancelled manually.               |
+        - in: query
+          name: fromDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter events from this date onwards in milliseconds (Unix timestamp). Inclusive.
+        - in: query
+          name: toDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter events up to this date in milliseconds (Unix timestamp). Inclusive.
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: integer
+            default: 1000
+            maximum: 1000
+          description: |
+            Maximum number of results to return per page.
+            - Event mode: Max 1000 (default 1000)
+            - Run mode (groupBy=workflowRunId): Max 10 (default 10)
+        - in: query
+          name: trimBody
+          required: false
+          schema:
+            type: integer
+            default: -1
+          description: |
+            Trim request/response bodies to this many bytes. Use -1 to exclude bodies entirely.
+            Useful for reducing response size when bodies are large.
+        - in: query
+          name: label
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter workflow run by the label assigned by the user.
+        - in: query
+          name: flowControlKey
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter workflow run by the flow control key assigned by the user on trigger.
+
+        - in: query
+          name: callerIp
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter workflow run by the callerIp that started to workflow run.
+      responses:
+        "200":
+          description: Workflow logs retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor:
+                    type: string
+                    description: Pagination cursor for the next page. Empty if no more results.
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowRun"
+                    description: Array of complete workflow runs with all steps and metadata.
+        "400":
+          description: Bad Request - Invalid parameters (e.g., invalid cursor, state, or groupBy value)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too Many Requests - Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/dlq:
+    get:
+      tags:
+        - DLQ
+      summary: List Failed Workflow Runs
+      description: |
+        List and paginate through all failed workflow runs currently in the DLQ.
+
+        Failed workflows end up in the DLQ after exhausting all retry attempts. You can filter,
+        paginate, and inspect these failures to understand what went wrong and decide whether to
+        resume, restart, or delete them.
+      parameters:
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor. If provided, returns the next page of results.
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: integer
+            default: 100
+            maximum: 100
+          description: The maximum number of failed workflow runs to return per page.
+        - in: query
+          name: fromDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter by starting date in milliseconds (Unix timestamp). This is inclusive.
+        - in: query
+          name: toDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter by ending date in milliseconds (Unix timestamp). This is inclusive.
+        - in: query
+          name: workflowUrl
+          required: false
+          schema:
+            type: string
+          description: Filter by workflow URL.
+        - in: query
+          name: workflowRunId
+          required: false
+          schema:
+            type: string
+          description: Filter by workflow run ID.
+        - in: query
+          name: workflowCreatedAt
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter by workflow creation timestamp in milliseconds (Unix timestamp).
+        - in: query
+          name: label
+          required: false
+          schema:
+            type: string
+          description: Filter by label assigned to the workflow run.
+        - in: query
+          name: failureFunctionState
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter by failure function state.
+
+             | State | Description |
+            |--------|--------------|
+            | CALLBACK_INPROGRESS | The failure function is in progress. |
+            | CALLBACK_SUCCESS | The failure function run successfully. |
+            | CALLBACK_FAIL | The failure function failed to run. |
+            | CALLBACK_CANCELED | The failure function was manually canceled |
+        - in: query
+          name: callerIp
+          required: false
+          schema:
+            type: string
+          description: Filter by IP address of the publisher.
+        - in: query
+          name: flowControlKey
+          required: false
+          schema:
+            type: string
+          description: Filter by Flow Control Key.
+      responses:
+        "200":
+          description: List of failed workflow runs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cursor:
+                    type: string
+                    description: Pagination cursor for the next page. Empty if no more results.
+                  messages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowDLQMessage"
+                    description: Array of failed workflow messages.
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags:
+        - DLQ
+      summary: Bulk Delete Failed Workflow Runs
+      description: |
+        Delete multiple failed workflow runs from the DLQ.
+
+        When a workflow run fails, it is moved to the DLQ. You can manually remove a failed workflow run from the DLQ using this endpoint. This is useful for cleaning up failed runs that you no longer wish to retry or analyze.
+
+        You can either specify specific DLQ IDs to delete, or use filters to delete matching workflows.
+        When using filters without DLQ IDs, the operation supports pagination via cursor.
+      parameters:
+        - in: query
+          name: dlqIds
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          description: List of specific DLQ IDs to delete. If provided, other filters are ignored.
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor for deleting in batches.
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: integer
+          description: Maximum number of workflows to delete per request.
+        - in: query
+          name: fromDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter by starting date in milliseconds (Unix timestamp). This is inclusive.
+        - in: query
+          name: toDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter by ending date in milliseconds (Unix timestamp). This is inclusive.
+        - in: query
+          name: workflowUrl
+          required: false
+          schema:
+            type: string
+          description: Filter by workflow URL.
+        - in: query
+          name: workflowRunId
+          required: false
+          schema:
+            type: string
+          description: Filter by workflow run ID.
+        - in: query
+          name: workflowCreatedAt
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter by workflow creation timestamp in milliseconds (Unix timestamp).
+        - in: query
+          name: label
+          required: false
+          schema:
+            type: string
+          description: Filter by label assigned to the workflow run.
+        - in: query
+          name: failureFunctionState
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter by failure function state.
+
+            | State | Description |
+            |--------|--------------|
+            | CALLBACK_INPROGRESS | The failure function is in progress. |
+            | CALLBACK_SUCCESS | The failure function run successfully. |
+            | CALLBACK_FAIL | The failure function failed to run. |
+            | CALLBACK_CANCELED | The failure function was manually canceled |
+        - in: query
+          name: callerIp
+          required: false
+          schema:
+            type: string
+          description: Filter by IP address of the publisher.
+        - in: query
+          name: flowControlKey
+          required: false
+          schema:
+            type: string
+          description: Filter by Flow Control Key.
+      responses:
+        "200":
+          description: Workflows deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
+                    format: int64
+                    description: The number of workflow runs that were deleted.
+                  cursor:
+                    type: string
+                    description: Pagination cursor for the next batch. Only present when using filters without DLQ IDs.
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/dlq/{dlqId}:
+    get:
+      tags:
+        - DLQ
+      summary: Get Failed Workflow Run
+      description: |
+        Get details of a specific failed workflow run from the DLQ.
+      parameters:
+        - in: path
+          name: dlqId
+          required: true
+          schema:
+            type: string
+          description: The DLQ ID of the failed workflow run.
+      responses:
+        "200":
+          description: Failed workflow run details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDLQMessage"
+        "400":
+          description: Bad Request - Invalid DLQ ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: DLQ message not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags:
+        - DLQ
+      summary: Delete Failed Workflow Run
+      description: |
+        Delete a specific failed workflow run from the DLQ.
+
+        Use this endpoint to remove a workflow from the DLQ after you have addressed the issue
+        or determined that the workflow should not be retried.
+      parameters:
+        - in: path
+          name: dlqId
+          required: true
+          schema:
+            type: string
+          description: The DLQ ID of the failed workflow run to delete.
+      responses:
+        "200":
+          description: Workflow deleted successfully
+        "400":
+          description: Bad Request - Invalid DLQ ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: DLQ message not found
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/dlq/resume/{dlqId}:
+    post:
+      tags:
+        - DLQ
+      summary: Resume Workflow from DLQ
+      x-mint:
+        content: |
+          When a workflow run fails, it's automatically moved to the DLQ (Dead Letter Queue) where it can be analyzed and resumed. 
+          The resume feature allows you to continue a failed workflow run from exactly where it failed, without re-executing successfully completed steps.
+
+          This is particularly useful for long-running workflows where you don't want to lose progress from successful steps when a single step fails.
+
+          When a workflow is resumed, it continues execution from the last failed step. A new workflow run ID is generated,
+          but the workflow maintains the state and results from previously completed steps.
+
+          <Note>
+            You can make changes to the workflow code as long as these changes come after the failed steps. 
+            However, making changes before the failed step will break the code and is not allowed.
+
+            For more details, check out [Handle workflow route code changes](/workflow/howto/changes) page.
+          </Note>
+
+      parameters:
+        - in: path
+          name: dlqId
+          required: true
+          schema:
+            type: string
+          description: The DLQ ID of the workflow run to resume.
+        - in: header
+          name: Upstash-Retries
+          required: false
+          schema:
+            type: integer
+          description: Override the number of retries for the remaining workflow steps.
+        - in: header
+          name: Upstash-Delay
+          required: false
+          schema:
+            type: string
+          description: Override the delay before executing the next workflow step. Format is `<value><unit>` (e.g., "10s", "5m").
+        - in: header
+          name: Upstash-Retry-Delay
+          required: false
+          schema:
+            type: string
+          description: Override the retry delay expression for the remaining workflow steps.
+        - in: header
+          name: Upstash-Flow-Control-Key
+          required: false
+          schema:
+            type: string
+          description: Override the flow control key for the remaining workflow steps.
+        - in: header
+          name: Upstash-Flow-Control-Value
+          required: false
+          schema:
+            type: string
+          description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
+        - in: header
+          name: Upstash-Label
+          required: false
+          schema:
+            type: string
+          description: Override the label for the remaining workflow steps.
+        - in: header
+          name: Upstash-Failure-Callback
+          required: false
+          schema:
+            type: string
+          description: Override the failure callback URL for the remaining workflow steps.
+      responses:
+        "200":
+          description: Workflow resumed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflowRunId:
+                    type: string
+                    description: The ID of the resumed workflow run (a new ID is generated for the resumed run).
+                  workflowCreatedAt:
+                    type: integer
+                    format: int64
+                    description: The timestamp when the resumed workflow run was created (Unix timestamp in milliseconds).
+        "400":
+          description: Bad Request - Invalid DLQ ID, not a workflow message, or workflow doesn't support resume
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: DLQ message not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/dlq/resume:
+    post:
+      tags:
+        - DLQ
+      summary: Bulk Resume Workflows from DLQ
+      description: |
+        When a workflow run fails, it's automatically moved to the DLQ (Dead Letter Queue) where it can be analyzed and resumed. 
+          The resume feature allows you to continue a failed workflow run from exactly where it failed, without re-executing successfully completed steps.
+
+          This is particularly useful for long-running workflows where you don't want to lose progress from successful steps when a single step fails.
+
+          When a workflow is resumed, it continues execution from the last failed step. A new workflow run ID is generated,
+          but the workflow maintains the state and results from previously completed steps.
+
+          <Note>
+            You can make changes to the workflow code as long as these changes come after the failed steps. 
+            However, making changes before the failed step will break the code and is not allowed.
+
+            For more details, check out [Handle workflow route code changes](/workflow/howto/changes) page.
+          </Note>
+      parameters:
+        - in: query
+          name: dlqIds
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          description: List of specific DLQ IDs to resume. If provided, other filters are ignored.
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor for resuming workflows in batches.
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: integer
+          description: Maximum number of workflows to resume. If not provided, all matching workflows will be resumed.
+        - in: query
+          name: fromDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter workflows by starting date, in milliseconds (Unix timestamp). This is inclusive.
+        - in: query
+          name: toDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter workflows by ending date, in milliseconds (Unix timestamp). This is inclusive.
+        - in: query
+          name: workflowUrl
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by workflow URL.
+        - in: query
+          name: workflowRunId
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by workflow run ID.
+        - in: query
+          name: workflowCreatedAt
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter workflows by creation timestamp in milliseconds (Unix timestamp).
+        - in: query
+          name: label
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by label assigned by the user.
+        - in: query
+          name: failureFunctionState
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter workflows by failure function state.
+
+            | State | Description |
+            |--------|--------------|
+            | CALLBACK_INPROGRESS | The failure function is in progress. |
+            | CALLBACK_SUCCESS | The failure function run successfully. |
+            | CALLBACK_FAIL | The failure function failed to run. |
+            | CALLBACK_CANCELED | The failure function was manually canceled |
+        - in: query
+          name: callerIp
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by IP address of the publisher.
+        - in: query
+          name: flowControlKey
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by Flow Control Key.
+        - in: header
+          name: Upstash-Retries
+          required: false
+          schema:
+            type: integer
+          description: Override the number of retries for the remaining workflow steps.
+        - in: header
+          name: Upstash-Delay
+          required: false
+          schema:
+            type: string
+          description: Override the delay before executing the next workflow step. Format is `<value><unit>` (e.g., "10s", "5m").
+        - in: header
+          name: Upstash-Retry-Delay
+          required: false
+          schema:
+            type: string
+          description: Override the retry delay expression for the remaining workflow steps.
+        - in: header
+          name: Upstash-Flow-Control-Key
+          required: false
+          schema:
+            type: string
+          description: Override the flow control key for the remaining workflow steps.
+        - in: header
+          name: Upstash-Flow-Control-Value
+          required: false
+          schema:
+            type: string
+          description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
+        - in: header
+          name: Upstash-Label
+          required: false
+          schema:
+            type: string
+          description: Override the label for the remaining workflow steps.
+        - in: header
+          name: Upstash-Failure-Callback
+          required: false
+          schema:
+            type: string
+          description: Override the failure callback URL for the remaining workflow steps.
+      responses:
+        "200":
+          description: Workflows resumed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflowRuns:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        workflowRunId:
+                          type: string
+                          description: The ID of the resumed workflow run (a new ID is generated for each resumed run).
+                        workflowCreatedAt:
+                          type: integer
+                          format: int64
+                          description: The timestamp when the resumed workflow run was created (Unix timestamp in milliseconds).
+                    description: Array of resumed workflow runs.
+                  cursor:
+                    type: string
+                    description: Pagination cursor to use in subsequent requests. If empty, all matching workflows have been processed.
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Some DLQ messages were not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/dlq/restart/{dlqId}:
+    post:
+      tags:
+        - DLQ
+      summary: Restart Workflow from DLQ
+      description: |
+        Restart a failed workflow run from the DLQ. The workflow will start from the beginning.
+
+        Unlike resume, which continues from where the workflow failed, restart executes the entire workflow
+        from the first step. A new workflow run ID is generated and all steps will be executed again.
+      parameters:
+        - in: path
+          name: dlqId
+          required: true
+          schema:
+            type: string
+          description: The DLQ ID of the workflow run to restart.
+        - in: header
+          name: Upstash-Retries
+          required: false
+          schema:
+            type: integer
+          description: Override the number of retries for the workflow steps.
+        - in: header
+          name: Upstash-Delay
+          required: false
+          schema:
+            type: string
+          description: Override the delay before executing the workflow. Format is `<value><unit>` (e.g., "10s", "5m").
+        - in: header
+          name: Upstash-Retry-Delay
+          required: false
+          schema:
+            type: string
+          description: Override the retry delay expression for the workflow steps.
+        - in: header
+          name: Upstash-Flow-Control-Key
+          required: false
+          schema:
+            type: string
+          description: Override the flow control key for the workflow.
+        - in: header
+          name: Upstash-Flow-Control-Value
+          required: false
+          schema:
+            type: string
+          description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
+        - in: header
+          name: Upstash-Label
+          required: false
+          schema:
+            type: string
+          description: Override the label for the workflow.
+        - in: header
+          name: Upstash-Failure-Callback
+          required: false
+          schema:
+            type: string
+          description: Override the failure callback URL for the workflow.
+      responses:
+        "200":
+          description: Workflow restarted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflowRunId:
+                    type: string
+                    description: The ID of the restarted workflow run (a new ID is generated for the restarted run).
+                  workflowCreatedAt:
+                    type: integer
+                    format: int64
+                    description: The timestamp when the restarted workflow run was created (Unix timestamp in milliseconds).
+        "400":
+          description: Bad Request - Invalid DLQ ID, not a workflow message, or workflow doesn't support restart
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: DLQ message not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/dlq/restart:
+    post:
+      tags:
+        - DLQ
+      summary: Bulk Restart Workflows from DLQ
+      description: |
+        Restart multiple failed workflow runs from the DLQ. Each workflow will start from the beginning.
+
+        Unlike resume, which continues from where workflows failed, restart executes the entire workflows
+        from the first step. New workflow run IDs are generated and all steps will be executed again.
+
+        A maximum of 50 workflow runs can be restarted per request. If more runs are available, a cursor is returned, which can be used in subsequent requests to continue the operation. When no cursor is returned, all entries have been processed.
+        Each restarted workflow run is assigned a new random Run ID.
+      parameters:
+        - in: query
+          name: dlqIds
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          description: List of specific DLQ IDs to restart. If provided, other filters are ignored.
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: Pagination cursor for restarting workflows in batches.
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: integer
+          description: Maximum number of workflows to restart. If not provided, all matching workflows will be restarted.
+        - in: query
+          name: fromDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter workflows by starting date, in milliseconds (Unix timestamp). This is inclusive.
+        - in: query
+          name: toDate
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter workflows by ending date, in milliseconds (Unix timestamp). This is inclusive.
+        - in: query
+          name: workflowUrl
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by workflow URL.
+        - in: query
+          name: workflowRunId
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by workflow run ID.
+        - in: query
+          name: workflowCreatedAt
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Filter workflows by creation timestamp in milliseconds (Unix timestamp).
+        - in: query
+          name: label
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by label assigned by the user.
+        - in: query
+          name: failureFunctionState
+          required: false
+          schema:
+            type: string
+          description: |
+            Filter workflows by failure function state.
+
+            | State | Description |
+            |--------|--------------|
+            | CALLBACK_INPROGRESS | The failure function is in progress. |
+            | CALLBACK_SUCCESS | The failure function run successfully. |
+            | CALLBACK_FAIL | The failure function failed to run. |
+            | CALLBACK_CANCELED | The failure function was manually canceled |
+        - in: query
+          name: callerIp
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by IP address of the publisher.
+        - in: query
+          name: flowControlKey
+          required: false
+          schema:
+            type: string
+          description: Filter workflows by Flow Control Key.
+        - in: header
+          name: Upstash-Retries
+          required: false
+          schema:
+            type: integer
+          description: Override the number of retries for the workflow steps.
+        - in: header
+          name: Upstash-Delay
+          required: false
+          schema:
+            type: string
+          description: Override the delay before executing the workflows. Format is `<value><unit>` (e.g., "10s", "5m").
+        - in: header
+          name: Upstash-Retry-Delay
+          required: false
+          schema:
+            type: string
+          description: Override the retry delay expression for the workflow steps.
+        - in: header
+          name: Upstash-Flow-Control-Key
+          required: false
+          schema:
+            type: string
+          description: Override the flow control key for the workflows.
+        - in: header
+          name: Upstash-Flow-Control-Value
+          required: false
+          schema:
+            type: string
+          description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
+        - in: header
+          name: Upstash-Label
+          required: false
+          schema:
+            type: string
+          description: Override the label for the workflows.
+        - in: header
+          name: Upstash-Failure-Callback
+          required: false
+          schema:
+            type: string
+          description: Override the failure callback URL for the workflows.
+      responses:
+        "200":
+          description: Workflows restarted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflowRuns:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        workflowRunId:
+                          type: string
+                          description: The ID of the restarted workflow run (a new ID is generated for each restarted run).
+                        workflowCreatedAt:
+                          type: integer
+                          format: int64
+                          description: The timestamp when the restarted workflow run was created (Unix timestamp in milliseconds).
+                    description: Array of restarted workflow runs.
+                  cursor:
+                    type: string
+                    description: Pagination cursor to use in subsequent requests. If empty, all matching workflows have been processed.
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Some DLQ messages were not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/dlq/callback/{dlqId}:
+    post:
+      tags:
+        - DLQ
+      summary: Retry Failure Callback
+      description: |
+        If the failure callback for a workflow run has failed, you can use this endpoint to manually trigger the failure callback again. 
+        This is useful for ensuring that your system is notified of workflow failures even if the original callback attempt did not succeed.
+
+        The state of the failure callback for each workflow run is included in the DLQ message response as failureCallbackInfo.state. 
+        You can filter for all workflow runs with a failed failure callback by using the failureCallbackState filter when listing workflow runs in the DLQ with the `/v2/workflows/dlq` endpoint.
+      parameters:
+        - in: path
+          name: dlqId
+          required: true
+          schema:
+            type: string
+          description: The DLQ ID of the failed workflow run whose failure callback should be retried.
+      responses:
+        "200":
+          description: Failure callback retried successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflowRunId:
+                    type: string
+                    description: The ID of the workflow run.
+                  workflowCreatedAt:
+                    type: integer
+                    format: int64
+                    description: The timestamp when the workflow run was created (Unix timestamp in milliseconds).
+        "400":
+          description: Bad Request. Workflow doesn't have a failed callback, callback is already in-progress, succeeded, or was canceled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: DLQ message not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags:
+        - DLQ
+      summary: Cancel In-Progress Failure Callback
+      description: |
+        Cancel an in-progress failure callback for a failed workflow.
+
+        When you retry a failed failure callback using the POST endpoint, it enters an in-progress state.
+        This endpoint allows you to cancel that in-progress callback before it completes.
+
+        The callback must be in an in-progress state. If there's no in-progress callback,
+        the request will fail with a 400 error.
+      parameters:
+        - in: path
+          name: dlqId
+          required: true
+          schema:
+            type: string
+          description: The DLQ ID of the workflow run whose in-progress failure callback should be canceled.
+      responses:
+        "302":
+          description: Failure callback canceled successfully
+        "400":
+          description: Bad Request - No in-progress failure callback to cancel, or callback information is invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Failure callback not found or message not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error" 
+  /v2/flowControl:
+    get:
+      summary: List Flow Control Keys
+      description: List all Flow Control keys
+      tags:
+        - Flow Control
+      responses:
+        '200':
+          description: Flow control keys retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FlowControlKey'
+  /v2/flowControl/{flowControlKey}:
+    get:
+      summary: Get Flow Control Key
+      description: Get details of a specific Flow Control key
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The Flow Control key to retrieve
+      responses:
+        '200':
+          description: Flow control key details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowControlKey'
+        '404':
+          description: Flow Control key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/pause:
+    post:
+      summary: Pause Flow Control Key
+      description: Pauses the delivery of messages associated with a specific flow-control key.
+      x-mint: 
+        content: |
+          When a flow-control key is paused, messages associated with that key will not be delivered until the key is resumed.
+          
+          Messages that are already in the waitlist will remain there. New incoming messages will be added directly to the waitlist.
+  
+          While the key is paused, the current rate period continues to elapse and the existing rate count is preserved for that period.
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key to pause.
+      responses:
+        '200':
+          description: The flow-control key has been paused.
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/resume:
+    post:
+      summary: Resume Flow Control Key
+      description: Resumes the delivery of messages associated with a specific flow-control key.
+      x-mint: 
+        content: |
+          When a flow-control key is resumed, messages associated with that key will begin to be delivered again.
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key to resume.
+      responses:
+        '200':
+          description: The flow-control key has been resumed.
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/pin:
+    post:
+      summary: Pin Configuration for Flow Control Key
+      description: Pins a processing configuration for a specific flow-control key.
+      x-mint: 
+        content: |
+          Normally, each message sent to QStash includes a flow-control configuration for the corresponding flow-control key. 
+          The processing configuration is updated based on configurations provided by incoming messages.
+
+          This means that if you want to change the configuration, you typically need to update it in your code and wait until a new message with the updated configuration is sent.
+
+          By pinning a configuration, you can enforce a fixed configuration for a flow-control key. 
+          While pinned, the system ignores configurations provided by incoming messages and continues using the pinned configuration until it is explicitly unpinned.
+
+          This allows you to increase or decrease processing throughput without requiring code changes or waiting for new messages with updated configurations.
+          For example, you can temporarily increase the processing speed to clear a backlog of pending messages, or decrease it when a downstream dependency is experiencing issues.
+
+          <Warning>Pinning a configuration resets the current state (rate count and period) of the flow-control key.</Warning>
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key for which the configuration will be pinned.
+        - name: parallelism
+          in: query
+          schema:
+            type: integer
+          description: The parallelism value to apply to the flow-control key.
+        - name: rate
+          in: query
+          schema:
+            type: integer
+          description: The rate value to apply to the flow-control key.
+        - name: period
+          in: query
+          schema:
+            type: integer
+          description: The period value to apply to the flow-control key, in seconds.
+      responses:
+        '200':
+          description: The flow-control key configuration has been pinned.
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided, or when the parallelism, rate or period values are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/unpin:
+    post:
+      summary: Unpin Configuration for Flow Control Key
+      description: Removes the pinned configuration for a specific flow-control key.
+      x-mint: 
+        content: |
+          Normally, each message sent to QStash includes a flow-control configuration for the corresponding flow-control key, and the processing configuration is updated according to incoming messages.
+
+          When a configuration is pinned, the system ignores configurations provided by incoming messages and continues using the pinned configuration.
+
+          Calling this endpoint removes the pinned configuration. After unpinning, the system resumes the default behavior and updates the configuration based on configurations provided by incoming messages.
+
+          Message delivery will initially continue using the last pinned configuration. Once a new message with a different configuration is received, the system updates the configuration accordingly.
+
+          Use this API when you want to return to the default flow-control behavior after temporarily pinning a configuration.
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key for which the configuration will be unpinned.
+        - name: parallelism
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: The flag to indicate whether to unpin the parallelism configuration.
+        - name: rate
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: The flag to indicate whether to unpin the rate configuration.
+      responses:
+        '200':
+          description: The flow-control key configuration is pinned
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/flowControl/{flowControlKey}/resetRate:
+    post:
+      summary: Reset Rate for Flow Control Key
+      description: Resets the rate configuration state for a specific flow-control key.
+      x-mint: 
+        content: |
+          Rate configuration limits the number of messages delivered within a given time period for messages sharing the same flow-control key.
+
+          When the rate limit is reached, subsequent messages with the same flow-control key are placed in the waitlist and are not delivered until the next time period begins.
+
+          In some situations, you may want to immediately resume message delivery without waiting for the current period to expire. Resetting the rate configuration clears the current rate count and immediately ends the current period.
+
+          After the reset, the current timestamp becomes the start of the new rate period.
+      tags:
+        - Flow Control
+      parameters:
+        - name: flowControlKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The flow-control key for which the rate state will be reset.
+      responses:
+        '200':
+          description: The rate state for the flow-control key has been reset.
+        '400':
+          description: Bad request. Returned when the flow-control key is not provided.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error. Returned when an unexpected error occurs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/globalParallelism:
+    get:
+      summary: Get Global Parallelism
+      description: Returns the current global parallelism usage across all flow control keys
+      tags:
+        - Flow Control
+      responses:
+        '200':
+          description: Global parallelism info retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  parallelismMax:
+                    type: integer
+                    description: The configured maximum global parallelism
+                  parallelismCount:
+                    type: integer
+                    description: The current number of messages running globally in parallel
+  /v2/keys:
+    get:
+      summary: Get Signing Keys
+      description: Retrieve your current and next signing keys
+      tags:
+        - Signing Keys
+      responses:
+        '200':
+          description: Signing keys retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SigningKeys'
+  /v2/keys/rotate:
+    post:
+      summary: Rotate Signing Keys
+      description: Rotate your signing keys
+      x-mint: 
+        content: |
+          Rotating signing keys lets you switch the keys used to sign messages without causing downtime.
+          This ensures that signatures remain valid and that the application can continue verifying new messages seamlessly.
+
+          During a rotation, the next key becomes the new current key, and a fresh next key is generated.
+
+          Make sure to update your application to use the new current and next keys after rotation.
+      tags:
+        - Signing Keys
+      responses:
+        '200':
+          description: Keys rotated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SigningKeys'
+
+    get:
+      tags:
+        - Flow Control
+      summary: Get Flow Control Key
+      description: |
+        Get details of a specific Flow Control key.
+
+        Flow Control keys are used to manage concurrency and rate limiting for workflow steps.
+        This endpoint returns the current waitlist size for the specified flow control key,
+        which indicates how many workflow steps are currently waiting due to flow control constraints.
+      parameters:
+        - in: path
+          name: flowControlKey
+          required: true
+          schema:
+            type: string
+          description: The Flow Control key to retrieve.
+      responses:
+        "200":
+          description: Flow control key details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlowControlKey"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Flow Control key not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"  
+  /v2/notify/{eventId}:
+    post:
+      tags:
+        - Notify
+      summary: Notify Event
+      description: |
+        Notify an event to all waiters listening for that event ID.
+
+        This endpoint broadcasts an event to all active waiters that are waiting for the specified event.
+        Each waiting workflow step receives the event data and continues execution.
+
+        **Important:** This is an "unsafe notify" operation - if there are no active waiters when the
+        notification is sent, the event is lost and will not be delivered later. For guaranteed delivery
+        within a specific workflow run, use the `/v2/notify/{workflowRunId}/{eventId}` endpoint instead.
+
+      parameters:
+        - in: path
+          name: eventId
+          required: true
+          schema:
+            type: string
+          description: The event ID that waiters are listening for.
+      requestBody:
+        description: The event data to send to all waiters. This will be the request payload for waiting workflow steps.
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+          text/plain:
+            schema:
+              type: string
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Event notification sent successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NotifyResponse"
+                description: Array of notification results, one for each notified waiter.
+        "400":
+          description: Bad Request - Invalid event ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate Limit Exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/notify/{workflowRunId}/{eventId}:
+    post:
+      tags:
+        - Notify
+      summary: Notify Workflow Run Event
+      description: |
+        Notify an event to a specific workflow run's waiters.
+
+        This endpoint sends an event notification to waiters within a specific workflow run.
+        Unlike the general notify endpoint, this uses a "safe notify" mechanism that guarantees
+        delivery even if no waiter is currently active.
+
+        **Safe Notify Behavior:**
+        - If a waiter is currently active, it receives the notification immediately
+        - If no waiter is active, the notification is saved in the database
+        - When a waiter becomes active later, it will consume the saved notification
+        - This ensures events are never lost due to timing issues
+      parameters:
+        - in: path
+          name: workflowRunId
+          required: true
+          schema:
+            type: string
+          description: The workflow run ID to notify.
+        - in: path
+          name: eventId
+          required: true
+          schema:
+            type: string
+          description: The event ID that waiters are listening for.
+      requestBody:
+        description: The event data to send to the waiter. This will be the request payload for the waiting workflow step.
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+          text/plain:
+            schema:
+              type: string
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Event notification sent or saved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotifyResponse"
+        "400":
+          description: Bad Request - Invalid workflow run ID or event ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate Limit Exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/waiters/{eventId}:
+    get:
+      tags:
+        - Notify
+      summary: List Waiters
+      description: |
+        List all active waiters for a specific event ID.
+
+        Returns information about all workflow runs that are currently waiting for the specified event.
+      parameters:
+        - in: path
+          name: eventId
+          required: true
+          schema:
+            type: string
+          description: The event ID to list waiters for.
+      responses:
+        "200":
+          description: List of active waiters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Waiter"
+                description: Array of waiters currently listening for this event.
+        "400":
+          description: Bad Request - Invalid event ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
