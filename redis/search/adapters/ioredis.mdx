@@ -1,0 +1,111 @@
+---
+title: ioredis
+description: Use Redis Search with ioredis via the @upstash/search-ioredis adapter
+---
+
+If you're already using **ioredis** in your project, you can use Redis Search without switching to the `@upstash/redis` client. The `@upstash/search-ioredis` package wraps your existing ioredis instance and exposes the full Redis Search API.
+
+### Installation
+
+```bash
+npm install @upstash/search-ioredis ioredis
+```
+
+### Setup
+
+```ts
+import IORedis from "ioredis";
+import { createSearch, s } from "@upstash/search-ioredis";
+
+// Create ioredis client using your Upstash Redis URL
+const ioredis = new IORedis(process.env.REDIS_URL);
+
+// Create search client
+const search = createSearch(ioredis);
+```
+
+The `REDIS_URL` should be your Upstash Redis connection string in the format:
+
+```
+rediss://default:<PASSWORD>@<YOUR-DATABASE>.upstash.io:6379
+```
+
+### Create an Index
+
+```ts
+const schema = s.object({
+  name: s.string(),
+  description: s.string(),
+  category: s.string().noTokenize(),
+  price: s.number(),
+  inStock: s.boolean(),
+});
+
+await search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema,
+});
+```
+
+### Get an Index Client
+
+Use `search.index()` to get a client for an existing index without making a Redis call:
+
+```ts
+const index = search.index({ name: "products", schema });
+```
+
+### Add Data
+
+Add data using standard Redis commands via your ioredis client. Any key matching the index prefix is automatically indexed:
+
+```ts
+await ioredis.call("JSON.SET", "product:1", "$", JSON.stringify({
+  name: "Wireless Headphones",
+  description: "Premium noise-cancelling wireless headphones with 30-hour battery life",
+  category: "electronics",
+  price: 199.99,
+  inStock: true,
+}));
+```
+
+### Search Data
+
+```ts
+// Query with a filter
+const results = await index.query({
+  filter: { description: "wireless" },
+});
+
+// Count matching documents
+const count = await index.count({
+  filter: { price: { $lt: 150 } },
+});
+```
+
+### Wait for Indexing
+
+Index updates are batched for performance. Use `waitIndexing()` when you need queries to reflect recent writes:
+
+```ts
+await index.waitIndexing();
+```
+
+### Describe an Index
+
+```ts
+const description = await index.describe();
+```
+
+### Drop an Index
+
+```ts
+const result = await index.drop();
+// Returns 1 (dropped) or 0 (index not found)
+```
+
+<Note>
+The adapter exposes the exact same search API as `@upstash/redis`. Refer to the [Index Management](../index-management), [Querying](../querying), [Aggregations](../aggregations), and [Schema Definition](../schema-definition) pages for the full API reference.
+</Note>
