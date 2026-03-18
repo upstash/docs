@@ -25,14 +25,46 @@ Each waiter has a timeout duration to wait for the event and then fires automati
 A race condition can occur when `notify` is called before `waitForEvent` is executed.
 In this scenario, the notification will be sent but no workflow will be waiting to receive it, causing the event to be lost.
 
-<Warning>
-  For better protection against race conditions, consider using [Webhooks](/workflow/features/webhooks) which have built-in lookback and are safer against timing issues.
-</Warning>
+### Solutions
 
-To prevent race conditions, always check the response of the `notify` operation.
-The `notify` method returns a list of notified waiters.
-If this list is empty, it means no workflows were waiting for the event, and you should retry the notification.
+There are three ways to handle race conditions:
 
+1. **Use lookback with `workflowRunId`** (Recommended for targeted notifications)
+2. **Use [Webhooks](/workflow/features/webhooks)** (Recommended for general use)
+3. **Check and retry** (Manual approach)
+
+#### Option 1: Lookback with workflowRunId
+
+When you know which specific workflow run should receive the notification, you can provide a `workflowRunId` to enable lookback. The notification will be stored and delivered even if sent before `waitForEvent`:
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<WORKFLOW_TOKEN>" });
+
+// Trigger a workflow
+const { workflowRunId } = await client.trigger({
+  url: "https://your-app.com/api/process-order",
+  body: { orderId: "123" }
+});
+
+// Immediately notify with lookback - no race condition!
+await client.notify({
+  eventId: "payment-verified",
+  eventData: { verified: true },
+  workflowRunId: workflowRunId, // Enables lookback
+});
+```
+</CodeGroup>
+
+#### Option 2: Use Webhooks
+
+[Webhooks](/workflow/features/webhooks) have built-in lookback and are safer against timing issues for general event handling.
+
+#### Option 3: Check and Retry
+
+Alternatively, you can check the response of the `notify` operation and retry if needed:
 
 <CodeGroup>
 ```typescript TypeScript
