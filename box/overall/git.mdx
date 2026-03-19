@@ -32,6 +32,31 @@ const box = await Box.create({
 })
 ```
 
+### Git identity
+
+You can also set the git author identity that will be used for commits made inside the box. Both fields are optional and applied to the container's global git config on creation.
+
+| Field       | Type     | Default              | Description                              |
+| ----------- | -------- | -------------------- | ---------------------------------------- |
+| `token`     | `string` | —                    | GitHub token for private repos and push  |
+| `userName`  | `string` | `"Upstash Box"`      | Value written to `git config user.name`  |
+| `userEmail` | `string` | `"box@upstash.com"`  | Value written to `git config user.email` |
+
+```tsx {5-9}
+import { Box } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  git: {
+    token: process.env.GITHUB_TOKEN,
+    userName: "deploy-bot",
+    userEmail: "deploy-bot@acme.com",
+  },
+})
+```
+
+If `userName` or `userEmail` are omitted, the box uses the defaults (`"Upstash Box"` / `"box@upstash.com"`). Omitting `token` is fine for public repositories where push access is not required.
+
 ---
 
 ## Quickstart
@@ -144,6 +169,22 @@ const commit = await box.git.commit({
 })
 ```
 
+You can optionally override the commit author for a single commit using `authorName` and `authorEmail`. When omitted, the box's configured git identity is used (either the values set at creation via `config.git` or the latest `updateConfig` values).
+
+```tsx
+const commit = await box.git.commit({
+  message: "feat: add onboarding checklist",
+  authorName: "Alice",
+  authorEmail: "alice@acme.com",
+})
+```
+
+| Option        | Type     | Required | Description                                       |
+| ------------- | -------- | -------- | ------------------------------------------------- |
+| `message`     | `string` | Yes      | Commit message                                    |
+| `authorName`  | `string` | No       | Override `--author` name for this commit only     |
+| `authorEmail` | `string` | No       | Override `--author` email for this commit only    |
+
 ### Push
 
 Pushes the current branch. You can also provide a branch name explicitly.
@@ -189,6 +230,40 @@ const result = await box.git.exec({
   args: ["branch", "--show-current"],
 })
 ```
+
+### Update Git Config
+
+Updates the git author identity in the running container. At least one field must be provided; the other field retains its current value.
+
+Returns the effective identity values after the update.
+
+```tsx
+const identity = await box.git.updateConfig({
+  userName: "ci-bot",
+  userEmail: "ci-bot@acme.com",
+})
+
+console.log(identity.git_user_name)  // "ci-bot"
+console.log(identity.git_user_email) // "ci-bot@acme.com"
+```
+
+You can update a single field — the other will not change:
+
+```tsx
+// Only update the email, keep the existing user name
+const identity = await box.git.updateConfig({
+  userEmail: "ci-bot@acme.com",
+})
+```
+
+If the box is in Running or Idle state, the new config is applied immediately inside the container (equivalent to running `git config --global` for the updated fields). Changes take effect for all subsequent commits.
+
+| Option       | Type     | Required | Description                  |
+| ------------ | -------- | -------- | ---------------------------- |
+| `userName`   | `string` | No       | New value for `user.name`    |
+| `userEmail`  | `string` | No       | New value for `user.email`   |
+
+**Return value:** `{ git_user_name: string; git_user_email: string }`
 
 ---
 
