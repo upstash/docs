@@ -1,0 +1,131 @@
+---
+title: "Security & Secrets"
+---
+
+## Isolation
+
+Every Upstash Box runs in its own isolated container with a dedicated filesystem, process tree, and network stack. Boxes cannot communicate with or observe each other. Network access is restricted — containers cannot reach private networks, cloud metadata services, or other internal infrastructure.
+
+## Environment Variables
+
+You can pass environment variables when creating a box. These are available to all code running inside the box, including your agent and any user-submitted code.
+
+```tsx
+const box = await Box.create({
+  runtime: "node",
+  env: {
+    DATABASE_URL: "postgres://...",
+    ANTHROPIC_API_KEY: "sk-ant-...",
+  },
+})
+```
+
+<Warning>
+Environment variables are visible to all code running inside the box. If you run untrusted code (e.g., user-submitted prompts that execute shell commands), those secrets can be read by the untrusted code. For sensitive credentials, use **Attach Headers** instead.
+</Warning>
+
+---
+
+## Attach Headers
+
+`attachHeaders` lets you inject HTTP headers into outbound HTTPS requests from a box — **without the secrets ever entering the container**. This is ideal for passing API keys, tokens, or credentials that should not be accessible to untrusted code.
+
+### How it works
+
+When you create a box with `attachHeaders`, a TLS-intercepting proxy on the host transparently injects the specified headers into outbound HTTPS requests matching the configured host patterns. The secrets exist only on the host — they never appear in environment variables, files, or process memory inside the container.
+
+For hosts that don't match any rule, traffic passes through untouched with no TLS interception.
+
+### Usage
+
+```tsx
+const box = await Box.create({
+  runtime: "node",
+  attachHeaders: {
+    "api.stripe.com": {
+      Authorization: "Bearer sk_live_...",
+    },
+    "*.supabase.co": {
+      apikey: "eyJ...",
+    },
+    "api.anthropic.com": {
+      "x-api-key": "sk-ant-...",
+    },
+  },
+})
+```
+
+Now any HTTPS request from inside the box to `api.stripe.com` will automatically include the `Authorization` header — without the Stripe key being visible anywhere inside the container.
+
+```tsx
+// Code running inside the box — the key is injected transparently
+const result = await box.exec.command(
+  'curl -s https://api.stripe.com/v1/charges?limit=1'
+)
+// The Authorization header was added by the proxy — the container never sees the key
+```
+
+### Host patterns
+
+| Pattern | Matches |
+|---|---|
+| `api.stripe.com` | Exact match only |
+| `*.supabase.co` | Any subdomain: `xyz.supabase.co`, `db.supabase.co` |
+
+- Patterns must be lowercase
+- Wildcard `*.` matches any subdomain (most-specific match wins)
+- Only `*.` prefix wildcards are supported
+
+### When to use attachHeaders vs env vars
+
+| | Environment Variables | Attach Headers |
+|---|---|---|
+| **Visibility** | Visible to all code in the box | Never enters the container |
+| **Use case** | Non-sensitive config, or when you trust all code in the box | API keys, tokens, credentials for untrusted code |
+| **SDK compatibility** | Works with any SDK that reads from env | Works with any SDK that makes HTTPS requests |
+| **Setup** | Pass in `env` | Pass in `attachHeaders` with host patterns |
+
+### Combining with AI SDK
+
+If you're running an AI SDK (like Vercel AI SDK) inside a box, you can use both approaches:
+
+```tsx
+const box = await Box.create({
+  runtime: "node",
+  // Agent uses managed key (handled by Upstash)
+  agent: {
+    provider: Agent.ClaudeCode,
+    model: ClaudeCode.Sonnet_4_6,
+    apiKey: BoxApiKey.UpstashKey,
+  },
+  // Inject Stripe key for user code — never visible in the container
+  attachHeaders: {
+    "api.stripe.com": {
+      Authorization: "Bearer sk_live_...",
+    },
+  },
+})
+```
+
+### Limitations
+
+- `attachHeaders` is set once at box creation and cannot be updated
+- Only HTTPS (port 443) traffic is intercepted
+- HTTP/2 connections through matched hosts are downgraded to HTTP/1.1
+- Header values are encrypted at rest and never returned in API responses
+
+---
+
+## Blocked Environment Variables
+
+For system security, the following environment variables cannot be set:
+
+| Variable | Reason |
+|---|---|
+| `PATH` | Prevents binary hijacking |
+| `HOME` | Prevents home directory manipulation |
+| `LD_PRELOAD` | Prevents shared library injection |
+| `LD_LIBRARY_PATH` | Prevents library path hijacking |
+| `NODE_OPTIONS` | Prevents Node.js flag injection |
+
+All other environment variables — including `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and their `*_BASE_URL` variants — are allowed. The built-in agent runner uses its own isolated environment that overrides these per-run.
