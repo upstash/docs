@@ -1,0 +1,157 @@
+---
+title: "Schedules"
+---
+
+Create recurring tasks that run on a cron schedule inside a box. You can schedule shell commands or agent prompts.
+
+---
+
+## API
+
+### Schedule a shell command
+
+Run a shell command on a cron schedule.
+
+```typescript
+const schedule = await box.schedule.exec({
+  cron: "* * * * *",
+  command: ["bash", "-c", "date >> /workspace/home/cron.log && echo scheduled-ok"],
+})
+
+console.log(schedule.id)
+```
+
+---
+
+### Schedule an agent prompt
+
+Run an agent prompt on a cron schedule. Requires an agent to be configured on the box.
+
+```typescript
+const schedule = await box.schedule.agent({
+  cron: "0 9 * * *",
+  prompt: "Run the test suite and fix any failures",
+})
+
+console.log(schedule.id)
+```
+
+---
+
+### List schedules
+
+Retrieve all schedules for the current box.
+
+```typescript
+const schedules = await box.schedule.list()
+
+for (const s of schedules) {
+  console.log(s.id, s.type, s.cron)
+}
+```
+
+---
+
+### Get a schedule
+
+Retrieve a single schedule by ID.
+
+```typescript
+const schedule = await box.schedule.get("schedule_abc123")
+
+console.log(schedule.type) // "exec" | "agent"
+console.log(schedule.cron)
+```
+
+---
+
+### Delete a schedule
+
+Remove a schedule so it no longer runs.
+
+```typescript
+await box.schedule.delete("schedule_abc123")
+```
+
+---
+
+## Cron syntax
+
+Schedules use standard 5-field cron expressions:
+
+```
+┌───────────── minute (0-59)
+│ ┌───────────── hour (0-23)
+│ │ ┌───────────── day of month (1-31)
+│ │ │ ┌───────────── month (1-12)
+│ │ │ │ ┌───────────── day of week (0-6, Sun=0)
+│ │ │ │ │
+* * * * *
+```
+
+| Expression | Description |
+| --- | --- |
+| `* * * * *` | Every minute |
+| `0 * * * *` | Every hour |
+| `0 9 * * *` | Daily at 9:00 AM |
+| `0 9 * * 1-5` | Weekdays at 9:00 AM |
+| `*/5 * * * *` | Every 5 minutes |
+
+---
+
+## Examples
+
+### Periodic health check
+
+Schedule a command that checks whether your service is healthy.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "node" })
+
+await box.schedule.exec({
+  cron: "*/5 * * * *",
+  command: ["bash", "-c", "curl -sf http://localhost:3000/health || echo UNHEALTHY >> /workspace/home/health.log"],
+})
+```
+
+### Daily code review agent
+
+Schedule an agent to review recent changes every morning.
+
+```typescript
+import { Box, Agent, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    provider: Agent.ClaudeCode,
+    model: ClaudeCode.Sonnet_4_5,
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  },
+  git: { token: process.env.GITHUB_TOKEN },
+})
+
+await box.git.clone({ repo: "github.com/your-org/your-repo" })
+
+await box.schedule.agent({
+  cron: "0 9 * * 1-5",
+  prompt: "Pull latest changes, review the last 24h of commits, and open issues for any bugs or style violations",
+})
+```
+
+### Manage schedules
+
+List active schedules and clean up ones you no longer need.
+
+```typescript
+const schedules = await box.schedule.list()
+
+for (const s of schedules) {
+  console.log(`${s.id} — ${s.type} — ${s.cron}`)
+}
+
+// Remove a specific schedule
+await box.schedule.delete(schedules[0].id)
+```
