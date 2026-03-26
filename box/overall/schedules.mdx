@@ -1,0 +1,234 @@
+---
+title: "Schedules"
+---
+
+Create recurring tasks that run on a cron schedule inside a box. You can schedule shell commands or agent prompts. Available on both `box.schedule` and `ephemeralBox.schedule`.
+
+---
+
+## API
+
+### Schedule a shell command
+
+Run a shell command on a cron schedule.
+
+```typescript
+const schedule = await box.schedule.exec({
+  cron: "* * * * *",
+  command: ["bash", "-c", "date >> /workspace/home/cron.log && echo scheduled-ok"],
+  webhookUrl: "https://example.com/hook",          // optional
+  webhookHeaders: { Authorization: "Bearer ..." }, // optional
+  folder: "/workspace/home",                       // optional, defaults to box.cwd
+})
+
+console.log(schedule.id)
+```
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `cron` | Yes | 5-field cron expression (UTC) |
+| `command` | Yes | `string[]` — the command to run |
+| `webhookUrl` | No | URL to notify when the scheduled run completes |
+| `webhookHeaders` | No | Headers to include in the webhook request |
+| `folder` | No | Working directory. Defaults to `box.cwd`; relative paths resolved against it |
+
+---
+
+### Schedule an agent prompt
+
+Run an agent prompt on a cron schedule. Requires an agent to be configured on the box.
+
+```typescript
+const schedule = await box.schedule.agent({
+  cron: "0 9 * * *",
+  prompt: "Run the test suite and fix any failures",
+  model: "claude-sonnet-4-6", // optional, overrides box's model
+})
+
+console.log(schedule.id)
+```
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `cron` | Yes | 5-field cron expression (UTC) |
+| `prompt` | Yes | The prompt to send to the agent |
+| `folder` | No | Working directory. Defaults to `box.cwd`; relative paths resolved against it |
+| `model` | No | Override the box's default model for this schedule |
+| `webhookUrl` | No | URL to notify when the scheduled run completes |
+| `webhookHeaders` | No | Headers to include in the webhook request |
+
+---
+
+### List schedules
+
+Retrieve all non-deleted schedules for the current box.
+
+```typescript
+const schedules = await box.schedule.list()
+
+for (const s of schedules) {
+  console.log(s.id, s.type, s.cron, s.status)
+}
+```
+
+---
+
+### Get a schedule
+
+Retrieve a single schedule by ID.
+
+```typescript
+const schedule = await box.schedule.get("schedule_abc123")
+
+console.log(schedule.type)   // "exec" | "prompt"
+console.log(schedule.status) // "active" | "paused" | "deleted"
+console.log(schedule.cron)
+```
+
+---
+
+### Pause a schedule
+
+Pause an active schedule so it stops running.
+
+```typescript
+await box.schedule.pause("schedule_abc123")
+```
+
+---
+
+### Resume a schedule
+
+Resume a paused schedule.
+
+```typescript
+await box.schedule.resume("schedule_abc123")
+```
+
+---
+
+### Delete a schedule
+
+Remove a schedule so it no longer runs.
+
+```typescript
+await box.schedule.delete("schedule_abc123")
+```
+
+---
+
+## Schedule response
+
+Most schedule methods return a `Schedule` object:
+
+```typescript
+interface Schedule {
+  id: string
+  box_id: string
+  type: "exec" | "prompt"
+  cron: string
+  command?: string[]         // present when type is "exec"
+  prompt?: string            // present when type is "prompt"
+  folder?: string
+  model?: string
+  status: "active" | "paused" | "deleted"
+  webhook_url?: string
+  webhook_headers?: Record<string, string>
+  last_run_at?: number
+  last_run_status?: "completed" | "failed" | "skipped"
+  last_run_id?: string
+  total_runs: number
+  total_failures: number
+  created_at: number
+  updated_at: number
+}
+```
+
+---
+
+## Cron syntax
+
+Schedules use standard 5-field cron expressions (UTC):
+
+```
+┌───────────── minute (0-59)
+│ ┌───────────── hour (0-23)
+│ │ ┌───────────── day of month (1-31)
+│ │ │ ┌───────────── month (1-12)
+│ │ │ │ ┌───────────── day of week (0-6, Sun=0)
+│ │ │ │ │
+* * * * *
+```
+
+| Expression | Description |
+| --- | --- |
+| `* * * * *` | Every minute |
+| `0 * * * *` | Every hour |
+| `0 9 * * *` | Daily at 9:00 AM |
+| `0 9 * * 1-5` | Weekdays at 9:00 AM |
+| `*/5 * * * *` | Every 5 minutes |
+
+---
+
+## Examples
+
+### Periodic health check
+
+Schedule a command that checks whether your service is healthy.
+
+```typescript
+import { Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "node" })
+
+await box.schedule.exec({
+  cron: "*/5 * * * *",
+  command: ["bash", "-c", "curl -sf http://localhost:3000/health || echo UNHEALTHY >> /workspace/home/health.log"],
+})
+```
+
+### Daily code review agent
+
+Schedule an agent to review recent changes every morning.
+
+```typescript
+import { Box, Agent, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    provider: Agent.ClaudeCode,
+    model: ClaudeCode.Sonnet_4_5,
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  },
+  git: { token: process.env.GITHUB_TOKEN },
+})
+
+await box.git.clone({ repo: "github.com/your-org/your-repo" })
+
+await box.schedule.agent({
+  cron: "0 9 * * 1-5",
+  prompt: "Pull latest changes, review the last 24h of commits, and open issues for any bugs or style violations",
+})
+```
+
+### Manage schedules
+
+List active schedules, pause, resume, and clean up ones you no longer need.
+
+```typescript
+const schedules = await box.schedule.list()
+
+for (const s of schedules) {
+  console.log(`${s.id} — ${s.type} — ${s.cron} — ${s.status}`)
+}
+
+// Pause a schedule
+await box.schedule.pause(schedules[0].id)
+
+// Resume it later
+await box.schedule.resume(schedules[0].id)
+
+// Remove a specific schedule
+await box.schedule.delete(schedules[0].id)
+```
