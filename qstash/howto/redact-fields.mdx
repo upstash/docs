@@ -1,0 +1,132 @@
+---
+title: "Redact Private Data"
+description: "How to redact private data in your messages"
+---
+
+QStash messages can contain private data that you don't want visible in the Upstash Console, or API responses.
+
+QStash allows you to redact specific fields so they appear as `REDACTED:<SHA256>` in the dashboard and API. The original values are still used when delivering messages to your endpoint. The SHA256 hash lets you verify the two data without revealing the original data.
+
+To redact a field, pass the `redactFields` option when publishing a message.
+
+Available options:
+| Option | Description |
+|--|--|
+| body | Redact the body of the message |
+| headers | Redact the headers of the message |
+| headers[header_name] | Redact a specific header (e.g., `headers[Authorization]`) |
+
+<Info>
+Redaction is one-way. Once a field is redacted, the original value cannot be retrieved from the API or dashboard.
+</Info>
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+const res = await client.publishJSON({
+  url: "https://my-api...",
+  body: { hello: "world" },
+  redactFields: {
+    body: true,
+    header: ["Authorization"]
+  },
+});
+```
+
+```python Python
+from qstash import QStash
+
+client = QStash("<QSTASH_TOKEN>")
+client.message.publish_json(
+    url="https://my-api...",
+    body={
+        "hello": "world",
+    },
+    redact_fields={
+      "body": True,
+      "header": ["Authorization"]
+    },
+)
+```
+
+```bash cURL
+curl -XPOST \
+    -H 'Authorization: Bearer XXX' \
+    -H "Content-Type: application/json" \
+    -H "Upstash-Redact-Fields: body, header[Authorization]" \
+    -d '{ "hello": "world" }' \
+    'https://qstash.upstash.io/v2/publish/https://my-api...'
+```
+</CodeGroup>
+
+<Frame caption="Logs of a message with `body` and header[My-Secret-Header] redacted">
+  <img src="/img/qstash/redact-logs.png" />
+</Frame>
+
+Redaction is configured per message, so you can redact different fields for different messages.
+
+If a message fails and moves to the DLQ, the redacted fields remain redacted in the DLQ.
+However, when you retry a DLQ message, QStash delivers the original values to your endpoint.
+
+## Schedules
+
+You can also redact fields in schedules. Pass the `redactFields` option when creating a schedule, and all messages produced by that schedule will have the specified fields redacted.
+Schedule get and list endpoints also apply redaction, so private data won't appear in API responses or the dashboard.
+
+<CodeGroup>
+```typescript TypeScript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+const res = await client.schedule.create({
+  name: "my-schedule",
+  cron: "0 * * * *",
+  url: "https://my-api...",
+  body: { hello: "world" },
+  redactFields: {
+    body: true,
+    header: ["Authorization"]
+  },
+});
+```
+
+```python Python
+from qstash import QStash
+
+client = QStash("<QSTASH_TOKEN>")
+client.schedule.create(
+    name="my-schedule",
+    cron="0 * * * *",
+    url="https://my-api...",
+    body={"hello": "world"},
+    redact_fields={
+      "body": True,
+      "header": ["Authorization"]
+    },
+)
+```
+
+```shell cURL
+curl -XPOST \
+    -H 'Authorization: Bearer XXX' \
+    -H "Content-type: application/json" \
+    -H "Upstash-Cron: * * * * *" \
+    -H "Upstash-Redact-Fields: body, header[Authorization]" \
+    -d '{ "hello": "world" }' \
+    'https://qstash.upstash.io/v2/schedules/https://example.com'
+```
+</CodeGroup>
+
+
+<Frame caption="Schedule with body and header[My-Secret-Header] redacted">
+  <img src="/img/qstash/redact-schedules.png" />
+</Frame>
+
+<Warning>
+When updating a redacted schedule via the dashboard or API, you must provide the original values for the redacted fields.
+
+If you don't provide the original values, the redacted fields will be saved as `REDACTED:<SHA256>` — which is the hash value visible in the dashboard, not the original data.
+</Warning>
