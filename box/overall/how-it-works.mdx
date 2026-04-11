@@ -6,93 +6,7 @@ Every Upstash Box is a **durable execution environment** for AI workloads. Each 
 
 Boxes are billed per active CPU time (not idle time), state persists across runs, and you can choose from Node, Python, Go or other runtimes. Unlike other sandboxing services, our boxes do not have a maximum session duration, you can resume them days or even weeks later.
 
----
-
-## Use Cases
-
-### 1. Agent Servers
-
-A very powerful pattern is the **Agent Server**: a long-running, per-tenant agent that persists its state across sessions. Unlike ephemeral sandboxes that lose everything on shutdown, an Agent Server keeps its history, context, and learned preferences intact forever.
-
-<Frame>
-  <img src="/img/box/agent-server.png" />
-</Frame>
-
-Each user gets a dedicated Box running its own agent. The agent observes every request and response in a non-blocking way. It builds up a personalized understanding of what that user needs. Over time, it contributes back to a shared **Knowledge Base**, so insights from one tenant can improve results for everyone.
-
-Because boxes are serverless, idle tenants only cost a very low storage rate. When a user returns, their box wakes instantly with all prior state intact (installed packages, file history, learned preferences) and picks up exactly where it left off.
-
-### 2. Multi-Agent Orchestration
-
-Box's async SDK lets you spin up multiple boxes in parallel, each running a specialized agent with a distinct role. Once every agent finishes, a final box can synthesize their outputs into a single result.
-
-<Frame>
-  <img src="/img/box/review-infrastructure.png" />
-</Frame>
-
-A practical example is an automated **PR review pipeline**. When a pull request is opened, you fan out to three boxes. One for security review, one for code quality, and one for architecture. Then you collect their findings in a fourth box that summarizes everything and posts a comment on GitHub.
-
-```tsx
-const pr = "https://github.com/acme/app/pull/42"
-
-const [security, quality, architecture] = await Promise.all([
-  Box.create({ runtime: "node", agent: { provider: Agent.ClaudeCode, model: ClaudeCode.Sonnet_4_6 } }),
-  Box.create({ runtime: "node", agent: { provider: Agent.ClaudeCode, model: ClaudeCode.Sonnet_4_6 } }),
-  Box.create({ runtime: "node", agent: { provider: Agent.ClaudeCode, model: ClaudeCode.Sonnet_4_6 } }),
-])
-
-const reviews = await Promise.all([
-  security.agent.run({ prompt: `Security review for ${pr}` }),
-  quality.agent.run({ prompt: `Code quality review for ${pr}` }),
-  architecture.agent.run({ prompt: `Architecture review for ${pr}` }),
-])
-
-const jury = await Box.create({
-  runtime: "node",
-  agent: { provider: Agent.ClaudeCode, model: ClaudeCode.Sonnet_4_6 },
-  git: { token: process.env.GIT_TOKEN },
-})
-
-await jury.agent.run({
-  prompt: `Summarize these reviews and post a comment on ${pr}:\n${reviews.map((r) => r.result).join("\n\n")}`,
-})
-```
-
-Because each box is isolated, the agents cannot interfere with each other. You get true parallelism with independent filesystems, and the orchestration logic stays in your own code.
-
-### 3. Parallel Testing & Comparison
-
-Box makes it easy to run parallel test scenarios at scale. Spin up N boxes, each running a different model against the same inputs, and compare the results side by side.
-
-<Frame>
-  <img src="/img/box/model-comparison.png" />
-</Frame>
-
-For example, at Context7 we use Box to benchmark LLMs for context extraction over documentation. We spin up boxes in parallel, each running a different model against the same documentation files and prompts. We then evaluate hallucination percentage, accuracy score, and context quality to find the best model:
-
-```tsx
-const models = ["claude/opus_4_6", "openai/gpt-5.4-codex", "google/gemini-3-pro"]
-
-const docs = await fs.readFile("./documentation.md", "utf-8")
-const prompt = `Extract all API endpoints from this documentation:\n${docs}`
-
-const boxes = await Promise.all(
-  models.map((model) => Box.create({ runtime: "node", agent: { provider: inferDefaultProvider(model), model } })),
-)
-
-const results = await Promise.all(boxes.map((box) => box.agent.run({ prompt })))
-
-const evaluation = results.map((r, i) => ({
-  model: models[i],
-  result: r.result,
-  hallucinationPct: evaluateHallucination(r.result, docs),
-  accuracyScore: evaluateAccuracy(r.result, docs),
-}))
-
-const bestModel = evaluation.sort((a, b) => a.hallucinationPct - b.hallucinationPct)[0]
-```
-
-Each box is fully isolated, so one model's behavior never leaks into another's results. 
+Looking for inspiration? Check out the [Use Cases](/box/overall/use-cases) page.
 
 ---
 
@@ -109,6 +23,48 @@ Every box is a self-contained environment with five capabilities:
 | **Snapshots**  | Capture box state and restore new boxes from it              |
 
 The agent has full access to the shell, filesystem, and git inside its box. It can install packages, write files, run tests, and interact with the network.
+
+---
+
+## Runtimes
+
+Each box runs in an isolated container with a pre-installed language runtime. By default, all runtimes use **Debian** (glibc), which offers the widest binary compatibility. Append `-alpine` for smaller images based on musl.
+
+| Runtime | Default (Debian) | Alpine variant    |
+|---------|------------------|-------------------|
+| Node.js | `node`           | `node-alpine`     |
+| Python  | `python`         | `python-alpine`   |
+| Go      | `golang`         | `golang-alpine`   |
+| Ruby    | `ruby`           | `ruby-alpine`     |
+| Rust    | `rust`           | `rust-alpine`     |
+
+```ts
+// Debian (default) — best for native modules and prebuilt binaries
+const box = await Box.create({ runtime: "node" })
+
+// Alpine — smaller image, musl-based
+const box = await Box.create({ runtime: "node-alpine" })
+```
+
+---
+
+## Agent
+
+Every Upstash Box comes with built-in coding agent harnesses. You don't need to bring your own agent framework or wire up tool calls. The box already knows how to give an agent access to its shell, filesystem, and git, and how to stream output back to you.
+
+We currently support Claude Code and Codex as native agents inside of a box. You choose a model when creating a box.
+
+For more details, see the [Agent](/box/overall/agent) page.
+
+<Frame>
+  <img src="/img/box/agent.png" />
+</Frame>
+
+Each iteration builds on the last. If a test fails, the agent sees the error output and corrects. If a file is missing, it discovers that during the read phase and adapts. The loop continues until the task is complete or the agent determines it cannot make further progress.
+
+You control what goes in (the prompt) and what comes out (raw text or a structured response). The agent handles reasoning and tool selection within its box, using the same [shell](/box/overall/shell), [filesystem](/box/overall/files), and [git](/box/overall/git) available to you through the SDK.
+
+A box retains its full state between runs (files, installed packages, git history, etc.). You can send multiple prompts to the same box and the agent picks up exactly where it left off.
 
 ---
 
@@ -223,26 +179,6 @@ Deleting a box is irreversible, so snapshot first if you may want to recreate th
 
 ---
 
-## Security & Isolation
-
-Every box runs as its own Docker container with an independent filesystem, process tree, and network stack. Boxes cannot communicate with or observe each other. There is no shared state between them.
-
-<Frame>
-  <img src="/img/box/routing.png" />
-</Frame>
-
-Your app makes SDK calls to the Upstash API gateway, which authenticates the request and routes it to the correct box. Each box has a unique ID, and all communication between your app and the box is encrypted in transit.
-
-Inside a box, the agent, shell, filesystem, and git all share the same isolated environment. The agent can install packages, write files, spawn processes, and make outbound HTTP requests, but only within its own container boundary. It cannot access the host, other boxes, or any Upstash-internal infrastructure.
-
-| Boundary       | Guarantee                                                                               |
-| -------------- | --------------------------------------------------------------------------------------- |
-| **Filesystem** | Each box has its own filesystem. No shared volumes between boxes.                       |
-| **Processes**  | Process trees are fully isolated. One box cannot signal or inspect another's processes. |
-| **Network**    | Boxes can make outbound requests (HTTP, DNS) but cannot reach other boxes.              |
-
----
-
 ## Networking
 
 Every box has full outbound network access by default. HTTP, HTTPS, DNS, WebSockets, and raw TCP are all available. Agents can call external APIs, download packages, pull container images, and interact with any public endpoint.
@@ -300,6 +236,26 @@ await box.updateNetworkPolicy({
 
 ---
 
+## Security & Isolation
+
+Every box runs as its own Docker container with an independent filesystem, process tree, and network stack. Boxes cannot communicate with or observe each other. There is no shared state between them.
+
+<Frame>
+  <img src="/img/box/routing.png" />
+</Frame>
+
+Your app makes SDK calls to the Upstash API gateway, which authenticates the request and routes it to the correct box. Each box has a unique ID, and all communication between your app and the box is encrypted in transit.
+
+Inside a box, the agent, shell, filesystem, and git all share the same isolated environment. The agent can install packages, write files, spawn processes, and make outbound HTTP requests, but only within its own container boundary. It cannot access the host, other boxes, or any Upstash-internal infrastructure.
+
+| Boundary       | Guarantee                                                                               |
+| -------------- | --------------------------------------------------------------------------------------- |
+| **Filesystem** | Each box has its own filesystem. No shared volumes between boxes.                       |
+| **Processes**  | Process trees are fully isolated. One box cannot signal or inspect another's processes. |
+| **Network**    | Boxes can make outbound requests (HTTP, DNS) but cannot reach other boxes.              |
+
+---
+
 ## Compute & Billing
 
 Compute is billed separately from persisted storage. CPU is only metered while a box is actively executing commands or agent steps, so paused or idle boxes do not accrue compute charges.
@@ -311,23 +267,3 @@ Compute is billed separately from persisted storage. CPU is only metered while a
 | **Storage** | $0.10 per GB-month for **all** persisted storage, including disks and snapshots |
 
 Boxes are currently available in one size with 2 vCPU, 2GB of memory and 10GB disk space.
-
----
-
-## Agent
-
-Every Upstash Box comes with built-in coding agent harnesses. You don't need to bring your own agent framework or wire up tool calls. The box already knows how to give an agent access to its shell, filesystem, and git, and how to stream output back to you.
-
-We currently support Claude Code and Codex as native agents inside of a box. You choose a model when creating a box.
-
-For more details, see the [Agent](/box/overall/agent) page.
-
-<Frame>
-  <img src="/img/box/agent.png" />
-</Frame>
-
-Each iteration builds on the last. If a test fails, the agent sees the error output and corrects. If a file is missing, it discovers that during the read phase and adapts. The loop continues until the task is complete or the agent determines it cannot make further progress.
-
-You control what goes in (the prompt) and what comes out (raw text or a structured response). The agent handles reasoning and tool selection within its box, using the same [shell](/box/overall/shell), [filesystem](/box/overall/files), and [git](/box/overall/git) available to you through the SDK.
-
-A box retains its full state between runs (files, installed packages, git history, etc.). You can send multiple prompts to the same box and the agent picks up exactly where it left off.
