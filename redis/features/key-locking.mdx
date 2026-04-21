@@ -1,0 +1,172 @@
+---
+title: Key-Based Locking
+description: "Key-based locks for concurrent command execution"
+---
+
+Upstash Redis databases use locks to keep commands isolated while allowing
+independent keys to be processed in parallel. The engine automatically locks
+the keys used by the command. Commands that operate on different keys can run
+concurrently, subject to the parallelism available to your database.
+
+Key-based locking is transparent to clients. You do not need to change regular
+Redis commands to use it.
+
+## How It Works
+
+- Single-key commands (for example `GET`, `SET`, `INCR`, `HSET`) acquire a
+  lock on just that key.
+- Multi-key commands acquire locks on every key they reference, in a
+  deterministic order to avoid deadlocks.
+- Read-only commands (for example `GET`, `HGET`, `LRANGE`) take a shared read
+  lock, so multiple readers on the same key run concurrently. Read
+  locks block writers on that key until they complete.
+- Commands that need a database-wide operation, such as `FLUSHDB` and
+  `FLUSHALL`, take the global lock and can reduce concurrency while they run.
+
+## Transactions
+
+Transactions (`MULTI`/`EXEC`) use key-based locking at `EXEC` time. While
+commands are queued, Upstash collects the keys referenced by the transaction.
+When `EXEC` runs, the engine takes an exclusive write lock for the union of
+those keys and executes the queued commands atomically.
+
+Transactions that touch disjoint key sets can run concurrently. Transactions
+that share any key block each other until one transaction finishes.
+
+```redis
+MULTI
+SET user:42:name "Ada"
+INCR user:42:version
+EXEC
+```
+
+In this example, `EXEC` locks `user:42:name` and `user:42:version` for the
+duration of the transaction.
+
+If a queued command requires a database-wide lock, the whole transaction uses
+the global lock. This includes commands such as `FLUSHDB` and `FLUSHALL`.
+
+Lua scripts queued inside a transaction always execute under the global lock,
+even if the script declares [`allow-key-locking`](#lua-scripts). If you want
+script-level key locking, run the script directly with `EVAL`/`EVALSHA`
+outside of a transaction.
+
+## Lua Scripts
+
+Lua scripts (`EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`) default to the global
+lock because the engine cannot know in advance which keys the script will use.
+To opt into key-based locking, add the `allow-key-locking` flag to the script's
+shebang line:
+
+```lua
+#!lua flags=allow-key-locking
+
+redis.call('INCR', KEYS[1])
+redis.call('INCRBY', KEYS[2], ARGV[1])
+return "OK"
+```
+
+When the flag is set, Upstash locks only the keys passed through the `KEYS`
+array when the script is invoked. Other commands and scripts that touch disjoint
+keys can run in parallel.
+
+### Rules for `allow-key-locking`
+
+- **Every key passed to `redis.call` must appear in `KEYS`.** You may compute
+  the key value inside the script (for example by concatenating parts of
+  `ARGV`), but the final string must exactly match one of the entries declared
+  in the `KEYS` array. Otherwise the engine rejects the command:
+
+  ```
+  ERR Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is set. Key was: <key>
+  ```
+
+  In practice, this means you should pass fully resolved keys through `KEYS`
+  rather than reconstructing them from `ARGV` inside the script.
+
+- **Database-wide writes are not allowed.** Commands that require database-wide
+  exclusive access, such as `FLUSHDB` and `FLUSHALL`, cannot be called from a
+  script with `allow-key-locking`. Run those scripts without the flag so the
+  engine can use the global lock.
+
+Read-only script variants and scripts with the `no-writes` flag also need
+`allow-key-locking` if you want them to use per-key read locks. Without it, they
+run under the global lock. To use both flags in a Lua script, separate them with
+a comma:
+
+```lua
+#!lua flags=no-writes,allow-key-locking
+```
+
+### When to use it
+
+Enable `allow-key-locking` for short scripts that operate on a small, known
+set of keys and are called frequently enough that the global lock becomes a
+bottleneck (for example counters, rate limiters, or per-user state
+transitions). For scripts that must scan or mutate many keys at once, leave
+the flag off so the engine uses the global lock.
+
+### Example: Key-Locked Counter
+
+```lua
+#!lua flags=allow-key-locking
+
+local current = tonumber(redis.call('GET', KEYS[1]) or "0")
+if current >= tonumber(ARGV[1]) then
+  return 0
+end
+redis.call('INCR', KEYS[1])
+return 1
+```
+
+Invoked with:
+
+```
+EVAL "<script>" 1 user:42:quota 100
+```
+
+Multiple clients calling this script for different users will execute
+concurrently, each holding a lock only on its own `user:<id>:quota` key.
+
+## Redis Functions
+
+Redis functions (`FCALL`, `FCALL_RO`) also default to the global lock. For
+functions, `allow-key-locking` is set on each registered function, not on the
+library shebang:
+
+```lua
+#!lua name=locks
+
+local function incr_if_below(keys, args)
+  local current = tonumber(redis.call('GET', keys[1]) or "0")
+  if current >= tonumber(args[1]) then
+    return 0
+  end
+
+  redis.call('INCR', keys[1])
+  return 1
+end
+
+redis.register_function{
+  function_name='incr_if_below',
+  callback=incr_if_below,
+  flags={'allow-key-locking'}
+}
+```
+
+Invoked with:
+
+```
+FCALL incr_if_below 1 user:42:quota 100
+```
+
+The same rules apply: every key used by the function must be passed in the
+`FCALL` key list. Keys passed as regular arguments are not locked unless they
+also appear in the key list.
+
+If the function is also read-only, include both flags in the function
+registration:
+
+```lua
+flags={'no-writes', 'allow-key-locking'}
+```
