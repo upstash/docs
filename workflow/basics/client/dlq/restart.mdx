@@ -7,10 +7,76 @@ This allows you to reprocess workflow runs that previously failed after exhausti
 
 ## Arguments
 
-<ParamField body="dlqId" type="string|string[]" required>
-    The DLQ entry ID or list of IDs to restart.
-    Use the `dlqId` field from messages returned by `client.dlq.list()`.
+The first argument specifies which DLQ entries to restart. The optional second argument provides flow control and retry settings.
+
+### By DLQ ID
+
+Pass a single DLQ ID or an array of IDs directly:
+
+```ts
+await client.dlq.restart("dlq-12345");
+await client.dlq.restart(["dlq-12345", "dlq-67890"]);
+```
+
+### By filters
+
+Pass an object with a `filter` field:
+
+<ParamField body="filter" type="object">
+    <Expandable defaultOpen>
+        <ParamField body="workflowUrl" type="string" optional>
+            Filter by exact workflow URL.
+        </ParamField>
+
+        <ParamField body="workflowRunId" type="string" optional>
+            Filter by workflow run ID.
+        </ParamField>
+
+        <ParamField body="label" type="string" optional>
+            Restart workflows with this label.
+        </ParamField>
+
+        <ParamField body="fromDate" type="Date | number" optional>
+            Restart workflows created after this date.
+        </ParamField>
+
+        <ParamField body="toDate" type="Date | number" optional>
+            Restart workflows created before this date.
+        </ParamField>
+
+        <ParamField body="callerIp" type="string" optional>
+            Filter by the IP address that triggered the workflow.
+        </ParamField>
+
+        <ParamField body="flowControlKey" type="string" optional>
+            Filter by flow control key.
+        </ParamField>
+
+        <ParamField body="workflowCreatedAt" type="number" optional>
+            Filter by workflow creation time (Unix timestamp in ms).
+        </ParamField>
+
+        <ParamField body="failureFunctionState" type="string" optional>
+            Filter by failure callback state.
+        </ParamField>
+    </Expandable>
 </ParamField>
+
+<ParamField body="count" type="number" optional>
+    Maximum number of messages to process per call. Defaults to `100`.
+</ParamField>
+
+<ParamField body="cursor" type="string" optional>
+    A pagination cursor from a previous request.
+</ParamField>
+
+### Restart all
+
+<ParamField body="all" type="boolean">
+    Set to `true` to restart all DLQ entries.
+</ParamField>
+
+### Options (second argument)
 
 <ParamField body="flowControl" type="object" optional>
     An optional flow control configuration to limit concurrency and execution rate of restarted workflow runs.
@@ -44,7 +110,9 @@ This allows you to reprocess workflow runs that previously failed after exhausti
 
 ## Response
 
-`client.dlq.restart()` returns one or more objects containing details of the restarted workflow run(s):
+<ResponseField name="cursor" type="string">
+    A pagination cursor. If not returned, all matching entries have been processed.
+</ResponseField>
 
 <ResponseField name="workflowRuns" type="object[]">
     <Expandable defaultOpen>
@@ -55,9 +123,7 @@ This allows you to reprocess workflow runs that previously failed after exhausti
         <ResponseField name="workflowCreatedAt" type="number">
             The Unix timestamp (in milliseconds) when the new workflow run was created.
         </ResponseField>
-
     </Expandable>
-
 </ResponseField>
 
 ## Usage
@@ -66,21 +132,32 @@ This allows you to reprocess workflow runs that previously failed after exhausti
 ```ts Single
 const { messages } = await client.dlq.list();
 
-const response = await client.dlq.restart({
-  dlqId: messages[0].dlqId, // Use the dlqId from the message
+const response = await client.dlq.restart(messages[0].dlqId, {
   flowControl: {
     key: "my-flow-control-key",
     parallelism: 10,
   },
   retries: 3,
 });
-
 ```
 ```ts Multiple
-const responses = await client.dlq.restart({
-  dlqId: ["dlq-12345", "dlq-67890"],
-  retries: 5,
-});
+const response = await client.dlq.restart(["dlq-12345", "dlq-67890"]);
+```
+```ts By filters
+let cursor: string | undefined;
+do {
+  const result = await client.dlq.restart({
+    filter: { label: "my-label" },
+    cursor,
+  });
+  cursor = result.cursor;
+} while (cursor);
+```
+```ts All
+let cursor: string | undefined;
+do {
+  const result = await client.dlq.restart({ all: true, cursor });
+  cursor = result.cursor;
+} while (cursor);
 ```
 </CodeGroup>
-

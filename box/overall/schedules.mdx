@@ -42,7 +42,9 @@ Run an agent prompt on a cron schedule. Requires an agent to be configured on th
 const schedule = await box.schedule.agent({
   cron: "0 9 * * *",
   prompt: "Run the test suite and fix any failures",
-  model: "claude-sonnet-4-6", // optional, overrides box's model
+  model: "anthropic/claude-sonnet-4-6",          // optional, overrides box's model
+  timeout: 300_000,                     // optional, kill the run after 5 minutes
+  options: { maxBudgetUsd: 1.0 },      // optional, provider-specific agent options
 })
 
 console.log(schedule.id)
@@ -54,6 +56,8 @@ console.log(schedule.id)
 | `prompt` | Yes | The prompt to send to the agent |
 | `folder` | No | Working directory. Defaults to `box.cwd`; relative paths resolved against it |
 | `model` | No | Override the box's default model for this schedule |
+| `options` | No | Provider-specific agent options (e.g. `maxBudgetUsd`, `effort`, `systemPrompt`, `maxTurns`) |
+| `timeout` | No | Timeout in milliseconds — kills the run if exceeded |
 | `webhookUrl` | No | URL to notify when the scheduled run completes |
 | `webhookHeaders` | No | Headers to include in the webhook request |
 
@@ -131,6 +135,8 @@ interface Schedule {
   prompt?: string            // present when type is "prompt"
   folder?: string
   model?: string
+  agent_options?: Record<string, unknown>
+  timeout?: number
   status: "active" | "paused" | "deleted"
   webhook_url?: string
   webhook_headers?: Record<string, string>
@@ -177,7 +183,7 @@ Schedules use standard 5-field cron expressions (UTC):
 Schedule a command that checks whether your service is healthy.
 
 ```typescript
-import { Box } from "@upstash/box"
+import { Agent, Box } from "@upstash/box"
 
 const box = await Box.create({ runtime: "node" })
 
@@ -192,13 +198,13 @@ await box.schedule.exec({
 Schedule an agent to review recent changes every morning.
 
 ```typescript
-import { Box, Agent, ClaudeCode } from "@upstash/box"
+import { Agent, Box } from "@upstash/box"
 
 const box = await Box.create({
   runtime: "node",
   agent: {
-    provider: Agent.ClaudeCode,
-    model: ClaudeCode.Sonnet_4_5,
+    harness: Agent.ClaudeCode,
+    model: "anthropic/claude-sonnet-4-5",
     apiKey: process.env.ANTHROPIC_API_KEY,
   },
   git: { token: process.env.GITHUB_TOKEN },
@@ -209,6 +215,8 @@ await box.git.clone({ repo: "github.com/your-org/your-repo" })
 await box.schedule.agent({
   cron: "0 9 * * 1-5",
   prompt: "Pull latest changes, review the last 24h of commits, and open issues for any bugs or style violations",
+  timeout: 600_000,
+  options: { maxBudgetUsd: 2.0, effort: "high" },
 })
 ```
 
