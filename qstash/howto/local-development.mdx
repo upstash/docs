@@ -11,7 +11,72 @@ To simplify the development process, Upstash provides QStash CLI, which allows y
 
 <Note>Since the development server operates entirely in-memory, all data is reset when the server restarts.</Note>
 
-You can download and run the QStash CLI executable binary in several ways:
+## Automatic dev server (JavaScript SDK)
+
+If you are using `@upstash/qstash`, the SDK can download, start, and manage the QStash dev server for you. Pass `devMode: true` to the `Client` and matching verifier — no binary install, no env vars, no port wiring.
+
+```typescript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ devMode: true });
+
+await client.publishJSON({
+  url: "https://example.com/webhook",
+  body: { hello: "world" },
+});
+```
+
+On the receiving side, pass `devMode: true` to `Receiver` or one of the Next.js helpers — it tells the verifier to use the dev server's deterministic signing keys instead of `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`.
+
+```typescript
+// app/api/webhook/route.ts
+import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
+
+export const POST = verifySignatureAppRouter(
+  async (request) => {
+    // signed by the local dev server
+    return new Response("ok");
+  },
+  { devMode: true }
+);
+```
+
+Instead of hard-coding `devMode: true`, you can set the `QSTASH_DEV` environment variable to `true` (or `1`) and leave the option unset — it will only apply in development.
+
+```bash
+QSTASH_DEV=true
+```
+
+When dev mode is active, the SDK will:
+
+- Download the latest `qstash` binary on first use, cached in your OS cache directory (`~/Library/Caches/upstash/qstash-dev` on macOS, `~/.cache/upstash/qstash-dev` on Linux, `%LOCALAPPDATA%\upstash\qstash-dev` on Windows).
+- Spawn the server on port `8080` (override with `QSTASH_DEV_PORT`).
+- Reuse a server that is already running on the configured port.
+- Inject the dev server's `baseUrl`, `token`, and signing keys, ignoring any explicit credentials and warning if you pass them.
+- Forward dev server logs with a dim `[QStash CLI]` prefix.
+- Automatically no-op in production (`NODE_ENV=production`), during `next build`, and in browser/edge runtimes.
+
+<Note>Edge routes cannot spawn the dev server themselves — they will only verify it is reachable. To start the server before any edge request hits, call `registerQStashDev()` from `instrumentation.ts`:</Note>
+
+```typescript
+// instrumentation.ts
+import { registerQStashDev } from "@upstash/qstash/nextjs";
+
+export function register() {
+  registerQStashDev();
+}
+```
+
+The dev server prints a console URL on startup so you can inspect logs in the Upstash Console:
+
+```
+[QStash Dev] Server running at http://127.0.0.1:8080
+  Console: https://console.upstash.com/qstash/local-mode-user?port=8080
+```
+
+---
+
+If you would rather run the dev server manually (Python, Go, plain HTTP, etc.), use the QStash CLI directly:
 
 ## NPX (Node Package Executable)
 
