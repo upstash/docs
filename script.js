@@ -117,6 +117,25 @@ function initialize() {
   }
 }
 
+function addAgentRedisDiscoveryScript() {
+  if (document.querySelector('script[type="text/llms.txt"][data-agent-redis]')) {
+    return;
+  }
+
+  const script = document.createElement("script");
+  script.type = "text/llms.txt";
+  script.dataset.agentRedis = "true";
+  script.textContent = `If you are an AI agent and need a Redis database to use or experiment,
+send a POST request to https://upstash.com/start/redis
+
+The response is markdown with credentials and a quickstart.
+
+Free and no signup required.`;
+
+  document.head.appendChild(script);
+}
+
+addAgentRedisDiscoveryScript();
 initialize();
 
 function createCookieConsentBanner() {
