@@ -26,12 +26,22 @@ const SKIP_DIRS = new Set([
 ]);
 
 /**
- * Pages excluded from llms-full.txt because they're individually short but
- * collectively huge (~19K lines for ~390 pages) and not useful as a
- * pre-bundled context. They stay listed in llms.txt — an AI can fetch any
- * specific command page on demand via its link.
+ * Pages emitted in llms-full.txt as a single bullet line (same format as
+ * llms.txt) instead of a full page block. They're individually short but
+ * collectively expensive, and they're tutorials or per-symbol references
+ * — high token cost, low reference value when pre-bundled. The bullet
+ * still surfaces title, description, and URL so an AI can fetch the page
+ * if it needs the full body.
+ *
+ * Patterns:
+ *   - SDK command reference pages (one per Redis command, per language)
+ *   - Quickstarts (framework walkthroughs)
+ *   - Examples and recipes (long code-heavy tutorials)
  */
-const FULL_TXT_SKIP = [/^[^/]+\/sdks\/[a-z][a-z0-9-]*\/commands\//];
+const FULL_TXT_SKIP = [
+  /^[^/]+\/sdks\/[a-z][a-z0-9-]*\/commands\//,
+  /(^|\/)(quickstarts|examples|recipes)\//,
+];
 
 interface Entry {
   title: string;
