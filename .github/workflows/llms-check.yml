@@ -1,0 +1,52 @@
+name: llms.txt check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Push back to the PR branch needs the branch ref, not the merge commit.
+          ref: ${{ github.head_ref || github.ref }}
+          # Use a token that can push back to PR branches.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: llms/package-lock.json
+
+      - name: Install
+        working-directory: llms
+        run: npm ci
+
+      - name: Check llms.txt is up to date
+        id: check
+        working-directory: llms
+        run: npm run check
+        continue-on-error: true
+
+      - name: Auto-commit regenerated llms.txt
+        if: steps.check.outcome == 'failure' && github.event_name == 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add llms.txt llms-full.txt
+          git commit -m "chore(llms): regenerate llms.txt and llms-full.txt"
+          git push
+
+      - name: Fail if llms.txt was stale
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "::error::llms.txt / llms-full.txt were out of date. A regeneration commit was pushed to this PR — please review it and re-run CI."
+          exit 1
