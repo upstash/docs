@@ -3,7 +3,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { walkNavigation, type WalkItem } from "./generator.ts";
-import { expandOpenApi, type OpenApiEntry } from "./openapi.ts";
+import { expandOpenApi } from "./openapi.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DOCS_ROOT = join(SCRIPT_DIR, "..", "..");
@@ -25,37 +25,38 @@ const SKIP_DIRS = new Set([
   "logo",
 ]);
 
-interface DocsEntry {
+interface Entry {
   title: string;
-  /** Site-relative path without the `.md` suffix, used as the sort key. */
+  /** Site-relative path without leading slash, e.g. `agent-resources/cli`. */
   path: string;
-  /** Full URL under the docs site, e.g. `https://upstash.com/docs/foo/bar.md`. */
-  url: string;
-  description?: string;
+  /** First-paragraph description used in llms.txt bullets. */
+  shortDescription?: string;
+  /**
+   * The page body as it appears in llms-full.txt. For MDX pages this is the
+   * frontmatter-stripped file body. For OpenAPI operations it's a synthesized
+   * block: `<spec-source> <method> <api-path>\n<description>`.
+   */
+  fullBody: string;
+  /**
+   * Determines the blank-line spacing used in llms-full.txt: MDX pages get
+   * three blank lines between Source and body, OpenAPI ops get one.
+   */
+  kind: "mdx" | "openapi";
 }
 
-const docsEntries: DocsEntry[] = [];
+const entries: Entry[] = [];
 const openApiSpecs: { url: string }[] = [];
-const llmsFullParts: string[] = ["# Upstash Documentation", ""];
 
-// README.mdx at the docs root isn't part of docs.json's navigation but is
-// included in upstream's llms.txt.
 addMdxEntry("README");
 
-// Track the depth of the most recent group yield so we can decide whether
-// a following openapi item belongs in the "OpenAPI Specs" footer. Upstream's
-// llms.txt only footers a spec whose containing group is at depth 2 — i.e.
-// a subcategory directly under a top-level tab group, not nested deeper.
 let currentGroupDepth = 0;
 
 for (const item of walkNavigation({ docsRoot: DOCS_ROOT })) {
   handle(item);
 }
 
-// Mintlify's upstream llms.txt also surfaces .mdx files that exist on disk
-// but aren't referenced from docs.json (orphan pages still served by URL).
-// Walk the docs root and add any we haven't seen yet.
 addOrphanMdxFiles();
+entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
 writeLlmsTxt();
 writeLlmsFullTxt();
@@ -66,15 +67,18 @@ console.log(`Wrote ${LLMS_FULL_TXT}`);
 function handle(item: WalkItem): void {
   if (item.type === "group") {
     currentGroupDepth = item.depth;
-    // Headings are only used in llms-full.txt — llms.txt is one flat list.
-    const hashes = "#".repeat(Math.min(item.depth + 2, 6));
-    pushHeading(llmsFullParts, `${hashes} ${item.group}`);
     return;
   }
 
   if (item.type === "openapi") {
     for (const op of expandOpenApi(DOCS_ROOT, item.source, item.directory)) {
-      pushOpenApiEntry(op);
+      entries.push({
+        title: op.title,
+        path: op.path,
+        shortDescription: firstParagraph(op.description),
+        fullBody: openApiBody(item.source, op.method, op.apiPath, op.description),
+        kind: "openapi",
+      });
     }
     if (item.directory && currentGroupDepth === 2) {
       openApiSpecs.push({ url: `${SITE_URL}/${item.source}` });
@@ -83,29 +87,31 @@ function handle(item: WalkItem): void {
   }
 
   // type === "page"
-  const url = `${SITE_URL}/${item.path}.md`;
-  docsEntries.push({
+  entries.push({
     title: item.metadata.title,
     path: item.path,
-    url,
-    description: flatten(item.metadata.description),
+    shortDescription: firstParagraph(item.metadata.description),
+    fullBody: item.content,
+    kind: "mdx",
   });
-  pushFullBody(item.metadata.title, url, item.content);
 }
 
-function pushOpenApiEntry(op: OpenApiEntry): void {
-  const url = `${SITE_URL}/${op.path}.md`;
-  docsEntries.push({
-    title: op.title,
-    path: op.path,
-    url,
-    description: flatten(op.description),
+function addMdxEntry(path: string): void {
+  const filePath = join(DOCS_ROOT, `${path}.mdx`);
+  if (!existsSync(filePath)) return;
+  const raw = readFileSync(filePath, "utf-8");
+  const { metadata, body } = parseFrontmatter(raw);
+  entries.push({
+    title: metadata.title || titleFromBasename(path),
+    path,
+    shortDescription: firstParagraph(metadata.description),
+    fullBody: body,
+    kind: "mdx",
   });
-  pushFullBody(op.title, url, op.description ?? "");
 }
 
 function addOrphanMdxFiles(): void {
-  const seen = new Set(docsEntries.map((e) => e.path));
+  const seen = new Set(entries.map((e) => e.path));
   walkMdx(DOCS_ROOT);
 
   function walkMdx(dir: string): void {
@@ -126,30 +132,15 @@ function addOrphanMdxFiles(): void {
   }
 }
 
-function addMdxEntry(path: string): void {
-  const filePath = join(DOCS_ROOT, `${path}.mdx`);
-  if (!existsSync(filePath)) return;
-  const raw = readFileSync(filePath, "utf-8");
-  const { metadata, body } = parseFrontmatter(raw);
-  const title = metadata.title || titleFromBasename(path);
-  const url = `${SITE_URL}/${path}.md`;
-  docsEntries.push({
-    title,
-    path,
-    url,
-    description: flatten(metadata.description),
-  });
-  pushFullBody(title, url, body);
-}
-
 function writeLlmsTxt(): void {
-  // Sort by site-relative path (no `.md`) so e.g. `get-qstash` precedes
-  // `get-qstash-stats` — including `.md` would invert that pair because
-  // `-` (0x2D) sorts before `.` (0x2E) in ASCII.
-  docsEntries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const lines: string[] = ["# Upstash Documentation", "", "## Docs", ""];
-  for (const e of docsEntries) {
-    lines.push(formatBullet(e));
+  for (const e of entries) {
+    const url = `${SITE_URL}/${e.path}.md`;
+    lines.push(
+      e.shortDescription
+        ? `- [${e.title}](${url}): ${e.shortDescription}`
+        : `- [${e.title}](${url})`,
+    );
   }
   if (openApiSpecs.length > 0) {
     lines.push("", "## OpenAPI Specs", "");
@@ -161,18 +152,109 @@ function writeLlmsTxt(): void {
 }
 
 function writeLlmsFullTxt(): void {
-  writeFileSync(LLMS_FULL_TXT, llmsFullParts.join("\n").replace(/\n+$/, "\n"));
+  // Upstream's per-page block, with visible-blank counts noted:
+  //
+  //   MDX page:
+  //     # <title>
+  //     Source: <url>          ← then 3 blank lines
+  //     <body>                 ← then 2 blank lines before next page
+  //
+  //   OpenAPI op:
+  //     # <title>
+  //     Source: <url>          ← then 1 blank line
+  //     <body>                 ← then 2 blank lines before next page
+  const chunks: string[] = [];
+  for (const e of entries) {
+    const url = `${SITE_URL}/${e.path}`;
+    const body =
+      e.kind === "mdx"
+        ? normalizeMdxBody(e.fullBody)
+        : e.fullBody.replace(/^\n+/, "").replace(/\n+$/, "");
+    const blanksAfterSource = e.kind === "mdx" ? "\n\n\n\n" : "\n\n";
+    chunks.push(`# ${e.title}\nSource: ${url}${blanksAfterSource}${body}\n\n\n`);
+  }
+  writeFileSync(LLMS_FULL_TXT, chunks.join(""));
 }
 
-function formatBullet(e: DocsEntry): string {
-  return e.description
-    ? `- [${e.title}](${e.url}): ${e.description}`
-    : `- [${e.title}](${e.url})`;
+/**
+ * Normalize an MDX body the way Mintlify's llms-full.txt pipeline does:
+ *   - strip leading/trailing blank lines
+ *   - rewrite dash-style bullets (`- `, `  - `) to asterisk-style (`* `, `  * `)
+ *   - rewrite plain `---` horizontal-rule lines to `***`
+ *   - strip trailing whitespace from every line
+ *
+ * This isn't a full markdown serializer — fence-attribute injection
+ * (`bash` -> `bash theme={"system"}`) and JSX re-indentation are still
+ * missing — but it covers the highest-frequency content diffs.
+ */
+function normalizeMdxBody(body: string): string {
+  const lines = body.replace(/^\n+/, "").replace(/\n+$/, "").split(/\r?\n/);
+  let inFence = false;
+  const out = lines.map((line) => {
+    const fenceMatch = /^(\s*```)(.*)$/.exec(line);
+    if (fenceMatch) {
+      const trimmed = line.replace(/[ \t]+$/, "");
+      if (!inFence) {
+        inFence = true;
+        // Mintlify appends ` theme={"system"}` to every opening fence whose
+        // info string isn't empty (i.e. any fence that declares a language
+        // or attributes), unless one is already present.
+        const info = fenceMatch[2].trim();
+        if (info.length > 0 && !/theme=\{"system"\}/.test(info)) {
+          return `${trimmed} theme={"system"}`;
+        }
+        return trimmed;
+      }
+      inFence = false;
+      return trimmed;
+    }
+    if (inFence) return line.replace(/[ \t]+$/, "");
+    let l = line.replace(/[ \t]+$/, "");
+    l = l.replace(/^(\s*)-(\s+)/, "$1*$2");
+    if (/^---\s*$/.test(l)) l = "***";
+    l = rewriteInternalLinks(l);
+    return l;
+  });
+  return out.join("\n");
 }
 
-function pushHeading(out: string[], heading: string): void {
-  if (out.length > 0 && out[out.length - 1] !== "") out.push("");
-  out.push(heading, "");
+/**
+ * Mintlify mounts the docs site under `/docs/`, so internal links like
+ * `[X](/agent-resources/cli)` are rewritten to `[X](/docs/agent-resources/cli)`
+ * in the published markdown. Also unescape `\&` in link URLs (MDX often
+ * writes `\&` to avoid HTML-entity ambiguity, but the upstream txt is
+ * plain).
+ */
+function rewriteInternalLinks(line: string): string {
+  return line.replace(/\]\(([^)]*)\)/g, (_match, url: string) => {
+    let u = url.replace(/\\&/g, "&");
+    if (u.startsWith("/") && !u.startsWith("/docs/") && u !== "/docs") {
+      u = `/docs${u}`;
+    }
+    return `](${u})`;
+  });
+}
+
+function openApiBody(
+  source: string,
+  method: string,
+  apiPath: string,
+  description: string | undefined,
+): string {
+  const header = `/${source} ${method} ${apiPath}`;
+  return description ? `${header}\n${description}` : header;
+}
+
+/**
+ * Mintlify's upstream llms.txt uses only the first paragraph of a description
+ * (text up to the first blank line), with single newlines folded to single
+ * spaces. Intra-paragraph multi-space runs are preserved verbatim.
+ */
+function firstParagraph(s: string | undefined): string | undefined {
+  if (!s) return undefined;
+  const firstPara = s.split(/\r?\n\s*\r?\n/)[0];
+  const out = firstPara.replace(/\r?\n/g, " ").trim();
+  return out || undefined;
 }
 
 /**
@@ -184,24 +266,6 @@ function titleFromBasename(path: string): string {
   const base = path.split("/").pop() ?? path;
   const spaced = base.replace(/-/g, " ");
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-function pushFullBody(title: string, url: string, body: string): void {
-  llmsFullParts.push(`### ${title}`, "");
-  llmsFullParts.push(`Source: ${url}`, "");
-  llmsFullParts.push(body.trim(), "", "---", "");
-}
-
-/**
- * Mintlify's upstream llms.txt uses only the first paragraph of a description
- * (text up to the first blank line), with single newlines folded to single
- * spaces. Intra-paragraph multi-space runs are preserved verbatim.
- */
-function flatten(s: string | undefined): string | undefined {
-  if (!s) return undefined;
-  const firstPara = s.split(/\r?\n\s*\r?\n/)[0];
-  const out = firstPara.replace(/\r?\n/g, " ").trim();
-  return out || undefined;
 }
 
 function parseFrontmatter(raw: string): {

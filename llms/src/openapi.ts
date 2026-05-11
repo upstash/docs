@@ -7,6 +7,10 @@ export interface OpenApiEntry {
   /** Path under the docs site, without leading slash and without `.md`. */
   path: string;
   description?: string;
+  /** HTTP method, lowercase (e.g. "get", "post"). Used in llms-full.txt. */
+  method: string;
+  /** Spec-relative path of the operation (e.g. "/qstash/users"). */
+  apiPath: string;
 }
 
 interface OpenApiOperation {
@@ -56,7 +60,7 @@ export function expandOpenApi(
   // second-and-later occurrences within a single spec.
   const seenPaths = new Map<string, number>();
 
-  for (const methods of Object.values(spec.paths)) {
+  for (const [apiPath, methods] of Object.entries(spec.paths)) {
     for (const [method, op] of Object.entries(methods)) {
       if (!HTTP_METHODS.has(method)) continue;
       if (!op.summary) continue;
@@ -80,6 +84,8 @@ export function expandOpenApi(
         title: op.summary,
         path,
         description: op.description?.trim() || undefined,
+        method,
+        apiPath,
       });
     }
   }
