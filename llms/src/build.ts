@@ -25,6 +25,14 @@ const SKIP_DIRS = new Set([
   "logo",
 ]);
 
+/**
+ * Pages excluded from llms-full.txt because they're individually short but
+ * collectively huge (~19K lines for ~390 pages) and not useful as a
+ * pre-bundled context. They stay listed in llms.txt — an AI can fetch any
+ * specific command page on demand via its link.
+ */
+const FULL_TXT_SKIP = [/^[^/]+\/sdks\/[a-z][a-z0-9-]*\/commands\//];
+
 interface Entry {
   title: string;
   /** Site-relative path without leading slash, e.g. `agent-resources/cli`. */
@@ -151,71 +159,116 @@ function writeLlmsTxt(): void {
   writeFileSync(LLMS_TXT, lines.join("\n") + "\n");
 }
 
+function isExcludedFromFullTxt(path: string): boolean {
+  return FULL_TXT_SKIP.some((re) => re.test(path));
+}
+
 function writeLlmsFullTxt(): void {
-  // Upstream's per-page block, with visible-blank counts noted:
+  // Two block kinds, mixed in alphabetical-by-path order:
   //
-  //   MDX page:
+  //   Full page block (for normal pages):
   //     # <title>
-  //     Source: <url>          ← then 3 blank lines
-  //     <body>                 ← then 2 blank lines before next page
+  //     Source: <url>
   //
-  //   OpenAPI op:
-  //     # <title>
-  //     Source: <url>          ← then 1 blank line
-  //     <body>                 ← then 2 blank lines before next page
+  //     <body>
+  //
+  //   Reference bullet (for paths in FULL_TXT_SKIP):
+  //     - [<title>](<url>.md): <description>
+  //
+  // Bullets land at their natural sort position so consecutive ones form a
+  // clean list. `collapseBlankRuns` squashes any 2+ blank-line runs the body
+  // contributes; pages always carry leading/trailing blanks so they stay
+  // visually separated from neighbours.
   const chunks: string[] = [];
   for (const e of entries) {
+    if (isExcludedFromFullTxt(e.path)) {
+      const url = `${SITE_URL}/${e.path}.md`;
+      const desc = e.shortDescription ? `: ${e.shortDescription}` : "";
+      chunks.push(`- [${e.title}](${url})${desc}\n`);
+      continue;
+    }
     const url = `${SITE_URL}/${e.path}`;
     const body =
       e.kind === "mdx"
         ? normalizeMdxBody(e.fullBody)
         : e.fullBody.replace(/^\n+/, "").replace(/\n+$/, "");
-    const blanksAfterSource = e.kind === "mdx" ? "\n\n\n\n" : "\n\n";
-    chunks.push(`# ${e.title}\nSource: ${url}${blanksAfterSource}${body}\n\n\n`);
+    chunks.push(`\n# ${e.title}\nSource: ${url}\n\n${body}\n\n`);
   }
-  writeFileSync(LLMS_FULL_TXT, chunks.join(""));
+  writeFileSync(LLMS_FULL_TXT, collapseBlankRuns(chunks.join("")).replace(/^\n+/, ""));
+}
+
+/** Collapse any run of 2+ blank lines down to a single blank line. */
+function collapseBlankRuns(s: string): string {
+  return s.replace(/\n{3,}/g, "\n\n");
 }
 
 /**
- * Normalize an MDX body the way Mintlify's llms-full.txt pipeline does:
- *   - strip leading/trailing blank lines
- *   - rewrite dash-style bullets (`- `, `  - `) to asterisk-style (`* `, `  * `)
- *   - rewrite plain `---` horizontal-rule lines to `***`
- *   - strip trailing whitespace from every line
- *
- * This isn't a full markdown serializer — fence-attribute injection
- * (`bash` -> `bash theme={"system"}`) and JSX re-indentation are still
- * missing — but it covers the highest-frequency content diffs.
+ * Normalize an MDX body for inclusion in llms-full.txt. Trims size and
+ * presentational noise without losing prose:
+ *   - drop leading/trailing blank lines
+ *   - strip trailing whitespace on every line
+ *   - rewrite `- ` bullets to `* ` and `---` HR to `***`
+ *     (consistent with markdown serializer output)
+ *   - rewrite internal links `/foo` → `/docs/foo` and unescape `\&` in URLs
+ *   - drop `<Frame>` / `<Frame caption="…">` / `</Frame>` wrapper lines —
+ *     purely visual scaffolding around images
+ *   - drop image `src` URLs: `![alt](src)` → `![alt]()` and
+ *     `<img alt="…" src="…long…" />` → `<img alt="…" />`
+ *   - strip pre-existing `theme={"system"}` from code-fence info strings,
+ *     since it's Mintlify-specific theming with no value to an LLM
  */
 function normalizeMdxBody(body: string): string {
   const lines = body.replace(/^\n+/, "").replace(/\n+$/, "").split(/\r?\n/);
   let inFence = false;
-  const out = lines.map((line) => {
-    const fenceMatch = /^(\s*```)(.*)$/.exec(line);
+  const out: string[] = [];
+  for (const raw of lines) {
+    const fenceMatch = /^(\s*```)(.*)$/.exec(raw);
     if (fenceMatch) {
-      const trimmed = line.replace(/[ \t]+$/, "");
+      const trimmed = raw.replace(/[ \t]+$/, "");
       if (!inFence) {
         inFence = true;
-        // Mintlify appends ` theme={"system"}` to every opening fence whose
-        // info string isn't empty (i.e. any fence that declares a language
-        // or attributes), unless one is already present.
-        const info = fenceMatch[2].trim();
-        if (info.length > 0 && !/theme=\{"system"\}/.test(info)) {
-          return `${trimmed} theme={"system"}`;
-        }
-        return trimmed;
+        out.push(trimmed.replace(/\s*theme=\{"system"\}\s*$/, ""));
+        continue;
       }
       inFence = false;
-      return trimmed;
+      out.push(trimmed);
+      continue;
     }
-    if (inFence) return line.replace(/[ \t]+$/, "");
-    let l = line.replace(/[ \t]+$/, "");
+    if (inFence) {
+      out.push(raw.replace(/[ \t]+$/, ""));
+      continue;
+    }
+    // Drop bare <Frame> wrappers (with or without caption attrs) so images
+    // inside them stand alone. Match leading-whitespace forms too.
+    if (/^\s*<Frame(\s[^>]*)?>\s*$/.test(raw)) continue;
+    if (/^\s*<\/Frame>\s*$/.test(raw)) continue;
+
+    let l = raw.replace(/[ \t]+$/, "");
     l = l.replace(/^(\s*)-(\s+)/, "$1*$2");
     if (/^---\s*$/.test(l)) l = "***";
     l = rewriteInternalLinks(l);
-    return l;
-  });
+    l = stripImageSources(l);
+    // Strip inline `<Frame …>…</Frame>` wrappers (one-line form).
+    l = l.replace(/<Frame(\s[^>]*)?>/g, "").replace(/<\/Frame>/g, "");
+    // If stripping leaves the line empty, drop it instead of emitting blank.
+    if (l.trim() === "" && raw.trim() !== "") continue;
+    out.push(l);
+  }
   return out.join("\n");
+}
+
+/**
+ * Strip image source URLs to shrink the bundle — AI consumers don't follow
+ * image links, and badge / asset URLs run into the hundreds of bytes.
+ *
+ *   `![alt](https://…)` → `![alt]()`
+ *   `<img src="https://…" alt="…" />` → `<img alt="…" />`
+ */
+function stripImageSources(line: string): string {
+  let l = line.replace(/(!\[[^\]]*\])\([^)]*\)/g, "$1()");
+  l = l.replace(/(<img\b[^>]*?)\s+src="[^"]*"/g, "$1");
+  l = l.replace(/(<img\b[^>]*?)\s+src='[^']*'/g, "$1");
+  return l;
 }
 
 /**
