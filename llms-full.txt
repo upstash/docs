@@ -22221,9 +22221,33 @@ Use bucket aggregations when you want segmented analytics (for example by catego
 | [`$dateHistogram`](./date-histogram) | Fixed date/time intervals |
 | [`$facet`](./facet) | Hierarchical FACET paths |
 
+### Input Format
+
+Every bucket operator takes an object with a `field` property and operator-specific parameters:
+
+**`$terms`** — group by distinct values:
+```json
+{"by_category": {"$terms": {"field": "category", "size": 10}}}
+```
+
+**`$range`** — custom range buckets:
+```json
+{"price_ranges": {"$range": {"field": "price", "ranges": [{"to": 50}, {"from": 50, "to": 100}, {"from": 100}]}}}
+```
+
+**`$histogram`** — fixed numeric intervals:
+```json
+{"price_buckets": {"$histogram": {"field": "price", "interval": 10}}}
+```
+
+**`$dateHistogram`** — fixed time intervals:
+```json
+{"by_month": {"$dateHistogram": {"field": "createdAt", "fixedInterval": "30d"}}}
+```
+
 ### Behavior Notes
 
-* Bucket operators can contain nested `$aggs`.
+* Bucket operators can contain nested `$aggs` for per-bucket metrics.
 * `$terms`, `$range`, `$histogram`, and `$dateHistogram` support nested `$aggs`.
 * `$facet` does not support nested `$aggs` and cannot be used as a sub-aggregation.
 
@@ -22815,6 +22839,17 @@ Use metrics when you want one value (or stats object), not grouped buckets.
 | [`$extendedStats`](./extended-stats) | `$stats` + variance and std deviation metrics |
 | [`$percentiles`](./percentiles) | Distribution percent points |
 
+### Input Format
+
+Every metric operator takes an object with at least a `field` property:
+
+```json
+{"alias_name": {"$avg": {"field": "price"}}}
+{"alias_name": {"$avg": {"field": "price", "missing": 0}}}
+```
+
+The `field` value must be a string pointing to a FAST field in your schema.
+
 ### Behavior Notes
 
 * Metric operators require a `field`.
@@ -23102,6 +23137,65 @@ Aggregation requests have two phases:
 2. **Aggregation computation**: the selected set is reduced into metric values and/or buckets.
 
 Each aggregation is defined with an **alias** (the key you choose for the result) and an **operator** that specifies what to compute.
+
+### Response Format
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const result = await index.aggregate({
+  aggregations: {
+    avg_price: { $avg: { field: "price" } },
+    by_category: { $terms: { field: "category", size: 5 } },
+  },
+});
+
+// result is an object keyed by alias:
+// {
+//   avg_price: { value: 49.99 },
+//   by_category: {
+//     buckets: [
+//       { key: "electronics", docCount: 42 },
+//       { key: "clothing", docCount: 31 },
+//     ],
+//   },
+// }
+```
+</Tab>
+
+<Tab title="Python">
+```python
+result = index.aggregate(
+    aggregations={
+        "avg_price": {"$avg": {"field": "price"}},
+        "by_category": {"$terms": {"field": "category", "size": 5}},
+    },
+)
+
+# result is a dict keyed by alias:
+# {
+#   "avg_price": {"value": 49.99},
+#   "by_category": {
+#     "buckets": [
+#       {"key": "electronics", "docCount": 42},
+#       {"key": "clothing", "docCount": 31},
+#     ],
+#   },
+# }
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.AGGREGATE products '{}' '{"avg_price": {"$avg": {"field": "price"}}, "by_category": {"$terms": {"field": "category", "size": 5}}}'
+
+# Response (`redis-cli --json`) is an object keyed by alias:
+# {"avg_price":{"value":49.99},"by_category":{"buckets":[{"key":"electronics","docCount":42},{"key":"clothing","docCount":31}]}}
+```
+</Tab>
+
+</Tabs>
 
 ## Filtering
 
@@ -23454,6 +23548,282 @@ SEARCH.LISTALIASES
 
 </Tabs>
 
+# Command Reference
+Source: https://upstash.com/docs/redis/search/command-reference
+
+A complete reference of all Upstash Redis Search commands, their syntax, and return values.
+
+<Note>
+Upstash Redis Search uses `SEARCH.*` commands. These are **not** the same as the `FT.*` commands
+from the open-source RediSearch module. The two are completely separate implementations and are
+not compatible with each other.
+</Note>
+
+## Index Commands
+
+### SEARCH.CREATE
+
+Creates a new search index.
+
+```bash
+SEARCH.CREATE <name> ON <JSON|HASH|STRING>
+  PREFIX <count> <prefix> [<prefix> ...]
+  [LANGUAGE <language>]
+  [SKIPINITIALSCAN]
+  [EXISTSOK]
+  SCHEMA <field> <type> [FAST] [NOSTEM] [NOTOKENIZE] [FROM <source_field>] ...
+```
+
+**Returns:** `1` on success. With `EXISTSOK`, returns `0` if an identical index already exists. Returns an error if the existing index has a different configuration.
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST inStock BOOL
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.CREATE", "products", "ON", "JSON", "PREFIX", "1", "product:", "SCHEMA", "name", "TEXT", "price", "F64", "FAST", "inStock", "BOOL"]'
+```
+</Tab>
+</Tabs>
+
+***
+
+### SEARCH.DROP
+
+Removes an index. The underlying Redis keys are **not** deleted.
+
+```bash
+SEARCH.DROP <name>
+```
+
+**Returns:** `1` if dropped, `0` if the index was not found.
+
+***
+
+### SEARCH.DESCRIBE
+
+Returns metadata about an index.
+
+```bash
+SEARCH.DESCRIBE <name>
+```
+
+**Returns:** Index metadata including name, data type, prefixes, language, and schema definition. Returns `null` if the index does not exist.
+
+***
+
+### SEARCH.WAITINDEXING
+
+Blocks until all pending index updates are processed and visible to queries.
+
+```bash
+SEARCH.WAITINDEXING <name>
+```
+
+**Returns:** `1` when indexing is complete, `0` if the index was not found.
+
+<Warning>
+Do not call `SEARCH.WAITINDEXING` after every write. Batch updates are necessary for
+optimal indexing performance. Use this command only when you need to ensure queries
+reflect recent changes, such as in tests or CI pipelines.
+</Warning>
+
+***
+
+## Query Commands
+
+### SEARCH.QUERY
+
+Searches for documents matching a JSON filter.
+
+```bash
+SEARCH.QUERY <name> '<json_filter>'
+  [LIMIT <count>]
+  [OFFSET <offset>]
+  [ORDERBY <field> <ASC|DESC>]
+  [SELECT <count> <field> [<field> ...]]
+  [NOCONTENT]
+  [HIGHLIGHT FIELDS <count> <field> [<field> ...] [TAGS <open> <close>]]
+  [SCOREFUNC ...]
+```
+
+**Parameters:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `LIMIT` | Maximum number of results to return. Must be between 1 and 1000. | 10 |
+| `OFFSET` | Number of results to skip (for pagination). | 0 |
+| `ORDERBY` | Sort by a FAST field in `ASC` or `DESC` order. | Sort by relevance score (descending) |
+| `SELECT` | Return only specific fields. Prefix with count of fields. | All fields |
+| `NOCONTENT` | Return only keys and scores, no document content. | Disabled |
+| `HIGHLIGHT` | Wrap matching terms in tags. Default tags: `<em>` / `</em>`. | Disabled |
+| `SCOREFUNC` | Adjust relevance scores using numeric field values. | Disabled |
+
+**Response format (Redis CLI):**
+
+```
+[
+  ["key1", "score1", [["$", "{\"name\": \"...\", ...}"]]],
+  ["key2", "score2", [["$", "{\"name\": \"...\", ...}"]]]
+]
+```
+
+Each result is an array of `[key, score, content]` where:
+* `key` — the Redis key of the matching document
+* `score` — relevance score (float)
+* `content` — array of field-value pairs (for JSON indexes: `[["$", "<json_string>"]]`; for HASH indexes: `[["field", "value"], ...]`)
+
+When `NOCONTENT` is used, the content element is omitted.
+When `SELECT` is used, only the selected fields appear in the content.
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"name": "wireless"}' LIMIT 10 OFFSET 0
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.QUERY", "products", "{\"name\": \"wireless\"}", "LIMIT", "10", "OFFSET", "0"]'
+```
+</Tab>
+</Tabs>
+
+***
+
+### SEARCH.COUNT
+
+Returns the number of documents matching a query without retrieving them.
+
+```bash
+SEARCH.COUNT <name> '<json_filter>'
+```
+
+**Returns:** An integer — the count of matching documents.
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.COUNT products '{"inStock": true}'
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.COUNT", "products", "{\"inStock\": true}"]'
+```
+</Tab>
+</Tabs>
+
+***
+
+### SEARCH.AGGREGATE
+
+Computes analytics (metrics and buckets) over matching documents.
+
+```bash
+SEARCH.AGGREGATE <name> '<json_filter>' '<json_aggregations>'
+```
+
+**Response format (Redis CLI):**
+
+In `redis-cli --json`, the response is an object keyed by alias:
+
+```json
+{
+  "avg_price": { "value": 49.99 },
+  "by_category": { "buckets": [{ "key": "electronics", "docCount": 42 }] }
+}
+```
+
+Raw RESP output may be rendered differently by client/protocol settings, but semantically each top-level alias maps to its aggregation result.
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.AGGREGATE products '{}' '{"avg_price": {"$avg": {"field": "price"}}}'
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.AGGREGATE", "products", "{}", "{\"avg_price\": {\"$avg\": {\"field\": \"price\"}}}"]'
+```
+</Tab>
+</Tabs>
+
+***
+
+## Alias Commands
+
+### SEARCH.ALIASADD
+
+Creates or updates an alias pointing to an index.
+
+```bash
+SEARCH.ALIASADD <alias> <index_name>
+```
+
+**Returns:** `1` if a new alias was created, `2` if an existing alias was updated.
+
+***
+
+### SEARCH.ALIASDEL
+
+Removes an alias.
+
+```bash
+SEARCH.ALIASDEL <alias>
+```
+
+**Returns:** `1` if deleted, `0` if the alias was not found.
+
+***
+
+### SEARCH.LISTALIASES
+
+Returns all aliases and the indices they point to.
+
+```bash
+SEARCH.LISTALIASES
+```
+
+**Returns:** An array of `[alias, index_name]` pairs.
+
+***
+
+## REST API Usage
+
+All search commands can be sent via the Upstash REST API using a JSON array POST body.
+Each element of the array corresponds to a token in the command.
+
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["COMMAND", "arg1", "arg2", ...]'
+```
+
+The JSON filter and aggregation arguments are passed as string values within the array (not as nested JSON objects):
+
+```bash
+# Correct — filter is a string inside the array
+["SEARCH.QUERY", "products", "{\"name\": \"wireless\"}", "LIMIT", "10"]
+
+# Incorrect — filter is a nested object
+["SEARCH.QUERY", "products", {"name": "wireless"}, "LIMIT", "10"]
+```
+
+Search commands also work through the `/pipeline` endpoint for batching multiple commands in a single HTTP request.
+
 # Counting
 Source: https://upstash.com/docs/redis/search/counting
 
@@ -23504,6 +23874,234 @@ SEARCH.COUNT products '{"inStock": true, "price": {"$lt": 100}}'
 </Tab>
 
 </Tabs>
+
+# Document Updates
+Source: https://upstash.com/docs/redis/search/document-updates
+
+Documents in a search index are regular Redis keys.
+
+When a key matches an index prefix, it is indexed automatically. When the key changes, the index is updated automatically.
+
+<Note>
+There is no separate update command for search. Use regular Redis write commands to change your data.
+</Note>
+
+Any command that modifies a matching key updates the index. For example, this includes commands such as:
+
+* JSON commands such as `JSON.SET`, `JSON.MERGE`, ...
+* Hash commands such as `HSET`, `HINCRBY`, ...
+* String commands such as `SET`, `SETEX`, ...
+* Generic commands such as `DEL`, `EXPIRE`, `PEXPIRE`, ...
+
+This is not an exhaustive list. The rule is that if the command changes a key tracked by the index, the index is updated.
+
+Index updates are batched for performance, so recent writes may not immediately appear in search results.
+Use [`SEARCH.WAITINDEXING`](/docs/redis/search/index-management#waiting-for-indexing) when you need to ensure queries reflect recent changes.
+
+## JSON Documents
+
+For JSON indexes, any JSON command that modifies a matching key updates the indexed document.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+const products = redis.search.index({ name: "products" });
+
+await redis.json.set("product:1", "$.price", 79.99);
+
+await products.waitIndexing();
+
+const discounted = await products.query({
+  filter: { price: { $lt: 90 } },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+products = redis.search.index(name="products")
+
+redis.json.set("product:1", "$.price", 79.99)
+
+products.wait_indexing()
+
+discounted = products.query(filter={"price": {"$lt": 90}})
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+JSON.SET product:1 $.price 79.99
+
+SEARCH.WAITINDEXING products
+SEARCH.QUERY products '{"price":{"$lt":90}}'
+```
+</Tab>
+
+</Tabs>
+
+## Hash Documents
+
+For hash indexes, any hash command that modifies a matching key updates the indexed document.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const articles = redis.search.index({ name: "articles" });
+
+await redis.hset("article:1", {
+  status: "published",
+  views: 125,
+});
+
+await articles.waitIndexing();
+
+const published = await articles.query({
+  filter: { status: "published" },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+articles = redis.search.index(name="articles")
+
+redis.hset("article:1", values={
+    "status": "published",
+    "views": 125,
+})
+
+articles.wait_indexing()
+
+published = articles.query(filter={"status": "published"})
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+HSET article:1 status published views 125
+
+SEARCH.WAITINDEXING articles
+SEARCH.QUERY articles '{"status":"published"}'
+```
+</Tab>
+
+</Tabs>
+
+## String Documents
+
+For string indexes, indexed keys must contain valid JSON strings.
+Any command that replaces or modifies the matching string key updates the indexed document.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const notes = redis.search.index({ name: "notes" });
+
+await redis.set("note:1", {
+  title: "Release checklist",
+  status: "done",
+});
+
+await notes.waitIndexing();
+
+const done = await notes.query({
+  filter: { status: "done" },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+notes = redis.search.index(name="notes")
+
+redis.set("note:1", '{"title":"Release checklist","status":"done"}')
+
+notes.wait_indexing()
+
+done = notes.query(filter={"status": "done"})
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SET note:1 '{"title":"Release checklist","status":"done"}'
+
+SEARCH.WAITINDEXING notes
+SEARCH.QUERY notes '{"status":"done"}'
+```
+</Tab>
+
+</Tabs>
+
+## Deletes
+
+Deleting a matching key removes the document from the index.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.del("product:1");
+await products.waitIndexing();
+```
+</Tab>
+
+<Tab title="Python">
+```python
+redis.delete("product:1")
+products.wait_indexing()
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+DEL product:1
+SEARCH.WAITINDEXING products
+```
+</Tab>
+
+</Tabs>
+
+## Expiration
+
+When a matching key expires, Upstash Redis Search removes the expired document from the index.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.expire("product:flash-sale", 3600);
+```
+</Tab>
+
+<Tab title="Python">
+```python
+redis.expire("product:flash-sale", 3600)
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+EXPIRE product:flash-sale 3600
+```
+</Tab>
+
+</Tabs>
+
+## Eviction
+
+When an indexed key is evicted, Upstash Redis Search removes the document from the index. Once the Redis key is gone,
+it no longer appears in search results.
 
 # Quickstart
 Source: https://upstash.com/docs/redis/search/getting-started
@@ -24153,8 +24751,11 @@ For adequate performance, index updates are batched and committed periodically. 
 immediately appear in search results. Use `SEARCH.WAITINDEXING` when you need to ensure queries reflect recent changes.
 
 The `SEARCH.WAITINDEXING` command blocks until all pending index updates are processed and visible to queries.
+For examples of changing, deleting, and expiring indexed documents, see [Document Updates](/docs/redis/search/document-updates).
+
 We recommend **not to** call this command each time you perform a write operation on the index. For optimal indexing and
-query performance, batch updates are necessary.
+query performance, batch updates are necessary. This command is primarily useful in tests and CI pipelines
+where you need to guarantee that writes are reflected in subsequent queries.
 
 Returns `1` when indexing is complete, or `0` if the index was not found.
 
@@ -25201,6 +25802,19 @@ Source: https://upstash.com/docs/redis/search/query-operators/field-operators/ov
 Field operators provide precise control over how individual fields are matched.
 Use these when simple value matching doesn't meet your needs.
 
+### Quick Reference
+
+| Operator | Supported Field Types | Description | Example |
+|---|---|---|---|
+| [`$smart`](./smart-matching) | all | Intelligent multi-stage matching (default behavior) | `{"name": {"$smart": "wireless"}}` |
+| [`$eq`](./eq) | all | Exact equality | `{"status": {"$eq": "active"}}` |
+| [`$in`](./in) | all | Match any of multiple values | `{"status": {"$in": ["active", "pending"]}}` |
+| [`$gt`](./range-operators), `$gte`, `$lt`, `$lte` | numeric, date, keyword | Range comparison | `{"price": {"$gt": 10, "$lt": 100}}` |
+| [`$phrase`](./phrase) | text | Phrase matching with optional slop and prefix | `{"text": {"$phrase": {"query": "hello world", "slop": 1}}}` |
+| [`$fuzzy`](./fuzzy) | text | Typo-tolerant matching (Levenshtein distance) | `{"name": {"$fuzzy": {"term": "wireles", "distance": 1}}}` |
+| [`$regex`](./regex) | text | Regular expression pattern matching | `{"name": {"$regex": "wire.*"}}` |
+| [`$boost`](./boost) | modifier (on any operator) | Adjust relevance score weight | `{"name": {"$eq": "wireless", "$boost": 2.0}}` |
+
 # $phrase
 Source: https://upstash.com/docs/redis/search/query-operators/field-operators/phrase
 
@@ -25662,7 +26276,7 @@ Smart matching works well for general search scenarios, but consider using expli
 # Queries
 Source: https://upstash.com/docs/redis/search/querying
 
-Queries are JSON strings that describe which documents to return. If the index doesn't exist, queries return an empty array.
+Queries are JSON strings that describe which documents to return. If the index doesn't exist, queries return `null`.
 
 We recommend searching by field values directly because we automatically provide intelligent matching behavior out of the box:
 
@@ -25717,6 +26331,60 @@ SEARCH.QUERY products '{"inStock": true, "price": 199.99}'
 
 ***
 
+### Response Format
+
+The query response is an array of matching documents. Each document includes the Redis key, a relevance score, and the document content.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const results = await index.query({
+  filter: { name: "headphones" },
+});
+
+// results is an array of objects:
+// [
+//   { key: "product:1", score: 5.23, data: { name: "Wireless Headphones", price: 99.99, ... } },
+//   { key: "product:2", score: 3.11, data: { name: "Studio Headphones", price: 149.99, ... } },
+// ]
+```
+</Tab>
+
+<Tab title="Python">
+```python
+results = index.query(filter={"name": "headphones"})
+
+# results is a list of objects:
+# [
+#   QueryResult(key="product:1", score=5.23, data={"name": "Wireless Headphones", "price": 99.99, ...}),
+#   QueryResult(key="product:2", score=3.11, data={"name": "Studio Headphones", "price": 149.99, ...}),
+# ]
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"name": "headphones"}'
+
+# Response:
+# [
+#   ["product:1", "5.23", [["$", "{\"name\": \"Wireless Headphones\", \"price\": 99.99}"]]],
+#   ["product:2", "3.11", [["$", "{\"name\": \"Studio Headphones\", \"price\": 149.99}"]]]
+# ]
+```
+</Tab>
+
+</Tabs>
+
+When `select` / `NOCONTENT` is used, the response shape changes — see [Controlling Output](#3-controlling-output).
+
+If no documents match, an empty array is returned. If the index doesn't exist, `null` is returned.
+
+For a detailed breakdown of the raw response structure, see the [Command Reference](/docs/redis/search/command-reference#searchquery).
+
+***
+
 ### Smart Matching
 
 When you provide a value directly to a field (without explicit operators),
@@ -25740,6 +26408,16 @@ or [`$fuzzy`](./query-operators/field-operators/fuzzy).
 ### 1. Pagination with Limit and Offset
 
 Limit controls how many results to return. Offset controls how many results to skip. Together, they provide a way to paginate results.
+
+| Parameter | Description | Default | Constraints |
+|-----------|-------------|---------|-------------|
+| `LIMIT` | Number of results to return | 10 | Must be between 1 and 1000 |
+| `OFFSET` | Number of results to skip | 0 | Must be non-negative |
+
+<Note>
+`LIMIT` and `OFFSET` are separate keywords. This differs from RediSearch which uses the combined
+`LIMIT <offset> <count>` syntax. Using `LIMIT 0 10` will return an error.
+</Note>
 
 <Tabs>
 
@@ -26172,6 +26850,42 @@ We provide a schema builder utility called `s` that makes it easy to define a sc
 ```ts
 import { Redis, s } from "@upstash/redis"
 ```
+
+### Field Type Reference
+
+| SDK Method | Redis CLI Type | Description | Supports FAST | Range Operators | Text Operators |
+|---|---|---|---|---|---|
+| `s.string()` | `TEXT` | Full-text searchable field with tokenization and stemming | No | No | `$smart`, `$phrase`, `$fuzzy`, `$regex` |
+| `s.keyword()` | `KEYWORD` | Exact-match string (no tokenization) | Yes | Yes (`$gt`, `$gte`, `$lt`, `$lte`) | No |
+| `s.number()` | `F64` (default), `U64`, `I64` | Numeric field | Yes | Yes | No |
+| `s.date()` | `DATE` | Date/time field | Yes | Yes | No |
+| `s.boolean()` | `BOOL` | Boolean field | Yes | No | No |
+| `s.facet()` | `FACET` | Hierarchical path-based field | No | No | No (only `$eq`, `$in`) |
+
+<Note>
+In the TypeScript SDK, `s.number()` defaults to `F64`. You can specify `s.number("U64")` or
+`s.number("I64")` for unsigned or signed 64-bit integers. `F64` fields are FAST by default.
+</Note>
+
+### FAST Fields
+
+The `FAST` flag creates a columnar store for a field, enabling:
+* **Sorting** with `ORDERBY` in queries
+* **Score functions** with `SCOREFUNC FIELDVALUE`
+* **Metric aggregations** (`$avg`, `$sum`, `$min`, `$max`, `$count`, etc.)
+
+In the TypeScript SDK, numeric (`F64`), boolean, and date fields are FAST **by default**. You can
+disable it with `.fast(false)`. In Redis CLI, you must explicitly add the `FAST` keyword after the
+field type.
+
+```bash
+# Redis CLI — FAST must be explicit
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST rating F64 FAST
+```
+
+If you attempt to use `ORDERBY`, `SCOREFUNC`, or metric aggregations on a non-FAST field, you will get an error.
+
+***
 
 ### Basic Usage
 
@@ -26626,6 +27340,151 @@ SEARCH.CREATE users ON JSON PREFIX 1 users: SCHEMA username TEXT NOTOKENIZE prof
 </Tab>
 
 </Tabs>
+
+# Troubleshooting
+Source: https://upstash.com/docs/redis/search/troubleshooting
+
+Common errors and how to resolve them when working with Upstash Redis Search.
+
+## Index Errors
+
+### `ERR Index <name> already exists`
+
+You tried to create an index that already exists.
+
+**Fix:** Use the `existsOk` option (SDK) or `EXISTSOK` flag (CLI) to skip creation if an identical index already exists:
+
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: EXISTSOK SCHEMA name TEXT
+```
+
+Or drop the existing index first with `SEARCH.DROP <name>`.
+
+If the existing index has a different schema/configuration, `EXISTSOK` still returns an error. In that case, drop and recreate the index (or use a different index name).
+
+***
+
+## Query Errors
+
+### `ERR limit should be a positive number less than 1000`
+
+The `LIMIT` value must be a positive integer. Valid range is `1` to `1000` (inclusive).
+
+**Common causes:**
+* Using `LIMIT 0` — the minimum is 1
+* Using `LIMIT 1001` or greater — the maximum is 1000
+* Using RediSearch-style `LIMIT <offset> <count>` syntax — Upstash uses separate `LIMIT` and `OFFSET` keywords
+
+**Fix:**
+```bash
+# Correct
+SEARCH.QUERY products '{}' LIMIT 10 OFFSET 20
+
+# Incorrect (RediSearch style)
+SEARCH.QUERY products '{}' LIMIT 20 10
+```
+
+### `ERR Unknown field operator: $not`
+
+There is no `$not` operator. Use `$mustNot` for exclusion filtering:
+
+```bash
+# Correct
+SEARCH.QUERY products '{"$mustNot": [{"status": "discontinued"}]}'
+
+# Incorrect
+SEARCH.QUERY products '{"status": {"$not": "discontinued"}}'
+```
+
+***
+
+## Aggregation Errors
+
+### Aggregation operator requires field to be FAST
+
+```
+Aggregation '<name>' operator '$avg' requires field '<field>' to be FAST
+```
+
+All metric aggregation operators (`$avg`, `$sum`, `$min`, `$max`, `$count`, `$cardinality`, `$stats`, `$extendedStats`, `$percentiles`) require the target field to be defined as `FAST` in the index schema.
+
+**Fix:** Recreate the index with the field marked as `FAST`:
+
+```bash
+# Ensure 'price' has the FAST flag
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST
+```
+
+In the TypeScript SDK, numeric fields (`s.number("F64")`) and date fields (`s.date()`) are FAST by default. Boolean fields (`s.boolean()`) are also FAST by default. If you explicitly called `.fast(false)`, remove it.
+
+### Missing required 'field' property
+
+```
+Aggregation '<name>' is missing required 'field' property
+```
+
+Every metric aggregation operator requires a `field` property pointing to the field to aggregate.
+
+**Fix:** Pass `field` as an object property, not a bare string:
+
+Correct:
+```json
+{"avg_price": {"$avg": {"field": "price"}}}
+```
+
+Incorrect — operator value is a bare string instead of an object:
+```json
+{"avg_price": {"$avg": "price"}}
+```
+
+### Aggregation must be a JSON object
+
+```
+Aggregation '<name>' must be a JSON object
+```
+
+The aggregation alias must map to an object containing an operator key (like `$avg`), not directly to a string or number.
+
+**Fix:**
+
+Correct:
+```json
+{"avg_price": {"$avg": {"field": "price"}}}
+```
+
+Incorrect — alias maps directly to an operator string:
+```json
+{"avg_price": "$avg"}
+```
+
+***
+
+## Schema Errors
+
+### Field type mismatches
+
+If a document field's value doesn't match the schema type (e.g., a string value `"abc"` for a numeric field), that document is silently skipped during indexing for that field. It will not appear in queries that filter on the mismatched field.
+
+### Missing document fields
+
+If a document doesn't have a field defined in the schema, it simply won't match queries filtering on that field. No error is raised.
+
+***
+
+## Upstash Redis Search vs RediSearch
+
+Upstash Redis Search uses `SEARCH.*` commands and is a separate implementation from the
+open-source RediSearch module which uses `FT.*` commands. The two are **not** compatible.
+
+| | Upstash Redis Search | RediSearch |
+|---|---|---|
+| Command prefix | `SEARCH.*` | `FT.*` |
+| Engine | Tantivy (Rust) | RediSearch (C) |
+| Query syntax | JSON-based filters | RediSearch query syntax |
+| Pagination | `LIMIT <count> OFFSET <offset>` (separate keywords) | `LIMIT <offset> <count>` (combined) |
+| Hosting | Serverless (Upstash) | Self-hosted or Redis Cloud |
+
+If you are migrating from RediSearch, you will need to rewrite your queries to use the JSON filter syntax and `SEARCH.*` commands.
 
 # Unexpected Increase in Command Count
 Source: https://upstash.com/docs/redis/troubleshooting/command_count_increases_unexpectedly
