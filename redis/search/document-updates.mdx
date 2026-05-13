@@ -1,0 +1,228 @@
+---
+title: Document Updates
+---
+
+Documents in a search index are regular Redis keys.
+
+When a key matches an index prefix, it is indexed automatically. When the key changes, the index is updated automatically.
+
+<Note>
+There is no separate update command for search. Use regular Redis write commands to change your data.
+</Note>
+
+Any command that modifies a matching key updates the index. For example, this includes commands such as:
+
+- JSON commands such as `JSON.SET`, `JSON.MERGE`, ...
+- Hash commands such as `HSET`, `HINCRBY`, ...
+- String commands such as `SET`, `SETEX`, ...
+- Generic commands such as `DEL`, `EXPIRE`, `PEXPIRE`, ...
+
+This is not an exhaustive list. The rule is that if the command changes a key tracked by the index, the index is updated.
+
+Index updates are batched for performance, so recent writes may not immediately appear in search results.
+Use [`SEARCH.WAITINDEXING`](/redis/search/index-management#waiting-for-indexing) when you need to ensure queries reflect recent changes.
+
+## JSON Documents
+
+For JSON indexes, any JSON command that modifies a matching key updates the indexed document.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+const products = redis.search.index({ name: "products" });
+
+await redis.json.set("product:1", "$.price", 79.99);
+
+await products.waitIndexing();
+
+const discounted = await products.query({
+  filter: { price: { $lt: 90 } },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+products = redis.search.index(name="products")
+
+redis.json.set("product:1", "$.price", 79.99)
+
+products.wait_indexing()
+
+discounted = products.query(filter={"price": {"$lt": 90}})
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+JSON.SET product:1 $.price 79.99
+
+SEARCH.WAITINDEXING products
+SEARCH.QUERY products '{"price":{"$lt":90}}'
+```
+</Tab>
+
+</Tabs>
+
+## Hash Documents
+
+For hash indexes, any hash command that modifies a matching key updates the indexed document.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const articles = redis.search.index({ name: "articles" });
+
+await redis.hset("article:1", {
+  status: "published",
+  views: 125,
+});
+
+await articles.waitIndexing();
+
+const published = await articles.query({
+  filter: { status: "published" },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+articles = redis.search.index(name="articles")
+
+redis.hset("article:1", values={
+    "status": "published",
+    "views": 125,
+})
+
+articles.wait_indexing()
+
+published = articles.query(filter={"status": "published"})
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+HSET article:1 status published views 125
+
+SEARCH.WAITINDEXING articles
+SEARCH.QUERY articles '{"status":"published"}'
+```
+</Tab>
+
+</Tabs>
+
+## String Documents
+
+For string indexes, indexed keys must contain valid JSON strings.
+Any command that replaces or modifies the matching string key updates the indexed document.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const notes = redis.search.index({ name: "notes" });
+
+await redis.set("note:1", {
+  title: "Release checklist",
+  status: "done",
+});
+
+await notes.waitIndexing();
+
+const done = await notes.query({
+  filter: { status: "done" },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+notes = redis.search.index(name="notes")
+
+redis.set("note:1", '{"title":"Release checklist","status":"done"}')
+
+notes.wait_indexing()
+
+done = notes.query(filter={"status": "done"})
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SET note:1 '{"title":"Release checklist","status":"done"}'
+
+SEARCH.WAITINDEXING notes
+SEARCH.QUERY notes '{"status":"done"}'
+```
+</Tab>
+
+</Tabs>
+
+## Deletes
+
+Deleting a matching key removes the document from the index.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.del("product:1");
+await products.waitIndexing();
+```
+</Tab>
+
+<Tab title="Python">
+```python
+redis.delete("product:1")
+products.wait_indexing()
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+DEL product:1
+SEARCH.WAITINDEXING products
+```
+</Tab>
+
+</Tabs>
+
+## Expiration
+
+When a matching key expires, Upstash Redis Search removes the expired document from the index.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.expire("product:flash-sale", 3600);
+```
+</Tab>
+
+<Tab title="Python">
+```python
+redis.expire("product:flash-sale", 3600)
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+EXPIRE product:flash-sale 3600
+```
+</Tab>
+
+</Tabs>
+
+## Eviction
+
+When an indexed key is evicted, Upstash Redis Search removes the document from the index. Once the Redis key is gone,
+it no longer appears in search results.

@@ -1,0 +1,276 @@
+---
+title: Command Reference
+---
+
+A complete reference of all Upstash Redis Search commands, their syntax, and return values.
+
+<Note>
+Upstash Redis Search uses `SEARCH.*` commands. These are **not** the same as the `FT.*` commands
+from the open-source RediSearch module. The two are completely separate implementations and are
+not compatible with each other.
+</Note>
+
+## Index Commands
+
+### SEARCH.CREATE
+
+Creates a new search index.
+
+```bash
+SEARCH.CREATE <name> ON <JSON|HASH|STRING>
+  PREFIX <count> <prefix> [<prefix> ...]
+  [LANGUAGE <language>]
+  [SKIPINITIALSCAN]
+  [EXISTSOK]
+  SCHEMA <field> <type> [FAST] [NOSTEM] [NOTOKENIZE] [FROM <source_field>] ...
+```
+
+**Returns:** `1` on success. With `EXISTSOK`, returns `0` if an identical index already exists. Returns an error if the existing index has a different configuration.
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST inStock BOOL
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.CREATE", "products", "ON", "JSON", "PREFIX", "1", "product:", "SCHEMA", "name", "TEXT", "price", "F64", "FAST", "inStock", "BOOL"]'
+```
+</Tab>
+</Tabs>
+
+---
+
+### SEARCH.DROP
+
+Removes an index. The underlying Redis keys are **not** deleted.
+
+```bash
+SEARCH.DROP <name>
+```
+
+**Returns:** `1` if dropped, `0` if the index was not found.
+
+---
+
+### SEARCH.DESCRIBE
+
+Returns metadata about an index.
+
+```bash
+SEARCH.DESCRIBE <name>
+```
+
+**Returns:** Index metadata including name, data type, prefixes, language, and schema definition. Returns `null` if the index does not exist.
+
+---
+
+### SEARCH.WAITINDEXING
+
+Blocks until all pending index updates are processed and visible to queries.
+
+```bash
+SEARCH.WAITINDEXING <name>
+```
+
+**Returns:** `1` when indexing is complete, `0` if the index was not found.
+
+<Warning>
+Do not call `SEARCH.WAITINDEXING` after every write. Batch updates are necessary for
+optimal indexing performance. Use this command only when you need to ensure queries
+reflect recent changes, such as in tests or CI pipelines.
+</Warning>
+
+---
+
+## Query Commands
+
+### SEARCH.QUERY
+
+Searches for documents matching a JSON filter.
+
+```bash
+SEARCH.QUERY <name> '<json_filter>'
+  [LIMIT <count>]
+  [OFFSET <offset>]
+  [ORDERBY <field> <ASC|DESC>]
+  [SELECT <count> <field> [<field> ...]]
+  [NOCONTENT]
+  [HIGHLIGHT FIELDS <count> <field> [<field> ...] [TAGS <open> <close>]]
+  [SCOREFUNC ...]
+```
+
+**Parameters:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `LIMIT` | Maximum number of results to return. Must be between 1 and 1000. | 10 |
+| `OFFSET` | Number of results to skip (for pagination). | 0 |
+| `ORDERBY` | Sort by a FAST field in `ASC` or `DESC` order. | Sort by relevance score (descending) |
+| `SELECT` | Return only specific fields. Prefix with count of fields. | All fields |
+| `NOCONTENT` | Return only keys and scores, no document content. | Disabled |
+| `HIGHLIGHT` | Wrap matching terms in tags. Default tags: `<em>` / `</em>`. | Disabled |
+| `SCOREFUNC` | Adjust relevance scores using numeric field values. | Disabled |
+
+**Response format (Redis CLI):**
+
+```
+[
+  ["key1", "score1", [["$", "{\"name\": \"...\", ...}"]]],
+  ["key2", "score2", [["$", "{\"name\": \"...\", ...}"]]]
+]
+```
+
+Each result is an array of `[key, score, content]` where:
+- `key` — the Redis key of the matching document
+- `score` — relevance score (float)
+- `content` — array of field-value pairs (for JSON indexes: `[["$", "<json_string>"]]`; for HASH indexes: `[["field", "value"], ...]`)
+
+When `NOCONTENT` is used, the content element is omitted.
+When `SELECT` is used, only the selected fields appear in the content.
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"name": "wireless"}' LIMIT 10 OFFSET 0
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.QUERY", "products", "{\"name\": \"wireless\"}", "LIMIT", "10", "OFFSET", "0"]'
+```
+</Tab>
+</Tabs>
+
+---
+
+### SEARCH.COUNT
+
+Returns the number of documents matching a query without retrieving them.
+
+```bash
+SEARCH.COUNT <name> '<json_filter>'
+```
+
+**Returns:** An integer — the count of matching documents.
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.COUNT products '{"inStock": true}'
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.COUNT", "products", "{\"inStock\": true}"]'
+```
+</Tab>
+</Tabs>
+
+---
+
+### SEARCH.AGGREGATE
+
+Computes analytics (metrics and buckets) over matching documents.
+
+```bash
+SEARCH.AGGREGATE <name> '<json_filter>' '<json_aggregations>'
+```
+
+**Response format (Redis CLI):**
+
+In `redis-cli --json`, the response is an object keyed by alias:
+
+```json
+{
+  "avg_price": { "value": 49.99 },
+  "by_category": { "buckets": [{ "key": "electronics", "docCount": 42 }] }
+}
+```
+
+Raw RESP output may be rendered differently by client/protocol settings, but semantically each top-level alias maps to its aggregation result.
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.AGGREGATE products '{}' '{"avg_price": {"$avg": {"field": "price"}}}'
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.AGGREGATE", "products", "{}", "{\"avg_price\": {\"$avg\": {\"field\": \"price\"}}}"]'
+```
+</Tab>
+</Tabs>
+
+---
+
+## Alias Commands
+
+### SEARCH.ALIASADD
+
+Creates or updates an alias pointing to an index.
+
+```bash
+SEARCH.ALIASADD <alias> <index_name>
+```
+
+**Returns:** `1` if a new alias was created, `2` if an existing alias was updated.
+
+---
+
+### SEARCH.ALIASDEL
+
+Removes an alias.
+
+```bash
+SEARCH.ALIASDEL <alias>
+```
+
+**Returns:** `1` if deleted, `0` if the alias was not found.
+
+---
+
+### SEARCH.LISTALIASES
+
+Returns all aliases and the indices they point to.
+
+```bash
+SEARCH.LISTALIASES
+```
+
+**Returns:** An array of `[alias, index_name]` pairs.
+
+---
+
+## REST API Usage
+
+All search commands can be sent via the Upstash REST API using a JSON array POST body.
+Each element of the array corresponds to a token in the command.
+
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["COMMAND", "arg1", "arg2", ...]'
+```
+
+The JSON filter and aggregation arguments are passed as string values within the array (not as nested JSON objects):
+
+```bash
+# Correct — filter is a string inside the array
+["SEARCH.QUERY", "products", "{\"name\": \"wireless\"}", "LIMIT", "10"]
+
+# Incorrect — filter is a nested object
+["SEARCH.QUERY", "products", {"name": "wireless"}, "LIMIT", "10"]
+```
+
+Search commands also work through the `/pipeline` endpoint for batching multiple commands in a single HTTP request.
