@@ -1172,6 +1172,8 @@ The exact option shape depends on the configured agent:
 * `Codex`: `modelReasoningEffort`, `modelReasoningSummary`, `personality`, `webSearch`
 * `OpenCode`: `reasoningEffort`, `textVerbosity`, `reasoningSummary`, `thinking`
 
+To bring your own agent process, use a [custom agent](/docs/box/overall/custom-agent).
+
 ## Quickstart
 
 <Tabs>
@@ -1504,6 +1506,195 @@ The `Authorization` header is added by the proxy. The container never sees the s
 * Only HTTPS traffic on port `443` is intercepted
 * HTTP/2 connections through matched hosts are downgraded to HTTP/1.1
 * Header values are encrypted at rest and never returned by API responses
+
+# Custom Agent
+Source: https://upstash.com/docs/box/overall/custom-agent
+
+Custom agents let you bring your own agent process to an Upstash Box. The box still provides the same sandbox, filesystem, shell, git, logs, streaming, and console experience, but your code decides how to call the model and how to produce output.
+
+Use a custom agent when the built-in Claude Code, Codex, OpenCode, or Cursor agents do not fit your workflow.
+
+## Create a Custom Agent Box
+
+Create the box with `agent.harness: Agent.Custom` and provide a `customHarness` command. The command runs inside the box for every `box.agent.run()` or `box.agent.stream()` call.
+
+```ts
+import { Agent, Box } from "@upstash/box"
+
+const box = await Box.create({
+  apiKey: process.env.UPSTASH_BOX_API_KEY!,
+  runtime: "node",
+  agent: {
+    harness: Agent.Custom,
+    model: "claude-haiku-4-5-20251001",
+    customHarness: {
+      command: "node",
+      args: ["/workspace/home/custom-anthropic-agent.mjs"],
+      protocol: "box-sse-v1",
+    },
+  },
+  env: {
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!,
+  },
+})
+```
+
+## Agent Contract
+
+For each run, Box executes your command and appends these arguments:
+
+```bash
+-p "<prompt>" --model "<model>" --stream --session "<session-id>"
+```
+
+`--session` is only included when a prior session exists.
+
+Your process must write Server-Sent Events to `stdout` using the `box-sse-v1` protocol:
+
+```txt
+event: text
+data: {"text":"Hello"}
+
+event: done
+data: {"output":"Hello","input_tokens":10,"output_tokens":4,"total_cost_usd":0.0001,"session_id":"session-1"}
+```
+
+Supported event names:
+
+| Event | Description |
+| --- | --- |
+| `text` | Adds text to the visible response |
+| `thinking` | Emits reasoning/thinking text |
+| `tool` | Shows a tool call in logs |
+| `tool_result` | Shows a tool result in logs |
+| `done` | Finishes the run successfully |
+| `error` | Finishes the run with an error |
+
+## SDK Helper
+
+If your custom agent process can import `@upstash/box`, use `runCustomHarness()` to parse Box arguments and emit the protocol events:
+
+```ts
+import { runCustomHarness } from "@upstash/box"
+
+await runCustomHarness(async ({ prompt, model, sessionId }, emit) => {
+  emit.tool({ name: "my_agent", input: { model } })
+
+  const output = `received: ${prompt}`
+  emit.text(output)
+
+  return {
+    output,
+    inputTokens: prompt.split(/\s+/).length,
+    outputTokens: output.split(/\s+/).length,
+    sessionId,
+  }
+})
+```
+
+## Minimal Anthropic Agent
+
+This custom agent calls Anthropic directly and streams text back through Box.
+
+```js title="custom-anthropic-agent.mjs"
+const args = process.argv.slice(2)
+
+function readArg(name, fallback = "") {
+  const index = args.indexOf(name)
+  return index >= 0 ? args[index + 1] ?? fallback : fallback
+}
+
+function emit(event, data) {
+  process.stdout.write(`event: ${event}\n`)
+  process.stdout.write(`data: ${JSON.stringify(data)}\n\n`)
+}
+
+const prompt = readArg("-p")
+const model = readArg("--model", "claude-haiku-4-5-20251001")
+const sessionId = readArg("--session") || crypto.randomUUID()
+
+try {
+  emit("tool", {
+    name: "anthropic_messages",
+    input: { model },
+  })
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  })
+
+  const body = await response.json()
+
+  if (!response.ok) {
+    throw new Error(body.error?.message ?? `Anthropic request failed: ${response.status}`)
+  }
+
+  const output = body.content
+    ?.filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("") ?? ""
+
+  emit("text", { text: output })
+  emit("done", {
+    output,
+    input_tokens: body.usage?.input_tokens ?? 0,
+    output_tokens: body.usage?.output_tokens ?? 0,
+    session_id: sessionId,
+  })
+} catch (error) {
+  emit("error", {
+    error: error instanceof Error ? error.message : String(error),
+    session_id: sessionId,
+  })
+  process.exitCode = 1
+}
+```
+
+Write the custom agent into the box before the first run:
+
+```ts
+await box.files.write({
+  path: "custom-anthropic-agent.mjs",
+  content: agentSource,
+})
+
+const result = await box.agent.run({
+  prompt: "Say hello from my custom agent",
+})
+
+console.log(result.result)
+```
+
+## Update an Existing Custom Agent
+
+You can update the custom agent command for an existing custom box:
+
+```ts
+await box.configureCustomHarness({
+  command: "node",
+  args: ["/workspace/home/another-agent.mjs"],
+  protocol: "box-sse-v1",
+})
+```
+
+This only works for boxes created with `agent.harness: Agent.Custom`.
+
+## Notes
+
+* Custom agents do not use managed provider keys.
+* Pass secrets through `env` on `Box.create()` or configure them inside the box.
+* The command must be a binary name from `PATH` or an absolute path under `/workspace/home/` or `/home/boxuser/`.
+* The command runs as `boxuser` inside the existing box sandbox.
 
 # Ephemeral Box
 Source: https://upstash.com/docs/box/overall/ephemeral-box
@@ -8403,16 +8594,85 @@ Source: https://upstash.com/docs/qstash/howto/local-development
 
 QStash requires a publicly available API to send messages to.
 During development when applications are not yet deployed, developers typically need to expose their local API by creating a public tunnel.
-While local tunneling works seamlessly, it requires code changes between development and production environments and increase friction for developers.
+
+While local tunneling works seamlessly, it requires code changes between development and production environments and increases friction for developers.
 To simplify the development process, Upstash provides QStash CLI, which allows you to run a development server locally for testing and development.
 
 <Check>The development server fully supports all QStash features including Schedules, URL Groups, Workflows, and Event Logs.</Check>
 
 <Note>Since the development server operates entirely in-memory, all data is reset when the server restarts.</Note>
 
-You can download and run the QStash CLI executable binary in several ways:
+## Automatic dev server (JavaScript SDK)
 
-## NPX (Node Package Executable)
+If you are using `@upstash/qstash`, you can just set `QSTASH_DEV=true` in your environment variables, and the SDK will download and connect to the dev server automatically.
+
+```bash .env
+QSTASH_DEV=true
+```
+
+Additionally, you can pass `devMode: true` to explicitly enable dev mode:
+
+```typescript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ devMode: true });
+
+await client.publishJSON({
+  url: "https://example.com/webhook",
+  body: { hello: "world" },
+});
+```
+
+```typescript
+// app/api/webhook/route.ts
+import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
+
+export const POST = verifySignatureAppRouter(
+  async (request) => {
+    // signed by the local dev server
+    return new Response("ok");
+  },
+  { devMode: true }
+);
+```
+
+On startup the SDK prints the dev server URL and a link to the Upstash Console:
+
+```
+[QStash Dev] Server running at http://127.0.0.1:8080
+  Console: https://console.upstash.com/qstash/local-mode-user?port=8080
+```
+
+When dev mode is active, the SDK will:
+
+* Download the latest `qstash` binary on first use, cached in your OS cache directory:
+  * macOS: `~/Library/Caches/upstash/qstash-dev`
+  * Linux: `~/.cache/upstash/qstash-dev`
+  * Windows: `%LOCALAPPDATA%\upstash\qstash-dev`
+* Spawn the server on port `8080` (override with `QSTASH_DEV_PORT`).
+* Confirm the server is running on the configured port and skip spawning if it is.
+* Override the `baseUrl`, `token`, and signing keys you provide and use the dev server's instead.
+
+<Warning>
+Dev mode is automatically a no-op when `NODE_ENV=production` and in browser/edge runtimes.
+</Warning>
+
+### Next.js edge routes
+
+If you are using edge routes in Next.js, the SDK cannot spawn the dev server from the edge runtime — it can only verify it is reachable. To start the server before any edge request hits, call `registerQStashDev()` from `instrumentation.ts`:
+
+```typescript
+// instrumentation.ts
+import { registerQStashDev } from "@upstash/qstash/nextjs";
+
+export const register = () => registerQStashDev();
+```
+
+## Running the dev server manually
+
+If you would rather run the dev server manually (Python, Go, plain HTTP, etc.), use the QStash CLI directly.
+
+### @upstash/qstash-cli
 
 Install the binary via the `@upstash/qstash-cli` NPM package:
 
@@ -8430,7 +8690,7 @@ Once you start the local server, you can go to the QStash tab on Upstash Console
 
 <img />
 
-## Docker
+### Docker
 
 QStash CLI is available as a Docker image through our public AWS ECR repository:
 
@@ -8442,7 +8702,7 @@ docker pull public.ecr.aws/upstash/qstash:latest
 docker run -p 8080:8080 public.ecr.aws/upstash/qstash:latest qstash dev
 ```
 
-## Artifact Repository
+### Direct download
 
 You can download the binary directly from our artifact repository without using a package manager:
 
@@ -8455,7 +8715,7 @@ After extracting the archive file, run the executable:
 $ ./qstash dev
 ```
 
-## QStash CLI
+## CLI reference
 
 Currently, the only available command for QStash CLI is `dev`, which starts a development server instance.
 
@@ -8481,6 +8741,8 @@ Running `qstash dev` starts two components:
 # Start with custom ports for both components
 $ ./qstash dev -port=8080 -log-port=9000
 ```
+
+## Test users
 
 There are predefined test users available. You can configure the quota type of users using the `-quota` option, with available options being `payg` and `pro`.
 These quotas don't affect performance but allow you to simulate different server limits based on the subscription tier.
@@ -8519,8 +8781,6 @@ QSTASH_NEXT_SIGNING_KEY="sig_7GFR4YaDshFcqsxWRZpRB161jguD"
 ```
 
 </CodeGroup>
-
-<Info>Currently, there is no GUI client available for the development server. You can use QStash SDKs to fetch resources like event logs.</Info>
 
 ## License
 
@@ -11366,6 +11626,18 @@ const client = new Client({
   },
 });
 ```
+
+## Local development
+
+Pass `devMode: true` (or set `QSTASH_DEV=true`) to have the SDK download, start, and manage a local QStash dev server for you. No tokens or signing keys required — the SDK injects deterministic dev credentials.
+
+```typescript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ devMode: true });
+```
+
+The same flag works on the receiving side — pass `devMode: true` to `Receiver` or `verifySignature*` to verify signatures with the dev server's keys. See [Local Development](/docs/qstash/howto/local-development) for the full walkthrough, including the `registerQStashDev()` helper for Next.js edge routes.
 
 ## Telemetry
 
@@ -17729,6 +18001,22 @@ Sidekiq accesses Redis regularly, even when there is no queue activity. This can
 
 # Changelog
 Source: https://upstash.com/docs/redis/overall/changelog
+
+<Update label="March 2026">
+Added [Upstash Redis Search](/docs/redis/search/introduction) feature, a new extension for searching Redis data. It works with JSON, Hash, and String data, automatically keeps indexes in sync with Redis writes, and supports full-text search, filtering, aggregations, aliases, highlighting, fuzzy matching, phrase queries, and regex matching.
+
+Redis Search is available through the [@upstash/redis](/docs/redis/sdks/ts/overview) and [upstash-redis](/docs/redis/sdks/py/overview) SDKs. If you already use `node-redis` or `ioredis`, you can use the [`@upstash/search-redis`](/docs/redis/search/adapters/node-redis) and [`@upstash/search-ioredis`](/docs/redis/search/adapters/ioredis) wrappers without switching clients.
+
+New Redis Search commands:
+* [`SEARCH.CREATE`](/docs/redis/search/command-reference#searchcreate): Create a search index
+* [`SEARCH.DROP`](/docs/redis/search/command-reference#searchdrop): Remove a search index
+* [`SEARCH.DESCRIBE`](/docs/redis/search/command-reference#searchdescribe): Return metadata about a search index
+* [`SEARCH.WAITINDEXING`](/docs/redis/search/command-reference#searchwaitindexing): Wait until pending index updates are visible to queries
+* [`SEARCH.QUERY`](/docs/redis/search/command-reference#searchquery): Search documents with a JSON filter
+* [`SEARCH.COUNT`](/docs/redis/search/command-reference#searchcount): Count matching documents without returning them
+* [`SEARCH.AGGREGATE`](/docs/redis/search/command-reference#searchaggregate): Compute analytics over matching documents
+* [`SEARCH.ALIASADD`](/docs/redis/search/command-reference#searchaliasadd), [`SEARCH.ALIASDEL`](/docs/redis/search/command-reference#searchaliasdel), and [`SEARCH.LISTALIASES`](/docs/redis/search/command-reference#searchlistaliases): Manage search index aliases
+</Update>
 
 <Update label="December 2025">
 Added [Redis Functions](https://redis.io/docs/latest/develop/programmability/functions-intro/) support. New commands are:
@@ -50565,6 +50853,41 @@ Source: https://upstash.com/docs/workflow/howto/local-development/development-se
 
 Upstash Workflow is built on top of Upstash QStash.
 The QStash CLI provides a local development server that performs QStash functionality locally for development and testing purposes.
+
+## Automatic dev server (recommended)
+
+If you are using `@upstash/workflow`, you can just set `QSTASH_DEV=true` in your environment, and the SDK will download and connect to the dev server automatically. No tokens or signing keys required.
+
+```bash .env
+QSTASH_DEV=true
+```
+
+With `QSTASH_DEV=true` set, both the workflow client and the `serve()` endpoint pick up the dev server automatically. The endpoint also verifies incoming signatures against the dev server's deterministic signing keys, so signature verification works end-to-end with no extra setup.
+
+```typescript
+// app/api/workflow/route.ts
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve(async (context) => {
+  await context.run("step-1", () => console.log("running locally"));
+});
+```
+
+```typescript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: process.env.QSTASH_TOKEN ?? "" });
+
+await client.trigger({
+  url: "http://localhost:3000/api/workflow",
+});
+```
+
+For details on the dev server behavior, ports, and the `registerQStashDev()` helper for Next.js edge routes, see the [QStash Local Development docs](/docs/qstash/howto/local-development).
+
+## Manual setup
+
+If you would rather start and manage the QStash dev server yourself, follow the steps below.
 
 <Steps>
     <Step title="Install and Start Development Server">
