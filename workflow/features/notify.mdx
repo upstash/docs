@@ -166,6 +166,75 @@ await client.notify(
 ```
 </CodeGroup>
 
+The same also applies to `context.notify` 
+
+<CodeGroup>
+```typescript TypeScript
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve<string>(async (context) => {
+  const { orderId, processingResult } = context.requestPayload;
+
+  await context.run("process-order", async () => {
+    // ...
+  })
+
+  const { notifyResponse } = await context.notify(
+    "notify-processing-complete",
+    `order-${orderId}`,
+    {
+      orderId,
+      status: "completed",
+      result: processingResult,
+      completedAt: new Date().toISOString(),
+      workflowRunId: "targetWorkflowRunId"  // Enables lookback
+    }
+  );
+
+});
+```
+
+```python Python
+from fastapi import FastAPI
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+from datetime import datetime
+
+app = FastAPI()
+serve = Serve(app)
+
+@serve.post("/api/order-processor")
+async def order_processor(context: AsyncWorkflowContext[str]) -> None:
+    order_id = context.request_payload["order_id"]
+    processing_result = context.request_payload["processing_result"]
+
+    # Process the order
+    async def _process_order():
+        return await process_order(order_id)
+
+    result = await context.run("process-order", _process_order)
+
+    # Notify waiting workflows that processing is complete
+    notify_response = await context.notify(
+        "notify-processing-complete",
+        f"order-{order_id}",
+        {
+            "order_id": order_id,
+            "status": "completed",
+            "result": processing_result,
+            "workflowRunId": "targetWorkflowRunId" # Enables lookback
+        }
+    )
+
+    # Log notification results
+    async def _log_notification():
+        print(f"Notified {len(notify_response)} waiting workflows")
+        return notify_response
+
+    await context.run("log-notification", _log_notification)
+```
+</CodeGroup>
+
 <Note>
 When using lookback with `workflowRunId`, the notification is targeted to a specific workflow run rather than all waiters with that event ID.
 </Note>
