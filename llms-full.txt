@@ -935,7 +935,7 @@ Create a keep-alive box with default settings. See the [quickstart](/docs/box/ov
 Once the box is running, connect to it via SSH from your terminal. The `-L` flag forwards the OpenClaw dashboard port to your local machine. Use your [Box API key](/docs/box/overall/quickstart#1-get-your-api-key) as the password when prompted.
 
 ```bash
-ssh -L 18789:127.0.0.1:18789 <box-id>@us-east-1.box.upstash.com
+ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -L 18789:127.0.0.1:18789 <box-id>@us-east-1.box.upstash.com
 ```
 
 The `box-id` is the name of your box (e.g. `right-flamingo-14486`).
@@ -1004,6 +1004,18 @@ nohup openclaw gateway > gateway.log 2>&1 &
 ```
 
 This command runs automatically whenever the box starts, so your gateway is always available without manual intervention.
+
+***
+
+## Troubleshooting
+
+If your SSH session freezes randomly during onboarding, retry the connection with a clean config and no shared control socket:
+
+```bash
+ssh -F /dev/null -o ControlMaster=no -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -L 18789:127.0.0.1:18789 <box-id>@us-east-1.box.upstash.com
+```
+
+The most likely causes are a local `~/.ssh/config` entry (e.g. a stale `ControlMaster` socket or conflicting options) being applied to the connection, or a NAT/firewall on your network dropping idle TCP connections. The flags above bypass your local SSH config and keep the connection active with periodic keepalives.
 
 # Remote Development
 Source: https://upstash.com/docs/box/guides/remote-development
@@ -1171,6 +1183,8 @@ The exact option shape depends on the configured agent:
 * `ClaudeCode`: `maxTurns`, `maxBudgetUsd`, `effort`, `thinking`, `disallowedTools`, `agents`, `promptSuggestions`, `fallbackModel`, `systemPrompt`
 * `Codex`: `modelReasoningEffort`, `modelReasoningSummary`, `personality`, `webSearch`
 * `OpenCode`: `reasoningEffort`, `textVerbosity`, `reasoningSummary`, `thinking`
+
+To bring your own agent process, use a [custom agent](/docs/box/overall/custom-agent).
 
 ## Quickstart
 
@@ -1504,6 +1518,195 @@ The `Authorization` header is added by the proxy. The container never sees the s
 * Only HTTPS traffic on port `443` is intercepted
 * HTTP/2 connections through matched hosts are downgraded to HTTP/1.1
 * Header values are encrypted at rest and never returned by API responses
+
+# Custom Agent
+Source: https://upstash.com/docs/box/overall/custom-agent
+
+Custom agents let you bring your own agent process to an Upstash Box. The box still provides the same sandbox, filesystem, shell, git, logs, streaming, and console experience, but your code decides how to call the model and how to produce output.
+
+Use a custom agent when the built-in Claude Code, Codex, OpenCode, or Cursor agents do not fit your workflow.
+
+## Create a Custom Agent Box
+
+Create the box with `agent.harness: Agent.Custom` and provide a `customHarness` command. The command runs inside the box for every `box.agent.run()` or `box.agent.stream()` call.
+
+```ts
+import { Agent, Box } from "@upstash/box"
+
+const box = await Box.create({
+  apiKey: process.env.UPSTASH_BOX_API_KEY!,
+  runtime: "node",
+  agent: {
+    harness: Agent.Custom,
+    model: "claude-haiku-4-5-20251001",
+    customHarness: {
+      command: "node",
+      args: ["/workspace/home/custom-anthropic-agent.mjs"],
+      protocol: "box-sse-v1",
+    },
+  },
+  env: {
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!,
+  },
+})
+```
+
+## Agent Contract
+
+For each run, Box executes your command and appends these arguments:
+
+```bash
+-p "<prompt>" --model "<model>" --stream --session "<session-id>"
+```
+
+`--session` is only included when a prior session exists.
+
+Your process must write Server-Sent Events to `stdout` using the `box-sse-v1` protocol:
+
+```txt
+event: text
+data: {"text":"Hello"}
+
+event: done
+data: {"output":"Hello","input_tokens":10,"output_tokens":4,"total_cost_usd":0.0001,"session_id":"session-1"}
+```
+
+Supported event names:
+
+| Event | Description |
+| --- | --- |
+| `text` | Adds text to the visible response |
+| `thinking` | Emits reasoning/thinking text |
+| `tool` | Shows a tool call in logs |
+| `tool_result` | Shows a tool result in logs |
+| `done` | Finishes the run successfully |
+| `error` | Finishes the run with an error |
+
+## SDK Helper
+
+If your custom agent process can import `@upstash/box`, use `runCustomHarness()` to parse Box arguments and emit the protocol events:
+
+```ts
+import { runCustomHarness } from "@upstash/box"
+
+await runCustomHarness(async ({ prompt, model, sessionId }, emit) => {
+  emit.tool({ name: "my_agent", input: { model } })
+
+  const output = `received: ${prompt}`
+  emit.text(output)
+
+  return {
+    output,
+    inputTokens: prompt.split(/\s+/).length,
+    outputTokens: output.split(/\s+/).length,
+    sessionId,
+  }
+})
+```
+
+## Minimal Anthropic Agent
+
+This custom agent calls Anthropic directly and streams text back through Box.
+
+```js title="custom-anthropic-agent.mjs"
+const args = process.argv.slice(2)
+
+function readArg(name, fallback = "") {
+  const index = args.indexOf(name)
+  return index >= 0 ? args[index + 1] ?? fallback : fallback
+}
+
+function emit(event, data) {
+  process.stdout.write(`event: ${event}\n`)
+  process.stdout.write(`data: ${JSON.stringify(data)}\n\n`)
+}
+
+const prompt = readArg("-p")
+const model = readArg("--model", "claude-haiku-4-5-20251001")
+const sessionId = readArg("--session") || crypto.randomUUID()
+
+try {
+  emit("tool", {
+    name: "anthropic_messages",
+    input: { model },
+  })
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  })
+
+  const body = await response.json()
+
+  if (!response.ok) {
+    throw new Error(body.error?.message ?? `Anthropic request failed: ${response.status}`)
+  }
+
+  const output = body.content
+    ?.filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("") ?? ""
+
+  emit("text", { text: output })
+  emit("done", {
+    output,
+    input_tokens: body.usage?.input_tokens ?? 0,
+    output_tokens: body.usage?.output_tokens ?? 0,
+    session_id: sessionId,
+  })
+} catch (error) {
+  emit("error", {
+    error: error instanceof Error ? error.message : String(error),
+    session_id: sessionId,
+  })
+  process.exitCode = 1
+}
+```
+
+Write the custom agent into the box before the first run:
+
+```ts
+await box.files.write({
+  path: "custom-anthropic-agent.mjs",
+  content: agentSource,
+})
+
+const result = await box.agent.run({
+  prompt: "Say hello from my custom agent",
+})
+
+console.log(result.result)
+```
+
+## Update an Existing Custom Agent
+
+You can update the custom agent command for an existing custom box:
+
+```ts
+await box.configureCustomHarness({
+  command: "node",
+  args: ["/workspace/home/another-agent.mjs"],
+  protocol: "box-sse-v1",
+})
+```
+
+This only works for boxes created with `agent.harness: Agent.Custom`.
+
+## Notes
+
+* Custom agents do not use managed provider keys.
+* Pass secrets through `env` on `Box.create()` or configure them inside the box.
+* The command must be a binary name from `PATH` or an absolute path under `/workspace/home/` or `/home/boxuser/`.
+* The command runs as `boxuser` inside the existing box sandbox.
 
 # Ephemeral Box
 Source: https://upstash.com/docs/box/overall/ephemeral-box
@@ -17729,6 +17932,22 @@ Sidekiq accesses Redis regularly, even when there is no queue activity. This can
 
 # Changelog
 Source: https://upstash.com/docs/redis/overall/changelog
+
+<Update label="March 2026">
+Added [Upstash Redis Search](/docs/redis/search/introduction) feature, a new extension for searching Redis data. It works with JSON, Hash, and String data, automatically keeps indexes in sync with Redis writes, and supports full-text search, filtering, aggregations, aliases, highlighting, fuzzy matching, phrase queries, and regex matching.
+
+Redis Search is available through the [@upstash/redis](/docs/redis/sdks/ts/overview) and [upstash-redis](/docs/redis/sdks/py/overview) SDKs. If you already use `node-redis` or `ioredis`, you can use the [`@upstash/search-redis`](/docs/redis/search/adapters/node-redis) and [`@upstash/search-ioredis`](/docs/redis/search/adapters/ioredis) wrappers without switching clients.
+
+New Redis Search commands:
+* [`SEARCH.CREATE`](/docs/redis/search/command-reference#searchcreate): Create a search index
+* [`SEARCH.DROP`](/docs/redis/search/command-reference#searchdrop): Remove a search index
+* [`SEARCH.DESCRIBE`](/docs/redis/search/command-reference#searchdescribe): Return metadata about a search index
+* [`SEARCH.WAITINDEXING`](/docs/redis/search/command-reference#searchwaitindexing): Wait until pending index updates are visible to queries
+* [`SEARCH.QUERY`](/docs/redis/search/command-reference#searchquery): Search documents with a JSON filter
+* [`SEARCH.COUNT`](/docs/redis/search/command-reference#searchcount): Count matching documents without returning them
+* [`SEARCH.AGGREGATE`](/docs/redis/search/command-reference#searchaggregate): Compute analytics over matching documents
+* [`SEARCH.ALIASADD`](/docs/redis/search/command-reference#searchaliasadd), [`SEARCH.ALIASDEL`](/docs/redis/search/command-reference#searchaliasdel), and [`SEARCH.LISTALIASES`](/docs/redis/search/command-reference#searchlistaliases): Manage search index aliases
+</Update>
 
 <Update label="December 2025">
 Added [Redis Functions](https://redis.io/docs/latest/develop/programmability/functions-intro/) support. New commands are:
@@ -49373,6 +49592,35 @@ await client.notify(
     event_data={"verified": True, "amount": 100},
     workflow_run_id=workflow_run.workflow_run_id  # Enables lookback
 )
+```
+</CodeGroup>
+
+The same also applies to `context.notify`
+
+<CodeGroup>
+```typescript TypeScript
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve<string>(async (context) => {
+  const { orderId, processingResult } = context.requestPayload;
+
+  await context.run("process-order", async () => {
+    // ...
+  })
+
+  const { notifyResponse } = await context.notify(
+    "notify-processing-complete",
+    `order-${orderId}`,
+    {
+      orderId,
+      status: "completed",
+      result: processingResult,
+      completedAt: new Date().toISOString(),
+      workflowRunId: "targetWorkflowRunId"  // Enables lookback
+    }
+  );
+
+});
 ```
 </CodeGroup>
 
