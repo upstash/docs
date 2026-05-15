@@ -8605,16 +8605,85 @@ Source: https://upstash.com/docs/qstash/howto/local-development
 
 QStash requires a publicly available API to send messages to.
 During development when applications are not yet deployed, developers typically need to expose their local API by creating a public tunnel.
-While local tunneling works seamlessly, it requires code changes between development and production environments and increase friction for developers.
+
+While local tunneling works seamlessly, it requires code changes between development and production environments and increases friction for developers.
 To simplify the development process, Upstash provides QStash CLI, which allows you to run a development server locally for testing and development.
 
 <Check>The development server fully supports all QStash features including Schedules, URL Groups, Workflows, and Event Logs.</Check>
 
 <Note>Since the development server operates entirely in-memory, all data is reset when the server restarts.</Note>
 
-You can download and run the QStash CLI executable binary in several ways:
+## Automatic dev server (JavaScript SDK)
 
-## NPX (Node Package Executable)
+If you are using `@upstash/qstash`, you can just set `QSTASH_DEV=true` in your environment variables, and the SDK will download and connect to the dev server automatically.
+
+```bash .env
+QSTASH_DEV=true
+```
+
+Additionally, you can pass `devMode: true` to explicitly enable dev mode:
+
+```typescript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ devMode: true });
+
+await client.publishJSON({
+  url: "https://example.com/webhook",
+  body: { hello: "world" },
+});
+```
+
+```typescript
+// app/api/webhook/route.ts
+import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
+
+export const POST = verifySignatureAppRouter(
+  async (request) => {
+    // signed by the local dev server
+    return new Response("ok");
+  },
+  { devMode: true }
+);
+```
+
+On startup the SDK prints the dev server URL and a link to the Upstash Console:
+
+```
+[QStash Dev] Server running at http://127.0.0.1:8080
+  Console: https://console.upstash.com/qstash/local-mode-user?port=8080
+```
+
+When dev mode is active, the SDK will:
+
+* Download the latest `qstash` binary on first use, cached in your OS cache directory:
+  * macOS: `~/Library/Caches/upstash/qstash-dev`
+  * Linux: `~/.cache/upstash/qstash-dev`
+  * Windows: `%LOCALAPPDATA%\upstash\qstash-dev`
+* Spawn the server on port `8080` (override with `QSTASH_DEV_PORT`).
+* Confirm the server is running on the configured port and skip spawning if it is.
+* Override the `baseUrl`, `token`, and signing keys you provide and use the dev server's instead.
+
+<Warning>
+Dev mode is automatically a no-op when `NODE_ENV=production` and in browser/edge runtimes.
+</Warning>
+
+### Next.js edge routes
+
+If you are using edge routes in Next.js, the SDK cannot spawn the dev server from the edge runtime — it can only verify it is reachable. To start the server before any edge request hits, call `registerQStashDev()` from `instrumentation.ts`:
+
+```typescript
+// instrumentation.ts
+import { registerQStashDev } from "@upstash/qstash/nextjs";
+
+export const register = () => registerQStashDev();
+```
+
+## Running the dev server manually
+
+If you would rather run the dev server manually (Python, Go, plain HTTP, etc.), use the QStash CLI directly.
+
+### @upstash/qstash-cli
 
 Install the binary via the `@upstash/qstash-cli` NPM package:
 
@@ -8632,7 +8701,7 @@ Once you start the local server, you can go to the QStash tab on Upstash Console
 
 <img />
 
-## Docker
+### Docker
 
 QStash CLI is available as a Docker image through our public AWS ECR repository:
 
@@ -8644,7 +8713,7 @@ docker pull public.ecr.aws/upstash/qstash:latest
 docker run -p 8080:8080 public.ecr.aws/upstash/qstash:latest qstash dev
 ```
 
-## Artifact Repository
+### Direct download
 
 You can download the binary directly from our artifact repository without using a package manager:
 
@@ -8657,7 +8726,7 @@ After extracting the archive file, run the executable:
 $ ./qstash dev
 ```
 
-## QStash CLI
+## CLI reference
 
 Currently, the only available command for QStash CLI is `dev`, which starts a development server instance.
 
@@ -8683,6 +8752,8 @@ Running `qstash dev` starts two components:
 # Start with custom ports for both components
 $ ./qstash dev -port=8080 -log-port=9000
 ```
+
+## Test users
 
 There are predefined test users available. You can configure the quota type of users using the `-quota` option, with available options being `payg` and `pro`.
 These quotas don't affect performance but allow you to simulate different server limits based on the subscription tier.
@@ -8721,8 +8792,6 @@ QSTASH_NEXT_SIGNING_KEY="sig_7GFR4YaDshFcqsxWRZpRB161jguD"
 ```
 
 </CodeGroup>
-
-<Info>Currently, there is no GUI client available for the development server. You can use QStash SDKs to fetch resources like event logs.</Info>
 
 ## License
 
@@ -11568,6 +11637,18 @@ const client = new Client({
   },
 });
 ```
+
+## Local development
+
+Pass `devMode: true` (or set `QSTASH_DEV=true`) to have the SDK download, start, and manage a local QStash dev server for you. No tokens or signing keys required — the SDK injects deterministic dev credentials.
+
+```typescript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ devMode: true });
+```
+
+The same flag works on the receiving side — pass `devMode: true` to `Receiver` or `verifySignature*` to verify signatures with the dev server's keys. See [Local Development](/docs/qstash/howto/local-development) for the full walkthrough, including the `registerQStashDev()` helper for Next.js edge routes.
 
 ## Telemetry
 
@@ -50812,6 +50893,41 @@ Source: https://upstash.com/docs/workflow/howto/local-development/development-se
 
 Upstash Workflow is built on top of Upstash QStash.
 The QStash CLI provides a local development server that performs QStash functionality locally for development and testing purposes.
+
+## Automatic dev server (recommended)
+
+If you are using `@upstash/workflow`, you can just set `QSTASH_DEV=true` in your environment, and the SDK will download and connect to the dev server automatically. No tokens or signing keys required.
+
+```bash .env
+QSTASH_DEV=true
+```
+
+With `QSTASH_DEV=true` set, both the workflow client and the `serve()` endpoint pick up the dev server automatically. The endpoint also verifies incoming signatures against the dev server's deterministic signing keys, so signature verification works end-to-end with no extra setup.
+
+```typescript
+// app/api/workflow/route.ts
+import { serve } from "@upstash/workflow/nextjs";
+
+export const { POST } = serve(async (context) => {
+  await context.run("step-1", () => console.log("running locally"));
+});
+```
+
+```typescript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: process.env.QSTASH_TOKEN ?? "" });
+
+await client.trigger({
+  url: "http://localhost:3000/api/workflow",
+});
+```
+
+For details on the dev server behavior, ports, and the `registerQStashDev()` helper for Next.js edge routes, see the [QStash Local Development docs](/docs/qstash/howto/local-development).
+
+## Manual setup
+
+If you would rather start and manage the QStash dev server yourself, follow the steps below.
 
 <Steps>
     <Step title="Install and Start Development Server">
