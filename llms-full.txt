@@ -24452,7 +24452,7 @@ redis = Redis.from_env()
 index = redis.search.create_index(
     name="products",
     data_type="json",
-    prefix="product:",
+    prefixes="product:",
     schema={
         "name": "TEXT",
         "description": "TEXT",
@@ -24472,9 +24472,22 @@ SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description TE
 
 </Tabs>
 
+<Note>
+Create an index once, not on every request. `createIndex` throws if an index with
+the same name already exists. To make setup safely re-runnable, pass `exists_ok=True`
+in the Python SDK, or wrap the call in a `try/catch` in TypeScript.
+</Note>
+
 ## 2. Add Data
 
 Add data using standard Redis JSON commands. Any key matching the index prefix will be automatically indexed.
+
+<Note>
+Writes are indexed asynchronously: a `JSON.SET` returns before the document is
+searchable. For demos and tests, call `waitIndexing()` / `wait_indexing()` to
+block until pending updates are applied. In production, queries running on a later
+request will normally hit an up-to-date index without waiting.
+</Note>
 
 <Tabs>
 
@@ -24496,12 +24509,14 @@ await redis.json.set("product:2", "$", {
   price: 129.99,
   inStock: true,
 });
+
+await index.waitIndexing();
 ```
 </Tab>
 
 <Tab title="Python">
 ```python
-redis.json().set("product:1", "$", {
+redis.json.set("product:1", "$", {
     "name": "Wireless Headphones",
     "description": "Premium noise-cancelling wireless headphones with 30-hour battery life",
     "category": "electronics",
@@ -24509,7 +24524,7 @@ redis.json().set("product:1", "$", {
     "inStock": True,
 })
 
-redis.json().set("product:2", "$", {
+redis.json.set("product:2", "$", {
     "name": "Running Shoes",
     "description": "Lightweight running shoes with advanced cushioning technology",
     "category": "sports",
@@ -28276,9 +28291,9 @@ the prompt.
 In this tutorial we build a small but complete **agent memory** layer on Upstash
 Redis, with two tiers:
 
-* **Working memory** — the running conversation for the current session, stored
+* **Working memory**: the running conversation for the current session, stored
   in a single Redis key with a TTL so it expires on its own.
-* **Long-term memory** — durable facts about the user (preferences, events,
+* **Long-term memory**: durable facts about the user (preferences, events,
   decisions) stored as JSON documents and recalled with [Redis Search](/docs/redis/search/introduction)
   full-text queries.
 
@@ -28287,7 +28302,7 @@ those plus the recent conversation, then **remembers** any new facts worth keepi
 
 <Note>
 This tutorial uses OpenAI for the chat and fact-extraction calls, but the memory
-layer itself is model-agnostic — swap in any LLM you like.
+layer itself is model-agnostic, so swap in any LLM you like.
 </Note>
 
 ## Prerequisites
@@ -28328,7 +28343,7 @@ the `text` field for full-text recall, and keep `userId` and `kind` as exact-mat
 keywords so we can scope a search to a single user. `createdAt` is a sortable
 number we can use to favor recent memories.
 
-Create the index **once** (e.g. in a setup script) — not on every request.
+Create the index **once** (e.g. in a setup script), not on every request.
 
 <Tabs>
 
@@ -28339,17 +28354,21 @@ import { Redis, s } from "@upstash/redis";
 
 const redis = Redis.fromEnv();
 
-await redis.search.createIndex({
-  name: "memories",
-  dataType: "json",
-  prefix: "memory:",
-  schema: s.object({
-    text: s.string(),        // full-text searchable fact
-    userId: s.keyword(),     // exact-match owner
-    kind: s.keyword(),       // "preference" | "event" | "fact" ...
-    createdAt: s.number(),   // epoch ms, sortable
-  }),
-});
+try {
+  await redis.search.createIndex({
+    name: "memories",
+    dataType: "json",
+    prefix: "memory:",
+    schema: s.object({
+      text: s.string(),        // full-text searchable fact
+      userId: s.keyword(),     // exact-match owner
+      kind: s.keyword(),       // "preference" | "event" | "fact" ...
+      createdAt: s.number(),   // epoch ms, sortable
+    }),
+  });
+} catch {
+  // Index already exists, safe to ignore when re-running setup.
+}
 ```
 </Tab>
 
@@ -28363,7 +28382,8 @@ redis = Redis.from_env()
 redis.search.create_index(
     name="memories",
     data_type="json",
-    prefix="memory:",
+    prefixes="memory:",
+    exists_ok=True, # idempotent: don't error if the index already exists
     schema={
         "text": "TEXT",        # full-text searchable fact
         "userId": "KEYWORD",   # exact-match owner
@@ -28482,7 +28502,7 @@ simplicity.
 
 ## Step 4: Remember new facts
 
-After each exchange we ask the model to pull out durable facts — things worth
+After each exchange we ask the model to pull out durable facts, the things worth
 remembering across sessions, not small talk. Each fact becomes a JSON document
 under the `memory:` prefix, so the index picks it up automatically.
 
@@ -28577,7 +28597,7 @@ def remember(user_id: str, conversation: list[dict]) -> None:
         if already_known(user_id, text):
             continue
         memory_id = uuid.uuid4().hex
-        redis.json().set(
+        redis.json.set(
             f"memory:{user_id}:{memory_id}",
             "$",
             {
@@ -28684,7 +28704,11 @@ expires, the facts learned there are recalled in the second:
 <Tab title="TypeScript">
 ```ts
 await chat("user-1", "session-a", "I'm vegetarian and I love spicy food.");
-// ...later, a brand new session...
+
+// Redis Search indexes writes asynchronously, wait so the demo is deterministic.
+await memories.waitIndexing();
+
+// ...a brand new session...
 const reply = await chat("user-1", "session-b", "Suggest a dinner for me.");
 console.log(reply); // recalls "vegetarian" + "spicy" from long-term memory
 ```
@@ -28693,7 +28717,11 @@ console.log(reply); // recalls "vegetarian" + "spicy" from long-term memory
 <Tab title="Python">
 ```python
 chat("user-1", "session-a", "I'm vegetarian and I love spicy food.")
-# ...later, a brand new session...
+
+# Redis Search indexes writes asynchronously, wait so the demo is deterministic.
+memories.wait_indexing()
+
+# ...a brand new session...
 reply = chat("user-1", "session-b", "Suggest a dinner for me.")
 print(reply)  # recalls "vegetarian" + "spicy" from long-term memory
 ```
@@ -28701,9 +28729,17 @@ print(reply)  # recalls "vegetarian" + "spicy" from long-term memory
 
 </Tabs>
 
+<Note>
+Redis Search indexes writes asynchronously: a `JSON.SET` returns before the
+document is searchable. For a deterministic demo or test, call `waitIndexing()` /
+`wait_indexing()` to block until pending updates are applied. In a real app the
+next user turn normally arrives later than the indexing window, so an explicit
+wait isn't needed.
+</Note>
+
 ## How it fits together
 
-* **Working memory** lives under `chat:{sessionId}` with a TTL — fast to read,
+* **Working memory** lives under `chat:{sessionId}` with a TTL: fast to read,
   self-expiring, scoped to one conversation.
 * **Long-term memory** lives under `memory:{userId}:{id}` and is searchable across
   sessions through the `memories` index.
@@ -28715,7 +28751,7 @@ print(reply)  # recalls "vegetarian" + "spicy" from long-term memory
 * Add a `kind` such as `"preference"` vs `"event"` and filter recall by it.
 * Boost recent memories with a [score function](/docs/redis/search/querying#4-score-function).
 * Summarize older working-memory messages instead of dropping them.
-* Stream the reply to a chat UI and animate it smoothly — see
+* Stream the reply to a chat UI and animate it smoothly. See
   [Smooth Text Streaming in AI SDK v5](https://upstash.com/blog/smooth-streaming).
 * Learn more about what Redis Search can do in the [Search docs](/docs/redis/search/introduction).
 
