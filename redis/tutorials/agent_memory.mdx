@@ -1,0 +1,481 @@
+---
+title: Agent Memory with Redis Search
+description: Build short-term and long-term memory for AI agents on Upstash Redis. Store working memory with TTLs and recall long-term memories with Redis Search full-text queries.
+---
+
+Large language models are stateless: once a request returns, the model forgets
+everything. To build an agent that remembers who a user is and what happened in
+past conversations, you need to store that context yourself and feed it back into
+the prompt.
+
+In this tutorial we build a small but complete **agent memory** layer on Upstash
+Redis, with two tiers:
+
+- **Working memory**: the running conversation for the current session, stored
+  in a single Redis key with a TTL so it expires on its own.
+- **Long-term memory**: durable facts about the user (preferences, events,
+  decisions) stored as JSON documents and recalled with [Redis Search](/redis/search/introduction)
+  full-text queries.
+
+On every turn the agent **recalls** relevant long-term memories, answers using
+those plus the recent conversation, then **remembers** any new facts worth keeping.
+
+<Note>
+This tutorial uses OpenAI for the chat and fact-extraction calls, but the memory
+layer itself is model-agnostic, so swap in any LLM you like.
+</Note>
+
+## Prerequisites
+
+- An [Upstash Redis](https://console.upstash.com) database (the REST URL and token).
+- An OpenAI API key.
+
+Install the dependencies:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```bash
+npm install @upstash/redis openai
+```
+</Tab>
+
+<Tab title="Python">
+```bash
+pip install upstash-redis openai
+```
+</Tab>
+
+</Tabs>
+
+Set your environment variables:
+
+```bash
+UPSTASH_REDIS_REST_URL="https://..."
+UPSTASH_REDIS_REST_TOKEN="..."
+OPENAI_API_KEY="sk-..."
+```
+
+## Step 1: Create the long-term memory index
+
+Long-term memories are JSON documents stored under the `memory:` prefix. We index
+the `text` field for full-text recall, and keep `userId` and `kind` as exact-match
+keywords so we can scope a search to a single user. `createdAt` is a sortable
+number we can use to favor recent memories.
+
+Create the index **once** (e.g. in a setup script), not on every request.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// setup.ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+try {
+  await redis.search.createIndex({
+    name: "memories",
+    dataType: "json",
+    prefix: "memory:",
+    schema: s.object({
+      text: s.string(),        // full-text searchable fact
+      userId: s.keyword(),     // exact-match owner
+      kind: s.keyword(),       // "preference" | "event" | "fact" ...
+      createdAt: s.number(),   // epoch ms, sortable
+    }),
+  });
+} catch {
+  // Index already exists, safe to ignore when re-running setup.
+}
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# setup.py
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+redis.search.create_index(
+    name="memories",
+    data_type="json",
+    prefixes="memory:",
+    exists_ok=True, # idempotent: don't error if the index already exists
+    schema={
+        "text": "TEXT",        # full-text searchable fact
+        "userId": "KEYWORD",   # exact-match owner
+        "kind": "KEYWORD",     # "preference" | "event" | "fact" ...
+        "createdAt": "F64",    # epoch ms, sortable
+    },
+)
+```
+</Tab>
+
+</Tabs>
+
+## Step 2: Working (short-term) memory
+
+Working memory is just the recent message history for a session. We store it as a
+single JSON value with a one-hour TTL and cap it to the last 20 messages so the
+prompt stays small. When the session goes quiet, Redis expires the key for us.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+// memory.ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+export type Message = { role: "user" | "assistant"; content: string };
+
+const SESSION_TTL = 60 * 60; // 1 hour
+const MAX_MESSAGES = 20;
+
+export async function loadHistory(sessionId: string): Promise<Message[]> {
+  return (await redis.get<Message[]>(`chat:${sessionId}`)) ?? [];
+}
+
+export async function saveHistory(sessionId: string, messages: Message[]) {
+  const trimmed = messages.slice(-MAX_MESSAGES);
+  await redis.set(`chat:${sessionId}`, trimmed, { ex: SESSION_TTL });
+}
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# memory.py
+import json
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+SESSION_TTL = 60 * 60  # 1 hour
+MAX_MESSAGES = 20
+
+
+def load_history(session_id: str) -> list[dict]:
+    raw = redis.get(f"chat:{session_id}")
+    return json.loads(raw) if raw else []
+
+
+def save_history(session_id: str, messages: list[dict]) -> None:
+    trimmed = messages[-MAX_MESSAGES:]
+    redis.set(f"chat:{session_id}", json.dumps(trimmed), ex=SESSION_TTL)
+```
+</Tab>
+
+</Tabs>
+
+## Step 3: Recall relevant memories
+
+To answer well, the agent needs the long-term facts that relate to the current
+message. We run a full-text query against the `memories` index, scoped to the
+user with the `userId` keyword. Redis Search ranks matches by relevance, so we
+take the top few.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const memories = redis.search.index({ name: "memories" });
+
+export async function recall(
+  userId: string,
+  query: string,
+  limit = 5,
+): Promise<string[]> {
+  const results = await memories.query({
+    filter: { text: query, userId },
+    limit,
+  });
+
+  // No memories yet → the index may not exist → results is null
+  return (results ?? []).map((r) => r.data.text as string);
+}
+```
+</Tab>
+
+<Tab title="Python">
+```python
+memories = redis.search.index(name="memories")
+
+
+def recall(user_id: str, query: str, limit: int = 5) -> list[str]:
+    results = memories.query(filter={"text": query, "userId": user_id}, limit=limit)
+
+    # No memories yet → the index may not exist → results is None
+    return [r.data["text"] for r in (results or [])]
+```
+</Tab>
+
+</Tabs>
+
+<Tip>
+To bias recall toward recent memories, you can boost the score with the
+`createdAt` field using a [score function](/redis/search/querying#4-score-function),
+or sort with `orderBy` / `order_by`. We keep plain relevance ranking here for
+simplicity.
+</Tip>
+
+## Step 4: Remember new facts
+
+After each exchange we ask the model to pull out durable facts, the things worth
+remembering across sessions, not small talk. Each fact becomes a JSON document
+under the `memory:` prefix, so the index picks it up automatically.
+
+Because full-text search gives us a cheap similarity check, we **deduplicate**
+before writing: if a very similar memory already exists for this user, we skip it.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import OpenAI from "openai";
+
+const openai = new OpenAI();
+
+// Heuristic: full-text scores are unbounded, so this threshold is tuned by feel.
+const DEDUPE_SCORE = 8;
+
+async function alreadyKnown(userId: string, text: string): Promise<boolean> {
+  const hits = await memories.query({ filter: { text, userId }, limit: 1 });
+  return !!hits?.length && hits[0].score > DEDUPE_SCORE;
+}
+
+export async function remember(userId: string, conversation: Message[]) {
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "Extract durable facts about the user worth remembering across " +
+          "sessions (preferences, decisions, personal details). Ignore " +
+          'small talk. Respond as JSON: {"facts": ["..."]}. Empty if none.',
+      },
+      { role: "user", content: JSON.stringify(conversation) },
+    ],
+  });
+
+  const { facts } = JSON.parse(completion.choices[0].message.content ?? '{"facts":[]}');
+
+  for (const text of facts as string[]) {
+    if (await alreadyKnown(userId, text)) continue;
+    const id = crypto.randomUUID();
+    await redis.json.set(`memory:${userId}:${id}`, "$", {
+      text,
+      userId,
+      kind: "fact",
+      createdAt: Date.now(),
+    });
+  }
+}
+```
+</Tab>
+
+<Tab title="Python">
+```python
+import json
+import uuid
+import time
+from openai import OpenAI
+
+openai = OpenAI()
+
+# Heuristic: full-text scores are unbounded, so this threshold is tuned by feel.
+DEDUPE_SCORE = 8
+
+
+def already_known(user_id: str, text: str) -> bool:
+    hits = memories.query(filter={"text": text, "userId": user_id}, limit=1)
+    return bool(hits) and hits[0].score > DEDUPE_SCORE
+
+
+def remember(user_id: str, conversation: list[dict]) -> None:
+    completion = openai.chat.completions.create(
+        model="gpt-4o-mini",
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Extract durable facts about the user worth remembering "
+                    "across sessions (preferences, decisions, personal details). "
+                    "Ignore small talk. Respond as JSON: {\"facts\": [\"...\"]}. "
+                    "Empty if none."
+                ),
+            },
+            {"role": "user", "content": json.dumps(conversation)},
+        ],
+    )
+
+    facts = json.loads(completion.choices[0].message.content or '{"facts":[]}')["facts"]
+
+    for text in facts:
+        if already_known(user_id, text):
+            continue
+        memory_id = uuid.uuid4().hex
+        redis.json.set(
+            f"memory:{user_id}:{memory_id}",
+            "$",
+            {
+                "text": text,
+                "userId": user_id,
+                "kind": "fact",
+                "createdAt": int(time.time() * 1000),
+            },
+        )
+```
+</Tab>
+
+</Tabs>
+
+## Step 5: The chat loop
+
+Now we wire it together. Each turn: **recall** relevant memories, build a prompt
+from those plus the working memory, call the model, persist the updated history,
+and **remember** new facts.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+export async function chat(userId: string, sessionId: string, input: string) {
+  const [history, recalled] = await Promise.all([
+    loadHistory(sessionId),
+    recall(userId, input),
+  ]);
+
+  const system =
+    "You are a helpful assistant. Use the following remembered facts about " +
+    `the user when relevant:\n${recalled.map((m) => `- ${m}`).join("\n") || "(none yet)"}`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: system },
+      ...history,
+      { role: "user", content: input },
+    ],
+  });
+
+  const reply = completion.choices[0].message.content ?? "";
+
+  const updated: Message[] = [
+    ...history,
+    { role: "user", content: input },
+    { role: "assistant", content: reply },
+  ];
+
+  await saveHistory(sessionId, updated);
+  await remember(userId, updated); // fire-and-forget in production
+
+  return reply;
+}
+```
+</Tab>
+
+<Tab title="Python">
+```python
+def chat(user_id: str, session_id: str, user_input: str) -> str:
+    history = load_history(session_id)
+    recalled = recall(user_id, user_input)
+
+    facts = "\n".join(f"- {m}" for m in recalled) or "(none yet)"
+    system = (
+        "You are a helpful assistant. Use the following remembered facts "
+        f"about the user when relevant:\n{facts}"
+    )
+
+    completion = openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system},
+            *history,
+            {"role": "user", "content": user_input},
+        ],
+    )
+
+    reply = completion.choices[0].message.content or ""
+
+    updated = history + [
+        {"role": "user", "content": user_input},
+        {"role": "assistant", "content": reply},
+    ]
+
+    save_history(session_id, updated)
+    remember(user_id, updated)  # run in the background in production
+
+    return reply
+```
+</Tab>
+
+</Tabs>
+
+## Try it
+
+Run two sessions for the same user. Even after the first session's working memory
+expires, the facts learned there are recalled in the second:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await chat("user-1", "session-a", "I'm vegetarian and I love spicy food.");
+
+// Redis Search indexes writes asynchronously, wait so the demo is deterministic.
+await memories.waitIndexing();
+
+// ...a brand new session...
+const reply = await chat("user-1", "session-b", "Suggest a dinner for me.");
+console.log(reply); // recalls "vegetarian" + "spicy" from long-term memory
+```
+</Tab>
+
+<Tab title="Python">
+```python
+chat("user-1", "session-a", "I'm vegetarian and I love spicy food.")
+
+# Redis Search indexes writes asynchronously, wait so the demo is deterministic.
+memories.wait_indexing()
+
+# ...a brand new session...
+reply = chat("user-1", "session-b", "Suggest a dinner for me.")
+print(reply)  # recalls "vegetarian" + "spicy" from long-term memory
+```
+</Tab>
+
+</Tabs>
+
+<Note>
+Redis Search indexes writes asynchronously: a `JSON.SET` returns before the
+document is searchable. For a deterministic demo or test, call `waitIndexing()` /
+`wait_indexing()` to block until pending updates are applied. In a real app the
+next user turn normally arrives later than the indexing window, so an explicit
+wait isn't needed.
+</Note>
+
+## How it fits together
+
+- **Working memory** lives under `chat:{sessionId}` with a TTL: fast to read,
+  self-expiring, scoped to one conversation.
+- **Long-term memory** lives under `memory:{userId}:{id}` and is searchable across
+  sessions through the `memories` index.
+- **Recall** uses full-text relevance to surface the facts that matter for the
+  current message; **remember** extracts and deduplicates new ones.
+
+## Next steps
+
+- Add a `kind` such as `"preference"` vs `"event"` and filter recall by it.
+- Boost recent memories with a [score function](/redis/search/querying#4-score-function).
+- Summarize older working-memory messages instead of dropping them.
+- Stream the reply to a chat UI and animate it smoothly. See
+  [Smooth Text Streaming in AI SDK v5](https://upstash.com/blog/smooth-streaming).
+- Learn more about what Redis Search can do in the [Search docs](/redis/search/introduction).
