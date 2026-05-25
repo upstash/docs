@@ -68,7 +68,9 @@ function markActive(userId: number, day = today()) {
 
 // How many unique users were active today?
 function dailyActiveUsers(day = today()) {
-  return redis.bitcount(`active:${day}`);
+  // bitcount accepts a key alone at runtime, but the TS SDK wants an
+  // explicit byte range; 0..-1 covers the whole bitmap.
+  return redis.bitcount(`active:${day}`, 0, -1);
 }
 
 function today() {
@@ -86,14 +88,14 @@ with bitwise operations, without storing anything extra.
 ```ts
 // Weekly active users: OR the last 7 daily bitmaps together
 async function weeklyActiveUsers(days: string[]) {
-  await redis.bitop("OR", "active:week", ...days.map((d) => `active:${d}`));
-  return redis.bitcount("active:week");
+  await redis.bitop("or", "active:week", ...days.map((d) => `active:${d}`));
+  return redis.bitcount("active:week", 0, -1);
 }
 
 // Retention: users active on BOTH day A and day B
 async function retained(dayA: string, dayB: string) {
-  await redis.bitop("AND", "tmp:retained", `active:${dayA}`, `active:${dayB}`);
-  return redis.bitcount("tmp:retained");
+  await redis.bitop("and", "tmp:retained", `active:${dayA}`, `active:${dayB}`);
+  return redis.bitcount("tmp:retained", 0, -1);
 }
 ```
 
@@ -139,11 +141,12 @@ const events = await redis.search.createIndex({
   name: "events-idx",
   prefix: "event:",
   dataType: "json",
+  existsOk: true,            // don't throw if the index already exists
   schema: s.object({
     name: s.keyword(),       // "pageview", "signup", "purchase"
     path: s.keyword(),       // "/pricing"
-    country: s.facet(),      // "DE"
-    device: s.facet(),       // "mobile"
+    country: s.keyword(),    // "DE"
+    device: s.keyword(),     // "mobile"
     amount: s.number("F64"), // for purchase events
     ts: s.date(),
   }),
@@ -173,6 +176,17 @@ async function track(event: {
 await track({ name: "pageview", path: "/pricing", country: "DE", device: "mobile" });
 await track({ name: "purchase", amount: 49.0, country: "DE", device: "mobile" });
 ```
+
+<Note>
+Indexing is asynchronous. In a long-running app you don't need to think about it,
+but in a tight loop, like a script or a test that writes events and immediately
+queries them, call `await events.waitIndexing()` first so the documents you just
+wrote are searchable:
+
+```ts
+await events.waitIndexing();
+```
+</Note>
 
 ### Now ask anything
 
@@ -207,7 +221,7 @@ const revenue = await events.aggregate({
 
 // Top pages this week
 const topPages = await events.aggregate({
-  filter: { ts: { $gte: "2024-06-10" } },
+  filter: { ts: { $gte: "2024-06-10T00:00:00Z" } }, // s.date() expects an RFC 3339 string
   aggregations: {
     pages: { $terms: { field: "path", size: 10 } },
   },
