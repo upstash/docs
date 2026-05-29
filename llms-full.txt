@@ -33059,25 +33059,32 @@ Because the task stays in `processing` while it is being worked on, a crashed
 consumer doesn't cause data loss. A periodic recovery job can scan `processing` for
 tasks that have been stuck too long and move them back to `tasks`.
 
-## A blocking queue
+## Consuming the queue
 
-Polling an empty queue in a tight loop wastes CPU and network calls. Blocking pop
-commands let a consumer sleep until a task arrives. `BRPOP` blocks on the right end
-of the list and returns as soon as an item is available, or after a timeout:
+A consumer reads from the queue in a loop. With a TCP Redis client you might use a
+blocking pop (`BRPOP`) to sleep until a task arrives, but `@upstash/redis` talks to
+Redis over HTTP, so it doesn't expose blocking commands. Instead, poll with `RPOP`
+and back off with a short sleep when the queue is empty:
 
 ```ts
-// Wait up to 5 seconds for a task. Use 0 to block indefinitely.
-const result = await redis.brpop("tasks", 5);
-// result is [queueName, task] or null on timeout
+async function consume() {
+  while (true) {
+    const task = await redis.rpop<string>("tasks");
+    if (task === null) {
+      await new Promise((r) => setTimeout(r, 1000)); // queue empty, wait before retrying
+      continue;
+    }
+    await handle(task);
+  }
+}
 ```
 
 <Note>
-Blocking commands hold the connection open for the duration of the wait. This suits
-long-running workers, but in short-lived serverless functions you usually want a
-short timeout (or plain `RPOP` polling) so the function doesn't hang on an idle
-queue. For event-driven serverless delivery, consider
-[Upstash QStash](/docs/qstash/overall/getstarted), which pushes messages to your HTTP
-endpoint instead.
+Polling works well for a long-running worker, but in short-lived serverless
+functions you usually don't want to run a loop at all. For event-driven delivery,
+consider [Upstash QStash](/docs/qstash/overall/getstarted), which pushes messages to your
+HTTP endpoint instead of making you poll. We come back to this
+[at the end](#when-to-reach-for-qstash-instead).
 </Note>
 
 ## Going further: a delayed, prioritized job queue with retries
@@ -33098,11 +33105,12 @@ comes.
 
 ```ts
 type Job = { id: string; type: string; payload: unknown };
+type ScheduledJob = Job & { attempts?: number };
 
 // Enqueue a job to run after `delayMs` (0 = immediately).
 // `priority` shaves milliseconds off the score so higher-priority jobs
 // of the same due-time sort first.
-async function enqueue(job: Job, delayMs = 0, priority = 0) {
+async function enqueue(job: ScheduledJob, delayMs = 0, priority = 0) {
   const runAt = Date.now() + delayMs - priority;
   await redis.zadd("jobs:scheduled", { score: runAt, member: JSON.stringify(job) });
 }
@@ -33126,7 +33134,9 @@ read and the remove.
 
 ```ts
 // Returns up to `limit` jobs that are due, and removes them from the schedule
-// in the same atomic operation.
+// in the same atomic operation. `unpack` is available in Redis's Lua (5.1); on
+// newer Lua you'd use `table.unpack`. Keep `limit` modest so the unpacked
+// argument list stays well within Lua's stack limits.
 const CLAIM = `
   local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, ARGV[2])
   if #due > 0 then
@@ -33135,12 +33145,14 @@ const CLAIM = `
   return due
 `;
 
-async function claimDueJobs(limit = 10): Promise<string[]> {
+async function claimDueJobs(limit = 10): Promise<ScheduledJob[]> {
+  // The members were stored as JSON, and @upstash/redis deserializes JSON in
+  // command results by default, so `eval` hands back parsed objects, not strings.
   return (await redis.eval(
     CLAIM,
     ["jobs:scheduled"],
     [Date.now().toString(), limit.toString()],
-  )) as string[];
+  )) as ScheduledJob[];
 }
 ```
 
@@ -33153,19 +33165,20 @@ separate list of jobs to look at later, rather than retrying them again.
 ```ts
 const MAX_ATTEMPTS = 3;
 
-async function processJob(raw: string) {
-  const job = JSON.parse(raw) as Job & { attempts?: number };
+async function processJob(job: ScheduledJob) {
   const attempts = job.attempts ?? 0;
 
   try {
     await handle(job); // your business logic
   } catch (err) {
     if (attempts + 1 >= MAX_ATTEMPTS) {
-      // Out of retries: set it aside for inspection
-      await redis.lpush(
-        "jobs:dead-letter",
-        JSON.stringify({ job, error: String(err), failedAt: Date.now() }),
-      );
+      // Out of retries: set it aside for inspection. @upstash/redis serializes
+      // the object to JSON for us, so we pass it directly.
+      await redis.lpush("jobs:dead-letter", {
+        job,
+        error: String(err),
+        failedAt: Date.now(),
+      });
     } else {
       // Re-schedule with exponential back-off: 1s, 2s, 4s, ...
       const backoffMs = 1000 * 2 ** attempts;
@@ -33199,8 +33212,11 @@ Failed jobs live in a list, so checking on them is straightforward. You can wire
 this into a dashboard or an alert:
 
 ```ts
+type DeadLetter = { job: ScheduledJob; error: string; failedAt: number };
+
 const failedCount = await redis.llen("jobs:dead-letter");
-const failed = await redis.lrange("jobs:dead-letter", 0, 9); // 10 most recent
+// lrange also deserializes JSON, so these come back as objects, not strings.
+const failed = await redis.lrange<DeadLetter>("jobs:dead-letter", 0, 9); // 10 most recent
 ```
 
 ## Wrapping up
