@@ -32953,6 +32953,294 @@ serverless deploy
 
 Visit the output url.
 
+# Redis Queue: From FIFO Lists to a Job Queue
+Source: https://upstash.com/docs/redis/tutorials/redis_queue
+
+## What is a queue?
+
+A queue holds items in order: the first item added is the first one taken out
+(FIFO, or First In First Out), like a line of people waiting for service. In
+software, a queue lets one part of your system hand work to another so the producer
+doesn't have to wait for the work to finish.
+
+Redis works well for queues. Its [list](/docs/redis/sdks/ts/commands/list/lpush) and
+[sorted set](/docs/redis/sdks/ts/commands/zset/zadd) types map onto queue operations,
+ and operations are atomic, so multiple producers and
+consumers can share a queue without stepping on each other. With
+[Upstash Redis](https://upstash.com/) you reach it over HTTP, so the same queue
+works from a serverless function or a long-running worker.
+
+This tutorial starts with a plain FIFO queue and builds up to a job queue that
+supports delays, priorities, and retries.
+
+### Database Setup
+
+Create a Redis database using the [Upstash Console](https://console.upstash.com),
+and add `UPSTASH_REDIS_REST_URL` and
+`UPSTASH_REDIS_REST_TOKEN` to your `.env` file:
+
+```bash
+UPSTASH_REDIS_REST_URL=your_upstash_redis_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_token
+```
+
+### Installation
+
+```bash
+npm install @upstash/redis
+```
+
+Then create a client. `Redis.fromEnv()` reads the two variables above
+automatically:
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+```
+
+## A basic FIFO queue
+
+A Redis list is all you need for a simple queue. You push items onto one end and
+pop them off the other. The convention is to enqueue on the left with `LPUSH` and
+dequeue on the right with `RPOP`, so the oldest item is always the next one out.
+
+```ts
+// Producer — add tasks to the queue
+await redis.lpush("tasks", "send-welcome-email:alice");
+await redis.lpush("tasks", "send-welcome-email:bob");
+
+// Consumer — take the next task (returns "send-welcome-email:alice")
+const task = await redis.rpop("tasks");
+```
+
+| Operation | Command | Description |
+| --- | --- | --- |
+| Enqueue | `LPUSH queue task` | Add a task to the head of the list |
+| Dequeue | `RPOP queue` | Remove and return the oldest task |
+| Peek | `LRANGE queue -1 -1` | Look at the next task without removing it |
+| Length | `LLEN queue` | How many tasks are waiting |
+
+To peek at the next task without removing it, read the tail with `LRANGE`. This is
+useful for monitoring or for deciding whether to process:
+
+```ts
+const [next] = await redis.lrange("tasks", -1, -1);
+```
+
+This is enough for fire-and-forget work, but it has a flaw: if your consumer pops a
+task and then crashes before finishing it, that task is lost. The next sections fix
+that.
+
+## A reliable queue
+
+To avoid losing tasks, don't fully remove a task until it has been processed.
+Redis's `LMOVE` command (the modern replacement for `RPOPLPUSH`) atomically moves a
+task from the main queue to a "processing" list in a single step:
+
+```ts
+// Atomically move the next task from "tasks" to "processing"
+const task = await redis.lmove("tasks", "processing", "right", "left");
+
+if (task) {
+  try {
+    await handle(task);
+    // Success: remove it from the processing list
+    await redis.lrem("processing", 1, task);
+  } catch (err) {
+    // Failure: the task is still safe in "processing".
+    // A recovery job can move stuck tasks back to "tasks" later.
+    console.error("task failed, left in processing list", err);
+  }
+}
+```
+
+Because the task stays in `processing` while it is being worked on, a crashed
+consumer doesn't cause data loss. A periodic recovery job can scan `processing` for
+tasks that have been stuck too long and move them back to `tasks`.
+
+## A blocking queue
+
+Polling an empty queue in a tight loop wastes CPU and network calls. Blocking pop
+commands let a consumer sleep until a task arrives. `BRPOP` blocks on the right end
+of the list and returns as soon as an item is available, or after a timeout:
+
+```ts
+// Wait up to 5 seconds for a task. Use 0 to block indefinitely.
+const result = await redis.brpop("tasks", 5);
+// result is [queueName, task] or null on timeout
+```
+
+<Note>
+Blocking commands hold the connection open for the duration of the wait. This suits
+long-running workers, but in short-lived serverless functions you usually want a
+short timeout (or plain `RPOP` polling) so the function doesn't hang on an idle
+queue. For event-driven serverless delivery, consider
+[Upstash QStash](/docs/qstash/overall/getstarted), which pushes messages to your HTTP
+endpoint instead.
+</Note>
+
+## Going further: a delayed, prioritized job queue with retries
+
+Plain lists are FIFO and immediate. Real job systems usually need a few more things:
+
+* Delays: run a job later, like a reminder in an hour, instead of right away.
+* Priorities: let urgent jobs go ahead of routine ones.
+* Retries: when a job keeps failing, retry it a few times and then set it aside
+  rather than retrying forever.
+
+A sorted set handles all three. It keeps members ordered by a numeric score. If the
+score is the time a job becomes due, the member with the lowest score is always the
+next job to run, and jobs scheduled for the future sit untouched until their time
+comes.
+
+### The schedule: score = "run at" timestamp
+
+```ts
+type Job = { id: string; type: string; payload: unknown };
+
+// Enqueue a job to run after `delayMs` (0 = immediately).
+// `priority` shaves milliseconds off the score so higher-priority jobs
+// of the same due-time sort first.
+async function enqueue(job: Job, delayMs = 0, priority = 0) {
+  const runAt = Date.now() + delayMs - priority;
+  await redis.zadd("jobs:scheduled", { score: runAt, member: JSON.stringify(job) });
+}
+
+// Routine job, runs now
+await enqueue({ id: "1", type: "email", payload: { to: "alice@example.com" } });
+
+// Reminder, runs in one hour
+await enqueue({ id: "2", type: "reminder", payload: { userId: 42 } }, 60 * 60 * 1000);
+
+// Urgent job — higher priority means it sorts ahead of same-time jobs
+await enqueue({ id: "3", type: "alert", payload: { level: "critical" } }, 0, 10_000);
+```
+
+### Claiming due jobs atomically
+
+A worker should only pick up jobs whose `runAt` is in the past, and when several
+workers run at once, no two should claim the same job. A Lua script handles this: it
+reads the due jobs and removes them in one step, so there is no race between the
+read and the remove.
+
+```ts
+// Returns up to `limit` jobs that are due, and removes them from the schedule
+// in the same atomic operation.
+const CLAIM = `
+  local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, ARGV[2])
+  if #due > 0 then
+    redis.call('ZREM', KEYS[1], unpack(due))
+  end
+  return due
+`;
+
+async function claimDueJobs(limit = 10): Promise<string[]> {
+  return (await redis.eval(
+    CLAIM,
+    ["jobs:scheduled"],
+    [Date.now().toString(), limit.toString()],
+  )) as string[];
+}
+```
+
+### The worker: process, retry, or dead-letter
+
+When a job fails, we re-schedule it with an exponential back-off delay and increment
+its attempt count. Once it runs out of retries, it goes to a dead-letter queue: a
+separate list of jobs to look at later, rather than retrying them again.
+
+```ts
+const MAX_ATTEMPTS = 3;
+
+async function processJob(raw: string) {
+  const job = JSON.parse(raw) as Job & { attempts?: number };
+  const attempts = job.attempts ?? 0;
+
+  try {
+    await handle(job); // your business logic
+  } catch (err) {
+    if (attempts + 1 >= MAX_ATTEMPTS) {
+      // Out of retries: set it aside for inspection
+      await redis.lpush(
+        "jobs:dead-letter",
+        JSON.stringify({ job, error: String(err), failedAt: Date.now() }),
+      );
+    } else {
+      // Re-schedule with exponential back-off: 1s, 2s, 4s, ...
+      const backoffMs = 1000 * 2 ** attempts;
+      await enqueue({ ...job, attempts: attempts + 1 }, backoffMs);
+    }
+  }
+}
+
+// Worker loop
+async function runWorker() {
+  while (true) {
+    const jobs = await claimDueJobs();
+    if (jobs.length === 0) {
+      await new Promise((r) => setTimeout(r, 1000)); // nothing due, wait before retrying
+      continue;
+    }
+    await Promise.all(jobs.map(processJob));
+  }
+}
+
+runWorker();
+```
+
+This gives you a job queue that schedules work for later, runs urgent jobs first,
+retries failures with back-off, and moves jobs that keep failing to a dead-letter
+queue, all on a single sorted set.
+
+### Inspecting the dead-letter queue
+
+Failed jobs live in a list, so checking on them is straightforward. You can wire
+this into a dashboard or an alert:
+
+```ts
+const failedCount = await redis.llen("jobs:dead-letter");
+const failed = await redis.lrange("jobs:dead-letter", 0, 9); // 10 most recent
+```
+
+## Wrapping up
+
+Redis covers queues at several levels, all in the same database:
+
+* Lists (`LPUSH` / `RPOP`) for simple FIFO queues, plus `LMOVE` for reliability and
+  `BRPOP` for blocking consumers.
+* Sorted sets (`ZADD` / `ZRANGEBYSCORE`) for delayed and prioritized scheduling.
+* Lua scripts (`EVAL`) to claim work atomically across many concurrent workers.
+
+Because Upstash Redis is serverless and accessed over HTTP, you can produce jobs
+from serverless or edge functions and consume them from wherever your workers run.
+
+### When to reach for QStash instead
+
+The job queue above assumes you have a worker process polling Redis. In a fully
+serverless setup you often don't want to keep a worker running. That is where
+[Upstash QStash](/docs/qstash/overall/getstarted) comes in: instead of pulling jobs from
+a list, you publish a message and QStash pushes it to your HTTP endpoint, with
+retries, scheduling, and delays handled for you.
+
+```ts
+import { Client } from "@upstash/qstash";
+
+const qstash = new Client({ token: process.env.QSTASH_TOKEN! });
+
+// Deliver this job to your endpoint after a one-hour delay
+await qstash.publishJSON({
+  url: "https://your-app.com/api/jobs/reminder",
+  body: { userId: 42 },
+  delay: 60 * 60, // seconds
+});
+```
+
+A rough rule of thumb: use the Redis patterns in this guide when you control the
+consumer and want full control over how jobs are stored and claimed. Reach for
+QStash when you'd rather not run a worker at all and just want jobs delivered to an
+endpoint. See the [QStash documentation](/docs/qstash/overall/getstarted) to get started.
+
 # Serverless Redisson
 Source: https://upstash.com/docs/redis/tutorials/redisson
 
