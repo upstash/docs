@@ -37,10 +37,12 @@ const SKIP_DIRS = new Set([
  *   - SDK command reference pages (one per Redis command, per language)
  *   - Quickstarts (framework walkthroughs)
  *   - Examples and recipes (long code-heavy tutorials)
+ *   - Redis tutorials (long code-heavy walkthroughs)
  */
 const FULL_TXT_SKIP = [
   /^[^/]+\/sdks\/[a-z][a-z0-9-]*\/commands\//,
   /(^|\/)(quickstarts|examples|recipes)\//,
+  /^redis\/tutorials\//,
 ];
 
 /**
