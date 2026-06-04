@@ -1,0 +1,121 @@
+---
+title: TanStack AI Chat Persistance
+description: Use Upstash Redis to persist TanStack AI chat histories across reloads, navigation, and devices with a simple adapter.
+---
+
+By default a TanStack AI `ChatClient` keeps messages in memory only, so they vanish on reload. TanStack AI exposes a tiny persistence interface - `getItem` / `setItem` / `removeItem` - and any backend that implements it becomes durable storage.
+
+Upstash Redis is a great fit: it's serverless with a REST API (no connection pooling, works in any edge/serverless runtime), latency is low enough to write on every streamed token, and per-conversation keys with an optional TTL give you free expiry of stale chats.
+
+<Note>This tutorial uses OpenAI for the model, but persistence is model-agnostic.</Note>
+
+## Prerequisites
+
+- An [Upstash Redis](https://console.upstash.com) database
+- A TanStack AI `ChatClient` (`@tanstack/ai-client`)
+- `@upstash/redis`
+
+```bash
+npm install @tanstack/ai-client @upstash/redis
+```
+
+```bash
+UPSTASH_REDIS_REST_URL="https://..."
+UPSTASH_REDIS_REST_TOKEN="..."
+```
+
+## The adapter
+
+A persistence adapter is just an object with three methods. Each may be sync or async — the client awaits them. We store the messages array under a namespaced key and revive `createdAt` (which becomes a string through JSON) on read.
+
+```typescript
+// upstash-persistence.ts
+import type { Redis } from "@upstash/redis";
+import type { ChatClientPersistence, UIMessage } from "@tanstack/ai-client";
+
+export function upstashPersistence(
+  redis: Redis,
+  { prefix = "tanstack:chat:", ttlSeconds }: { prefix?: string; ttlSeconds?: number } = {},
+): ChatClientPersistence {
+  const key = (id: string) => `${prefix}${id}`;
+
+  return {
+    async getItem(id) {
+      const stored = await redis.get<Array<UIMessage>>(key(id));
+      if (!stored) return null;
+      // createdAt round-trips as a string through JSON; revive it.
+      return stored.map((m) => ({
+        ...m,
+        createdAt: typeof m.createdAt === "string" ? new Date(m.createdAt) : m.createdAt,
+      }));
+    },
+    async setItem(id, messages) {
+      await redis.set(key(id), messages, ttlSeconds ? { ex: ttlSeconds } : undefined);
+    },
+    async removeItem(id) {
+      await redis.del(key(id));
+    },
+  };
+}
+```
+
+## Use it
+
+Pass the adapter as `persistence` and give the client a stable `id` — that `id` is the storage key, so the same `id` loads the same conversation back.
+
+```typescript
+import { Redis } from "@upstash/redis";
+import { ChatClient } from "@tanstack/ai-client";
+import { upstashPersistence } from "./upstash-persistence";
+
+const redis = Redis.fromEnv();
+
+const chat = new ChatClient({
+  id: "conversation-123",
+  connection,                              // your OpenAI/SSE transport
+  persistence: upstashPersistence(redis),  // <- that's it
+});
+
+await chat.sendMessage("In one short sentence, what is Upstash Redis?");
+```
+
+The client now:
+
+- **Hydrates on construction** — calls `getItem(id)` and populates itself (overriding `initialMessages`).
+- **Saves on every change** — calls `setItem(id, messages)` on each new message and streamed chunk, through an ordered write queue.
+- **Clears on `clear()`** — calls `removeItem(id)`.
+
+## Try it
+
+Create a client, chat, then construct a **brand-new** client with the same `id` — it hydrates the full history from Redis with no `initialMessages`:
+
+```typescript
+// Session 1 — persists to Redis
+const a = new ChatClient({ id: "demo", connection, persistence: upstashPersistence(redis) });
+await a.sendMessage("In one short sentence, what is Upstash Redis?");
+await a.sendMessage("And in one sentence, what is TanStack?");
+
+// Session 2 — same id, fresh client, no initialMessages
+const b = new ChatClient({ id: "demo", connection, persistence: upstashPersistence(redis) });
+await b.sendMessage("What did I ask you first? Quote it back.");
+// -> 'You asked: "In one short sentence, what is Upstash Redis?"'
+```
+
+Expected behavior:
+
+```
+Session 1: 4 messages stored under "tanstack:chat:demo"
+Session 2: hydrates all 4 from Redis, then answers with full context
+clear():   key removed from Redis
+```
+
+The second client never saw the first one's messages in memory - it recalled them from Redis, proving the conversation truly persisted.
+
+<Note>Persistence is best-effort: TanStack AI swallows adapter errors so storage hiccups never break the chat. Handle errors inside the adapter if you need to react to them.</Note>
+
+## Next steps
+
+- Check out [Agent Memory with Redis Search](/redis/tutorials/agent_memory) for more advanced retrieval.
+- Set `ttlSeconds` to auto-expire idle conversations.
+- Namespace keys per user, e.g. `prefix: \`chat:${userId}:\``.
+- Swap the same adapter shape onto any TanStack AI client (React/Vue/Solid/Svelte `useChat`).
