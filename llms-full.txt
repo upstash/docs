@@ -6553,6 +6553,78 @@ curl https://qstash.upstash.io/v2/publish/...?qstash_token=<QSTASH_TOKEN>
 
 Always keep your token safe and reset it if you suspect it has been compromised.
 
+# At-Least-Once Delivery
+Source: https://upstash.com/docs/qstash/features/at-least-once
+
+QStash provides at-least-once delivery for all messages. This guarantees that no messages will be lost, even in the face of server crashes, or other unexpected problems.
+
+In normal operation, each message is delivered once, excluding retries. However, in rare cases, QStash may deliver the same message more than once, even if your endpoint has already processed it successfully. This can happen when QStash cannot reliably determine whether the previous delivery attempt completed, so it retries the message to preserve at-least-once delivery guarantees.
+
+A duplicate delivery can happen in a flow like this:
+
+1. A message is published to QStash.
+2. QStash attempts to deliver the message to the destination.
+3. Before the request is completed, the QStash server shuts down unexpectedly.
+4. When the server restarts, it cannot determine the final delivery status of the message.
+5. To avoid losing the message, QStash delivers it again.
+
+<Info>
+  True exactly-once delivery cannot be guaranteed in distributed systems under all failure scenarios.
+
+  Most production messaging systems therefore use at-least-once delivery together with idempotent handlers to prioritize reliability and prevent message loss.
+
+  To learn more about the underlying coordination challenge, see the [Two Generals' Problem](https://en.wikipedia.org/wiki/Two_Generals%27_Problem).
+</Info>
+
+There are three common strategies to handle duplicate deliveries:
+
+#### 1. Use an idempotency key
+
+Because duplicate deliveries can occur, you can use an idempotency key to ensure that the an operation is executed only once.
+
+Each QStash message includes a unique `Upstash-Message-Id` header, which you can use for this purpose.
+
+For example, if your handler updates a database record, you can store the `Upstash-Message-Id` in the database along with the record. Before processing a message, you can check if the `Upstash-Message-Id` has already been processed. If it has, you can skip processing the message again.
+
+An example implementation using Redis is shown below:
+
+```typescript title="api/handler/route.ts"
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+export async function GET(request: Request): Promise<Response> {
+  const messageId = request.headers.get("Upstash-Message-Id");
+
+  const isNew = await redis.set(`processed:${messageId}`, "true", {
+    nx: true,
+    ex: 60 * 60 * 24,
+  });
+
+  if (!isNew) {
+    return Response.json({ message: "Message already processed" }, { status: 200 });
+  }
+
+  // critical business logic here
+
+  return Response.json({ message: "Message processed" }, { status: 200 });
+}
+```
+
+#### 2. Design idempotent operations
+
+You can also design your system so that applying the same operation multiple times does not change the final state. In this case, you may not need to store a separate idempotency key.
+
+For example, if your handler sets a field to true, processing the same message multiple times has the same effect as processing it once. The final state remains true.
+
+#### 3. Accept duplicates
+
+In some cases, duplicate messages may be acceptable.
+
+For example, if a message triggers a non-critical notification email, receiving the same message more than once may be tolerable, even if it results in multiple emails being sent.
+
+This approach is only recommended when duplicate processing does not affect correctness, or any other critical behavior.
+
 # Background Jobs
 Source: https://upstash.com/docs/qstash/features/background-jobs
 
