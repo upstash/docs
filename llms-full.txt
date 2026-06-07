@@ -703,6 +703,197 @@ Source: https://upstash.com/docs/api-reference/vector/get-vector-stats
 /devops/developer-api/openapi.yml get /vector/index/stats
 Get vector statistics for all the vector indices associated with the authenticated user
 
+# Code Interpreter with Vercel AI SDK
+Source: https://upstash.com/docs/box/guides/ai-sdk-code-interpreter
+
+In this guide we'll add a **code interpreter** tool to a Vercel AI SDK chat app. When a user asks a question that needs computation — math, data analysis, statistics — the model writes code and sends it to a fresh `EphemeralBox` to run. The sandbox is isolated, disposable, and auto-expires when the session ends.
+
+***
+
+## 1. Installation
+
+```bash
+npm install @upstash/box @ai-sdk/anthropic @ai-sdk/react ai zod
+```
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box) and add your environment variables:
+
+```bash title=".env.local"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
+```
+
+***
+
+## 2. Create the API route
+
+Each time the model decides to run code, the tool spins up a fresh `EphemeralBox`, executes the snippet, and deletes the box immediately after. Nothing persists between tool calls.
+
+```typescript title="app/api/chat/route.ts"
+import { streamText, tool, convertToModelMessages, stepCountIs } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { EphemeralBox } from "@upstash/box";
+import { z } from "zod";
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  const result = streamText({
+    model: anthropic("claude-sonnet-4-6"),
+    system:
+      "You are a helpful assistant with access to a secure code sandbox. " +
+      "When the user asks for computation, data analysis, or math — write and run code " +
+      "instead of estimating. Prefer Python for numerical work, JavaScript for JSON or string processing.",
+    messages: await convertToModelMessages(messages),
+    stopWhen: stepCountIs(10),
+    tools: {
+      executeSandboxCode: tool({
+        description:
+          "Run Python or JavaScript code in a secure, isolated sandbox. " +
+          "Use this for any math, data processing, or computation.",
+        inputSchema: z.object({
+          lang: z.enum(["python", "js"]).describe("Language to run"),
+          code: z.string().describe("The code to execute"),
+        }),
+        execute: async ({ lang, code, env }) => {
+          const box = await EphemeralBox.create({
+            apiKey: process.env.UPSTASH_BOX_API_KEY,
+            runtime: lang === "python" ? "python" : "node",
+            ttl: 120,
+          });
+
+          try {
+            const run = await box.exec.code({ lang, code, timeout: 10_000 });
+            return {
+              success: run.exitCode === 0,
+              output: run.result,
+            };
+          } finally {
+            await box.delete();
+          }
+        },
+      }),
+    },
+  });
+
+  return result.toUIMessageStreamResponse();
+}
+```
+
+<Note>
+`ttl: 120` means the box auto-deletes after 2 minutes even if the `finally` block is skipped. For longer-running scripts, increase this value.
+</Note>
+
+***
+
+## 3. Add a simple UI
+
+Wire up a simple chat UI with `useChat` from the AI SDK. This UI also will display tool calls so that we can test the functionality.
+
+```typescript title="app/page.tsx"
+"use client";
+
+import { useState } from "react";
+import { useChat } from "@ai-sdk/react";
+
+export default function Page() {
+  const { messages, sendMessage, status } = useChat();
+  const [input, setInput] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!input.trim()) return;
+    sendMessage({ text: input });
+    setInput("");
+  }
+
+  return (
+    <div className="mx-auto flex h-screen max-w-2xl flex-col p-4">
+      <h1 className="mb-4 text-lg font-semibold">Code Interpreter</h1>
+
+      <div className="flex-1 space-y-4 overflow-y-auto">
+        {messages.map((message) => (
+          <div key={message.id}>
+            <div className="text-xs font-medium text-gray-500">
+              {message.role === "user" ? "You" : "Assistant"}
+            </div>
+            {message.parts.map((part, i) => {
+              if (part.type === "text") {
+                return (
+                  <p key={i} className="whitespace-pre-wrap text-sm">
+                    {part.text}
+                  </p>
+                );
+              }
+              if (part.type.startsWith("tool-")) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const p = part as any;
+                const toolName = part.type.slice(5);
+                const isDone = p.state === "output-available";
+                return (
+                  <div
+                    key={i}
+                    className="my-1 rounded border border-gray-200 bg-gray-50 p-2 text-xs"
+                  >
+                    <code>{toolName}</code>{" "}
+                    <span className={isDone ? "text-green-600" : "text-gray-400"}>
+                      {isDone ? "✓" : "running…"}
+                    </span>
+                    {isDone && p.output && (
+                      <pre className="mt-1 overflow-x-auto">
+                        {String(p.output.output)}
+                      </pre>
+                    )}
+                  </div>
+                );
+              }
+              return null;
+            })}
+          </div>
+        ))}
+      </div>
+
+      <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask me to compute something..."
+          disabled={status === "streaming"}
+          className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400"
+        />
+        <button
+          type="submit"
+          disabled={status === "streaming"}
+          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
+        >
+          Send
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+***
+
+## 4. Try it
+
+Start your Next.js app and ask anything that needs real computation:
+
+> *"What is the square root of 144 plus 25 factorial?"*
+
+The model writes a Python snippet, the `executeSandboxCode` tool fires, a fresh `EphemeralBox` boots, the code runs, and the result streams back — all within a single response turn.
+
+```
+executeSandboxCode  ✓
+
+Square root of 144: 12.0
+25 factorial: 15511210043330985984000000
+Sum: 1.5511210043330986e+25
+```
+
+Every tool call gets its own isolated box, so a crash in one never affects the others. The `timeout: 10_000` on `exec.code` cuts off the HTTP call after 10 seconds — without it, an infinite loop would hang until the backend times out or the `ttl` deletes the box. Raise the timeout for long-running scripts, but always set one.
+
 # Build a Code Review Agent
 Source: https://upstash.com/docs/box/guides/code-review-agent
 
