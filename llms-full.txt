@@ -1339,6 +1339,127 @@ https://<box-id>-3000.preview.box.upstash.com
 
 <img />
 
+# Scrape Dynamic Websites with Playwright
+Source: https://upstash.com/docs/box/guides/web-scraping-playwright
+
+In this guide, we use Upstash Box to run [Playwright](https://playwright.dev) against a JavaScript-heavy site, scrape structured data from it, and pull the results back to our own server. Because a Box is a real Linux container rather than a restricted serverless runtime, Chromium and its system dependencies install and run exactly like they would on your laptop.
+
+***
+
+## 1. Installation
+
+```bash
+npm install @upstash/box
+```
+
+Set your environment variables:
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+***
+
+## 2. Provision a box and install Playwright
+
+Create a box with outbound network access (the default) so it can reach the target site and download the browser binaries, then install Playwright and Chromium with its system dependencies.
+
+```typescript title="scripts/scrape.ts"
+import "dotenv/config"
+import { Agent, Box } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    harness: Agent.ClaudeCode,
+    model: "anthropic/claude-sonnet-4-6",
+  },
+})
+
+console.log(`Box ready: ${box.id}`)
+
+await box.exec.command("npm init -y && npm install playwright")
+
+// `--with-deps` pulls in the Linux system libraries Chromium needs via apt-get
+const setup = await box.exec.command("npx playwright install chromium --with-deps")
+
+if (setup.status !== "completed") {
+  throw new Error(`Chromium setup failed: ${setup.result}`)
+}
+
+console.log("Chromium and its system dependencies are ready.")
+```
+
+***
+
+## 3. Let the agent write and run the scraper
+
+Hand the scraping task to the box's built-in agent. It writes the Playwright script, runs it, fixes any issues it hits along the way, and saves the output to a file in the workspace.
+
+```typescript title="scripts/scrape.ts" {1}
+const run = await box.agent.run({
+  prompt: `
+Write a Node.js script that uses Playwright to:
+1. Launch headless Chromium and navigate to https://news.ycombinator.com/show
+2. Wait for the page to finish loading
+3. Extract the title, URL, and point count for the top 10 posts
+4. Save the result as a JSON array to /workspace/home/scraped_data.json
+
+Then run the script and confirm the file was written successfully.
+  `.trim(),
+})
+
+console.log(run.result)
+```
+
+The agent has shell, filesystem, and the installed Playwright package available, so it can iterate — adjusting selectors, adding waits for dynamic content, retrying on failure — until the scrape actually produces data.
+
+***
+
+## 4. Pull the results back
+
+Read the file the agent wrote and bring it back into your own process.
+
+```typescript title="scripts/scrape.ts"
+const raw = await box.files.read("/workspace/home/scraped_data.json")
+const dataset = JSON.parse(raw)
+
+console.table(dataset.slice(0, 3))
+
+await box.delete()
+```
+
+You now have structured data extracted from a dynamic, JavaScript-rendered page — without managing a single Chromium binary yourself.
+
+***
+
+## 5. Skip the setup on every run with snapshots
+
+`npx playwright install chromium --with-deps` takes real time to stream and unpack OS-level packages. Paying that cost on every scrape request would be painful in production.
+
+[Snapshot](/docs/box/overall/snapshots) the box once Chromium and its dependencies are installed, and restore from that snapshot whenever you need a ready-to-go scraping environment:
+
+```typescript title="scripts/prepare-snapshot.ts"
+const snapshot = await box.snapshot({ name: "playwright-ready" })
+console.log(`Snapshot ready: ${snapshot.id}`)
+```
+
+Store `snapshot.id` somewhere your application can reach (an env var, a database row, etc.), then spin up pre-warmed boxes from it on demand:
+
+```typescript title="scripts/run-scrape-job.ts"
+import { Box } from "@upstash/box"
+
+const box = await Box.fromSnapshot(process.env.PLAYWRIGHT_SNAPSHOT_ID!)
+
+const run = await box.agent.run({
+  prompt: "Navigate to <url> and extract <data>...",
+})
+
+await box.delete()
+```
+
+Restoring from a snapshot starts the box with Chromium and its system libraries already in place, so the agent can start scraping immediately instead of waiting on `apt-get` and binary downloads.
+
 # Agent
 Source: https://upstash.com/docs/box/overall/agent
 
