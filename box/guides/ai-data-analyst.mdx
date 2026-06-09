@@ -1,0 +1,135 @@
+---
+title: "Build an AI Data Analyst"
+---
+
+In this guide, we build an AI-powered data analyst that generates insights and visualizations from the [World Happiness Report dataset (2011–2025)](https://www.kaggle.com/datasets/elvisbui/world-happiness-report-2005-2025-panel) using Upstash Box's persistent, secure sandbox environment.
+
+The agent reads 15 years of happiness data across 150+ countries, produces trend charts, ranks countries for the latest year, identifies the biggest movers over time, and then enriches a chart in a second pass — all inside an isolated microVM with no infrastructure to manage.
+
+---
+
+## 1. Installation
+
+```bash
+npm install @upstash/box
+```
+
+Set your environment variable:
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Download the dataset from [Kaggle](https://www.kaggle.com/datasets/elvisbui/world-happiness-report-2005-2025-panel) and save it as `world_happiness_report_2005_2025.csv` in your project root.
+
+The CSV has these columns:
+
+| Column | Description |
+|---|---|
+| `year` | Report year (2011–2025) |
+| `rank_in_year` | Country rank within that year (1 = happiest) |
+| `country` | Country name |
+| `happiness_score` | Cantril ladder score (0–10) |
+| `lower_whisker`, `upper_whisker` | 95 % confidence interval bounds |
+| `explained_log_gdp_per_capita` | GDP contribution to score |
+| `explained_social_support` | Social support contribution |
+| `explained_healthy_life_expectancy` | Health contribution |
+| `explained_freedom` | Freedom contribution |
+| `explained_generosity` | Generosity contribution |
+| `explained_corruption` | Corruption perception contribution |
+| `dystopia_plus_residual` | Residual |
+
+> The `explained_*` columns are empty for years before 2019. The agent handles this gracefully.
+
+---
+
+## 2. Initialize the sandbox and upload the dataset
+
+Create a box with the Python runtime and configure the Claude Code agent. Then read the local CSV and write it directly into the container's filesystem.
+
+```typescript title="analyst.ts"
+import "dotenv/config"
+import fs from "node:fs"
+import { Agent, Box, ClaudeCode } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "python",
+  agent: {
+    harness: Agent.ClaudeCode,
+    model: ClaudeCode.Sonnet_4_6,
+  },
+})
+
+console.log(`Box ready: ${box.id}`)
+
+const csv = fs.readFileSync("world_happiness_report_2005_2025.csv", "utf-8")
+
+await box.files.write({
+  path: "/workspace/home/happiness.csv",
+  content: csv,
+})
+
+console.log("Dataset uploaded.")
+```
+
+---
+
+## 3. Run the analysis
+
+Hand the analytical goals to the agent. It writes Python with pandas and matplotlib, executes it, and self-corrects on any runtime errors — all without you managing a message loop, tool schemas, or install commands.
+
+```typescript title="analyst.ts"
+const analysisPrompt = `
+You have the World Happiness Report dataset (2011–2025) at /workspace/home/happiness.csv.
+
+Columns: year, rank_in_year, country, happiness_score, lower_whisker, upper_whisker,
+explained_log_gdp_per_capita, explained_social_support, explained_healthy_life_expectancy,
+explained_freedom, explained_generosity, explained_corruption, dystopia_plus_residual.
+
+Note: the explained_* columns are empty for years before 2019 — handle that gracefully.
+
+Produce three charts and save each to /workspace/home/:
+
+1. trends.png — Line chart of happiness_score over time (2011–2025) for the
+   top 5 and bottom 5 countries by their 2025 happiness_score.
+   Use distinct colors, add a legend, and label each line at the right edge.
+   Title: "Happiness Score Trends (2011–2025)".
+
+2. ranking_2025.png — Horizontal bar chart of the top 15 and bottom 15 countries
+   by 2025 happiness_score, sorted descending. Color top 15 steelblue,
+   bottom 15 coral. Title: "Happiest & Least Happy Countries (2025)".
+
+3. biggest_movers.png — Bar chart of the 10 countries with the largest rank
+   improvement and 10 with the largest rank decline between their first
+   available year and 2025 (lower rank_in_year = happier).
+   Color improvers green, decliners red.
+   Title: "Biggest Rank Changes vs First Available Year".
+
+Use matplotlib. Install any missing packages. Make all charts 14×7 inches,
+tight_layout, 150 dpi.
+`.trim()
+
+const run = await box.agent.run({ prompt: analysisPrompt })
+
+console.log(run.result)
+```
+
+The agent has full shell, filesystem, and Python package access. If any script throws an error, it reads its own stderr, patches the script, and re-runs automatically.
+
+---
+
+## 4. Download the charts
+
+Because the agent writes directly to the persistent disk volume, pulling results back is a single file read per chart.
+
+```typescript title="analyst.ts"
+for (const [remote, local] of [
+  ["/workspace/home/trends.png",        "happiness_trends.png"],
+  ["/workspace/home/ranking_2025.png",  "happiness_ranking_2025.png"],
+  ["/workspace/home/biggest_movers.png","happiness_biggest_movers.png"],
+] as const) {
+  const b64 = await box.files.read(remote, { encoding: "base64" })
+  fs.writeFileSync(local, Buffer.from(b64, "base64"))
+  console.log(`Saved ${local}`)
+}
+```
