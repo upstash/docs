@@ -755,7 +755,7 @@ export async function POST(req: Request) {
           lang: z.enum(["python", "js"]).describe("Language to run"),
           code: z.string().describe("The code to execute"),
         }),
-        execute: async ({ lang, code, env }) => {
+        execute: async ({ lang, code }) => {
           const box = await EphemeralBox.create({
             apiKey: process.env.UPSTASH_BOX_API_KEY,
             runtime: lang === "python" ? "python" : "node",
@@ -1338,6 +1338,279 @@ https://<box-id>-3000.preview.box.upstash.com
 ```
 
 <img />
+
+# AI File Editor with TanStack AI
+Source: https://upstash.com/docs/box/guides/tanstack-ai-file-editor
+
+An `EphemeralBox` gives you exactly two capabilities: **code execution** and **file operations**. That turns out to be all you need to hand an AI agent a real, disposable computer. This guide uses both. The model writes the code, and a single tool moves files in and out of the sandbox to run it against.
+
+We'll build a file editor with [TanStack AI](https://tanstack.com/ai). The user uploads a file and asks for a change. The model writes the code to do it. A single tool then **spins up a Box, uploads the file, runs that code, downloads the result, and tears the Box down**. The model's code and its dependencies never touch your server. They run inside an isolated sandbox that exists only for the length of the call.
+
+***
+
+## 1. Installation
+
+```bash
+npm install @tanstack/ai @tanstack/ai-anthropic @tanstack/ai-react @upstash/box zod
+```
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box) and add your environment variables:
+
+```bash title=".env.local"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
+```
+
+***
+
+## 2. The API route
+
+The route hands the model a single `editFile` tool. Each time the model calls it, the tool runs one self-contained lifecycle: it **creates a fresh `EphemeralBox`, uploads the user's file, runs the model's code, finds the result with `files.list`, reads it back, and deletes the Box in a `finally`**. The model writes code that reads the input file and drops its result into an output directory. Those four calls (`files.write`, `exec`, `files.list`, and `files.read`) are the entire `EphemeralBox` surface, and they're enough to drive a real feature.
+
+```typescript title="app/api/chat/route.ts"
+import { chat, toServerSentEventsResponse, toolDefinition } from "@tanstack/ai";
+import { anthropicText } from "@tanstack/ai-anthropic";
+import { EphemeralBox } from "@upstash/box";
+import { z } from "zod";
+
+const OUT_DIR = "/workspace/home/out";
+
+const MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", json: "application/json", csv: "text/csv",
+  txt: "text/plain", md: "text/markdown", pdf: "application/pdf",
+  mp3: "audio/mpeg", wav: "audio/wav",
+};
+const mimeOf = (name: string) => MIME[name.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream";
+
+export async function POST(request: Request) {
+  const { messages, forwardedProps } = await request.json();
+  const file = forwardedProps?.file; // useChat forwards the connection `body` here
+
+  // The browser sends { name, dataUrl }; keep the base64 payload + a safe name.
+  const base64 = String(file?.dataUrl ?? "").replace(/^data:.*;base64,/, "");
+  const inputName = String(file?.name ?? "input").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const inputPath = `/workspace/home/${inputName}`;
+
+  const editFile = toolDefinition({
+    name: "editFile",
+    description:
+      "Transform the uploaded file by running Python. Your code reads the input file and " +
+      `writes its result into ${OUT_DIR}/ with an appropriate extension.`,
+    inputSchema: z.object({
+      code: z.string().describe(`Python that reads the input file and writes the result into ${OUT_DIR}/.`),
+    }),
+    outputSchema: z.object({
+      ok: z.boolean(),
+      stdout: z.string(),
+      file: z
+        .object({ name: z.string(), mediaType: z.string(), base64: z.string() })
+        .nullable(),
+    }),
+  }).server(async ({ code }) => {
+    // No file uploaded? Don't even spin up a box.
+    if (!base64) {
+      return { ok: false, stdout: "No file has been uploaded yet.", file: null };
+    }
+
+    // A fresh sandbox per call: created here, torn down in `finally`.
+    const box = await EphemeralBox.create({
+      apiKey: process.env.UPSTASH_BOX_API_KEY,
+      runtime: "python",
+      ttl: 120, // safety net in case `delete()` is skipped
+    });
+
+    try {
+      // Prepare the box: output dir + libraries. (For production, bake these into a snapshot.)
+      await box.exec.command(`mkdir -p ${OUT_DIR} && pip install -q pillow pandas pypdf`);
+
+      // UPLOAD: the user's file goes into the sandbox (file op)
+      await box.files.write({ path: inputPath, content: base64, encoding: "base64" });
+
+      // EXEC: run the Python the model wrote
+      const run = await box.exec.code({ lang: "python", code });
+      if (run.exitCode !== 0) {
+        return { ok: false, stdout: run.result, file: null };
+      }
+
+      // LIST: discover what the code produced (file op)
+      const entries = await box.files.list(OUT_DIR);
+      const out = entries.find((e) => !e.is_dir);
+      if (!out) {
+        return { ok: false, stdout: run.result + "\n(no output file produced)", file: null };
+      }
+
+      // DOWNLOAD: read the result back out as base64 (file op)
+      const result = await box.files.read(out.path, { encoding: "base64" });
+      return {
+        ok: true,
+        stdout: run.result,
+        file: { name: out.name, mediaType: mimeOf(out.name), base64: result },
+      };
+    } finally {
+      await box.delete();
+    }
+  });
+
+  const stream = chat({
+    adapter: anthropicText("claude-sonnet-4-6"),
+    modelOptions: { max_tokens: 2048 },
+    systemPrompts: [
+      "You are a file editor backed by a secure sandbox. " +
+        "Reply normally to greetings, questions, and small talk WITHOUT calling any tool. " +
+        "Only call the editFile tool when the user actually asks you to transform or edit their uploaded file. " +
+        `The uploaded file, when present, is at ${inputPath}. To edit it, write Python that reads it, applies ` +
+        `the change, and saves the result into ${OUT_DIR}/ with a sensible filename and extension, then call ` +
+        "editFile with that code. Libraries available: Pillow, pandas, numpy, pypdf, plus the standard library (e.g. `wave` for audio). " +
+        "After the tool succeeds, tell the user in one short sentence what you did.",
+    ],
+    messages,
+    tools: [editFile],
+  });
+
+  return toServerSentEventsResponse(stream);
+}
+```
+
+<Note>
+The file tools (`files.write`, `files.list`, and `files.read`) are rooted at **`/workspace/home`**, and paths outside it are rejected. `exec` can write anywhere, but anything you move through the files API has to live under `/workspace/home`. That's why both the input file and `OUT_DIR` sit there.
+</Note>
+
+Because the model writes the code and we find the output with `files.list`, nothing here is image-specific. Ask for "convert this CSV to JSON" and the model uses pandas to write `out/data.json`, and the tool reads it back the same way. To support more formats, add their libraries to the `pip install` line, or bake them into a snapshot.
+
+***
+
+## 3. The UI
+
+Wire up `useChat` from `@tanstack/ai-react`. The uploaded file rides along on the request through the connection's dynamic `body` option. TanStack AI delivers that payload to the server under **`forwardedProps`**, which is why the route reads `forwardedProps.file` instead of a top-level field. We keep the file in a ref so each send picks up the latest one. Tool-call parts carry the typed `output`, so we render images inline and show a download link for everything else. A plain text prompt with no file is just a normal chat turn.
+
+```tsx title="app/page.tsx"
+"use client";
+
+import { useRef, useState } from "react";
+import { useChat, fetchServerSentEvents } from "@tanstack/ai-react";
+
+type ResultFile = { name: string; mediaType: string; base64: string };
+
+export default function Page() {
+  const [input, setInput] = useState("");
+  const [fileName, setFileName] = useState<string | null>(null);
+  const fileRef = useRef<{ name: string; dataUrl: string } | null>(null);
+
+  const { messages, sendMessage, isLoading } = useChat({
+    // The function runs per request, so it always sends the current file.
+    connection: fetchServerSentEvents("/api/chat", () => ({
+      body: { file: fileRef.current },
+    })),
+  });
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      fileRef.current = { name: f.name, dataUrl: reader.result as string };
+      setFileName(f.name);
+    };
+    reader.readAsDataURL(f);
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (isLoading || !input.trim()) return; // a file is only needed for edits
+    sendMessage(input.trim());
+    setInput("");
+  }
+
+  function renderResult(file: ResultFile, key: number) {
+    const src = `data:${file.mediaType};base64,${file.base64}`;
+    if (file.mediaType.startsWith("image/")) {
+      return <img key={key} src={src} alt={file.name} className="max-h-72 rounded border" />;
+    }
+    return (
+      <a key={key} href={src} download={file.name} className="text-sm text-blue-600 underline">
+        ⬇ Download {file.name}
+      </a>
+    );
+  }
+
+  return (
+    <div className="mx-auto flex h-screen max-w-2xl flex-col gap-4 p-4">
+      <h1 className="text-lg font-semibold">AI File Editor</h1>
+
+      <input type="file" onChange={handleFile} />
+      {fileName && <p className="text-xs text-gray-500">Selected: {fileName}</p>}
+
+      <div className="flex-1 space-y-4 overflow-y-auto">
+        {messages.map((message) => (
+          <div key={message.id}>
+            <div className="text-xs font-medium text-gray-500">
+              {message.role === "user" ? "You" : "Editor"}
+            </div>
+            {message.parts.map((part, i) => {
+              if (part.type === "text") {
+                return (
+                  <p key={i} className="whitespace-pre-wrap text-sm">
+                    {part.content}
+                  </p>
+                );
+              }
+              if (part.type === "tool-call") {
+                const result = part.output as
+                  | { ok: boolean; file: ResultFile | null }
+                  | undefined;
+                if (!result) return <p key={i} className="text-xs text-gray-400">editing…</p>;
+                if (result.ok && result.file) return renderResult(result.file, i);
+                return <p key={i} className="text-xs text-red-500">edit failed</p>;
+              }
+              return null;
+            })}
+          </div>
+        ))}
+      </div>
+
+      <form onSubmit={handleSubmit} className="flex gap-2">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="e.g. make it black and white"
+          disabled={isLoading}
+          className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400"
+        />
+        <button
+          type="submit"
+          disabled={isLoading}
+          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
+        >
+          {isLoading ? "Editing…" : "Edit"}
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+***
+
+## 4. Try it
+
+Run your Next.js app, upload a file, and describe the edit. With a color photo and *"make it black and white,"* the model writes a few lines of Pillow:
+
+```python
+from PIL import Image
+img = Image.open("/workspace/home/photo.png").convert("L")
+img.save("/workspace/home/out/photo.png")
+print("converted to grayscale")
+```
+
+The `editFile` tool runs it, finds `out/photo.png` via `files.list`, reads it back as base64, and the UI renders the grayscale image under your message.
+
+Swap the input and the prompt, and the same path carries the feature end to end:
+
+* **CSV to JSON:** ask *"convert this to JSON"* and the model uses pandas to write `out/data.json`, which the UI shows as a download link.
+* **Uppercase the headings in a Markdown file, resize an image, or extract a page from a PDF.** Anything the model can express in Python with the installed libraries works.
+
+Through all of this, the untrusted model-generated code and its dependencies stayed inside an isolated `EphemeralBox` that was created for the call and deleted the moment it returned. The whole editor is just two `EphemeralBox` capabilities wired into one tool: `exec`, plus the file operations `write`, `list`, and `read`.
 
 # Scrape Dynamic Websites with Playwright
 Source: https://upstash.com/docs/box/guides/web-scraping-playwright
