@@ -3,13 +3,13 @@ title: "AgentKit for the Vercel AI SDK"
 sidebarTitle: "Vercel AI SDK"
 ---
 
-[Upstash AgentKit](https://github.com/upstash/agentkit) builds production AI agents entirely on Upstash
-Redis — memory, conversation history, caching, and RAG, with no separate vector database. The semantic
-features run on [Upstash Redis Search](/redis/search/introduction) and its `$smart` fuzzy operator.
+[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
+conversation history, caching, and RAG, with no separate vector database. The semantic features run on
+[Upstash Redis Search](/redis/search/introduction) and its `$smart` fuzzy operator.
 
-`@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter: drop-ins for
-`generateText` / `streamText`. `redis` defaults to `Redis.fromEnv()` everywhere, so you import only
-from this package.
+`@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter. It adds chat history,
+agent memory, Redis-Search tools, rate limiting, and tool caching to `generateText` / `streamText`.
+`redis` defaults to `Redis.fromEnv()`, so you import only from this package.
 
 ```bash
 npm install @upstash/agentkit-ai-sdk @upstash/redis ai
@@ -22,33 +22,41 @@ npm install @upstash/agentkit-ai-sdk @upstash/redis ai
 
 ## How to store chat history with the AI SDK
 
-A Redis-backed `ChatHistory<UIMessage>` — the durable source of truth for your conversations. Persist
-the full transcript from your route's `onFinish`:
+A Redis-backed `ChatHistory<UIMessage>`, the durable source of truth for your conversations. `userId`
+comes from your auth session; `chatId` is the `useChat` id that the client posts. Save the full
+transcript from your route's `onFinish`:
 
 ```ts
 // app/api/chat/route.ts
-import { createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
+import { convertToModelMessages, createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
 import { createChatHistory } from "@upstash/agentkit-ai-sdk";
 
 const history = createChatHistory();
-const result = streamText({ model, messages: convertToModelMessages(messages) });
 
-return createUIMessageStreamResponse({
-  stream: toUIMessageStream({
-    stream: result.stream,
-    originalMessages: messages,
-    onFinish: ({ messages }) => history.saveChat({ userId, sessionId: chatId, messages, title }),
-  }),
-});
+export async function POST(req: Request) {
+  const userId = await getSessionUserId(req); // your auth session, never a client-sent id
+  const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
+
+  const result = streamText({ model, messages: convertToModelMessages(messages) });
+
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      onFinish: ({ messages }) =>
+        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+    }),
+  });
+}
 ```
 
-Load a transcript and list/search chats for a sidebar:
+To load a chat, take `chatId` from the page route and `userId` from the session, then seed `useChat`:
 
 ```ts
 const chat = await history.getChat({ userId, sessionId: chatId }); // full transcript, or null
 const chats = await history.listChats({ userId, limit: 50 }); // summaries, no messages
 const hits = await history.searchChats({ userId, query: "headphones", target: "both", limit: 20 });
-// then: useChat({ id: chatId, messages: chat?.messages ?? [] })
+// client: useChat({ id: chatId, messages: chat?.messages ?? [] })
 ```
 
 <AccordionGroup>
@@ -131,7 +139,7 @@ await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many u
 
 ## How to add rate limiting with the AI SDK
 
-A configured [Upstash Ratelimit](/redis/sdks/ratelimit-ts/overview) — call `.limit(identifier)` before
+A configured [Upstash Ratelimit](/redis/sdks/ratelimit-ts/overview). Call `.limit(identifier)` before
 the model and short-circuit when over the limit.
 
 ```ts
@@ -153,7 +161,7 @@ if (!success) throw new Error("rate limited"); // or return a 429 from your rout
 
 ## How to cache tools with the AI SDK
 
-Memoize a map of AI SDK tools' results in Redis — each tool is cached under its map key, scoped to
+Memoize a map of AI SDK tools' results in Redis. Each tool is cached under its map key, scoped to
 `userId`.
 
 ```ts
@@ -188,7 +196,7 @@ await generateText({ model, tools, prompt: "What's the weather in Paris?" });
 
 ## How to put it all together with the AI SDK
 
-A single `streamText` route can wire every feature — rate limit first, then memory + search + cached
+A single `streamText` route can wire every feature: rate limit first, then memory, search, and cached
 tools, persisting the whole conversation in `onFinish`:
 
 ```ts
