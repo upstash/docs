@@ -25983,40 +25983,15 @@ SEARCH.AGGREGATE products '{}' '{"by_category": {"$terms": {"field": "category",
 }
 ```
 
-* `sumOtherDocCount` — the number of matching documents that fell outside the returned buckets.
+* `sumOtherDocCount` is the number of matching documents that fell outside the returned buckets.
 
 ### Count accuracy
 
 <Warning>
-`$terms` bucket counts are **approximate**. Terms are tallied per index segment and then
-merged, so a term's `docCount` can be slightly off when its documents are spread across many
-segments and the term sits near each segment's candidate cutoff.
+`$terms` bucket counts are **approximate**. Terms are tallied per index segment and then merged, so a term's `docCount` can be slightly off, especially for terms near the `size` cutoff.
 </Warning>
 
-Two fields help you reason about the error:
-
-* `docCountErrorUpperBound` — the maximum possible error on the returned counts. Enable
-  per-bucket reporting with `showTermDocCountError: true`.
-* `sumOtherDocCount` — the number of matching documents not included in the returned buckets.
-
-To improve accuracy, increase `segmentSize`: more candidate terms are collected per segment
-before merging, which shrinks the error at the cost of more work per query. As `segmentSize`
-grows, the same query converges toward exact counts and `docCountErrorUpperBound` approaches `0`:
-
-| `segmentSize` | A bucket's `docCount` | `docCountErrorUpperBound` |
-|---------------|-----------------------|---------------------------|
-| `10` | 23,829 | 17,988 |
-| default | 25,548 | 8,130 |
-| `200000` | 25,864 | 1 |
-
-If you need an exact count for one specific term, query or filter for it directly with
-[`SEARCH.COUNT`](/docs/redis/search/command-reference#searchcount) instead of reading it from a
-`$terms` bucket.
-
-<Note>
-This matches the behavior of Tantivy's Elasticsearch-compatible terms aggregation, which backs
-Upstash Redis Search.
-</Note>
+`docCountErrorUpperBound` reports the maximum possible error on the returned counts (set `showTermDocCountError: true` for per-bucket values), and `sumOtherDocCount` is the number of matching documents not included in the returned buckets. Raising `segmentSize` reduces the error at the cost of more work per query. For an exact count of a specific term, use [`SEARCH.COUNT`](/docs/redis/search/command-reference#searchcount) instead of reading it from a bucket.
 
 # $avg
 Source: https://upstash.com/docs/redis/search/aggregation-operators/metric-aggregations/avg
@@ -27147,13 +27122,6 @@ SEARCH.LISTALIASES
 
 </Tabs>
 
-<Note>
-`SEARCH.LISTALIASES` only returns indexes that have an alias, and it returns an empty array
-when no aliases exist — even if the database has indexes. It is not a way to enumerate all of
-your indexes. To list every index in the database, use `SEARCH.LISTINDEXES` instead (see
-[Indices](/docs/redis/search/index-management#listing-indexes)).
-</Note>
-
 # Command Reference
 Source: https://upstash.com/docs/redis/search/command-reference
 
@@ -27282,12 +27250,6 @@ curl -X POST https://YOUR_ENDPOINT.upstash.io \
 ```
 </Tab>
 </Tabs>
-
-<Note>
-To enumerate the indexes in your database, use `SEARCH.LISTINDEXES`. `SEARCH.LISTALIASES`
-only returns indexes that have an alias — it returns an empty array when no aliases exist,
-even if the database has indexes, so it is not a way to discover all of your indexes.
-</Note>
 
 ***
 
@@ -27453,9 +27415,7 @@ Returns all aliases and the indices they point to.
 SEARCH.LISTALIASES
 ```
 
-**Returns:** An array of `[alias, index_name]` pairs. Returns an empty array if no aliases
-exist. This command only reports aliased indexes — to list every index in the database,
-use [`SEARCH.LISTINDEXES`](#searchlistindexes) instead.
+**Returns:** An array of `[alias, index_name]` pairs, or an empty array if no aliases exist. To list every index in the database, use [`SEARCH.LISTINDEXES`](#searchlistindexes).
 
 ***
 
@@ -28421,29 +28381,20 @@ On response, the following information is returned:
 
 ### Listing Indexes
 
-The `SEARCH.LISTINDEXES` command enumerates all search indexes in the database. Each entry
-reports the index `name` and its backing `type` (`HASH` or `JSON`). You can optionally filter
-by a glob-style pattern with `MATCH` and paginate with `LIMIT` and `OFFSET`.
+`SEARCH.LISTINDEXES` lists all search indexes in the database, reporting each index's `name` and backing `type` (`HASH` or `JSON`). Optionally filter names with `MATCH` and paginate with `LIMIT` and `OFFSET`.
 
 <Tabs>
 
 <Tab title="Redis CLI">
 ```bash
 SEARCH.LISTINDEXES
-# → [["name", "productIdx", "type", "HASH"], ["name", "blogIdx", "type", "JSON"]]
+# Returns: [["name", "productIdx", "type", "HASH"], ["name", "blogIdx", "type", "JSON"]]
 
-# Filter index names by a glob pattern and paginate
 SEARCH.LISTINDEXES MATCH 'product*' LIMIT 10 OFFSET 0
 ```
 </Tab>
 
 </Tabs>
-
-<Note>
-`SEARCH.LISTINDEXES` is the way to discover your indexes. Do not use `SEARCH.LISTALIASES`
-for this — it only returns indexes that have an alias and returns an empty array when no
-aliases exist, even if the database has indexes. See [Aliases](/docs/redis/search/aliases) for details.
-</Note>
 
 ### Dropping an Index
 
