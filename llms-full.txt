@@ -25927,7 +25927,7 @@ Field must be `FAST`.
 |----------|------|----------|-------------|
 | `field` | `string` | Yes | Field to bucket on. |
 | `size` | `number` | No | Max number of buckets returned. |
-| `segmentSize` | `number` | No | Internal candidate size used while collecting top terms. |
+| `segmentSize` | `number` | No | Number of candidate terms collected per index segment before merging. Raising it improves count accuracy at higher cost; lowering it is cheaper but less accurate. See [Count accuracy](#count-accuracy). |
 | `showTermDocCountError` | `boolean` | No | Include `docCountErrorUpperBound` in output. |
 | `minDocCount` | `number` | No | Buckets with fewer docs are excluded. |
 | `order` | `object` | No | One-key order object: `{ "count": "desc" }`, `{ "key": "asc" }`, or `{ "<subAggAlias>": "desc" }`. |
@@ -25982,6 +25982,41 @@ SEARCH.AGGREGATE products '{}' '{"by_category": {"$terms": {"field": "category",
   }
 }
 ```
+
+* `sumOtherDocCount` — the number of matching documents that fell outside the returned buckets.
+
+### Count accuracy
+
+<Warning>
+`$terms` bucket counts are **approximate**. Terms are tallied per index segment and then
+merged, so a term's `docCount` can be slightly off when its documents are spread across many
+segments and the term sits near each segment's candidate cutoff.
+</Warning>
+
+Two fields help you reason about the error:
+
+* `docCountErrorUpperBound` — the maximum possible error on the returned counts. Enable
+  per-bucket reporting with `showTermDocCountError: true`.
+* `sumOtherDocCount` — the number of matching documents not included in the returned buckets.
+
+To improve accuracy, increase `segmentSize`: more candidate terms are collected per segment
+before merging, which shrinks the error at the cost of more work per query. As `segmentSize`
+grows, the same query converges toward exact counts and `docCountErrorUpperBound` approaches `0`:
+
+| `segmentSize` | A bucket's `docCount` | `docCountErrorUpperBound` |
+|---------------|-----------------------|---------------------------|
+| `10` | 23,829 | 17,988 |
+| default | 25,548 | 8,130 |
+| `200000` | 25,864 | 1 |
+
+If you need an exact count for one specific term, query or filter for it directly with
+[`SEARCH.COUNT`](/docs/redis/search/command-reference#searchcount) instead of reading it from a
+`$terms` bucket.
+
+<Note>
+This matches the behavior of Tantivy's Elasticsearch-compatible terms aggregation, which backs
+Upstash Redis Search.
+</Note>
 
 # $avg
 Source: https://upstash.com/docs/redis/search/aggregation-operators/metric-aggregations/avg
@@ -27112,6 +27147,13 @@ SEARCH.LISTALIASES
 
 </Tabs>
 
+<Note>
+`SEARCH.LISTALIASES` only returns indexes that have an alias, and it returns an empty array
+when no aliases exist — even if the database has indexes. It is not a way to enumerate all of
+your indexes. To list every index in the database, use `SEARCH.LISTINDEXES` instead (see
+[Indices](/docs/redis/search/index-management#listing-indexes)).
+</Note>
+
 # Command Reference
 Source: https://upstash.com/docs/redis/search/command-reference
 
@@ -27196,6 +27238,56 @@ Do not call `SEARCH.WAITINDEXING` after every write. Batch updates are necessary
 optimal indexing performance. Use this command only when you need to ensure queries
 reflect recent changes, such as in tests or CI pipelines.
 </Warning>
+
+***
+
+### SEARCH.LISTINDEXES
+
+Lists all search indexes in the database.
+
+```bash
+SEARCH.LISTINDEXES [MATCH <pattern>] [LIMIT <count>] [OFFSET <offset>]
+```
+
+**Parameters:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `MATCH` | Filter index names by a glob-style pattern (e.g. `h*`). | All indexes |
+| `LIMIT` | Maximum number of indexes to return. | All indexes |
+| `OFFSET` | Number of indexes to skip (for pagination). | 0 |
+
+**Returns:** One entry per index, each a map of `name` and the backing `type` (`HASH` or `JSON`).
+
+**Response format (Redis CLI):**
+
+```
+[
+  ["name", "productIdx", "type", "HASH"],
+  ["name", "blogIdx", "type", "JSON"]
+]
+```
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.LISTINDEXES MATCH 'product*' LIMIT 10 OFFSET 0
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.LISTINDEXES", "MATCH", "product*", "LIMIT", "10", "OFFSET", "0"]'
+```
+</Tab>
+</Tabs>
+
+<Note>
+To enumerate the indexes in your database, use `SEARCH.LISTINDEXES`. `SEARCH.LISTALIASES`
+only returns indexes that have an alias — it returns an empty array when no aliases exist,
+even if the database has indexes, so it is not a way to discover all of your indexes.
+</Note>
 
 ***
 
@@ -27361,7 +27453,9 @@ Returns all aliases and the indices they point to.
 SEARCH.LISTALIASES
 ```
 
-**Returns:** An array of `[alias, index_name]` pairs.
+**Returns:** An array of `[alias, index_name]` pairs. Returns an empty array if no aliases
+exist. This command only reports aliased indexes — to list every index in the database,
+use [`SEARCH.LISTINDEXES`](#searchlistindexes) instead.
 
 ***
 
@@ -28324,6 +28418,32 @@ On response, the following information is returned:
 | `prefixes` | List of tracked key prefixes             |
 | `language` | Stemming language                        |
 | `schema`   | Field definitions with types and options |
+
+### Listing Indexes
+
+The `SEARCH.LISTINDEXES` command enumerates all search indexes in the database. Each entry
+reports the index `name` and its backing `type` (`HASH` or `JSON`). You can optionally filter
+by a glob-style pattern with `MATCH` and paginate with `LIMIT` and `OFFSET`.
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.LISTINDEXES
+# → [["name", "productIdx", "type", "HASH"], ["name", "blogIdx", "type", "JSON"]]
+
+# Filter index names by a glob pattern and paginate
+SEARCH.LISTINDEXES MATCH 'product*' LIMIT 10 OFFSET 0
+```
+</Tab>
+
+</Tabs>
+
+<Note>
+`SEARCH.LISTINDEXES` is the way to discover your indexes. Do not use `SEARCH.LISTALIASES`
+for this — it only returns indexes that have an alias and returns an empty array when no
+aliases exist, even if the database has indexes. See [Aliases](/docs/redis/search/aliases) for details.
+</Note>
 
 ### Dropping an Index
 
