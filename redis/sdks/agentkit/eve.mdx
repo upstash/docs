@@ -1,0 +1,273 @@
+---
+title: "AgentKit for Vercel Eve"
+sidebarTitle: "Vercel Eve"
+---
+
+[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
+conversation history, caching, and RAG, with no separate vector database. The semantic features run on
+[Upstash Redis Search](/redis/search/introduction) and its `$smart` fuzzy operator.
+
+`@upstash/agentkit-eve` brings AgentKit to **Eve, the Vercel agent framework**. You drop these into your
+`agent/` tree: memory tools, Redis-Search tools, a rate-limit gate, an
+[Upstash Box](https://github.com/upstash/box) sandbox backend, and cached tools.
+
+```bash
+npm install @upstash/agentkit-eve @upstash/redis
+# only if you use the sandbox backend:
+npm install @upstash/box
+```
+
+Add these to your existing eve project; `eve` and your AI-SDK provider are already installed there.
+AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
+
+## How to add memory tools to Eve
+
+Long-term memory the model reads and writes itself: `recall_memory` and `save_memory`, one file each.
+
+```ts
+// agent/tools/recall_memory.ts
+import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
+
+export default defineMemoryRecallTool({
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+```ts
+// agent/tools/save_memory.ts
+import { defineMemorySaveTool } from "@upstash/agentkit-eve";
+
+export default defineMemorySaveTool({
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+<Accordion title="Options and the userId tenant boundary">
+  - **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
+  - `topK` — max memories `recall` returns.
+  - `minScore` — BM25 relevance floor.
+  - `redis` — defaults to `Redis.fromEnv()`.
+
+  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from Eve's **verified
+  session auth** — `ctx.session.auth.current?.principalId` — not from anything the client supplies.
+  Configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) so `principalId`
+  is trustworthy; the `?? ctx.session.id` fallback only applies to unauthenticated requests. Memories
+  are stored at `agentkit:memory:<userId>:<id>`.
+</Accordion>
+
+## How to add RAG to Eve
+
+`search` / `aggregate` / `count` Eve tools over an Upstash Redis Search index. It is the counterpart to the
+[AI SDK adapter's](/redis/sdks/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk)
+`createSearchTools`. Descriptions are generated from your schema.
+
+```ts
+// agent/tools/search_books.ts
+import { s } from "@upstash/redis";
+import { defineSearchTools } from "@upstash/agentkit-eve";
+
+export default defineSearchTools({
+  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+  indexName: "books",
+}).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
+```
+
+<Accordion title="Options and the one-file-per-tool rule">
+  - **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
+  - `indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
+  - `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
+  - `defaultLimit` — default page size for `search` (10).
+  - `redis` — defaults to `Redis.fromEnv()`.
+
+  Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
+  you want — repeat the same `schema` + `indexName` across `search_books.ts` / `aggregate_books.ts` /
+  `count_books.ts`. The index is created reactively on first use, and each returned tool is already
+  `defineTool`-branded.
+</Accordion>
+
+## How to add rate limiting to Eve
+
+A ready `AuthFn` that throttles inbound requests. Drop it into your channel's
+[auth walk](https://eve.dev/docs/guides/auth-and-route-protection) ahead of your real authenticators.
+
+```ts
+// agent/channels/eve.ts
+import { createRateLimitAuth, Ratelimit } from "@upstash/agentkit-eve";
+import { localDev, vercelOidc } from "eve/channels/auth";
+import { eveChannel } from "eve/channels/eve";
+
+export default eveChannel({
+  auth: [
+    createRateLimitAuth({
+      limiter: Ratelimit.slidingWindow(20, "1 m"),
+      identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous",
+    }),
+    localDev(),
+    vercelOidc(),
+  ],
+});
+```
+
+<AccordionGroup>
+  <Accordion title="Options and the required identifier">
+    - **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
+    - **`identifier`** _(required)_ — a string, or `(request) => string`. There's no implicit `"global"`:
+      one shared bucket lets a single abusive caller exhaust the window for everyone, so derive it per
+      request (an auth user id, an API key, or `x-forwarded-for` for per-IP).
+    - `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
+    - `message` — 403 body when over the limit.
+    - `redis` — defaults to `Redis.fromEnv()`.
+
+    It's a gate: under the limit it returns `null` to fall through to the next `AuthFn`; over it throws
+    a 403.
+  </Accordion>
+  <Accordion title="Why only POST requests are counted">
+    Eve runs each turn as two authenticated requests: the message `POST` (which invokes the model) and a
+    follow-up `GET …/stream` that opens the reply stream. The auth walk runs on both, so counting both
+    would charge every turn twice. `createRateLimitAuth` counts only the `POST`s, so one turn costs one
+    token: a `Ratelimit.slidingWindow(20, "1 m")` allows 20 turns per minute, not 10. The session-read
+    `GET`s pass through unthrottled.
+  </Accordion>
+</AccordionGroup>
+
+## How to add a sandbox to Eve
+
+A drop-in replacement for Eve's `vercel()` backend, powered by
+[Upstash Box](https://github.com/upstash/box). Swap the import and keep the rest of your
+[sandbox file](https://eve.dev/docs/sandbox) the same.
+
+```ts
+// agent/sandbox.ts
+import { defineSandbox } from "eve/sandbox";
+import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: eve/sandbox/vercel
+
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  revalidationKey: () => "repo-bootstrap-v1",
+  async bootstrap({ use }) {
+    const sandbox = await use({ networkPolicy: "allow-all" }); // open egress to install packages
+    await sandbox.run({ command: "apt-get install -y jq" });
+  },
+  async onSession({ use }) {
+    await use(); // inherits the secure deny-all default
+  },
+});
+```
+
+<AccordionGroup>
+  <Accordion title="Config: Box's BoxConfig">
+    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim — whatever you'd pass to
+    `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
+    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, … — plus an optional `redis` (defaults to
+    `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below). `@upstash/box` is an
+    optional peer dependency — only needed when you import `@upstash/agentkit-eve/sandbox`.
+  </Accordion>
+  <Accordion title="Security: network egress is deny-all by default">
+    The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data
+    exfiltration / reaching your own infrastructure from inside the box. Open it per-session — in
+    `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob. Note that `env` passed
+    to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
+    it to see.
+  </Accordion>
+  <Accordion title="Brokering credentials (injecting headers)">
+    Box network policies are plain domain/CIDR allow-lists. Eve's per-domain firewall rules (`transform`
+    header injection, `forwardURL`) have no Box equivalent, so passing them in `use({ networkPolicy })`
+    **throws** rather than silently sending the request unauthenticated:
+
+    ```ts
+    // ❌ throws — Box can't inject headers via a per-session policy
+    export default defineSandbox({
+      backend: upstash({ runtime: "node" }),
+      async onSession({ use }) {
+        await use({
+          networkPolicy: {
+            allow: { "api.example.com": [{ transform: [{ headers: { authorization: "Bearer …" } }] }] },
+          },
+        });
+      },
+    });
+    ```
+
+    Broker credentials with Box's `attachHeaders` instead (set at backend creation; a proxy on the box
+    injects them), and open the domain with a plain allow-list:
+
+    ```ts
+    // ✅ headers injected at the firewall; the secret never enters the box
+    export default defineSandbox({
+      backend: upstash({
+        runtime: "node",
+        attachHeaders: { "api.example.com": { Authorization: "Bearer …" } },
+      }),
+      async onSession({ use }) {
+        await use({ networkPolicy: { allow: ["api.example.com"] } });
+      },
+    });
+    ```
+  </Accordion>
+  <Accordion title="Lifecycle: one box per conversation">
+    **Reuse** — Eve re-opens a session several times per turn; the backend reattaches to the same Box
+    instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
+    (`keepAlive: false`) — auto-paused when idle, resumed on reattach, reaped by Box. Pass
+    `keepAlive: true` only for an always-running box you manage yourself.
+
+    **Template registry** — Eve builds your template (seed files + `bootstrap`) at build/startup, but
+    session creation runs per request in a different process, so the snapshot id is stored in a durable
+    Redis registry (`redis`, defaulting to `Redis.fromEnv()`). Eve roots its tools at `/workspace` while
+    a Box session lives at `/workspace/home`; the backend bridges the two automatically.
+  </Accordion>
+</AccordionGroup>
+
+## How to cache tools in Eve
+
+Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
+
+```ts
+// agent/tools/get_weather.ts
+import { z } from "zod";
+import { defineCachedTool } from "@upstash/agentkit-eve";
+
+export default defineCachedTool({
+  description: "Get the current weather for a city.",
+  inputSchema: z.object({ city: z.string() }),
+  execute: async ({ city }) => fetchWeather(city),
+  toolName: "get_weather",
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+<Accordion title="Options">
+  - `description` / `inputSchema` / `execute` — the usual `defineTool` fields; `execute`'s result is memoized.
+  - **`toolName`** _(required)_ — the tool segment of the cache key.
+  - **`userId`** _(required)_ — a string, or `(input, ctx) => string`; scopes the cache per user.
+  - `ttlSeconds` — per-result TTL (default: no expiry).
+  - `redis` — defaults to `Redis.fromEnv()`.
+
+  Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
+</Accordion>
+
+## Working with Eve's `agent/` files
+
+Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it — it
+does **not** include shared `agent/`-source modules (e.g. a `agent/lib/redis.ts`). So inside `agent/`:
+
+- Import only from packages, never from other `agent/` files.
+- Lean on the defaults — **`redis` defaults to `Redis.fromEnv()`** in every helper, so you almost never pass it.
+- Repeat config (schema, names) per file rather than sharing a module.
+
+Shared app code (e.g. a seeder a page calls) lives in your project `lib/`, imported by the app — not by
+`agent/` files.
+
+## How to run the Eve example app
+
+A complete `eve` agent app (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox,
+with a chat UI that renders tool calls inline) lives in
+[`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo).
+
+<CardGroup cols={2}>
+  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
+    Source, packages, and the full example apps.
+  </Card>
+  <Card title="Eve" icon="up-right-from-square" href="https://eve.dev">
+    The Vercel agent framework this adapter targets.
+  </Card>
+</CardGroup>
