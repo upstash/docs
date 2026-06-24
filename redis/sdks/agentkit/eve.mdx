@@ -168,11 +168,41 @@ export default defineSandbox({
     `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob. Note that `env` passed
     to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
     it to see.
+  </Accordion>
+  <Accordion title="Brokering credentials (injecting headers)">
+    Box network policies are plain domain/CIDR allow-lists. Eve's per-domain firewall rules (`transform`
+    header injection, `forwardURL`) have no Box equivalent, so passing them in `use({ networkPolicy })`
+    **throws** rather than silently sending the request unauthenticated:
 
-    Network policies accept plain domain/CIDR allow-lists only. Eve's per-domain firewall rules
-    (`transform` header injection, `forwardURL`) have no Box equivalent, so the backend **throws** if you
-    pass them rather than silently dropping them. To broker credentials onto outbound requests, set
-    Box's `attachHeaders` at backend creation: `upstash({ attachHeaders: { "api.example.com": { ... } } })`.
+    ```ts
+    // ❌ throws — Box can't inject headers via a per-session policy
+    export default defineSandbox({
+      backend: upstash({ runtime: "node" }),
+      async onSession({ use }) {
+        await use({
+          networkPolicy: {
+            allow: { "api.example.com": [{ transform: [{ headers: { authorization: "Bearer …" } }] }] },
+          },
+        });
+      },
+    });
+    ```
+
+    Broker credentials with Box's `attachHeaders` instead (set at backend creation; a proxy on the box
+    injects them), and open the domain with a plain allow-list:
+
+    ```ts
+    // ✅ headers injected at the firewall; the secret never enters the box
+    export default defineSandbox({
+      backend: upstash({
+        runtime: "node",
+        attachHeaders: { "api.example.com": { Authorization: "Bearer …" } },
+      }),
+      async onSession({ use }) {
+        await use({ networkPolicy: { allow: ["api.example.com"] } });
+      },
+    });
+    ```
   </Accordion>
   <Accordion title="Lifecycle: one box per conversation">
     **Reuse** — Eve re-opens a session several times per turn; the backend reattaches to the same Box
