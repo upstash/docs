@@ -27,7 +27,8 @@ Snapshots are the best way to preserve cloned repositories, installed dependenci
 
 Call `snapshot()` on a running or paused box. The returned `Snapshot` object contains the ID you need to restore later.
 
-```typescript
+<CodeGroup>
+```typescript box.ts
 const snapshot = await box.snapshot({ name: "after-setup" })
 
 console.log(snapshot)
@@ -40,6 +41,21 @@ console.log(snapshot)
 // }
 ```
 
+```python box.py
+snapshot = box.snapshot(name="after-setup")
+
+print(snapshot)
+# Snapshot(
+#   id="snap_x7f...",
+#   name="after-setup",
+#   box_id="box_abc123",
+#   size_bytes=52428800,
+#   status="ready",
+#   created_at=1771845600,
+# )
+```
+</CodeGroup>
+
 <Note>
 Snapshots are independent of the source box. Deleting the original box does not delete its snapshots. They remain available for restore at any time.
 </Note>
@@ -50,7 +66,8 @@ Snapshots are independent of the source box. Deleting the original box does not 
 
 Retrieve all snapshots belonging to a box.
 
-```typescript
+<CodeGroup>
+```typescript box.ts
 const snapshots = await box.listSnapshots()
 
 console.log(snapshots)
@@ -60,15 +77,32 @@ console.log(snapshots)
 // ]
 ```
 
+```python box.py
+snapshots = box.list_snapshots()
+
+print(snapshots)
+# [
+#   Snapshot(id="snap_x7f...", name="after-setup", status="ready", ...),
+#   Snapshot(id="snap_a3b...", name="pre-refactor", status="ready", ...),
+# ]
+```
+</CodeGroup>
+
 ---
 
 ### Delete a snapshot
 
 Remove a snapshot by ID.
 
-```typescript
+<CodeGroup>
+```typescript box.ts
 await box.deleteSnapshot("snap_x7f...")
 ```
+
+```python box.py
+box.delete_snapshot("snap_x7f...")
+```
+</CodeGroup>
 
 ---
 
@@ -76,7 +110,8 @@ await box.deleteSnapshot("snap_x7f...")
 
 `Box.fromSnapshot()` provisions a new box with the exact state from the snapshot. The original box is unaffected. You can branch into multiple boxes from the same checkpoint.
 
-```typescript
+<CodeGroup>
+```typescript box.ts
 const restored = await Box.fromSnapshot(snapshot.id)
 
 // Box.fromSnapshot accepts creation options such as name:
@@ -85,6 +120,17 @@ const named = await Box.fromSnapshot(snapshot.id, { name: "restored-worker" })
 const files = await restored.files.list("/work")
 console.log(files)
 ```
+
+```python box.py
+restored = Box.from_snapshot(snapshot.id)
+
+# Box.from_snapshot accepts creation options such as name:
+named = Box.from_snapshot(snapshot.id, name="restored-worker")
+
+files = restored.files.list("/work")
+print(files)
+```
+</CodeGroup>
 
 The restored box starts with the same workspace state from the snapshot. You can also configure lifecycle settings such as keep-alive and init commands on the restored box.
 
@@ -96,7 +142,8 @@ The restored box starts with the same workspace state from the snapshot. You can
 
 Snapshot your working state, then let the agent attempt a large refactor. If the result is bad, we restore the original state and try a different prompt.
 
-```typescript
+<CodeGroup>
+```typescript box.ts
 import { Agent, Box } from "@upstash/box"
 
 const box = await Box.create({
@@ -121,15 +168,42 @@ if (run.status === "failed") {
 }
 ```
 
+```python box.py
+import os
+from upstash_box import Box, Agent
+
+box = Box.create(
+    runtime="node",
+    agent={"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]},
+    git={"token": os.environ["GITHUB_TOKEN"]},
+)
+
+box.git.clone(repo="github.com/my-org/my-repo")
+checkpoint = box.snapshot(name="pre-refactor")
+
+run = box.agent.run(
+    # 👇 Potentially difficult task
+    prompt="Rewrite the database layer to use connection pooling",
+)
+
+if run.status == "failed":
+    fallback = Box.from_snapshot(checkpoint.id)
+    fallback.agent.run(
+        prompt="Add connection pooling to the existing database layer without rewriting it",
+    )
+```
+</CodeGroup>
+
 ### Reusable base environments
 
 Install dependencies once, snapshot, then spawn boxes from the snapshot to skip setup time.
 
-```typescript
+<CodeGroup>
+```typescript box.ts
 import { Agent, Box } from "@upstash/box"
 
 const base = await Box.create({ runtime: "node" })
-await base.exec("npm install -g typescript eslint prettier")
+await base.exec.command("npm install -g typescript eslint prettier")
 const baseSnap = await base.snapshot({ name: "node-toolchain" })
 await base.delete()
 
@@ -142,11 +216,34 @@ const boxes = await Promise.all(
 )
 ```
 
+```python box.py
+import asyncio
+from upstash_box import AsyncBox
+
+async def main() -> None:
+    base = await AsyncBox.create(runtime="node")
+    await base.exec.command("npm install -g typescript eslint prettier")
+    base_snap = await base.snapshot(name="node-toolchain")
+    await base.delete()
+
+    async def run_task(task: str) -> AsyncBox:
+        box = await AsyncBox.from_snapshot(base_snap.id)
+        await box.agent.run(prompt=task)
+        return box
+
+    # spawn boxes from the snapshot in parallel
+    await asyncio.gather(*(run_task(t) for t in tasks))
+
+asyncio.run(main())
+```
+</CodeGroup>
+
 ### Fan-out from a single state
 
 Clone a repo once, snapshot, then run different agents or prompts in parallel from the same starting point.
 
-```typescript
+<CodeGroup>
+```typescript box.ts
 import { Agent, Box } from "@upstash/box"
 
 const seed = await Box.create({
@@ -169,3 +266,33 @@ await Promise.all([
   docs.agent.run({ prompt: "Generate API documentation for all public exports" }),
 ])
 ```
+
+```python box.py
+import asyncio
+import os
+from upstash_box import AsyncBox
+
+async def main() -> None:
+    seed = await AsyncBox.create(
+        runtime="node",
+        git={"token": os.environ["GITHUB_TOKEN"]},
+    )
+    await seed.git.clone(repo="github.com/your-org/monorepo")
+    snap = await seed.snapshot(name="repo-cloned")
+    await seed.delete()
+
+    security, performance, docs = await asyncio.gather(
+        AsyncBox.from_snapshot(snap.id),
+        AsyncBox.from_snapshot(snap.id),
+        AsyncBox.from_snapshot(snap.id),
+    )
+
+    await asyncio.gather(
+        security.agent.run(prompt="Audit src/ for SQL injection vulnerabilities"),
+        performance.agent.run(prompt="Profile the hot paths in src/api/ and optimize"),
+        docs.agent.run(prompt="Generate API documentation for all public exports"),
+    )
+
+asyncio.run(main())
+```
+</CodeGroup>
