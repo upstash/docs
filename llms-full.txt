@@ -17425,1040 +17425,6 @@ If you have any issue you can ask in our
 [Discord server](https://discord.gg/w9SenAtbme) or send email at
 [support@upstash.com](mailto:support@upstash.com)
 
-# AgentKit for the Vercel AI SDK
-Source: https://upstash.com/docs/redis/integrations/agentkit/ai-sdk
-
-[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
-
-`@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter. It adds chat history,
-agent memory, Redis-Search tools, rate limiting, and tool caching to `generateText` / `streamText`.
-`redis` defaults to `Redis.fromEnv()`, so you import only from this package.
-
-```bash
-npm install @upstash/agentkit-ai-sdk @upstash/redis ai
-```
-
-<Note>
-  AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
-  Pass your own `@upstash/redis` client as `redis` to any helper to override.
-</Note>
-
-## How to store chat history with the AI SDK
-
-A Redis-backed `ChatHistory<UIMessage>`, the durable source of truth for your conversations. `userId`
-comes from your auth session; `chatId` is the `useChat` id that the client posts. Save the full
-transcript from your route's `onFinish`:
-
-```ts
-// app/api/chat/route.ts
-import { convertToModelMessages, createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
-import { createChatHistory } from "@upstash/agentkit-ai-sdk";
-
-const history = createChatHistory();
-
-export async function POST(req: Request) {
-  const userId = await getSessionUserId(req); // your auth session, never a client-sent id
-  const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
-
-  const result = streamText({ model, messages: convertToModelMessages(messages) });
-
-  return createUIMessageStreamResponse({
-    stream: toUIMessageStream({
-      stream: result.stream,
-      originalMessages: messages,
-      onFinish: ({ messages }) =>
-        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
-    }),
-  });
-}
-```
-
-To load a chat, take `chatId` from the page route and `userId` from the session, then seed `useChat`:
-
-```ts
-const chat = await history.getChat({ userId, sessionId: chatId }); // full transcript, or null
-const chats = await history.listChats({ userId, limit: 50 }); // summaries, no messages
-const hits = await history.searchChats({ userId, query: "headphones", target: "both", limit: 20 });
-// client: useChat({ id: chatId, messages: chat?.messages ?? [] })
-```
-
-<AccordionGroup>
-  <Accordion title="Config and how it's stored">
-    ```ts
-    createChatHistory({
-      redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: base key prefix
-      indexName: "agentkit_chat", // optional: index name (defaults to the prefix)
-      ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
-    });
-    ```
-
-    Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
-    `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
-    overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
-    methods: `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats`
-    (`{ userId }`).
-  </Accordion>
-  <Accordion title="Security — userId is the tenant boundary">
-    Every method takes a single object; `userId` is **required, non-empty, and may not contain `:`**.
-    Derive it from a **verified server-side auth source** — the subject/user id from your auth provider
-    (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — and **never from a client-supplied header,
-    query param, or body** (read it from the session in your route). A chat can't be read or
-    overwritten under a different `userId`.
-  </Accordion>
-</AccordionGroup>
-
-## How to add agent memory with the AI SDK
-
-`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
-
-```ts
-import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
-
-const tools = createMemoryTools({ userId });
-
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
-```
-
-<Accordion title="Options and the userId tenant boundary">
-  * **`userId`** _(required)_ — a string, or `(input, options) => string`.
-  * `redis` — defaults to `Redis.fromEnv()`.
-  * `topK` — max memories `recall` returns.
-  * `minScore` — BM25 relevance floor.
-  * `recallToolName` / `saveToolName` — override the tool names.
-
-  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from a **verified
-  server-side auth source** (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — never a
-  client-supplied value. Memories are stored at `agentkit:memory:<userId>:<id>`.
-</Accordion>
-
-## How to add RAG with the AI SDK
-
-`search` / `aggregate` / `count` tools over an Upstash Redis Search index; the model-facing
-descriptions are generated from your schema.
-
-```ts
-import { s } from "@upstash/redis";
-import { createSearchTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
-
-const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
-const tools = createSearchTools({ schema, indexName: "users" });
-
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
-```
-
-<Accordion title="Options">
-  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
-  * `redis` — defaults to `Redis.fromEnv()`.
-  * `indexName` — defaults to `"agentkit:search"`.
-  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
-  * `defaultLimit` — default page size for `search` (10).
-
-  The index is created (and `waitIndexing`-ed) reactively on first use — no setup step.
-</Accordion>
-
-## How to add rate limiting with the AI SDK
-
-A configured [Upstash Ratelimit](/docs/redis/sdks/ratelimit-ts/overview). Call `.limit(identifier)` before
-the model and short-circuit when over the limit.
-
-```ts
-import { createRateLimit, Ratelimit } from "@upstash/agentkit-ai-sdk";
-
-const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(20, "1 m") });
-
-const { success } = await ratelimit.limit(userId);
-if (!success) throw new Error("rate limited"); // or return a 429 from your route
-```
-
-<Accordion title="Options">
-  * **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
-  * `redis` — the Upstash Redis client backing the limiter.
-  * `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
-
-  There's no model wrapper — pass a per-user `identifier` to `.limit()` to throttle per user.
-</Accordion>
-
-## How to cache tools with the AI SDK
-
-Memoize a map of AI SDK tools' results in Redis. Each tool is cached under its map key, scoped to
-`userId`.
-
-```ts
-import { z } from "zod";
-import { generateText, tool } from "ai";
-import { cachedTools } from "@upstash/agentkit-ai-sdk";
-
-const tools = cachedTools(
-  {
-    getWeather: tool({
-      description: "Get the weather for a city",
-      inputSchema: z.object({ city: z.string() }),
-      execute: async ({ city }) => fetchWeather(city),
-    }),
-  },
-  { userId },
-);
-
-await generateText({ model, tools, prompt: "What's the weather in Paris?" });
-```
-
-<Accordion title="Options">
-  Pass tools built with the AI SDK's `tool()` (so each keeps full input/output inference). Second arg:
-
-  * **`userId`** _(required)_ — a string, or `(input, options) => string`; scopes every entry to this user.
-  * `redis` — defaults to `Redis.fromEnv()`.
-  * `ttlSeconds` — default per-result TTL for every tool.
-
-  Cache keys are `agentkit:toolCache:<userId>:<toolName>:<hash-of-input>` — the `toolName` is the map
-  key, so you never pass a name yourself.
-</Accordion>
-
-## How to put it all together with the AI SDK
-
-A single `streamText` route can wire every feature: rate limit first, then memory, search, and cached
-tools, persisting the whole conversation in `onFinish`:
-
-```ts
-// app/api/chat/route.ts
-import { openai } from "@ai-sdk/openai";
-import {
-  convertToModelMessages,
-  createUIMessageStreamResponse,
-  streamText,
-  stepCountIs,
-  toUIMessageStream,
-  tool,
-  type UIMessage,
-} from "ai";
-import { z } from "zod";
-import { s, Redis } from "@upstash/redis";
-import {
-  Ratelimit,
-  cachedTools,
-  createChatHistory,
-  createMemoryTools,
-  createRateLimit,
-  createSearchTools,
-} from "@upstash/agentkit-ai-sdk";
-
-export async function POST(req: Request) {
-  const { id, messages } = (await req.json()) as { id: string; messages: UIMessage[] };
-  const redis = Redis.fromEnv();
-  // Derive this from your verified auth session in production (Clerk, Auth.js, …), never a client value.
-  const userId = "user-123";
-
-  // 1. Rate limit (by user) before any model work.
-  const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(30, "1 m") });
-  const { success } = await ratelimit.limit(userId);
-  if (!success) return new Response("Rate limited", { status: 429 });
-
-  // 2. Memory, search, and cached tools — all scoped to this user.
-  const tools = {
-    ...createMemoryTools({ redis, userId }),
-    ...createSearchTools({ schema: s.object({ title: s.string(), author: s.string() }), redis, indexName: "books" }),
-    ...cachedTools(
-      {
-        convert_price: tool({
-          description: "Convert a USD price to another currency.",
-          inputSchema: z.object({ usd: z.number(), currency: z.string() }),
-          execute: async ({ usd, currency }) => ({ currency, amount: usd * 0.92 }),
-        }),
-      },
-      { userId, redis },
-    ),
-  };
-
-  const result = streamText({
-    model: openai("gpt-5.4-mini"),
-    messages: await convertToModelMessages(messages),
-    tools,
-    stopWhen: stepCountIs(5),
-  });
-
-  // 3. Persist the whole conversation when the stream finishes.
-  const history = createChatHistory({ redis });
-  return createUIMessageStreamResponse({
-    stream: toUIMessageStream({
-      stream: result.stream,
-      originalMessages: messages,
-      onFinish: ({ messages }) => history.saveChat({ userId, sessionId: id, messages, title: "New chat" }),
-    }),
-  });
-}
-```
-
-A complete, runnable Next.js demo (`useChat` UI, chat sidebar with fuzzy search, inline tool calls)
-lives in [`examples/ai-sdk-demo`](https://github.com/upstash/agentkit/tree/main/examples/ai-sdk-demo).
-
-<CardGroup cols={2}>
-  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
-    Source, packages, and the full example apps.
-  </Card>
-  <Card title="Vercel AI SDK" icon="up-right-from-square" href="https://ai-sdk.dev">
-    The AI SDK this adapter plugs into.
-  </Card>
-</CardGroup>
-
-# AgentKit for the Vercel AI SDK
-Source: https://upstash.com/docs/redis/integrations/agentkit/ai-sdk
-
-[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
-
-`@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter. It adds chat history,
-agent memory, Redis-Search tools, rate limiting, and tool caching to `generateText` / `streamText`.
-`redis` defaults to `Redis.fromEnv()`, so you import only from this package.
-
-```bash
-npm install @upstash/agentkit-ai-sdk @upstash/redis ai
-```
-
-<Note>
-  AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
-  Pass your own `@upstash/redis` client as `redis` to any helper to override.
-</Note>
-
-## How to store chat history with the AI SDK
-
-A Redis-backed `ChatHistory<UIMessage>`, the durable source of truth for your conversations. `userId`
-comes from your auth session; `chatId` is the `useChat` id that the client posts. Save the full
-transcript from your route's `onFinish`:
-
-```ts
-// app/api/chat/route.ts
-import { convertToModelMessages, createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
-import { createChatHistory } from "@upstash/agentkit-ai-sdk";
-
-const history = createChatHistory();
-
-export async function POST(req: Request) {
-  const userId = await getSessionUserId(req); // your auth session, never a client-sent id
-  const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
-
-  const result = streamText({ model, messages: convertToModelMessages(messages) });
-
-  return createUIMessageStreamResponse({
-    stream: toUIMessageStream({
-      stream: result.stream,
-      originalMessages: messages,
-      onFinish: ({ messages }) =>
-        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
-    }),
-  });
-}
-```
-
-To load a chat, take `chatId` from the page route and `userId` from the session, then seed `useChat`:
-
-```ts
-const chat = await history.getChat({ userId, sessionId: chatId }); // full transcript, or null
-const chats = await history.listChats({ userId, limit: 50 }); // summaries, no messages
-const hits = await history.searchChats({ userId, query: "headphones", target: "both", limit: 20 });
-// client: useChat({ id: chatId, messages: chat?.messages ?? [] })
-```
-
-<AccordionGroup>
-  <Accordion title="Config and how it's stored">
-    ```ts
-    createChatHistory({
-      redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: base key prefix
-      indexName: "agentkit_chat", // optional: index name (defaults to the prefix)
-      ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
-    });
-    ```
-
-    Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
-    `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
-    overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
-    methods: `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats`
-    (`{ userId }`).
-  </Accordion>
-  <Accordion title="Security — userId is the tenant boundary">
-    Every method takes a single object; `userId` is **required, non-empty, and may not contain `:`**.
-    Derive it from a **verified server-side auth source** — the subject/user id from your auth provider
-    (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — and **never from a client-supplied header,
-    query param, or body** (read it from the session in your route). A chat can't be read or
-    overwritten under a different `userId`.
-  </Accordion>
-</AccordionGroup>
-
-## How to add agent memory with the AI SDK
-
-`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
-
-```ts
-import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
-
-const tools = createMemoryTools({ userId });
-
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
-```
-
-<Accordion title="Options and the userId tenant boundary">
-  * **`userId`** _(required)_ — a string, or `(input, options) => string`.
-  * `redis` — defaults to `Redis.fromEnv()`.
-  * `topK` — max memories `recall` returns.
-  * `minScore` — BM25 relevance floor.
-  * `recallToolName` / `saveToolName` — override the tool names.
-
-  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from a **verified
-  server-side auth source** (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — never a
-  client-supplied value. Memories are stored at `agentkit:memory:<userId>:<id>`.
-</Accordion>
-
-## How to add RAG with the AI SDK
-
-`search` / `aggregate` / `count` tools over an Upstash Redis Search index; the model-facing
-descriptions are generated from your schema.
-
-```ts
-import { s } from "@upstash/redis";
-import { createSearchTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
-
-const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
-const tools = createSearchTools({ schema, indexName: "users" });
-
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
-```
-
-<Accordion title="Options">
-  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
-  * `redis` — defaults to `Redis.fromEnv()`.
-  * `indexName` — defaults to `"agentkit:search"`.
-  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
-  * `defaultLimit` — default page size for `search` (10).
-
-  The index is created (and `waitIndexing`-ed) reactively on first use — no setup step.
-</Accordion>
-
-## How to add rate limiting with the AI SDK
-
-A configured [Upstash Ratelimit](/docs/redis/sdks/ratelimit-ts/overview). Call `.limit(identifier)` before
-the model and short-circuit when over the limit.
-
-```ts
-import { createRateLimit, Ratelimit } from "@upstash/agentkit-ai-sdk";
-
-const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(20, "1 m") });
-
-const { success } = await ratelimit.limit(userId);
-if (!success) throw new Error("rate limited"); // or return a 429 from your route
-```
-
-<Accordion title="Options">
-  * **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
-  * `redis` — the Upstash Redis client backing the limiter.
-  * `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
-
-  There's no model wrapper — pass a per-user `identifier` to `.limit()` to throttle per user.
-</Accordion>
-
-## How to cache tools with the AI SDK
-
-Memoize a map of AI SDK tools' results in Redis. Each tool is cached under its map key, scoped to
-`userId`.
-
-```ts
-import { z } from "zod";
-import { generateText, tool } from "ai";
-import { cachedTools } from "@upstash/agentkit-ai-sdk";
-
-const tools = cachedTools(
-  {
-    getWeather: tool({
-      description: "Get the weather for a city",
-      inputSchema: z.object({ city: z.string() }),
-      execute: async ({ city }) => fetchWeather(city),
-    }),
-  },
-  { userId },
-);
-
-await generateText({ model, tools, prompt: "What's the weather in Paris?" });
-```
-
-<Accordion title="Options">
-  Pass tools built with the AI SDK's `tool()` (so each keeps full input/output inference). Second arg:
-
-  * **`userId`** _(required)_ — a string, or `(input, options) => string`; scopes every entry to this user.
-  * `redis` — defaults to `Redis.fromEnv()`.
-  * `ttlSeconds` — default per-result TTL for every tool.
-
-  Cache keys are `agentkit:toolCache:<userId>:<toolName>:<hash-of-input>` — the `toolName` is the map
-  key, so you never pass a name yourself.
-</Accordion>
-
-## How to put it all together with the AI SDK
-
-A single `streamText` route can wire every feature: rate limit first, then memory, search, and cached
-tools, persisting the whole conversation in `onFinish`:
-
-```ts
-// app/api/chat/route.ts
-import { openai } from "@ai-sdk/openai";
-import {
-  convertToModelMessages,
-  createUIMessageStreamResponse,
-  streamText,
-  stepCountIs,
-  toUIMessageStream,
-  tool,
-  type UIMessage,
-} from "ai";
-import { z } from "zod";
-import { s, Redis } from "@upstash/redis";
-import {
-  Ratelimit,
-  cachedTools,
-  createChatHistory,
-  createMemoryTools,
-  createRateLimit,
-  createSearchTools,
-} from "@upstash/agentkit-ai-sdk";
-
-export async function POST(req: Request) {
-  const { id, messages } = (await req.json()) as { id: string; messages: UIMessage[] };
-  const redis = Redis.fromEnv();
-  // Derive this from your verified auth session in production (Clerk, Auth.js, …), never a client value.
-  const userId = "user-123";
-
-  // 1. Rate limit (by user) before any model work.
-  const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(30, "1 m") });
-  const { success } = await ratelimit.limit(userId);
-  if (!success) return new Response("Rate limited", { status: 429 });
-
-  // 2. Memory, search, and cached tools — all scoped to this user.
-  const tools = {
-    ...createMemoryTools({ redis, userId }),
-    ...createSearchTools({ schema: s.object({ title: s.string(), author: s.string() }), redis, indexName: "books" }),
-    ...cachedTools(
-      {
-        convert_price: tool({
-          description: "Convert a USD price to another currency.",
-          inputSchema: z.object({ usd: z.number(), currency: z.string() }),
-          execute: async ({ usd, currency }) => ({ currency, amount: usd * 0.92 }),
-        }),
-      },
-      { userId, redis },
-    ),
-  };
-
-  const result = streamText({
-    model: openai("gpt-5.4-mini"),
-    messages: await convertToModelMessages(messages),
-    tools,
-    stopWhen: stepCountIs(5),
-  });
-
-  // 3. Persist the whole conversation when the stream finishes.
-  const history = createChatHistory({ redis });
-  return createUIMessageStreamResponse({
-    stream: toUIMessageStream({
-      stream: result.stream,
-      originalMessages: messages,
-      onFinish: ({ messages }) => history.saveChat({ userId, sessionId: id, messages, title: "New chat" }),
-    }),
-  });
-}
-```
-
-A complete, runnable Next.js demo (`useChat` UI, chat sidebar with fuzzy search, inline tool calls)
-lives in [`examples/ai-sdk-demo`](https://github.com/upstash/agentkit/tree/main/examples/ai-sdk-demo).
-
-<CardGroup cols={2}>
-  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
-    Source, packages, and the full example apps.
-  </Card>
-  <Card title="Vercel AI SDK" icon="up-right-from-square" href="https://ai-sdk.dev">
-    The AI SDK this adapter plugs into.
-  </Card>
-</CardGroup>
-
-# AgentKit for Vercel Eve
-Source: https://upstash.com/docs/redis/integrations/agentkit/eve
-
-[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
-
-`@upstash/agentkit-eve` brings AgentKit to **Eve, the Vercel agent framework**. You drop these into your
-`agent/` tree: memory tools, Redis-Search tools, a rate-limit gate, an
-[Upstash Box](https://github.com/upstash/box) sandbox backend, and cached tools.
-
-```bash
-npm install @upstash/agentkit-eve @upstash/redis
-# only if you use the sandbox backend:
-npm install @upstash/box
-```
-
-Add these to your existing eve project; `eve` and your AI-SDK provider are already installed there.
-AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
-
-## How to add memory tools to Eve
-
-Long-term memory the model reads and writes itself: `recall_memory` and `save_memory`, one file each.
-
-```ts
-// agent/tools/recall_memory.ts
-import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
-
-export default defineMemoryRecallTool({
-  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-```ts
-// agent/tools/save_memory.ts
-import { defineMemorySaveTool } from "@upstash/agentkit-eve";
-
-export default defineMemorySaveTool({
-  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-<Accordion title="Options and the userId tenant boundary">
-  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
-  * `topK` — max memories `recall` returns.
-  * `minScore` — BM25 relevance floor.
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from Eve's **verified
-  session auth** — `ctx.session.auth.current?.principalId` — not from anything the client supplies.
-  Configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) so `principalId`
-  is trustworthy; the `?? ctx.session.id` fallback only applies to unauthenticated requests. Memories
-  are stored at `agentkit:memory:<userId>:<id>`.
-</Accordion>
-
-## How to add RAG to Eve
-
-`search` / `aggregate` / `count` Eve tools over an Upstash Redis Search index. It is the counterpart to the
-[AI SDK adapter's](/docs/redis/integrations/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk)
-`createSearchTools`. Descriptions are generated from your schema.
-
-```ts
-// agent/tools/search_books.ts
-import { s } from "@upstash/redis";
-import { defineSearchTools } from "@upstash/agentkit-eve";
-
-export default defineSearchTools({
-  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
-  indexName: "books",
-}).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
-```
-
-<Accordion title="Options and the one-file-per-tool rule">
-  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
-  * `indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
-  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
-  * `defaultLimit` — default page size for `search` (10).
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
-  you want — repeat the same `schema` + `indexName` across `search_books.ts` / `aggregate_books.ts` /
-  `count_books.ts`. The index is created reactively on first use, and each returned tool is already
-  `defineTool`-branded.
-</Accordion>
-
-## How to add rate limiting to Eve
-
-A ready `AuthFn` that throttles inbound requests. Drop it into your channel's
-[auth walk](https://eve.dev/docs/guides/auth-and-route-protection) ahead of your real authenticators.
-
-```ts
-// agent/channels/eve.ts
-import { createRateLimitAuth, Ratelimit } from "@upstash/agentkit-eve";
-import { localDev, vercelOidc } from "eve/channels/auth";
-import { eveChannel } from "eve/channels/eve";
-
-export default eveChannel({
-  auth: [
-    createRateLimitAuth({
-      limiter: Ratelimit.slidingWindow(20, "1 m"),
-      identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous",
-    }),
-    localDev(),
-    vercelOidc(),
-  ],
-});
-```
-
-<AccordionGroup>
-  <Accordion title="Options and the required identifier">
-    * **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
-    * **`identifier`** _(required)_ — a string, or `(request) => string`. There's no implicit `"global"`:
-      one shared bucket lets a single abusive caller exhaust the window for everyone, so derive it per
-      request (an auth user id, an API key, or `x-forwarded-for` for per-IP).
-    * `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
-    * `message` — 403 body when over the limit.
-    * `redis` — defaults to `Redis.fromEnv()`.
-
-    It's a gate: under the limit it returns `null` to fall through to the next `AuthFn`; over it throws
-    a 403.
-  </Accordion>
-  <Accordion title="Why only POST requests are counted">
-    Eve runs each turn as two authenticated requests: the message `POST` (which invokes the model) and a
-    follow-up `GET …/stream` that opens the reply stream. The auth walk runs on both, so counting both
-    would charge every turn twice. `createRateLimitAuth` counts only the `POST`s, so one turn costs one
-    token: a `Ratelimit.slidingWindow(20, "1 m")` allows 20 turns per minute, not 10. The session-read
-    `GET`s pass through unthrottled.
-  </Accordion>
-</AccordionGroup>
-
-## How to add a sandbox to Eve
-
-A drop-in replacement for Eve's `vercel()` backend, powered by
-[Upstash Box](https://github.com/upstash/box). Swap the import and keep the rest of your
-[sandbox file](https://eve.dev/docs/sandbox) the same.
-
-```ts
-// agent/sandbox.ts
-import { defineSandbox } from "eve/sandbox";
-import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: eve/sandbox/vercel
-
-export default defineSandbox({
-  backend: upstash({ runtime: "node", size: "medium" }),
-  revalidationKey: () => "repo-bootstrap-v1",
-  async bootstrap({ use }) {
-    const sandbox = await use({ networkPolicy: "allow-all" }); // open egress to install packages
-    await sandbox.run({ command: "apt-get install -y jq" });
-  },
-  async onSession({ use }) {
-    await use(); // inherits the secure deny-all default
-  },
-});
-```
-
-<AccordionGroup>
-  <Accordion title="Config: Box's BoxConfig">
-    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim — whatever you'd pass to
-    `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
-    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, … — plus an optional `redis` (defaults to
-    `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below). `@upstash/box` is an
-    optional peer dependency — only needed when you import `@upstash/agentkit-eve/sandbox`.
-  </Accordion>
-  <Accordion title="Security: network egress is deny-all by default">
-    The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data
-    exfiltration / reaching your own infrastructure from inside the box. Open it per-session — in
-    `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob. Note that `env` passed
-    to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
-    it to see.
-  </Accordion>
-  <Accordion title="Lifecycle: one box per conversation">
-    **Reuse** — Eve re-opens a session several times per turn; the backend reattaches to the same Box
-    instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
-    (`keepAlive: false`) — auto-paused when idle, resumed on reattach, reaped by Box. Pass
-    `keepAlive: true` only for an always-running box you manage yourself.
-
-    **Template registry** — Eve builds your template (seed files + `bootstrap`) at build/startup, but
-    session creation runs per request in a different process, so the snapshot id is stored in a durable
-    Redis registry (`redis`, defaulting to `Redis.fromEnv()`). Eve roots its tools at `/workspace` while
-    a Box session lives at `/workspace/home`; the backend bridges the two automatically.
-  </Accordion>
-</AccordionGroup>
-
-## How to cache tools in Eve
-
-Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
-
-```ts
-// agent/tools/get_weather.ts
-import { z } from "zod";
-import { defineCachedTool } from "@upstash/agentkit-eve";
-
-export default defineCachedTool({
-  description: "Get the current weather for a city.",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => fetchWeather(city),
-  toolName: "get_weather",
-  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-<Accordion title="Options">
-  * `description` / `inputSchema` / `execute` — the usual `defineTool` fields; `execute`'s result is memoized.
-  * **`toolName`** _(required)_ — the tool segment of the cache key.
-  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`; scopes the cache per user.
-  * `ttlSeconds` — per-result TTL (default: no expiry).
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
-</Accordion>
-
-## Working with Eve's `agent/` files
-
-Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it — it
-does **not** include shared `agent/`-source modules (e.g. a `agent/lib/redis.ts`). So inside `agent/`:
-
-* Import only from packages, never from other `agent/` files.
-* Lean on the defaults — **`redis` defaults to `Redis.fromEnv()`** in every helper, so you almost never pass it.
-* Repeat config (schema, names) per file rather than sharing a module.
-
-Shared app code (e.g. a seeder a page calls) lives in your project `lib/`, imported by the app — not by
-`agent/` files.
-
-## How to run the Eve example app
-
-A complete `eve` agent app (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox,
-with a chat UI that renders tool calls inline) lives in
-[`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo).
-
-<CardGroup cols={2}>
-  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
-    Source, packages, and the full example apps.
-  </Card>
-  <Card title="Eve" icon="up-right-from-square" href="https://eve.dev">
-    The Vercel agent framework this adapter targets.
-  </Card>
-</CardGroup>
-
-# AgentKit for Vercel Eve
-Source: https://upstash.com/docs/redis/integrations/agentkit/eve
-
-[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
-
-`@upstash/agentkit-eve` brings AgentKit to **Eve, the Vercel agent framework**. You drop these into your
-`agent/` tree: memory tools, Redis-Search tools, a rate-limit gate, an
-[Upstash Box](https://github.com/upstash/box) sandbox backend, and cached tools.
-
-```bash
-npm install @upstash/agentkit-eve @upstash/redis
-# only if you use the sandbox backend:
-npm install @upstash/box
-```
-
-Add these to your existing eve project; `eve` and your AI-SDK provider are already installed there.
-AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
-
-## How to add memory tools to Eve
-
-Long-term memory the model reads and writes itself: `recall_memory` and `save_memory`, one file each.
-
-```ts
-// agent/tools/recall_memory.ts
-import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
-
-export default defineMemoryRecallTool({
-  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-```ts
-// agent/tools/save_memory.ts
-import { defineMemorySaveTool } from "@upstash/agentkit-eve";
-
-export default defineMemorySaveTool({
-  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-<Accordion title="Options and the userId tenant boundary">
-  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
-  * `topK` — max memories `recall` returns.
-  * `minScore` — BM25 relevance floor.
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from Eve's **verified
-  session auth** — `ctx.session.auth.current?.principalId` — not from anything the client supplies.
-  Configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) so `principalId`
-  is trustworthy; the `?? ctx.session.id` fallback only applies to unauthenticated requests. Memories
-  are stored at `agentkit:memory:<userId>:<id>`.
-</Accordion>
-
-## How to add RAG to Eve
-
-`search` / `aggregate` / `count` Eve tools over an Upstash Redis Search index. It is the counterpart to the
-[AI SDK adapter's](/docs/redis/integrations/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk)
-`createSearchTools`. Descriptions are generated from your schema.
-
-```ts
-// agent/tools/search_books.ts
-import { s } from "@upstash/redis";
-import { defineSearchTools } from "@upstash/agentkit-eve";
-
-export default defineSearchTools({
-  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
-  indexName: "books",
-}).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
-```
-
-<Accordion title="Options and the one-file-per-tool rule">
-  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
-  * `indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
-  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
-  * `defaultLimit` — default page size for `search` (10).
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
-  you want — repeat the same `schema` + `indexName` across `search_books.ts` / `aggregate_books.ts` /
-  `count_books.ts`. The index is created reactively on first use, and each returned tool is already
-  `defineTool`-branded.
-</Accordion>
-
-## How to add rate limiting to Eve
-
-A ready `AuthFn` that throttles inbound requests. Drop it into your channel's
-[auth walk](https://eve.dev/docs/guides/auth-and-route-protection) ahead of your real authenticators.
-
-```ts
-// agent/channels/eve.ts
-import { createRateLimitAuth, Ratelimit } from "@upstash/agentkit-eve";
-import { localDev, vercelOidc } from "eve/channels/auth";
-import { eveChannel } from "eve/channels/eve";
-
-export default eveChannel({
-  auth: [
-    createRateLimitAuth({
-      limiter: Ratelimit.slidingWindow(20, "1 m"),
-      identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous",
-    }),
-    localDev(),
-    vercelOidc(),
-  ],
-});
-```
-
-<AccordionGroup>
-  <Accordion title="Options and the required identifier">
-    * **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
-    * **`identifier`** _(required)_ — a string, or `(request) => string`. There's no implicit `"global"`:
-      one shared bucket lets a single abusive caller exhaust the window for everyone, so derive it per
-      request (an auth user id, an API key, or `x-forwarded-for` for per-IP).
-    * `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
-    * `message` — 403 body when over the limit.
-    * `redis` — defaults to `Redis.fromEnv()`.
-
-    It's a gate: under the limit it returns `null` to fall through to the next `AuthFn`; over it throws
-    a 403.
-  </Accordion>
-  <Accordion title="Why only POST requests are counted">
-    Eve runs each turn as two authenticated requests: the message `POST` (which invokes the model) and a
-    follow-up `GET …/stream` that opens the reply stream. The auth walk runs on both, so counting both
-    would charge every turn twice. `createRateLimitAuth` counts only the `POST`s, so one turn costs one
-    token: a `Ratelimit.slidingWindow(20, "1 m")` allows 20 turns per minute, not 10. The session-read
-    `GET`s pass through unthrottled.
-  </Accordion>
-</AccordionGroup>
-
-## How to add a sandbox to Eve
-
-A drop-in replacement for Eve's `vercel()` backend, powered by
-[Upstash Box](https://github.com/upstash/box). Swap the import and keep the rest of your
-[sandbox file](https://eve.dev/docs/sandbox) the same.
-
-```ts
-// agent/sandbox.ts
-import { defineSandbox } from "eve/sandbox";
-import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: eve/sandbox/vercel
-
-export default defineSandbox({
-  backend: upstash({ runtime: "node", size: "medium" }),
-  revalidationKey: () => "repo-bootstrap-v1",
-  async bootstrap({ use }) {
-    const sandbox = await use({ networkPolicy: "allow-all" }); // open egress to install packages
-    await sandbox.run({ command: "apt-get install -y jq" });
-  },
-  async onSession({ use }) {
-    await use(); // inherits the secure deny-all default
-  },
-});
-```
-
-<AccordionGroup>
-  <Accordion title="Config: Box's BoxConfig">
-    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim — whatever you'd pass to
-    `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
-    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, … — plus an optional `redis` (defaults to
-    `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below). `@upstash/box` is an
-    optional peer dependency — only needed when you import `@upstash/agentkit-eve/sandbox`.
-  </Accordion>
-  <Accordion title="Security: network egress is deny-all by default">
-    The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data
-    exfiltration / reaching your own infrastructure from inside the box. Open it per-session — in
-    `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob. Note that `env` passed
-    to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
-    it to see.
-  </Accordion>
-  <Accordion title="Lifecycle: one box per conversation">
-    **Reuse** — Eve re-opens a session several times per turn; the backend reattaches to the same Box
-    instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
-    (`keepAlive: false`) — auto-paused when idle, resumed on reattach, reaped by Box. Pass
-    `keepAlive: true` only for an always-running box you manage yourself.
-
-    **Template registry** — Eve builds your template (seed files + `bootstrap`) at build/startup, but
-    session creation runs per request in a different process, so the snapshot id is stored in a durable
-    Redis registry (`redis`, defaulting to `Redis.fromEnv()`). Eve roots its tools at `/workspace` while
-    a Box session lives at `/workspace/home`; the backend bridges the two automatically.
-  </Accordion>
-</AccordionGroup>
-
-## How to cache tools in Eve
-
-Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
-
-```ts
-// agent/tools/get_weather.ts
-import { z } from "zod";
-import { defineCachedTool } from "@upstash/agentkit-eve";
-
-export default defineCachedTool({
-  description: "Get the current weather for a city.",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => fetchWeather(city),
-  toolName: "get_weather",
-  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-<Accordion title="Options">
-  * `description` / `inputSchema` / `execute` — the usual `defineTool` fields; `execute`'s result is memoized.
-  * **`toolName`** _(required)_ — the tool segment of the cache key.
-  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`; scopes the cache per user.
-  * `ttlSeconds` — per-result TTL (default: no expiry).
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
-</Accordion>
-
-## Working with Eve's `agent/` files
-
-Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it — it
-does **not** include shared `agent/`-source modules (e.g. a `agent/lib/redis.ts`). So inside `agent/`:
-
-* Import only from packages, never from other `agent/` files.
-* Lean on the defaults — **`redis` defaults to `Redis.fromEnv()`** in every helper, so you almost never pass it.
-* Repeat config (schema, names) per file rather than sharing a module.
-
-Shared app code (e.g. a seeder a page calls) lives in your project `lib/`, imported by the app — not by
-`agent/` files.
-
-## How to run the Eve example app
-
-A complete `eve` agent app (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox,
-with a chat UI that renders tool calls inline) lives in
-[`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo).
-
-<CardGroup cols={2}>
-  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
-    Source, packages, and the full example apps.
-  </Card>
-  <Card title="Eve" icon="up-right-from-square" href="https://eve.dev">
-    The Vercel agent framework this adapter targets.
-  </Card>
-</CardGroup>
-
 # BullMQ with Upstash Redis
 Source: https://upstash.com/docs/redis/integrations/bullmq
 
@@ -20280,6 +19246,1040 @@ We believe that Upstash is the best storage for your Lambda Functions because:
 
 # Agent Analytics
 Source: https://upstash.com/docs/redis/sdks/agent-analytics
+
+# AgentKit for the Vercel AI SDK
+Source: https://upstash.com/docs/redis/sdks/agentkit/ai-sdk
+
+[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
+conversation history, caching, and RAG, with no separate vector database. The semantic features run on
+[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+
+`@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter. It adds chat history,
+agent memory, Redis-Search tools, rate limiting, and tool caching to `generateText` / `streamText`.
+`redis` defaults to `Redis.fromEnv()`, so you import only from this package.
+
+```bash
+npm install @upstash/agentkit-ai-sdk @upstash/redis ai
+```
+
+<Note>
+  AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
+  Pass your own `@upstash/redis` client as `redis` to any helper to override.
+</Note>
+
+## How to store chat history with the AI SDK
+
+A Redis-backed `ChatHistory<UIMessage>`, the durable source of truth for your conversations. `userId`
+comes from your auth session; `chatId` is the `useChat` id that the client posts. Save the full
+transcript from your route's `onFinish`:
+
+```ts
+// app/api/chat/route.ts
+import { convertToModelMessages, createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
+import { createChatHistory } from "@upstash/agentkit-ai-sdk";
+
+const history = createChatHistory();
+
+export async function POST(req: Request) {
+  const userId = await getSessionUserId(req); // your auth session, never a client-sent id
+  const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
+
+  const result = streamText({ model, messages: convertToModelMessages(messages) });
+
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      onFinish: ({ messages }) =>
+        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+    }),
+  });
+}
+```
+
+To load a chat, take `chatId` from the page route and `userId` from the session, then seed `useChat`:
+
+```ts
+const chat = await history.getChat({ userId, sessionId: chatId }); // full transcript, or null
+const chats = await history.listChats({ userId, limit: 50 }); // summaries, no messages
+const hits = await history.searchChats({ userId, query: "headphones", target: "both", limit: 20 });
+// client: useChat({ id: chatId, messages: chat?.messages ?? [] })
+```
+
+<AccordionGroup>
+  <Accordion title="Config and how it's stored">
+    ```ts
+    createChatHistory({
+      redis, // optional: defaults to Redis.fromEnv()
+      prefix: "agentkit:chat", // optional: base key prefix
+      indexName: "agentkit_chat", // optional: index name (defaults to the prefix)
+      ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
+    });
+    ```
+
+    Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
+    can't collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
+    `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
+    overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
+    methods: `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats`
+    (`{ userId }`).
+  </Accordion>
+  <Accordion title="Security — userId is the tenant boundary">
+    Every method takes a single object; `userId` is **required, non-empty, and may not contain `:`**.
+    Derive it from a **verified server-side auth source** — the subject/user id from your auth provider
+    (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — and **never from a client-supplied header,
+    query param, or body** (read it from the session in your route). A chat can't be read or
+    overwritten under a different `userId`.
+  </Accordion>
+</AccordionGroup>
+
+## How to add agent memory with the AI SDK
+
+`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
+
+```ts
+import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
+import { generateText, stepCountIs } from "ai";
+
+const tools = createMemoryTools({ userId });
+
+await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
+```
+
+<Accordion title="Options and the userId tenant boundary">
+  * **`userId`** _(required)_ — a string, or `(input, options) => string`.
+  * `redis` — defaults to `Redis.fromEnv()`.
+  * `topK` — max memories `recall` returns.
+  * `minScore` — BM25 relevance floor.
+  * `recallToolName` / `saveToolName` — override the tool names.
+
+  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from a **verified
+  server-side auth source** (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — never a
+  client-supplied value. Memories are stored at `agentkit:memory:<userId>:<id>`.
+</Accordion>
+
+## How to add RAG with the AI SDK
+
+`search` / `aggregate` / `count` tools over an Upstash Redis Search index; the model-facing
+descriptions are generated from your schema.
+
+```ts
+import { s } from "@upstash/redis";
+import { createSearchTools } from "@upstash/agentkit-ai-sdk";
+import { generateText, stepCountIs } from "ai";
+
+const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
+const tools = createSearchTools({ schema, indexName: "users" });
+
+await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
+```
+
+<Accordion title="Options">
+  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
+  * `redis` — defaults to `Redis.fromEnv()`.
+  * `indexName` — defaults to `"agentkit:search"`.
+  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
+  * `defaultLimit` — default page size for `search` (10).
+
+  The index is created (and `waitIndexing`-ed) reactively on first use — no setup step.
+</Accordion>
+
+## How to add rate limiting with the AI SDK
+
+A configured [Upstash Ratelimit](/docs/redis/sdks/ratelimit-ts/overview). Call `.limit(identifier)` before
+the model and short-circuit when over the limit.
+
+```ts
+import { createRateLimit, Ratelimit } from "@upstash/agentkit-ai-sdk";
+
+const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(20, "1 m") });
+
+const { success } = await ratelimit.limit(userId);
+if (!success) throw new Error("rate limited"); // or return a 429 from your route
+```
+
+<Accordion title="Options">
+  * **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
+  * `redis` — the Upstash Redis client backing the limiter.
+  * `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
+
+  There's no model wrapper — pass a per-user `identifier` to `.limit()` to throttle per user.
+</Accordion>
+
+## How to cache tools with the AI SDK
+
+Memoize a map of AI SDK tools' results in Redis. Each tool is cached under its map key, scoped to
+`userId`.
+
+```ts
+import { z } from "zod";
+import { generateText, tool } from "ai";
+import { cachedTools } from "@upstash/agentkit-ai-sdk";
+
+const tools = cachedTools(
+  {
+    getWeather: tool({
+      description: "Get the weather for a city",
+      inputSchema: z.object({ city: z.string() }),
+      execute: async ({ city }) => fetchWeather(city),
+    }),
+  },
+  { userId },
+);
+
+await generateText({ model, tools, prompt: "What's the weather in Paris?" });
+```
+
+<Accordion title="Options">
+  Pass tools built with the AI SDK's `tool()` (so each keeps full input/output inference). Second arg:
+
+  * **`userId`** _(required)_ — a string, or `(input, options) => string`; scopes every entry to this user.
+  * `redis` — defaults to `Redis.fromEnv()`.
+  * `ttlSeconds` — default per-result TTL for every tool.
+
+  Cache keys are `agentkit:toolCache:<userId>:<toolName>:<hash-of-input>` — the `toolName` is the map
+  key, so you never pass a name yourself.
+</Accordion>
+
+## How to put it all together with the AI SDK
+
+A single `streamText` route can wire every feature: rate limit first, then memory, search, and cached
+tools, persisting the whole conversation in `onFinish`:
+
+```ts
+// app/api/chat/route.ts
+import { openai } from "@ai-sdk/openai";
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+  streamText,
+  stepCountIs,
+  toUIMessageStream,
+  tool,
+  type UIMessage,
+} from "ai";
+import { z } from "zod";
+import { s, Redis } from "@upstash/redis";
+import {
+  Ratelimit,
+  cachedTools,
+  createChatHistory,
+  createMemoryTools,
+  createRateLimit,
+  createSearchTools,
+} from "@upstash/agentkit-ai-sdk";
+
+export async function POST(req: Request) {
+  const { id, messages } = (await req.json()) as { id: string; messages: UIMessage[] };
+  const redis = Redis.fromEnv();
+  // Derive this from your verified auth session in production (Clerk, Auth.js, …), never a client value.
+  const userId = "user-123";
+
+  // 1. Rate limit (by user) before any model work.
+  const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(30, "1 m") });
+  const { success } = await ratelimit.limit(userId);
+  if (!success) return new Response("Rate limited", { status: 429 });
+
+  // 2. Memory, search, and cached tools — all scoped to this user.
+  const tools = {
+    ...createMemoryTools({ redis, userId }),
+    ...createSearchTools({ schema: s.object({ title: s.string(), author: s.string() }), redis, indexName: "books" }),
+    ...cachedTools(
+      {
+        convert_price: tool({
+          description: "Convert a USD price to another currency.",
+          inputSchema: z.object({ usd: z.number(), currency: z.string() }),
+          execute: async ({ usd, currency }) => ({ currency, amount: usd * 0.92 }),
+        }),
+      },
+      { userId, redis },
+    ),
+  };
+
+  const result = streamText({
+    model: openai("gpt-5.4-mini"),
+    messages: await convertToModelMessages(messages),
+    tools,
+    stopWhen: stepCountIs(5),
+  });
+
+  // 3. Persist the whole conversation when the stream finishes.
+  const history = createChatHistory({ redis });
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      onFinish: ({ messages }) => history.saveChat({ userId, sessionId: id, messages, title: "New chat" }),
+    }),
+  });
+}
+```
+
+A complete, runnable Next.js demo (`useChat` UI, chat sidebar with fuzzy search, inline tool calls)
+lives in [`examples/ai-sdk-demo`](https://github.com/upstash/agentkit/tree/main/examples/ai-sdk-demo).
+
+<CardGroup cols={2}>
+  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
+    Source, packages, and the full example apps.
+  </Card>
+  <Card title="Vercel AI SDK" icon="up-right-from-square" href="https://ai-sdk.dev">
+    The AI SDK this adapter plugs into.
+  </Card>
+</CardGroup>
+
+# AgentKit for the Vercel AI SDK
+Source: https://upstash.com/docs/redis/sdks/agentkit/ai-sdk
+
+[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
+conversation history, caching, and RAG, with no separate vector database. The semantic features run on
+[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+
+`@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter. It adds chat history,
+agent memory, Redis-Search tools, rate limiting, and tool caching to `generateText` / `streamText`.
+`redis` defaults to `Redis.fromEnv()`, so you import only from this package.
+
+```bash
+npm install @upstash/agentkit-ai-sdk @upstash/redis ai
+```
+
+<Note>
+  AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
+  Pass your own `@upstash/redis` client as `redis` to any helper to override.
+</Note>
+
+## How to store chat history with the AI SDK
+
+A Redis-backed `ChatHistory<UIMessage>`, the durable source of truth for your conversations. `userId`
+comes from your auth session; `chatId` is the `useChat` id that the client posts. Save the full
+transcript from your route's `onFinish`:
+
+```ts
+// app/api/chat/route.ts
+import { convertToModelMessages, createUIMessageStreamResponse, streamText, toUIMessageStream } from "ai";
+import { createChatHistory } from "@upstash/agentkit-ai-sdk";
+
+const history = createChatHistory();
+
+export async function POST(req: Request) {
+  const userId = await getSessionUserId(req); // your auth session, never a client-sent id
+  const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
+
+  const result = streamText({ model, messages: convertToModelMessages(messages) });
+
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      onFinish: ({ messages }) =>
+        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+    }),
+  });
+}
+```
+
+To load a chat, take `chatId` from the page route and `userId` from the session, then seed `useChat`:
+
+```ts
+const chat = await history.getChat({ userId, sessionId: chatId }); // full transcript, or null
+const chats = await history.listChats({ userId, limit: 50 }); // summaries, no messages
+const hits = await history.searchChats({ userId, query: "headphones", target: "both", limit: 20 });
+// client: useChat({ id: chatId, messages: chat?.messages ?? [] })
+```
+
+<AccordionGroup>
+  <Accordion title="Config and how it's stored">
+    ```ts
+    createChatHistory({
+      redis, // optional: defaults to Redis.fromEnv()
+      prefix: "agentkit:chat", // optional: base key prefix
+      indexName: "agentkit_chat", // optional: index name (defaults to the prefix)
+      ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
+    });
+    ```
+
+    Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
+    can't collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
+    `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
+    overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
+    methods: `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats`
+    (`{ userId }`).
+  </Accordion>
+  <Accordion title="Security — userId is the tenant boundary">
+    Every method takes a single object; `userId` is **required, non-empty, and may not contain `:`**.
+    Derive it from a **verified server-side auth source** — the subject/user id from your auth provider
+    (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — and **never from a client-supplied header,
+    query param, or body** (read it from the session in your route). A chat can't be read or
+    overwritten under a different `userId`.
+  </Accordion>
+</AccordionGroup>
+
+## How to add agent memory with the AI SDK
+
+`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
+
+```ts
+import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
+import { generateText, stepCountIs } from "ai";
+
+const tools = createMemoryTools({ userId });
+
+await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
+```
+
+<Accordion title="Options and the userId tenant boundary">
+  * **`userId`** _(required)_ — a string, or `(input, options) => string`.
+  * `redis` — defaults to `Redis.fromEnv()`.
+  * `topK` — max memories `recall` returns.
+  * `minScore` — BM25 relevance floor.
+  * `recallToolName` / `saveToolName` — override the tool names.
+
+  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from a **verified
+  server-side auth source** (Clerk, Auth.js/NextAuth, Supabase Auth, Auth0, …) — never a
+  client-supplied value. Memories are stored at `agentkit:memory:<userId>:<id>`.
+</Accordion>
+
+## How to add RAG with the AI SDK
+
+`search` / `aggregate` / `count` tools over an Upstash Redis Search index; the model-facing
+descriptions are generated from your schema.
+
+```ts
+import { s } from "@upstash/redis";
+import { createSearchTools } from "@upstash/agentkit-ai-sdk";
+import { generateText, stepCountIs } from "ai";
+
+const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
+const tools = createSearchTools({ schema, indexName: "users" });
+
+await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
+```
+
+<Accordion title="Options">
+  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
+  * `redis` — defaults to `Redis.fromEnv()`.
+  * `indexName` — defaults to `"agentkit:search"`.
+  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
+  * `defaultLimit` — default page size for `search` (10).
+
+  The index is created (and `waitIndexing`-ed) reactively on first use — no setup step.
+</Accordion>
+
+## How to add rate limiting with the AI SDK
+
+A configured [Upstash Ratelimit](/docs/redis/sdks/ratelimit-ts/overview). Call `.limit(identifier)` before
+the model and short-circuit when over the limit.
+
+```ts
+import { createRateLimit, Ratelimit } from "@upstash/agentkit-ai-sdk";
+
+const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(20, "1 m") });
+
+const { success } = await ratelimit.limit(userId);
+if (!success) throw new Error("rate limited"); // or return a 429 from your route
+```
+
+<Accordion title="Options">
+  * **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
+  * `redis` — the Upstash Redis client backing the limiter.
+  * `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
+
+  There's no model wrapper — pass a per-user `identifier` to `.limit()` to throttle per user.
+</Accordion>
+
+## How to cache tools with the AI SDK
+
+Memoize a map of AI SDK tools' results in Redis. Each tool is cached under its map key, scoped to
+`userId`.
+
+```ts
+import { z } from "zod";
+import { generateText, tool } from "ai";
+import { cachedTools } from "@upstash/agentkit-ai-sdk";
+
+const tools = cachedTools(
+  {
+    getWeather: tool({
+      description: "Get the weather for a city",
+      inputSchema: z.object({ city: z.string() }),
+      execute: async ({ city }) => fetchWeather(city),
+    }),
+  },
+  { userId },
+);
+
+await generateText({ model, tools, prompt: "What's the weather in Paris?" });
+```
+
+<Accordion title="Options">
+  Pass tools built with the AI SDK's `tool()` (so each keeps full input/output inference). Second arg:
+
+  * **`userId`** _(required)_ — a string, or `(input, options) => string`; scopes every entry to this user.
+  * `redis` — defaults to `Redis.fromEnv()`.
+  * `ttlSeconds` — default per-result TTL for every tool.
+
+  Cache keys are `agentkit:toolCache:<userId>:<toolName>:<hash-of-input>` — the `toolName` is the map
+  key, so you never pass a name yourself.
+</Accordion>
+
+## How to put it all together with the AI SDK
+
+A single `streamText` route can wire every feature: rate limit first, then memory, search, and cached
+tools, persisting the whole conversation in `onFinish`:
+
+```ts
+// app/api/chat/route.ts
+import { openai } from "@ai-sdk/openai";
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+  streamText,
+  stepCountIs,
+  toUIMessageStream,
+  tool,
+  type UIMessage,
+} from "ai";
+import { z } from "zod";
+import { s, Redis } from "@upstash/redis";
+import {
+  Ratelimit,
+  cachedTools,
+  createChatHistory,
+  createMemoryTools,
+  createRateLimit,
+  createSearchTools,
+} from "@upstash/agentkit-ai-sdk";
+
+export async function POST(req: Request) {
+  const { id, messages } = (await req.json()) as { id: string; messages: UIMessage[] };
+  const redis = Redis.fromEnv();
+  // Derive this from your verified auth session in production (Clerk, Auth.js, …), never a client value.
+  const userId = "user-123";
+
+  // 1. Rate limit (by user) before any model work.
+  const ratelimit = createRateLimit({ redis, limiter: Ratelimit.slidingWindow(30, "1 m") });
+  const { success } = await ratelimit.limit(userId);
+  if (!success) return new Response("Rate limited", { status: 429 });
+
+  // 2. Memory, search, and cached tools — all scoped to this user.
+  const tools = {
+    ...createMemoryTools({ redis, userId }),
+    ...createSearchTools({ schema: s.object({ title: s.string(), author: s.string() }), redis, indexName: "books" }),
+    ...cachedTools(
+      {
+        convert_price: tool({
+          description: "Convert a USD price to another currency.",
+          inputSchema: z.object({ usd: z.number(), currency: z.string() }),
+          execute: async ({ usd, currency }) => ({ currency, amount: usd * 0.92 }),
+        }),
+      },
+      { userId, redis },
+    ),
+  };
+
+  const result = streamText({
+    model: openai("gpt-5.4-mini"),
+    messages: await convertToModelMessages(messages),
+    tools,
+    stopWhen: stepCountIs(5),
+  });
+
+  // 3. Persist the whole conversation when the stream finishes.
+  const history = createChatHistory({ redis });
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      onFinish: ({ messages }) => history.saveChat({ userId, sessionId: id, messages, title: "New chat" }),
+    }),
+  });
+}
+```
+
+A complete, runnable Next.js demo (`useChat` UI, chat sidebar with fuzzy search, inline tool calls)
+lives in [`examples/ai-sdk-demo`](https://github.com/upstash/agentkit/tree/main/examples/ai-sdk-demo).
+
+<CardGroup cols={2}>
+  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
+    Source, packages, and the full example apps.
+  </Card>
+  <Card title="Vercel AI SDK" icon="up-right-from-square" href="https://ai-sdk.dev">
+    The AI SDK this adapter plugs into.
+  </Card>
+</CardGroup>
+
+# AgentKit for Vercel Eve
+Source: https://upstash.com/docs/redis/sdks/agentkit/eve
+
+[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
+conversation history, caching, and RAG, with no separate vector database. The semantic features run on
+[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+
+`@upstash/agentkit-eve` brings AgentKit to **Eve, the Vercel agent framework**. You drop these into your
+`agent/` tree: memory tools, Redis-Search tools, a rate-limit gate, an
+[Upstash Box](https://github.com/upstash/box) sandbox backend, and cached tools.
+
+```bash
+npm install @upstash/agentkit-eve @upstash/redis
+# only if you use the sandbox backend:
+npm install @upstash/box
+```
+
+Add these to your existing eve project; `eve` and your AI-SDK provider are already installed there.
+AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
+
+## How to add memory tools to Eve
+
+Long-term memory the model reads and writes itself: `recall_memory` and `save_memory`, one file each.
+
+```ts
+// agent/tools/recall_memory.ts
+import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
+
+export default defineMemoryRecallTool({
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+```ts
+// agent/tools/save_memory.ts
+import { defineMemorySaveTool } from "@upstash/agentkit-eve";
+
+export default defineMemorySaveTool({
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+<Accordion title="Options and the userId tenant boundary">
+  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
+  * `topK` — max memories `recall` returns.
+  * `minScore` — BM25 relevance floor.
+  * `redis` — defaults to `Redis.fromEnv()`.
+
+  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from Eve's **verified
+  session auth** — `ctx.session.auth.current?.principalId` — not from anything the client supplies.
+  Configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) so `principalId`
+  is trustworthy; the `?? ctx.session.id` fallback only applies to unauthenticated requests. Memories
+  are stored at `agentkit:memory:<userId>:<id>`.
+</Accordion>
+
+## How to add RAG to Eve
+
+`search` / `aggregate` / `count` Eve tools over an Upstash Redis Search index. It is the counterpart to the
+[AI SDK adapter's](/docs/redis/sdks/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk)
+`createSearchTools`. Descriptions are generated from your schema.
+
+```ts
+// agent/tools/search_books.ts
+import { s } from "@upstash/redis";
+import { defineSearchTools } from "@upstash/agentkit-eve";
+
+export default defineSearchTools({
+  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+  indexName: "books",
+}).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
+```
+
+<Accordion title="Options and the one-file-per-tool rule">
+  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
+  * `indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
+  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
+  * `defaultLimit` — default page size for `search` (10).
+  * `redis` — defaults to `Redis.fromEnv()`.
+
+  Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
+  you want — repeat the same `schema` + `indexName` across `search_books.ts` / `aggregate_books.ts` /
+  `count_books.ts`. The index is created reactively on first use, and each returned tool is already
+  `defineTool`-branded.
+</Accordion>
+
+## How to add rate limiting to Eve
+
+A ready `AuthFn` that throttles inbound requests. Drop it into your channel's
+[auth walk](https://eve.dev/docs/guides/auth-and-route-protection) ahead of your real authenticators.
+
+```ts
+// agent/channels/eve.ts
+import { createRateLimitAuth, Ratelimit } from "@upstash/agentkit-eve";
+import { localDev, vercelOidc } from "eve/channels/auth";
+import { eveChannel } from "eve/channels/eve";
+
+export default eveChannel({
+  auth: [
+    createRateLimitAuth({
+      limiter: Ratelimit.slidingWindow(20, "1 m"),
+      identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous",
+    }),
+    localDev(),
+    vercelOidc(),
+  ],
+});
+```
+
+<AccordionGroup>
+  <Accordion title="Options and the required identifier">
+    * **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
+    * **`identifier`** _(required)_ — a string, or `(request) => string`. There's no implicit `"global"`:
+      one shared bucket lets a single abusive caller exhaust the window for everyone, so derive it per
+      request (an auth user id, an API key, or `x-forwarded-for` for per-IP).
+    * `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
+    * `message` — 403 body when over the limit.
+    * `redis` — defaults to `Redis.fromEnv()`.
+
+    It's a gate: under the limit it returns `null` to fall through to the next `AuthFn`; over it throws
+    a 403.
+  </Accordion>
+  <Accordion title="Why only POST requests are counted">
+    Eve runs each turn as two authenticated requests: the message `POST` (which invokes the model) and a
+    follow-up `GET …/stream` that opens the reply stream. The auth walk runs on both, so counting both
+    would charge every turn twice. `createRateLimitAuth` counts only the `POST`s, so one turn costs one
+    token: a `Ratelimit.slidingWindow(20, "1 m")` allows 20 turns per minute, not 10. The session-read
+    `GET`s pass through unthrottled.
+  </Accordion>
+</AccordionGroup>
+
+## How to add a sandbox to Eve
+
+A drop-in replacement for Eve's `vercel()` backend, powered by
+[Upstash Box](https://github.com/upstash/box). Swap the import and keep the rest of your
+[sandbox file](https://eve.dev/docs/sandbox) the same.
+
+```ts
+// agent/sandbox.ts
+import { defineSandbox } from "eve/sandbox";
+import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: eve/sandbox/vercel
+
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  revalidationKey: () => "repo-bootstrap-v1",
+  async bootstrap({ use }) {
+    const sandbox = await use({ networkPolicy: "allow-all" }); // open egress to install packages
+    await sandbox.run({ command: "apt-get install -y jq" });
+  },
+  async onSession({ use }) {
+    await use(); // inherits the secure deny-all default
+  },
+});
+```
+
+<AccordionGroup>
+  <Accordion title="Config: Box's BoxConfig">
+    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim — whatever you'd pass to
+    `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
+    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, … — plus an optional `redis` (defaults to
+    `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below). `@upstash/box` is an
+    optional peer dependency — only needed when you import `@upstash/agentkit-eve/sandbox`.
+  </Accordion>
+  <Accordion title="Security: network egress is deny-all by default">
+    The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data
+    exfiltration / reaching your own infrastructure from inside the box. Open it per-session — in
+    `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob. Note that `env` passed
+    to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
+    it to see.
+  </Accordion>
+  <Accordion title="Lifecycle: one box per conversation">
+    **Reuse** — Eve re-opens a session several times per turn; the backend reattaches to the same Box
+    instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
+    (`keepAlive: false`) — auto-paused when idle, resumed on reattach, reaped by Box. Pass
+    `keepAlive: true` only for an always-running box you manage yourself.
+
+    **Template registry** — Eve builds your template (seed files + `bootstrap`) at build/startup, but
+    session creation runs per request in a different process, so the snapshot id is stored in a durable
+    Redis registry (`redis`, defaulting to `Redis.fromEnv()`). Eve roots its tools at `/workspace` while
+    a Box session lives at `/workspace/home`; the backend bridges the two automatically.
+  </Accordion>
+</AccordionGroup>
+
+## How to cache tools in Eve
+
+Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
+
+```ts
+// agent/tools/get_weather.ts
+import { z } from "zod";
+import { defineCachedTool } from "@upstash/agentkit-eve";
+
+export default defineCachedTool({
+  description: "Get the current weather for a city.",
+  inputSchema: z.object({ city: z.string() }),
+  execute: async ({ city }) => fetchWeather(city),
+  toolName: "get_weather",
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+<Accordion title="Options">
+  * `description` / `inputSchema` / `execute` — the usual `defineTool` fields; `execute`'s result is memoized.
+  * **`toolName`** _(required)_ — the tool segment of the cache key.
+  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`; scopes the cache per user.
+  * `ttlSeconds` — per-result TTL (default: no expiry).
+  * `redis` — defaults to `Redis.fromEnv()`.
+
+  Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
+</Accordion>
+
+## Working with Eve's `agent/` files
+
+Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it — it
+does **not** include shared `agent/`-source modules (e.g. a `agent/lib/redis.ts`). So inside `agent/`:
+
+* Import only from packages, never from other `agent/` files.
+* Lean on the defaults — **`redis` defaults to `Redis.fromEnv()`** in every helper, so you almost never pass it.
+* Repeat config (schema, names) per file rather than sharing a module.
+
+Shared app code (e.g. a seeder a page calls) lives in your project `lib/`, imported by the app — not by
+`agent/` files.
+
+## How to run the Eve example app
+
+A complete `eve` agent app (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox,
+with a chat UI that renders tool calls inline) lives in
+[`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo).
+
+<CardGroup cols={2}>
+  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
+    Source, packages, and the full example apps.
+  </Card>
+  <Card title="Eve" icon="up-right-from-square" href="https://eve.dev">
+    The Vercel agent framework this adapter targets.
+  </Card>
+</CardGroup>
+
+# AgentKit for Vercel Eve
+Source: https://upstash.com/docs/redis/sdks/agentkit/eve
+
+[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
+conversation history, caching, and RAG, with no separate vector database. The semantic features run on
+[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+
+`@upstash/agentkit-eve` brings AgentKit to **Eve, the Vercel agent framework**. You drop these into your
+`agent/` tree: memory tools, Redis-Search tools, a rate-limit gate, an
+[Upstash Box](https://github.com/upstash/box) sandbox backend, and cached tools.
+
+```bash
+npm install @upstash/agentkit-eve @upstash/redis
+# only if you use the sandbox backend:
+npm install @upstash/box
+```
+
+Add these to your existing eve project; `eve` and your AI-SDK provider are already installed there.
+AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
+
+## How to add memory tools to Eve
+
+Long-term memory the model reads and writes itself: `recall_memory` and `save_memory`, one file each.
+
+```ts
+// agent/tools/recall_memory.ts
+import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
+
+export default defineMemoryRecallTool({
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+```ts
+// agent/tools/save_memory.ts
+import { defineMemorySaveTool } from "@upstash/agentkit-eve";
+
+export default defineMemorySaveTool({
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+<Accordion title="Options and the userId tenant boundary">
+  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
+  * `topK` — max memories `recall` returns.
+  * `minScore` — BM25 relevance floor.
+  * `redis` — defaults to `Redis.fromEnv()`.
+
+  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from Eve's **verified
+  session auth** — `ctx.session.auth.current?.principalId` — not from anything the client supplies.
+  Configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) so `principalId`
+  is trustworthy; the `?? ctx.session.id` fallback only applies to unauthenticated requests. Memories
+  are stored at `agentkit:memory:<userId>:<id>`.
+</Accordion>
+
+## How to add RAG to Eve
+
+`search` / `aggregate` / `count` Eve tools over an Upstash Redis Search index. It is the counterpart to the
+[AI SDK adapter's](/docs/redis/sdks/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk)
+`createSearchTools`. Descriptions are generated from your schema.
+
+```ts
+// agent/tools/search_books.ts
+import { s } from "@upstash/redis";
+import { defineSearchTools } from "@upstash/agentkit-eve";
+
+export default defineSearchTools({
+  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+  indexName: "books",
+}).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
+```
+
+<Accordion title="Options and the one-file-per-tool rule">
+  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
+  * `indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
+  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
+  * `defaultLimit` — default page size for `search` (10).
+  * `redis` — defaults to `Redis.fromEnv()`.
+
+  Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
+  you want — repeat the same `schema` + `indexName` across `search_books.ts` / `aggregate_books.ts` /
+  `count_books.ts`. The index is created reactively on first use, and each returned tool is already
+  `defineTool`-branded.
+</Accordion>
+
+## How to add rate limiting to Eve
+
+A ready `AuthFn` that throttles inbound requests. Drop it into your channel's
+[auth walk](https://eve.dev/docs/guides/auth-and-route-protection) ahead of your real authenticators.
+
+```ts
+// agent/channels/eve.ts
+import { createRateLimitAuth, Ratelimit } from "@upstash/agentkit-eve";
+import { localDev, vercelOidc } from "eve/channels/auth";
+import { eveChannel } from "eve/channels/eve";
+
+export default eveChannel({
+  auth: [
+    createRateLimitAuth({
+      limiter: Ratelimit.slidingWindow(20, "1 m"),
+      identifier: (req) => req.headers.get("x-forwarded-for") ?? "anonymous",
+    }),
+    localDev(),
+    vercelOidc(),
+  ],
+});
+```
+
+<AccordionGroup>
+  <Accordion title="Options and the required identifier">
+    * **`limiter`** _(required)_ — e.g. `Ratelimit.slidingWindow(20, "1 m")` or `fixedWindow(...)`.
+    * **`identifier`** _(required)_ — a string, or `(request) => string`. There's no implicit `"global"`:
+      one shared bucket lets a single abusive caller exhaust the window for everyone, so derive it per
+      request (an auth user id, an API key, or `x-forwarded-for` for per-IP).
+    * `prefix` — base key prefix; keys are `<prefix>:<identifier>` (default `agentkit:rateLimit`).
+    * `message` — 403 body when over the limit.
+    * `redis` — defaults to `Redis.fromEnv()`.
+
+    It's a gate: under the limit it returns `null` to fall through to the next `AuthFn`; over it throws
+    a 403.
+  </Accordion>
+  <Accordion title="Why only POST requests are counted">
+    Eve runs each turn as two authenticated requests: the message `POST` (which invokes the model) and a
+    follow-up `GET …/stream` that opens the reply stream. The auth walk runs on both, so counting both
+    would charge every turn twice. `createRateLimitAuth` counts only the `POST`s, so one turn costs one
+    token: a `Ratelimit.slidingWindow(20, "1 m")` allows 20 turns per minute, not 10. The session-read
+    `GET`s pass through unthrottled.
+  </Accordion>
+</AccordionGroup>
+
+## How to add a sandbox to Eve
+
+A drop-in replacement for Eve's `vercel()` backend, powered by
+[Upstash Box](https://github.com/upstash/box). Swap the import and keep the rest of your
+[sandbox file](https://eve.dev/docs/sandbox) the same.
+
+```ts
+// agent/sandbox.ts
+import { defineSandbox } from "eve/sandbox";
+import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: eve/sandbox/vercel
+
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  revalidationKey: () => "repo-bootstrap-v1",
+  async bootstrap({ use }) {
+    const sandbox = await use({ networkPolicy: "allow-all" }); // open egress to install packages
+    await sandbox.run({ command: "apt-get install -y jq" });
+  },
+  async onSession({ use }) {
+    await use(); // inherits the secure deny-all default
+  },
+});
+```
+
+<AccordionGroup>
+  <Accordion title="Config: Box's BoxConfig">
+    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim — whatever you'd pass to
+    `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
+    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, … — plus an optional `redis` (defaults to
+    `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below). `@upstash/box` is an
+    optional peer dependency — only needed when you import `@upstash/agentkit-eve/sandbox`.
+  </Accordion>
+  <Accordion title="Security: network egress is deny-all by default">
+    The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data
+    exfiltration / reaching your own infrastructure from inside the box. Open it per-session — in
+    `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob. Note that `env` passed
+    to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
+    it to see.
+  </Accordion>
+  <Accordion title="Lifecycle: one box per conversation">
+    **Reuse** — Eve re-opens a session several times per turn; the backend reattaches to the same Box
+    instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
+    (`keepAlive: false`) — auto-paused when idle, resumed on reattach, reaped by Box. Pass
+    `keepAlive: true` only for an always-running box you manage yourself.
+
+    **Template registry** — Eve builds your template (seed files + `bootstrap`) at build/startup, but
+    session creation runs per request in a different process, so the snapshot id is stored in a durable
+    Redis registry (`redis`, defaulting to `Redis.fromEnv()`). Eve roots its tools at `/workspace` while
+    a Box session lives at `/workspace/home`; the backend bridges the two automatically.
+  </Accordion>
+</AccordionGroup>
+
+## How to cache tools in Eve
+
+Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
+
+```ts
+// agent/tools/get_weather.ts
+import { z } from "zod";
+import { defineCachedTool } from "@upstash/agentkit-eve";
+
+export default defineCachedTool({
+  description: "Get the current weather for a city.",
+  inputSchema: z.object({ city: z.string() }),
+  execute: async ({ city }) => fetchWeather(city),
+  toolName: "get_weather",
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+<Accordion title="Options">
+  * `description` / `inputSchema` / `execute` — the usual `defineTool` fields; `execute`'s result is memoized.
+  * **`toolName`** _(required)_ — the tool segment of the cache key.
+  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`; scopes the cache per user.
+  * `ttlSeconds` — per-result TTL (default: no expiry).
+  * `redis` — defaults to `Redis.fromEnv()`.
+
+  Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
+</Accordion>
+
+## Working with Eve's `agent/` files
+
+Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it — it
+does **not** include shared `agent/`-source modules (e.g. a `agent/lib/redis.ts`). So inside `agent/`:
+
+* Import only from packages, never from other `agent/` files.
+* Lean on the defaults — **`redis` defaults to `Redis.fromEnv()`** in every helper, so you almost never pass it.
+* Repeat config (schema, names) per file rather than sharing a module.
+
+Shared app code (e.g. a seeder a page calls) lives in your project `lib/`, imported by the app — not by
+`agent/` files.
+
+## How to run the Eve example app
+
+A complete `eve` agent app (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox,
+with a chat UI that renders tool calls inline) lives in
+[`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo).
+
+<CardGroup cols={2}>
+  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
+    Source, packages, and the full example apps.
+  </Card>
+  <Card title="Eve" icon="up-right-from-square" href="https://eve.dev">
+    The Vercel agent framework this adapter targets.
+  </Card>
+</CardGroup>
 
 - [ECHO](https://upstash.com/docs/redis/sdks/py/commands/auth/echo.md)
 - [PING](https://upstash.com/docs/redis/sdks/py/commands/auth/ping.md): Send a ping to the server and get a response if the server is alive.
