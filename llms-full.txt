@@ -25927,7 +25927,7 @@ Field must be `FAST`.
 |----------|------|----------|-------------|
 | `field` | `string` | Yes | Field to bucket on. |
 | `size` | `number` | No | Max number of buckets returned. |
-| `segmentSize` | `number` | No | Internal candidate size used while collecting top terms. |
+| `segmentSize` | `number` | No | Number of candidate terms collected per index segment before merging. Raising it improves count accuracy at higher cost; lowering it is cheaper but less accurate. See [Count accuracy](#count-accuracy). |
 | `showTermDocCountError` | `boolean` | No | Include `docCountErrorUpperBound` in output. |
 | `minDocCount` | `number` | No | Buckets with fewer docs are excluded. |
 | `order` | `object` | No | One-key order object: `{ "count": "desc" }`, `{ "key": "asc" }`, or `{ "<subAggAlias>": "desc" }`. |
@@ -25982,6 +25982,16 @@ SEARCH.AGGREGATE products '{}' '{"by_category": {"$terms": {"field": "category",
   }
 }
 ```
+
+* `sumOtherDocCount` is the number of matching documents that fell outside the returned buckets.
+
+### Count accuracy
+
+<Warning>
+`$terms` bucket counts are **approximate**. Terms are tallied per index segment and then merged, so a term's `docCount` can be slightly off, especially for terms near the `size` cutoff.
+</Warning>
+
+`docCountErrorUpperBound` reports the maximum possible error on the returned counts (set `showTermDocCountError: true` for per-bucket values), and `sumOtherDocCount` is the number of matching documents not included in the returned buckets. Raising `segmentSize` reduces the error at the cost of more work per query. For an exact count of a specific term, use [`SEARCH.COUNT`](/docs/redis/search/command-reference#searchcount) instead of reading it from a bucket.
 
 # $avg
 Source: https://upstash.com/docs/redis/search/aggregation-operators/metric-aggregations/avg
@@ -27199,6 +27209,50 @@ reflect recent changes, such as in tests or CI pipelines.
 
 ***
 
+### SEARCH.LISTINDEXES
+
+Lists all search indexes in the database.
+
+```bash
+SEARCH.LISTINDEXES [MATCH <pattern>] [LIMIT <count>] [OFFSET <offset>]
+```
+
+**Parameters:**
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `MATCH` | Filter index names by a glob-style pattern (e.g. `h*`). | All indexes |
+| `LIMIT` | Maximum number of indexes to return. | All indexes |
+| `OFFSET` | Number of indexes to skip (for pagination). | 0 |
+
+**Returns:** One entry per index, each a map of `name` and the backing `type` (`HASH` or `JSON`).
+
+**Response format (Redis CLI):**
+
+```
+[
+  ["name", "productIdx", "type", "HASH"],
+  ["name", "blogIdx", "type", "JSON"]
+]
+```
+
+<Tabs>
+<Tab title="Redis CLI">
+```bash
+SEARCH.LISTINDEXES MATCH 'product*' LIMIT 10 OFFSET 0
+```
+</Tab>
+<Tab title="curl">
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.LISTINDEXES", "MATCH", "product*", "LIMIT", "10", "OFFSET", "0"]'
+```
+</Tab>
+</Tabs>
+
+***
+
 ## Query Commands
 
 ### SEARCH.QUERY
@@ -27361,7 +27415,7 @@ Returns all aliases and the indices they point to.
 SEARCH.LISTALIASES
 ```
 
-**Returns:** An array of `[alias, index_name]` pairs.
+**Returns:** An array of `[alias, index_name]` pairs, or an empty array if no aliases exist. To list every index in the database, use [`SEARCH.LISTINDEXES`](#searchlistindexes).
 
 ***
 
@@ -28324,6 +28378,23 @@ On response, the following information is returned:
 | `prefixes` | List of tracked key prefixes             |
 | `language` | Stemming language                        |
 | `schema`   | Field definitions with types and options |
+
+### Listing Indexes
+
+`SEARCH.LISTINDEXES` lists all search indexes in the database, reporting each index's `name` and backing `type` (`HASH` or `JSON`). Optionally filter names with `MATCH` and paginate with `LIMIT` and `OFFSET`.
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.LISTINDEXES
+# Returns: [["name", "productIdx", "type", "HASH"], ["name", "blogIdx", "type", "JSON"]]
+
+SEARCH.LISTINDEXES MATCH 'product*' LIMIT 10 OFFSET 0
+```
+</Tab>
+
+</Tabs>
 
 ### Dropping an Index
 
