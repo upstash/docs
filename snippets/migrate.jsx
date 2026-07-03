@@ -16,10 +16,9 @@ export const Migrate = ({ product, cols = 3 }) => {
   ];
 
   const items = sources.filter((s) => !product || s.product === product);
-  const gridClass = "u-grid " + (cols >= 3 ? "u-grid--3" : "u-grid--2");
 
   return (
-    <div className={gridClass}>
+    <div className="u-grid u-grid--fixed3">
       {items.map((s) => (
         <div key={s.name} className="u-card u-card--static">
           <div className="u-card__icon u-card__icon--muted">⇄</div>

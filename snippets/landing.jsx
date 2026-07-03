@@ -60,10 +60,31 @@ export const AgentResources = () => {
     { name: "Context7", desc: "Up-to-date code docs for LLMs and agents.", href: "https://context7.com", glyph: "7" },
   ];
   return (
-    <div className="u-grid u-grid--fixed4">
+    <div className="u-grid u-grid--fixed2">
       {items.map((it) => (
         <a key={it.href} href={it.href} className="u-card">
           <div className="u-card__icon u-card__icon--muted">{it.glyph}</div>
+          <div className="u-card__body">
+            <div className="u-card__title">{it.name}</div>
+            <div className="u-card__desc">{it.desc}</div>
+          </div>
+        </a>
+      ))}
+    </div>
+  );
+};
+
+export const Concepts = () => {
+  const items = [
+    { name: "Serverless", desc: "No infrastructure to provision — just create and use.", href: "/common/concepts/serverless" },
+    { name: "Scale to Zero", desc: "Pay only for what you use, nothing for idle resources.", href: "/common/concepts/scale-to-zero" },
+    { name: "Global Replication", desc: "Low latency worldwide with multi-region replication.", href: "/common/concepts/global-replication" },
+    { name: "Access Anywhere", desc: "REST APIs for edge and serverless runtimes.", href: "/common/concepts/access-anywhere" },
+  ];
+  return (
+    <div className="u-grid u-grid--fixed2">
+      {items.map((it) => (
+        <a key={it.href} href={it.href} className="u-card">
           <div className="u-card__body">
             <div className="u-card__title">{it.name}</div>
             <div className="u-card__desc">{it.desc}</div>
