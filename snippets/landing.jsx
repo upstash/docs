@@ -57,13 +57,17 @@ export const AgentResources = () => {
     { name: "MCP Server", desc: "Manage Upstash from AI agents over MCP.", href: "/agent-resources/mcp", glyph: "⌘" },
     { name: "Skills", desc: "Ready-made skills for coding agents.", href: "/agent-resources/skills", glyph: "✦" },
     { name: "CLI", desc: "Manage Upstash from your terminal.", href: "/agent-resources/cli", glyph: "›" },
-    { name: "Context7", desc: "Up-to-date code docs for LLMs and agents.", href: "https://context7.com", glyph: "7" },
+    { name: "Context7", desc: "Up-to-date code docs for LLMs and agents.", href: "https://context7.com", icon: "/img/icons/context7.svg" },
   ];
   return (
     <div className="u-grid u-grid--fixed2">
       {items.map((it) => (
         <a key={it.href} href={it.href} className="u-card">
-          <div className="u-card__icon u-card__icon--muted">{it.glyph}</div>
+          {it.icon ? (
+            <img className="u-card__icon" src={it.icon} alt="" />
+          ) : (
+            <div className="u-card__icon u-card__icon--muted">{it.glyph}</div>
+          )}
           <div className="u-card__body">
             <div className="u-card__title">{it.name}</div>
             <div className="u-card__desc">{it.desc}</div>
@@ -76,15 +80,16 @@ export const AgentResources = () => {
 
 export const Concepts = () => {
   const items = [
-    { name: "Serverless", desc: "No infrastructure to provision — just create and use.", href: "/common/concepts/serverless" },
-    { name: "Scale to Zero", desc: "Pay only for what you use, nothing for idle resources.", href: "/common/concepts/scale-to-zero" },
-    { name: "Global Replication", desc: "Low latency worldwide with multi-region replication.", href: "/common/concepts/global-replication" },
-    { name: "Access Anywhere", desc: "REST APIs for edge and serverless runtimes.", href: "/common/concepts/access-anywhere" },
+    { name: "Serverless", desc: "No infrastructure to provision — just create and use.", href: "/common/concepts/serverless", glyph: "☁" },
+    { name: "Scale to Zero", desc: "Pay only for what you use, nothing for idle resources.", href: "/common/concepts/scale-to-zero", glyph: "↕" },
+    { name: "Global Replication", desc: "Low latency worldwide with multi-region replication.", href: "/common/concepts/global-replication", glyph: "◎" },
+    { name: "Access Anywhere", desc: "REST APIs for edge and serverless runtimes.", href: "/common/concepts/access-anywhere", glyph: "⇆" },
   ];
   return (
     <div className="u-grid u-grid--fixed2">
       {items.map((it) => (
         <a key={it.href} href={it.href} className="u-card">
+          <div className="u-card__icon u-card__icon--muted">{it.glyph}</div>
           <div className="u-card__body">
             <div className="u-card__title">{it.name}</div>
             <div className="u-card__desc">{it.desc}</div>
