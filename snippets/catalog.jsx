@@ -1,19 +1,19 @@
 // Single source of truth for SDKs, integrations, and demos across the docs.
 //
-// Used on the main Get Started page (all products, with a product icon per card)
-// and on each product landing (filtered via the `product` prop, icon hidden).
+// Renders custom-styled cards (see .u-card in style.css) so it looks consistent
+// on both the full-custom landing page and normal product pages. Used on the main
+// Get Started page (all products, with a product icon per card) and on each product
+// landing (filtered via `product`, icon hidden as redundant).
 //
 // NOTE (Mintlify constraint, validated): an exported component CANNOT reference a
 // sibling module-level `export const`. Mintlify compiles each export in isolation,
 // so the data array MUST live inside the component's own function body.
-// `.map`, `Card`/`CardGroup`, and cross-file imports all work fine.
 //
 // Fields: { title, description, href, product, type, featured? }
-//   product: "redis" | "vector" | "qstash" | "workflow" | "search" | "box"
-//            (or an array for multi-product entries)
+//   product: "redis" | "vector" | "qstash" | "workflow" | "search" | "box"  (or an array)
 //   type:    "sdk" | "integration" | "demo"
 
-export const Catalog = ({ product, type, featured, cols = 2 }) => {
+export const Catalog = ({ product, type, featured, cols = 3 }) => {
   const catalog = [
     // ---------- SDKs ----------
     { title: "@upstash/redis", description: "HTTP-based Redis client for serverless and edge.", href: "/redis/sdks/ts/overview", product: "redis", type: "sdk", featured: true },
@@ -70,27 +70,29 @@ export const Catalog = ({ product, type, featured, cols = 2 }) => {
       (!featured || entry.featured),
   );
 
-  // Show the product icon only on the main (cross-product) page; on a product
-  // landing the product is implicit, so the icon would be redundant.
+  // Product icon only on the main (cross-product) page; on a product landing the
+  // product is implicit, so it would be redundant noise.
   const showIcon = !product;
+  const gridClass = "u-grid " + (cols >= 3 ? "u-grid--3" : "u-grid--2");
 
   return (
-    <CardGroup cols={cols}>
+    <div className={gridClass}>
       {items.map((entry) => {
         const prod = Array.isArray(entry.product)
           ? entry.product[0]
           : entry.product;
         return (
-          <Card
-            key={entry.href}
-            title={entry.title}
-            href={entry.href}
-            icon={showIcon ? `/img/icons/${prod}.svg` : undefined}
-          >
-            {entry.description}
-          </Card>
+          <a key={entry.href} href={entry.href} className="u-card">
+            {showIcon ? (
+              <img className="u-card__icon" src={`/img/icons/${prod}.svg`} alt="" />
+            ) : null}
+            <div className="u-card__body">
+              <div className="u-card__title">{entry.title}</div>
+              <div className="u-card__desc">{entry.description}</div>
+            </div>
+          </a>
         );
       })}
-    </CardGroup>
+    </div>
   );
 };
