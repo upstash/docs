@@ -1,4 +1,4 @@
-// Full-custom landing components (used by introduction.mdx with `mode: custom`).
+// Full-custom landing components (used by introduction.mdx with `mode: frame`).
 // Styling lives in style.css (.u-* classes). Each component keeps its own data
 // locally (Mintlify compiles exports in isolation — no cross-references).
 
@@ -38,7 +38,7 @@ export const ProductGrid = () => {
     { name: "Box", desc: "Secure sandboxes for AI agents and code.", href: "/box/overall/quickstart", icon: "box" },
   ];
   return (
-    <div className="u-grid u-grid--3">
+    <div className="u-grid u-grid--fixed3">
       {products.map((p) => (
         <a key={p.href} href={p.href} className="u-card u-product">
           <img className="u-card__icon" src={`/img/icons/${p.icon}.svg`} alt="" />
@@ -52,20 +52,23 @@ export const ProductGrid = () => {
   );
 };
 
-export const Console = () => {
-  const shots = [
-    { src: "/img/getting_started/charts.png", cap: "Redis — real-time metrics" },
-    { src: "/img/ratelimit/dashboard.png", cap: "Ratelimit — analytics" },
-    { src: "/img/qstash/log.png", cap: "QStash — message logs" },
-    { src: "/img/qstash-workflow/run-view.png", cap: "Workflow — run inspector" },
+export const AgentResources = () => {
+  const items = [
+    { name: "MCP Server", desc: "Manage Upstash from AI agents over MCP.", href: "/agent-resources/mcp", glyph: "⌘" },
+    { name: "Skills", desc: "Ready-made skills for coding agents.", href: "/agent-resources/skills", glyph: "✦" },
+    { name: "CLI", desc: "Manage Upstash from your terminal.", href: "/agent-resources/cli", glyph: "›" },
+    { name: "Context7", desc: "Up-to-date code docs for LLMs and agents.", href: "https://context7.com", glyph: "7" },
   ];
   return (
-    <div className="u-grid u-grid--2">
-      {shots.map((s) => (
-        <figure key={s.src} className="u-console">
-          <img src={s.src} alt={s.cap} />
-          <figcaption className="u-console__cap">{s.cap}</figcaption>
-        </figure>
+    <div className="u-grid u-grid--fixed4">
+      {items.map((it) => (
+        <a key={it.href} href={it.href} className="u-card">
+          <div className="u-card__icon u-card__icon--muted">{it.glyph}</div>
+          <div className="u-card__body">
+            <div className="u-card__title">{it.name}</div>
+            <div className="u-card__desc">{it.desc}</div>
+          </div>
+        </a>
       ))}
     </div>
   );
