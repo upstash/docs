@@ -27,7 +27,7 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "upstash-vector (Python)", description: "Vector database client for Python.", href: "/vector/sdks/py/gettingstarted", product: "vector", type: "sdk", lang: "python" },
     { title: "@upstash/qstash", description: "Publish messages and schedule jobs over HTTP.", href: "/qstash/sdks/ts/overview", product: "qstash", type: "sdk", lang: "typescript", featured: true },
     { title: "qstash-py", description: "QStash messaging and scheduling for Python.", href: "/qstash/sdks/py/overview", product: "qstash", type: "sdk", lang: "python" },
-    { title: "@upstash/workflow", description: "Durable serverless functions and workflows.", href: "/workflow/getstarted", product: "workflow", type: "sdk", lang: "typescript", featured: true },
+    { title: "@upstash/workflow", description: "Durable serverless functions and workflows.", href: "https://github.com/upstash/workflow-js", product: "workflow", type: "sdk", lang: "typescript", featured: true },
     { title: "workflow-py", description: "Durable workflows for Python.", href: "https://github.com/upstash/workflow-py", product: "workflow", type: "sdk", lang: "python" },
     { title: "@upstash/search", description: "Full-text and semantic search client.", href: "/search/sdks/ts/getting-started", product: "search", type: "sdk", lang: "typescript", featured: true },
     { title: "upstash-search (Python)", description: "Search client for Python.", href: "/search/sdks/py/gettingstarted", product: "search", type: "sdk", lang: "python" },
@@ -56,6 +56,8 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "Pipedream", description: "Trigger Pipedream workflows from QStash.", href: "/qstash/integrations/pipedream", product: "qstash", type: "integration", lang: "typescript" },
     { title: "n8n (QStash)", description: "Publish QStash messages from n8n.", href: "/qstash/integrations/n8n", product: "qstash", type: "integration", lang: "typescript" },
     { title: "Docusaurus", description: "Add full-text search to a Docusaurus site.", href: "/search/integrations/docusaurus", product: "search", type: "integration", lang: "typescript" },
+    { title: "Documentation Crawler", description: "Crawl docs and feed them into Upstash Search.", href: "/search/tools/documentationcrawler", product: "search", type: "integration", lang: "typescript" },
+    { title: "Database Migrator", description: "Migrate your data into Upstash Search.", href: "/search/tools/databasemigrator", product: "search", type: "integration", lang: "typescript" },
 
     // ---------- Demos ----------
     { title: "Hacker News Trends", description: "Trend search over Hacker News, built on Upstash.", href: "https://hackernewstrends.com", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
