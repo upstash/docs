@@ -62,7 +62,10 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     // ---------- Demos ----------
     { title: "Hacker News Trends", description: "Trend search over Hacker News, built on Upstash.", href: "https://hackernewstrends.com", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
     { title: "Eve — Hacker News Agent", description: "A Hacker News agent built with the Vercel Eve framework.", href: "https://upstash-hackernews-eve-agent.vercel.app", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
-    { title: "AI SDK Code Interpreter", description: "Run AI-generated code in a Box sandbox.", href: "/box/guides/ai-sdk-code-interpreter", product: "box", type: "demo", lang: "typescript", featured: true },
+    { title: "Code Interpreter", description: "Run AI-generated code with the Vercel AI SDK.", href: "/box/guides/ai-sdk-code-interpreter", product: "box", type: "guide", lang: "typescript" },
+    { title: "Code Review Agent", description: "Build an AI agent that reviews code.", href: "/box/guides/code-review-agent", product: "box", type: "guide", lang: "typescript" },
+    { title: "AI File Editor", description: "Edit files with an AI agent using TanStack AI.", href: "/box/guides/tanstack-ai-file-editor", product: "box", type: "guide", lang: "typescript" },
+    { title: "Web Scraping with Playwright", description: "Scrape dynamic websites with Playwright.", href: "/box/guides/web-scraping-playwright", product: "box", type: "guide", lang: "typescript" },
     { title: "E-commerce Order Fulfillment", description: "Durable order processing with Workflow.", href: "/workflow/examples/eCommerceOrderFulfillment", product: "workflow", type: "demo", lang: "typescript", featured: true },
     { title: "Image Processing", description: "Fan-out image jobs with Workflow.", href: "/workflow/examples/imageProcessing", product: "workflow", type: "demo", lang: "typescript", featured: true },
     { title: "Customer Onboarding", description: "Multi-step onboarding flow with delays.", href: "/workflow/examples/customerOnboarding", product: "workflow", type: "demo", lang: "typescript" },
