@@ -28,8 +28,12 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "@upstash/qstash", description: "Publish messages and schedule jobs over HTTP.", href: "/qstash/sdks/ts/overview", product: "qstash", type: "sdk", lang: "typescript", featured: true },
     { title: "qstash-py", description: "QStash messaging and scheduling for Python.", href: "/qstash/sdks/py/overview", product: "qstash", type: "sdk", lang: "python" },
     { title: "@upstash/workflow", description: "Durable serverless functions and workflows.", href: "/workflow/getstarted", product: "workflow", type: "sdk", lang: "typescript", featured: true },
+    { title: "workflow-py", description: "Durable workflows for Python.", href: "https://github.com/upstash/workflow-py", product: "workflow", type: "sdk", lang: "python" },
     { title: "@upstash/search", description: "Full-text and semantic search client.", href: "/search/sdks/ts/getting-started", product: "search", type: "sdk", lang: "typescript", featured: true },
     { title: "upstash-search (Python)", description: "Search client for Python.", href: "/search/sdks/py/gettingstarted", product: "search", type: "sdk", lang: "python" },
+    { title: "@upstash/box", description: "TypeScript SDK for Upstash Box.", href: "https://github.com/upstash/box/tree/main/packages/sdk", product: "box", type: "sdk", lang: "typescript", featured: true },
+    { title: "box (Python)", description: "Python SDK for Upstash Box.", href: "https://github.com/upstash/box/tree/main/packages/python-sdk", product: "box", type: "sdk", lang: "python" },
+    { title: "Box CLI", description: "Create and manage boxes from your terminal.", href: "https://github.com/upstash/box/tree/main/packages/cli", product: "box", type: "sdk", lang: "typescript" },
 
     // ---------- Integrations ----------
     { title: "BullMQ", description: "Message queue built on Redis.", href: "/redis/integrations/bullmq", product: "redis", type: "integration", lang: "typescript", featured: true },
