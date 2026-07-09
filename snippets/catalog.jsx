@@ -12,26 +12,31 @@
 //   type:    "sdk" | "integration" | "demo"
 //   lang:    "typescript" | "python" | "ruby"  (icon in img/icons/lang/<lang>.svg)
 
-export const Catalog = ({ product, type, featured, cols = 3 }) => {
+export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
   const catalog = [
     // ---------- SDKs ----------
     { title: "@upstash/redis", description: "HTTP-based Redis client for serverless and edge.", href: "/redis/sdks/ts/overview", product: "redis", type: "sdk", lang: "typescript", featured: true },
     { title: "upstash-redis (Python)", description: "Serverless Redis client for Python.", href: "/redis/sdks/py/overview", product: "redis", type: "sdk", lang: "python" },
     { title: "@upstash/ratelimit", description: "Rate limiting for serverless, built on Redis.", href: "/redis/sdks/ratelimit-ts/overview", product: "redis", type: "sdk", lang: "typescript", featured: true },
     { title: "ratelimit (Python)", description: "Rate limiting SDK for Python.", href: "/redis/sdks/ratelimit-py/overview", product: "redis", type: "sdk", lang: "python" },
+    { title: "Realtime", description: "Real-time messaging over WebSockets.", href: "/redis/sdks/realtime", product: "redis", type: "sdk", lang: "typescript" },
+    { title: "AgentKit", description: "Agent memory, RAG, and chat history on Redis.", href: "/redis/sdks/agentkit/ai-sdk", product: "redis", type: "sdk", lang: "typescript" },
+    { title: "Redis Analytics", description: "Usage analytics for your Redis database.", href: "/redis/sdks/redis-analytics", product: "redis", type: "sdk", lang: "typescript" },
+    { title: "Agent Analytics", description: "Analytics for your AI agents.", href: "/redis/sdks/agent-analytics", product: "redis", type: "sdk", lang: "typescript" },
     { title: "@upstash/vector", description: "Vector database client for AI and LLM apps.", href: "/vector/sdks/ts/getting-started", product: "vector", type: "sdk", lang: "typescript", featured: true },
     { title: "upstash-vector (Python)", description: "Vector database client for Python.", href: "/vector/sdks/py/gettingstarted", product: "vector", type: "sdk", lang: "python" },
     { title: "@upstash/qstash", description: "Publish messages and schedule jobs over HTTP.", href: "/qstash/sdks/ts/overview", product: "qstash", type: "sdk", lang: "typescript", featured: true },
     { title: "qstash-py", description: "QStash messaging and scheduling for Python.", href: "/qstash/sdks/py/overview", product: "qstash", type: "sdk", lang: "python" },
     { title: "@upstash/workflow", description: "Durable serverless functions and workflows.", href: "/workflow/getstarted", product: "workflow", type: "sdk", lang: "typescript", featured: true },
     { title: "@upstash/search", description: "Full-text and semantic search client.", href: "/search/sdks/ts/getting-started", product: "search", type: "sdk", lang: "typescript", featured: true },
+    { title: "upstash-search (Python)", description: "Search client for Python.", href: "/search/sdks/py/gettingstarted", product: "search", type: "sdk", lang: "python" },
 
     // ---------- Integrations ----------
     { title: "BullMQ", description: "Message queue built on Redis.", href: "/redis/integrations/bullmq", product: "redis", type: "integration", lang: "typescript", featured: true },
     { title: "Drizzle", description: "Cache Drizzle ORM queries with Upstash Redis.", href: "/redis/integrations/drizzle", product: "redis", type: "integration", lang: "typescript", featured: true },
     { title: "Celery", description: "Use Upstash Redis as a Celery broker.", href: "/redis/integrations/celery", product: "redis", type: "integration", lang: "python" },
     { title: "Sidekiq", description: "Background jobs for Ruby on Upstash Redis.", href: "/redis/integrations/sidekiq", product: "redis", type: "integration", lang: "ruby" },
-    { title: "MCP Server", description: "Manage Upstash Redis from AI agents via MCP.", href: "/redis/integrations/mcp", product: "redis", type: "integration", lang: "typescript" },
+    { title: "MCP Server", description: "Manage Upstash Redis from AI agents via MCP.", href: "/agent-resources/mcp", product: "redis", type: "integration", lang: "typescript" },
     { title: "n8n (Redis)", description: "Automate workflows with Redis nodes in n8n.", href: "/redis/integrations/n8n", product: "redis", type: "integration", lang: "typescript" },
     { title: "Prometheus (Redis)", description: "Scrape Upstash Redis metrics into Prometheus.", href: "/redis/integrations/prometheus", product: "redis", type: "integration", lang: "typescript" },
     { title: "LangChain", description: "Vector store integration for LLM apps.", href: "/vector/integrations/langchain", product: "vector", type: "integration", lang: "python", featured: true },
@@ -49,6 +54,8 @@ export const Catalog = ({ product, type, featured, cols = 3 }) => {
     { title: "Docusaurus", description: "Add full-text search to a Docusaurus site.", href: "/search/integrations/docusaurus", product: "search", type: "integration", lang: "typescript" },
 
     // ---------- Demos ----------
+    { title: "Hacker News Trends", description: "Trend search over Hacker News, built on Upstash.", href: "https://hackernewstrends.com", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
+    { title: "Eve — Hacker News Agent", description: "An AI agent that explores Hacker News.", href: "https://upstash-hackernews-eve-agent.vercel.app", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
     { title: "AI SDK Code Interpreter", description: "Run AI-generated code in a Box sandbox.", href: "/box/guides/ai-sdk-code-interpreter", product: "box", type: "demo", lang: "typescript", featured: true },
     { title: "E-commerce Order Fulfillment", description: "Durable order processing with Workflow.", href: "/workflow/examples/eCommerceOrderFulfillment", product: "workflow", type: "demo", lang: "typescript", featured: true },
     { title: "Image Processing", description: "Fan-out image jobs with Workflow.", href: "/workflow/examples/imageProcessing", product: "workflow", type: "demo", lang: "typescript", featured: true },
@@ -68,7 +75,8 @@ export const Catalog = ({ product, type, featured, cols = 3 }) => {
     (entry) =>
       matchesProduct(entry) &&
       (!type || entry.type === type) &&
-      (!featured || entry.featured),
+      (!featured || entry.featured) &&
+      (!search || entry.search),
   );
 
   const gridClass = "u-grid " + (cols >= 3 ? "u-grid--3" : "u-grid--2");
