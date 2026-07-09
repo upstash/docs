@@ -19,10 +19,10 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "upstash-redis (Python)", description: "Serverless Redis client for Python.", href: "/redis/sdks/py/overview", product: "redis", type: "sdk", lang: "python" },
     { title: "@upstash/ratelimit", description: "Rate limiting for serverless, built on Redis.", href: "/redis/sdks/ratelimit-ts/overview", product: "redis", type: "sdk", lang: "typescript", featured: true },
     { title: "ratelimit (Python)", description: "Rate limiting SDK for Python.", href: "/redis/sdks/ratelimit-py/overview", product: "redis", type: "sdk", lang: "python" },
-    { title: "Realtime", description: "Real-time messaging over WebSockets.", href: "/redis/sdks/realtime", product: "redis", type: "sdk", lang: "typescript" },
+    { title: "Realtime", description: "Add realtime features to any Next.js app.", href: "/redis/sdks/realtime", product: "redis", type: "sdk", lang: "typescript" },
     { title: "AgentKit", description: "Agent memory, RAG, and chat history on Redis.", href: "/redis/sdks/agentkit/ai-sdk", product: "redis", type: "sdk", lang: "typescript" },
-    { title: "Redis Analytics", description: "Usage analytics for your Redis database.", href: "/redis/sdks/redis-analytics", product: "redis", type: "sdk", lang: "typescript" },
-    { title: "Agent Analytics", description: "Analytics for your AI agents.", href: "/redis/sdks/agent-analytics", product: "redis", type: "sdk", lang: "typescript" },
+    { title: "Redis Analytics", description: "Event tracking, flags, and A/B testing, powered by Redis.", href: "/redis/sdks/redis-analytics", product: "redis", type: "sdk", lang: "typescript" },
+    { title: "Agent Analytics", description: "Track AI agent traffic hitting your website.", href: "/redis/sdks/agent-analytics", product: "redis", type: "sdk", lang: "typescript" },
     { title: "@upstash/vector", description: "Vector database client for AI and LLM apps.", href: "/vector/sdks/ts/getting-started", product: "vector", type: "sdk", lang: "typescript", featured: true },
     { title: "upstash-vector (Python)", description: "Vector database client for Python.", href: "/vector/sdks/py/gettingstarted", product: "vector", type: "sdk", lang: "python" },
     { title: "@upstash/qstash", description: "Publish messages and schedule jobs over HTTP.", href: "/qstash/sdks/ts/overview", product: "qstash", type: "sdk", lang: "typescript", featured: true },
@@ -59,7 +59,7 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
 
     // ---------- Demos ----------
     { title: "Hacker News Trends", description: "Trend search over Hacker News, built on Upstash.", href: "https://hackernewstrends.com", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
-    { title: "Eve — Hacker News Agent", description: "An AI agent that explores Hacker News.", href: "https://upstash-hackernews-eve-agent.vercel.app", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
+    { title: "Eve — Hacker News Agent", description: "A Hacker News agent built with the Vercel Eve framework.", href: "https://upstash-hackernews-eve-agent.vercel.app", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
     { title: "AI SDK Code Interpreter", description: "Run AI-generated code in a Box sandbox.", href: "/box/guides/ai-sdk-code-interpreter", product: "box", type: "demo", lang: "typescript", featured: true },
     { title: "E-commerce Order Fulfillment", description: "Durable order processing with Workflow.", href: "/workflow/examples/eCommerceOrderFulfillment", product: "workflow", type: "demo", lang: "typescript", featured: true },
     { title: "Image Processing", description: "Fan-out image jobs with Workflow.", href: "/workflow/examples/imageProcessing", product: "workflow", type: "demo", lang: "typescript", featured: true },
