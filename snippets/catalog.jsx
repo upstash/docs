@@ -29,6 +29,7 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "qstash-py", description: "QStash messaging and scheduling for Python.", href: "/qstash/sdks/py/overview", product: "qstash", type: "sdk", lang: "python" },
     { title: "@upstash/workflow", description: "Durable serverless functions and workflows.", href: "https://github.com/upstash/workflow-js", product: "workflow", type: "sdk", lang: "typescript", featured: true },
     { title: "workflow-py", description: "Durable workflows for Python.", href: "https://github.com/upstash/workflow-py", product: "workflow", type: "sdk", lang: "python" },
+    { title: "Workflow Agents", description: "Reliable single and multi-agent workflows.", href: "/workflow/agents/overview", product: "workflow", type: "sdk", lang: "typescript" },
     { title: "@upstash/search", description: "Full-text and semantic search client.", href: "/search/sdks/ts/getting-started", product: "search", type: "sdk", lang: "typescript", featured: true },
     { title: "upstash-search (Python)", description: "Search client for Python.", href: "/search/sdks/py/gettingstarted", product: "search", type: "sdk", lang: "python" },
     { title: "@upstash/box", description: "TypeScript SDK for Upstash Box.", href: "https://github.com/upstash/box/tree/main/packages/sdk", product: "box", type: "sdk", lang: "typescript", featured: true },
@@ -62,10 +63,10 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     // ---------- Demos ----------
     { title: "Hacker News Trends", description: "Trend search over Hacker News, built on Upstash.", href: "https://hackernewstrends.com", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
     { title: "Eve — Hacker News Agent", description: "A Hacker News agent built with the Vercel Eve framework.", href: "https://upstash-hackernews-eve-agent.vercel.app", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
-    { title: "Code Interpreter", description: "Run AI-generated code with the Vercel AI SDK.", href: "/box/guides/ai-sdk-code-interpreter", product: "box", type: "guide", lang: "typescript" },
-    { title: "Code Review Agent", description: "Build an AI agent that reviews code.", href: "/box/guides/code-review-agent", product: "box", type: "guide", lang: "typescript" },
-    { title: "AI File Editor", description: "Edit files with an AI agent using TanStack AI.", href: "/box/guides/tanstack-ai-file-editor", product: "box", type: "guide", lang: "typescript" },
-    { title: "Web Scraping with Playwright", description: "Scrape dynamic websites with Playwright.", href: "/box/guides/web-scraping-playwright", product: "box", type: "guide", lang: "typescript" },
+    { title: "OpenClaw", description: "Run OpenClaw inside an Upstash Box.", href: "/box/guides/openclaw-setup", product: "box", type: "guide" },
+    { title: "Hermes", description: "Run the Hermes agent inside a Box.", href: "/box/guides/hermes-setup", product: "box", type: "guide" },
+    { title: "Crabbox", description: "Run your test suite in a Box from your local CLI.", href: "/box/guides/crabbox-setup", product: "box", type: "guide" },
+    { title: "Web Scraping with Playwright", description: "Scrape dynamic websites with Playwright.", href: "/box/guides/web-scraping-playwright", product: "box", type: "guide" },
     { title: "E-commerce Order Fulfillment", description: "Durable order processing with Workflow.", href: "/workflow/examples/eCommerceOrderFulfillment", product: "workflow", type: "demo", lang: "typescript", featured: true },
     { title: "Image Processing", description: "Fan-out image jobs with Workflow.", href: "/workflow/examples/imageProcessing", product: "workflow", type: "demo", lang: "typescript", featured: true },
     { title: "Customer Onboarding", description: "Multi-step onboarding flow with delays.", href: "/workflow/examples/customerOnboarding", product: "workflow", type: "demo", lang: "typescript" },
@@ -94,11 +95,13 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     <div className={gridClass}>
       {items.map((entry) => (
         <a key={entry.href} href={entry.href} className="u-card">
-          <img
-            className="u-card__icon"
-            src={`/img/icons/lang/${entry.lang}.${entry.lang === "ruby" ? "png" : "svg"}`}
-            alt={entry.lang}
-          />
+          {entry.lang ? (
+            <img
+              className="u-card__icon"
+              src={`/img/icons/lang/${entry.lang}.${entry.lang === "ruby" ? "png" : "svg"}`}
+              alt={entry.lang}
+            />
+          ) : null}
           <div className="u-card__body">
             <div className="u-card__title">{entry.title}</div>
             <div className="u-card__desc">{entry.description}</div>

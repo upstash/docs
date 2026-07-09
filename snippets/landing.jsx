@@ -9,14 +9,6 @@ export const Hero = () => (
       Serverless data and messaging — Redis, Vector, QStash, Workflow, Search,
       and Box. Scale to zero, pay per request.
     </p>
-    <div className="u-cta">
-      <a className="u-btn u-btn--primary" href="/redis/overall/getstarted">
-        Get started
-      </a>
-      <a className="u-btn u-btn--ghost" href="#products">
-        Browse products
-      </a>
-    </div>
   </div>
 );
 
