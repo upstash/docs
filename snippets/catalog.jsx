@@ -91,7 +91,7 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
         <a key={entry.href} href={entry.href} className="u-card">
           <img
             className="u-card__icon"
-            src={`/img/icons/lang/${entry.lang}.svg`}
+            src={`/img/icons/lang/${entry.lang}.${entry.lang === "ruby" ? "png" : "svg"}`}
             alt={entry.lang}
           />
           <div className="u-card__body">
