@@ -1,4 +1,4 @@
-// "Migrate to Upstash" stub. Guides are added later — for now this renders the
+// "Migrate to Upstash" stub. Guides are added later; for now this renders the
 // grid of source platforms in a "coming soon" state. Cards are intentionally
 // link-less until the destination pages exist.
 //
