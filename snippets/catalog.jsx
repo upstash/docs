@@ -98,7 +98,7 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
           {entry.lang ? (
             <img
               className="u-card__icon"
-              src={`/img/icons/lang/${entry.lang}.${entry.lang === "ruby" ? "png" : "svg"}`}
+              src={`https://upstash.com/docs/img/icons/lang/${entry.lang}.${entry.lang === "ruby" ? "png" : "svg"}`}
               alt={entry.lang}
             />
           ) : null}
