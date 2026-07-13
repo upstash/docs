@@ -23,6 +23,7 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "AgentKit", description: "Agent memory, RAG, and chat history on Redis.", href: "/redis/sdks/agentkit/ai-sdk", product: "redis", type: "sdk", lang: "typescript" },
     { title: "Redis Analytics", description: "Event tracking, flags, and A/B testing, powered by Redis.", href: "https://github.com/upstash/redis-analytics", product: "redis", type: "sdk", lang: "typescript" },
     { title: "Agent Analytics", description: "Track AI agent traffic hitting your website.", href: "https://github.com/upstash/agent-analytics", product: "redis", type: "sdk", lang: "typescript" },
+    { title: "MCP Server", description: "Manage Upstash Redis from AI agents via MCP.", href: "/redis/sdks/mcp", product: "redis", type: "sdk", lang: "typescript" },
     { title: "@upstash/vector", description: "Vector database client for AI and LLM apps.", href: "/vector/sdks/ts/getting-started", product: "vector", type: "sdk", lang: "typescript", featured: true },
     { title: "upstash-vector (Python)", description: "Vector database client for Python.", href: "/vector/sdks/py/gettingstarted", product: "vector", type: "sdk", lang: "python" },
     { title: "@upstash/qstash", description: "Publish messages and schedule jobs over HTTP.", href: "/qstash/sdks/ts/overview", product: "qstash", type: "sdk", lang: "typescript", featured: true },
@@ -41,7 +42,6 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "Drizzle", description: "Cache Drizzle ORM queries with Upstash Redis.", href: "/redis/integrations/drizzle", product: "redis", type: "integration", lang: "typescript", featured: true },
     { title: "Celery", description: "Use Upstash Redis as a Celery broker.", href: "/redis/integrations/celery", product: "redis", type: "integration", lang: "python" },
     { title: "Sidekiq", description: "Background jobs for Ruby on Upstash Redis.", href: "/redis/integrations/sidekiq", product: "redis", type: "integration", lang: "ruby" },
-    { title: "MCP Server", description: "Manage Upstash Redis from AI agents via MCP.", href: "/agent-resources/mcp", product: "redis", type: "integration", lang: "typescript" },
     { title: "n8n (Redis)", description: "Automate workflows with Redis nodes in n8n.", href: "/redis/integrations/n8n", product: "redis", type: "integration", lang: "typescript" },
     { title: "Prometheus (Redis)", description: "Scrape Upstash Redis metrics into Prometheus.", href: "/redis/integrations/prometheus", product: "redis", type: "integration", lang: "typescript" },
     { title: "LangChain", description: "Vector store integration for LLM apps.", href: "/vector/integrations/langchain", product: "vector", type: "integration", lang: "python", featured: true },
@@ -56,9 +56,9 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "Datadog", description: "Monitor QStash with Datadog.", href: "/qstash/integrations/datadog", product: "qstash", type: "integration", lang: "typescript" },
     { title: "Pipedream", description: "Trigger Pipedream workflows from QStash.", href: "/qstash/integrations/pipedream", product: "qstash", type: "integration", lang: "typescript" },
     { title: "n8n (QStash)", description: "Publish QStash messages from n8n.", href: "/qstash/integrations/n8n", product: "qstash", type: "integration", lang: "typescript" },
-    { title: "Docusaurus", description: "Add full-text search to a Docusaurus site.", href: "/search/integrations/docusaurus", product: "search", type: "integration", lang: "typescript" },
     { title: "Documentation Crawler", description: "Crawl docs and feed them into Upstash Search.", href: "/search/tools/documentationcrawler", product: "search", type: "integration", lang: "typescript" },
     { title: "Database Migrator", description: "Migrate your data into Upstash Search.", href: "/search/tools/databasemigrator", product: "search", type: "integration", lang: "typescript" },
+    { title: "Docusaurus", description: "Add full-text search to a Docusaurus site.", href: "/search/integrations/docusaurus", product: "search", type: "integration", lang: "typescript" },
 
     // ---------- Demos ----------
     { title: "Hacker News Trends", description: "Trend search over Hacker News, built on Upstash.", href: "https://hackernewstrends.com", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
