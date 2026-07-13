@@ -33,7 +33,9 @@ export const ProductGrid = () => {
     <div className="u-grid u-grid--fixed3">
       {products.map((p) => (
         <a key={p.href} href={p.href} className="u-card u-product">
-          <img className="u-card__icon" src={`/img/icons/${p.icon}.svg`} alt="" />
+          {/* absolute URL: Mintlify only rewrites literal src attrs to its CDN, and
+              the raw /img path 404s under the upstash.com/docs base path */}
+          <img className="u-card__icon" src={`https://upstash.com/docs/img/icons/${p.icon}.svg`} alt="" />
           <div className="u-card__body">
             <div className="u-card__title">{p.name}</div>
             <div className="u-card__desc">{p.desc}</div>
@@ -50,7 +52,7 @@ export const AgentResources = () => {
     { name: "MCP Server", desc: "Manage Upstash from AI agents over MCP.", href: "/agent-resources/mcp", paths: ["M7 12l5 5l-1.5 1.5a3.536 3.536 0 1 1 -5 -5l1.5 -1.5", "M17 12l-5 -5l1.5 -1.5a3.536 3.536 0 1 1 5 5l-1.5 1.5", "M3 21l2.5 -2.5", "M18.5 5.5l2.5 -2.5", "M10 11l-2 2", "M13 14l-2 2"] },
     { name: "Skills", desc: "Ready-made skills for coding agents.", href: "/agent-resources/skills", paths: ["M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2m0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2m-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6"] },
     { name: "CLI", desc: "Manage Upstash from your terminal.", href: "/agent-resources/cli", paths: ["M8 9l3 3l-3 3", "M13 15l3 0", "M3 6a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2l0 -12"] },
-    { name: "Context7", desc: "Up-to-date code docs for LLMs and agents.", href: "https://context7.com", icon: "/img/icons/context7.svg" },
+    { name: "Context7", desc: "Up-to-date code docs for LLMs and agents.", href: "https://context7.com", icon: "https://upstash.com/docs/img/icons/context7.svg" },
   ];
   return (
     <div className="u-grid u-grid--fixed2">
