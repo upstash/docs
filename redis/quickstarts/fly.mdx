@@ -10,7 +10,7 @@ title: "Fly.io"
   Fly.io has a native integration with Upstash where the databases are hosted in
   Fly. You can still access a Redis from Fly to Upstash but for the best
   latency, we recommend creating Redis (Upstash) inside Fly platform. Check
-  [here](https://fly.io/docs/reference/redis/) for details.
+  [here](https://fly.io/docs/upstash/redis/) for details.
 </Info>
 
 In this tutorial, we'll walk you through the process of deploying a Redis by
@@ -21,24 +21,23 @@ adapted to other languages and frameworks.
 ### Redis Setup
 
 Create a Redis database using
-[Fly CLI](https://fly.io/docs/hands-on/install-flyctl/)
+[Fly CLI](https://fly.io/docs/flyctl/install/)
 
 ```shell
 > flyctl redis create
 ? Select Organization: upstash (upstash)
 ? Choose a Redis database name (leave blank to generate one):
 ? Choose a primary region (can't be changed later) San Jose, California (US) (sjc)
-
-Upstash Redis can evict objects when memory is full. This is useful when caching in Redis. This setting can be changed later.
-Learn more at https://fly.io/docs/reference/redis/#memory-limits-and-object-eviction-policies
-? Would you like to enable eviction? No
 ? Optionally, choose one or more replica regions (can be changed later):
-? Select an Upstash Redis plan 3G: 3 GB Max Data Size
+? Select an Upstash Redis plan Pay As You Go
 
 Your Upstash Redis database silent-tree-6201 is ready.
 Apps in the upstash org can connect to at redis://default:978ba2e07tyrt67598acd8ac916a@fly-silent-tree-6201.upstash.io
 If you have redis-cli installed, use fly redis connect to connect to your database.
 ```
+
+Upstash Redis on Fly.io offers a pay-as-you-go plan as well as fixed-size plans.
+See [the Fly.io docs](https://fly.io/docs/upstash/redis/) for current pricing.
 
 ### Set up the Node.js application
 
@@ -49,23 +48,27 @@ If you have redis-cli installed, use fly redis connect to connect to your databa
 
 ```js
 const express = require("express");
-const redis = require("redis");
-const { promisify } = require("util");
+const { createClient } = require("redis");
 
 const app = express();
-const client = redis.createClient(process.env.REDIS_URL);
+const client = createClient({ url: process.env.REDIS_URL });
 
-const getAsync = promisify(client.get).bind(client);
-const setAsync = promisify(client.set).bind(client);
+client.on("error", (err) => console.error("Redis Client Error", err));
 
 app.get("/", async (req, res) => {
-  const value = await getAsync("counter");
-  await setAsync("counter", parseInt(value || 0) + 1);
+  const value = await client.get("counter");
+  await client.set("counter", parseInt(value || 0) + 1);
   res.send(`Hello, visitor number ${value || 0}!`);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+async function start() {
+  await client.connect();
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
+
+start();
 ```
 
 This code creates a simple Express server that increments a counter in Redis and
@@ -73,18 +76,18 @@ returns the visitor number.
 
 ### Configure the Fly.io application
 
-- Run `fly init "your-app-name"` to initialize a new Fly.io application.
-- Choose the "Node.js (14.x)" builder, and accept the defaults for the remaining
-  prompts.
-- Open the `fly.toml` file that was generated and add the following environment
-  variable under the `[[services]]` section:
+- Run `fly launch` to initialize a new Fly.io application, and accept the
+  defaults for the prompts.
+- Since the Redis URL contains your database password, store it as a secret
+  instead of putting it in `fly.toml`:
 
-```toml
-[env]
-  REDIS_URL = "<your-upstash-redis-url>"
+```shell
+fly secrets set REDIS_URL="<your-upstash-redis-url>"
 ```
 
 Replace `your-upstash-redis-url` with the Redis URL from your Upstash instance.
+The secret is made available to your application as the `REDIS_URL` environment
+variable.
 
 ### Deploy the application to Fly.io
 
@@ -153,21 +156,24 @@ In your application, you should typically use an environment variable for the Re
 Here's an example in a Node.js application:
 
 ```js
-const redis = require("redis");
+const { createClient } = require("redis");
 
 // Local Redis URL for development
-const LOCAL_REDIS_URL = 'redis://localhost:10000'; // Replace with your actual local address
-const REDIS_URL = process.env.NODE_ENV === 'development' ? LOCAL_REDIS_URL : process.env.REDIS_URL;
+const LOCAL_REDIS_URL = "redis://localhost:10000"; // Replace with your actual local address
+const REDIS_URL =
+  process.env.NODE_ENV === "development" ? LOCAL_REDIS_URL : process.env.REDIS_URL;
 
-const client = redis.createClient({
-    url: REDIS_URL
-});
+const client = createClient({ url: REDIS_URL });
 
-client.on("error", function(error) {
-  console.error(error);
-});
+client.on("error", (err) => console.error("Redis Client Error", err));
 
-// Rest of your Redis-related code
+async function main() {
+  await client.connect();
+
+  // Rest of your Redis-related code
+}
+
+main();
 ```
 
 ##### Step 3: Running Your Application Locally
