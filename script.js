@@ -119,6 +119,98 @@ function initialize() {
 
 initialize();
 
+/* On hard loads of /introduction (mode: frame + custom landing content),
+   Mintlify sometimes mis-measures its fixed sidebar during hydration and sets a
+   negative inline `top` on #sidebar (e.g. -604px), leaving the sidebar stuck
+   under the header showing the tail of the nav. Any real scroll makes Mintlify
+   re-measure and snap it back, so reproduce that: scroll 1px down, restore next
+   frame. Nudge whenever the page lands on /introduction (Mintlify stamps
+   data-current-path on <html> after hydration / on SPA navs) and whenever
+   #sidebar's inline top goes negative — which is never a legitimate state. */
+let sidebarNudging = false;
+function nudgeSidebar() {
+  if (sidebarNudging) return;
+  sidebarNudging = true;
+  // double rAF: let any in-flight reflow finish before nudging
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const x = window.scrollX;
+      const y = window.scrollY;
+      window.scrollTo(x, y + 1);
+      requestAnimationFrame(() => {
+        window.scrollTo(x, y);
+        window.dispatchEvent(new Event("resize"));
+        sidebarNudging = false;
+      });
+    });
+  });
+}
+
+function isSidebarBroken() {
+  const sidebar = document.getElementById("sidebar");
+  if (!sidebar) return false;
+  const top = parseFloat(sidebar.style.top);
+  if (!(top < 0)) return false;
+  // Negative top is legitimate only while the footer is in (or near) view:
+  // Mintlify raises the sidebar to clear it, updating top on every scroll —
+  // nudging then loops against Mintlify's own updates and shakes the page.
+  // A negative top with the footer nowhere near the viewport is the
+  // hydration mis-measure (happens at any restored scroll position).
+  const footer = document.querySelector("footer");
+  if (!footer) return true;
+  return footer.getBoundingClientRect().top > window.innerHeight + 200;
+}
+
+function watchIntroductionSidebar() {
+  let watchedSidebar = null;
+  let autoRepairs = 0;
+  const styleObserver = new MutationObserver(() => {
+    // cap observer-driven repairs as a backstop against any feedback loop
+    if (autoRepairs < 5 && isSidebarBroken()) {
+      autoRepairs++;
+      nudgeSidebar();
+    }
+  });
+
+  const check = () => {
+    const path = document.documentElement.getAttribute("data-current-path");
+    if (path !== "/introduction") return;
+    // React can recreate #sidebar across SPA navs; re-attach when it changes
+    const sidebar = document.getElementById("sidebar");
+    if (sidebar && sidebar !== watchedSidebar) {
+      watchedSidebar = sidebar;
+      styleObserver.disconnect();
+      styleObserver.observe(sidebar, {
+        attributes: true,
+        attributeFilter: ["style"],
+      });
+    }
+    if (isSidebarBroken()) nudgeSidebar();
+  };
+
+  let lastPath = null;
+  new MutationObserver(() => {
+    const path = document.documentElement.getAttribute("data-current-path");
+    if (path === lastPath) return;
+    lastPath = path;
+    if (path === "/introduction") {
+      autoRepairs = 0;
+      // landing on the page always gets one nudge: it also covers the reflow
+      // from style.css collapsing the ToC column after the attribute lands
+      nudgeSidebar();
+      check();
+    }
+  }).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-current-path"],
+  });
+
+  window.addEventListener("load", check);
+  check();
+}
+
+watchIntroductionSidebar();
+
 function createCookieConsentBanner() {
   if (document.getElementById("cookie-consent-banner")) return;
 
