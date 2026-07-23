@@ -46,10 +46,16 @@ const FULL_TXT_SKIP = [
 ];
 
 /**
- * Snippet injected at the top of both llms.txt and llms-full.txt. Surfaces
- * the "free scratch Redis DB" hint to AI agents reading the bundle.
+ * Preamble injected at the top of both llms.txt and llms-full.txt. Surfaces
+ * the "free scratch Redis DB" hint and agent tooling to AI agents reading
+ * the bundle. Inlined here (rather than referencing a `_snippets/` file) so
+ * the text always lands in the generated output.
  */
-const PREAMBLE_SNIPPET = "redis/start-redis-snippet.mdx";
+const PREAMBLE = `<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to \`https://upstash.com/start-redis\` — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+
+  Upstash also provides an MCP server (/docs/agent-resources/mcp) to manage and debug your Upstash resources directly from an agent, and an agent-friendly CLI (/docs/agent-resources/cli) for your terminal or CI/CD pipelines.
+</Tip>`;
 
 interface Entry {
   title: string;
@@ -160,8 +166,7 @@ function addOrphanMdxFiles(): void {
 
 function writeLlmsTxt(): void {
   const lines: string[] = ["# Upstash Documentation", ""];
-  const preamble = loadSnippet(PREAMBLE_SNIPPET);
-  if (preamble) lines.push(preamble, "");
+  lines.push(PREAMBLE, "");
   lines.push("## Docs", "");
   for (const e of entries) {
     const url = `${SITE_URL}/${e.path}.md`;
@@ -201,8 +206,7 @@ function writeLlmsFullTxt(): void {
   // contributes; pages always carry leading/trailing blanks so they stay
   // visually separated from neighbours.
   const chunks: string[] = [];
-  const preamble = loadSnippet(PREAMBLE_SNIPPET);
-  if (preamble) chunks.push(`${preamble}\n\n`);
+  chunks.push(`${PREAMBLE}\n\n`);
   for (const e of entries) {
     if (isExcludedFromFullTxt(e.path)) {
       const url = `${SITE_URL}/${e.path}.md`;
