@@ -119,62 +119,45 @@ function initialize() {
 
 initialize();
 
-/* On hard loads of /introduction (mode: frame + custom landing content),
-   Mintlify sometimes mis-measures its fixed sidebar during hydration and sets a
-   negative inline `top` on #sidebar (e.g. -604px), leaving the sidebar stuck
-   under the header showing the tail of the nav. Any real scroll makes Mintlify
-   re-measure and snap it back, so reproduce that: scroll 1px down, restore next
-   frame. Nudge whenever the page lands on /introduction (Mintlify stamps
-   data-current-path on <html> after hydration / on SPA navs) and whenever
-   #sidebar's inline top goes negative — which is never a legitimate state. */
-let sidebarNudging = false;
-function nudgeSidebar() {
-  if (sidebarNudging) return;
-  sidebarNudging = true;
-  // double rAF: let any in-flight reflow finish before nudging
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      const x = window.scrollX;
-      const y = window.scrollY;
-      window.scrollTo(x, y + 1);
-      requestAnimationFrame(() => {
-        window.scrollTo(x, y);
-        window.dispatchEvent(new Event("resize"));
-        sidebarNudging = false;
-      });
-    });
-  });
-}
-
-function isSidebarBroken() {
+/* Mintlify positions the fixed #sidebar with an inline `top` computed in a
+   window "scroll" listener (handleFooterAndSidebarScrollTop): when the footer
+   enters the viewport it shifts the sidebar up (negative top) to clear it, and
+   nothing but another scroll event ever recomputes it. If the page height
+   changes after a measurement (the /introduction body is client-rendered, so
+   the pre-hydration page is short with the footer in view), the sidebar is
+   left stuck above the viewport. style.css reserves min-height:100vh on
+   #content so that short state can't be painted or measured in the first
+   place; this watcher is a backstop for residual cases (e.g. the browser
+   clamping a restored scroll position against the not-yet-grown page). Heal by
+   re-running Mintlify's own listener with a synthetic scroll event: no actual
+   scrolling, so nothing visibly moves - and unlike the old 1px scroll nudge it
+   also works when the page is too short to scroll at all, which is exactly the
+   state the bug is born in. */
+function sidebarLooksBroken() {
   const sidebar = document.getElementById("sidebar");
   if (!sidebar) return false;
   const top = parseFloat(sidebar.style.top);
   if (!(top < 0)) return false;
-  // Negative top is legitimate only while the footer is in (or near) view:
-  // Mintlify raises the sidebar to clear it, updating top on every scroll —
-  // nudging then loops against Mintlify's own updates and shakes the page.
-  // A negative top with the footer nowhere near the viewport is the
-  // hydration mis-measure (happens at any restored scroll position).
-  const footer = document.querySelector("footer");
+  // Negative top is legitimate while the footer is in (or near) view; broken
+  // is negative top with the footer nowhere near the viewport.
+  const footer = document.getElementById("footer");
   if (!footer) return true;
   return footer.getBoundingClientRect().top > window.innerHeight + 200;
 }
 
-function watchIntroductionSidebar() {
+function watchSidebar() {
   let watchedSidebar = null;
-  let autoRepairs = 0;
+  // cap repairs per page as a guard against fighting a future Mintlify version
+  let repairs = 0;
+  const repair = () => {
+    if (repairs++ < 10) window.dispatchEvent(new Event("scroll"));
+  };
+
   const styleObserver = new MutationObserver(() => {
-    // cap observer-driven repairs as a backstop against any feedback loop
-    if (autoRepairs < 5 && isSidebarBroken()) {
-      autoRepairs++;
-      nudgeSidebar();
-    }
+    if (sidebarLooksBroken()) repair();
   });
 
-  const check = () => {
-    const path = document.documentElement.getAttribute("data-current-path");
-    if (path !== "/introduction") return;
+  const attach = () => {
     // React can recreate #sidebar across SPA navs; re-attach when it changes
     const sidebar = document.getElementById("sidebar");
     if (sidebar && sidebar !== watchedSidebar) {
@@ -185,31 +168,22 @@ function watchIntroductionSidebar() {
         attributeFilter: ["style"],
       });
     }
-    if (isSidebarBroken()) nudgeSidebar();
+    if (sidebarLooksBroken()) repair();
   };
 
-  let lastPath = null;
   new MutationObserver(() => {
-    const path = document.documentElement.getAttribute("data-current-path");
-    if (path === lastPath) return;
-    lastPath = path;
-    if (path === "/introduction") {
-      autoRepairs = 0;
-      // landing on the page always gets one nudge: it also covers the reflow
-      // from style.css collapsing the ToC column after the attribute lands
-      nudgeSidebar();
-      check();
-    }
+    repairs = 0;
+    attach();
   }).observe(document.documentElement, {
     attributes: true,
     attributeFilter: ["data-current-path"],
   });
 
-  window.addEventListener("load", check);
-  check();
+  window.addEventListener("load", attach);
+  attach();
 }
 
-watchIntroductionSidebar();
+watchSidebar();
 
 function createCookieConsentBanner() {
   if (document.getElementById("cookie-consent-banner")) return;
