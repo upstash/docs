@@ -1176,6 +1176,115 @@ hermes gateway start > gateway.log 2>&1 &
 
 This command runs automatically whenever the box starts, so your gateway is always available without manual intervention.
 
+# LangChain Deep Agents
+Source: https://upstash.com/docs/box/guides/langchain-deep-agents
+
+In this guide we'll give a [LangChain Deep Agent](https://docs.langchain.com/oss/python/deepagents/overview) a real computer to work in. The [`langchain-upstash-box`](https://pypi.org/project/langchain-upstash-box/) package wraps an Upstash Box (a secure, isolated cloud container with a full Linux shell, filesystem, git, and a runtime) as a Deep Agents [sandbox backend](https://docs.langchain.com/oss/python/deepagents/backends). The agent's shell and file tools then run inside the box instead of on your machine.
+
+***
+
+## 1. Installation
+
+<CodeGroup>
+
+```bash pip
+pip install langchain-upstash-box
+```
+
+```bash uv
+uv add langchain-upstash-box
+```
+
+</CodeGroup>
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box) and export it:
+
+```bash
+export UPSTASH_BOX_API_KEY="box_xxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+***
+
+## 2. Create a sandbox backend
+
+`UpstashBoxSandbox.create()` provisions a new box, waits until it is ready, and returns a backend that implements the Deep Agents `SandboxBackendProtocol`:
+
+<Info>
+The API key and base URL can also be passed directly as `api_key=` and `base_url=` arguments instead of the `UPSTASH_BOX_API_KEY` and `UPSTASH_BOX_BASE_URL` environment variables. The base URL defaults to `https://us-east-1.box.upstash.com`.
+</Info>
+
+```python
+from langchain_upstash_box import UpstashBoxSandbox
+
+# Creates a box and waits until it is ready.
+sandbox = UpstashBoxSandbox.create(runtime="python")
+
+result = sandbox.execute("echo hello")
+print(result.output)     # "hello"
+print(result.exit_code)  # 0
+
+# Filesystem helpers (ls / read / write / edit / glob / grep) come for free.
+sandbox.write("/workspace/home/hello.py", "print('hi from box')")
+print(sandbox.execute("python3 /workspace/home/hello.py").output)
+
+sandbox.delete()
+```
+
+If you already have a box, wrap it by id instead of creating a new one:
+
+```python
+sandbox = UpstashBoxSandbox(box_id="current-wasp-05510")
+```
+
+***
+
+## 3. Use with a Deep Agent
+
+Pass the sandbox as the agent's `backend`. Every shell command and file operation the agent performs now runs inside the box:
+
+```python
+from deepagents import create_deep_agent
+from langchain_upstash_box import UpstashBoxSandbox
+
+sandbox = UpstashBoxSandbox.create(runtime="python")
+
+agent = create_deep_agent(
+    model="anthropic:claude-sonnet-4-6",
+    system_prompt="You are a coding assistant with sandbox access.",
+    backend=sandbox,
+)
+
+result = agent.invoke(
+    {
+        "messages": [
+            {"role": "user", "content": "Create a hello world Python script and run it"}
+        ]
+    }
+)
+print(result["messages"][-1].content)
+
+sandbox.delete()
+```
+
+<Note>
+The `model="anthropic:..."` shorthand requires `langchain-anthropic` (install with `pip install "langchain[anthropic]"`) and an `ANTHROPIC_API_KEY` environment variable. Any LangChain chat model works here.
+</Note>
+
+***
+
+## 4. Cleanup
+
+You own the box lifecycle, so call `sandbox.delete()` when you are done. An idle box pauses automatically: its compute is released but the filesystem is kept, and it wakes up on the next command. The box itself stays around until you delete it.
+
+Commands have a default execution timeout of 30 minutes. You can override it for the whole backend or per call:
+
+```python
+sandbox = UpstashBoxSandbox.create(runtime="python", timeout=600)
+result = sandbox.execute("sleep 5 && echo done", timeout=30)
+```
+
+To see everything else a box can do, like snapshots, git, previews, and schedules, check the [Box quickstart](/docs/box/overall/quickstart).
+
 # Next.js Setup
 Source: https://upstash.com/docs/box/guides/nextjs-setup
 
