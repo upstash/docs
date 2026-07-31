@@ -1,0 +1,102 @@
+---
+title: "Reading Pages"
+---
+
+There are three ways to get data out of a tab: read the DOM as text, capture a screenshot, or have an AI agent extract structured data against a schema.
+
+## Page content
+
+`content()` reads the tab's current title, URL, visible text, and links from the real DOM, including JavaScript-rendered content:
+
+<CodeGroup>
+```typescript box.ts
+const { title, url, text, links } = await tab.content()
+
+console.log(title)
+console.log(text.slice(0, 200))
+for (const link of links ?? []) {
+  console.log(link.text, link.href)
+}
+```
+
+```python box.py
+content = tab.content()
+
+print(content.title)
+print(content.text[:200])
+for link in content.links or []:
+    print(link.text, link.href)
+```
+</CodeGroup>
+
+## Screenshots
+
+`screenshot()` captures the tab as a PNG. It works headless, with no display needed. By default you get raw PNG bytes. Ask for base64 if you are passing the image on, for example to an LLM:
+
+<CodeGroup>
+```typescript box.ts
+import { writeFile } from "node:fs/promises"
+
+// PNG bytes (Uint8Array)
+const png = await tab.screenshot({ fullPage: true })
+await writeFile("page.png", png)
+
+// Base64-encoded PNG string
+const b64 = await tab.screenshot({ type: "base64" })
+```
+
+```python box.py
+# PNG bytes
+png = tab.screenshot(full_page=True)
+with open("page.png", "wb") as f:
+    f.write(png)
+
+# Base64-encoded PNG string
+b64 = tab.screenshot(encoding="base64")
+```
+</CodeGroup>
+
+Pass `fullPage: true` to capture the entire scrollable page instead of just the viewport.
+
+## Structured extraction
+
+`extract()` hands the page to a DOM-aware AI agent and returns data validated against your schema. The schema is a [Zod](https://zod.dev) object schema (v3 or v4) in TypeScript, and a [pydantic](https://docs.pydantic.dev) model class or a raw JSON schema dict in Python:
+
+<CodeGroup>
+```typescript box.ts
+import { z } from "zod"
+
+const article = await tab.extract(
+  "extract the article title and author",
+  z.object({
+    title: z.string(),
+    author: z.string(),
+  }),
+)
+
+console.log(article.title, article.author)
+```
+
+```python box.py
+from pydantic import BaseModel
+
+class Article(BaseModel):
+    title: str
+    author: str
+
+article = tab.extract(
+    "extract the article title and author",
+    Article,
+)
+
+print(article.title, article.author)
+```
+</CodeGroup>
+
+<Note>
+  `extract` uses an LLM and is metered. It needs a provider API key on the box
+  or your account, and accepts an optional `model` override just like the other
+  [AI Actions](/box/overall/browser/ai-actions).
+</Note>
+
+The result is parsed with your schema before it is returned, so a successful call always gives you data in the shape you asked for.

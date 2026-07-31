@@ -1,0 +1,81 @@
+---
+title: "Connect over CDP"
+---
+
+The box browser is a real Chromium, and you can drive it with the tools you already use. `cdpUrl()` returns an authenticated Chrome DevTools Protocol WebSocket URL that Playwright, Puppeteer, or Stagehand can connect to directly. There is no browser to install and nothing to manage.
+
+<CodeGroup>
+```typescript box.ts
+const cdpUrl = await box.browser.cdpUrl()
+// wss://…?token=…
+```
+
+```python box.py
+cdp_url = box.browser.cdp_url()
+# wss://…?token=…
+```
+</CodeGroup>
+
+Like [live view](/box/overall/browser/live-view) URLs, the CDP URL carries its auth token in the URL. Anyone who has it gets full control of the browser, so treat it as a secret.
+
+## Playwright
+
+`playwright-core` is enough here, since you connect to the box's Chromium instead of launching one locally:
+
+<CodeGroup>
+```typescript scrape.ts
+import { chromium } from "playwright-core"
+
+const browser = await chromium.connectOverCDP(cdpUrl)
+
+const context = browser.contexts()[0] ?? (await browser.newContext())
+const page = context.pages()[0] ?? (await context.newPage())
+
+await page.goto("https://upstash.com")
+console.log(await page.title())
+```
+
+```python scrape.py
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp(cdp_url)
+    context = browser.contexts[0] if browser.contexts else browser.new_context()
+    page = context.pages[0] if context.pages else context.new_page()
+    page.goto("https://upstash.com")
+    print(page.title())
+```
+</CodeGroup>
+
+## Puppeteer
+
+```typescript scrape.ts
+import puppeteer from "puppeteer-core"
+
+const browser = await puppeteer.connect({ browserWSEndpoint: cdpUrl })
+
+const page = (await browser.pages())[0] ?? (await browser.newPage())
+await page.goto("https://upstash.com")
+```
+
+## Stagehand
+
+[Stagehand](https://www.stagehand.dev) can use the box browser as its local browser:
+
+```typescript agent.ts
+import { Stagehand } from "@browserbasehq/stagehand"
+
+const stagehand = new Stagehand({
+  env: "LOCAL",
+  localBrowserLaunchOptions: { cdpUrl },
+})
+
+await stagehand.init()
+await stagehand.act("click the first link")
+```
+
+## Mixing CDP and SDK control
+
+CDP clients and the SDK drive the same browser and the same tabs. A page opened by Playwright shows up in `box.browser.listTabs()`, and a tab created by the SDK is visible to Playwright. You can script the predictable steps like login and pagination with Playwright, hand the tab to [`act` or `run`](/box/overall/browser/ai-actions) for the steps that are easier to describe in natural language, and watch either through [Live View](/box/overall/browser/live-view).
+
+As a rule of thumb: use CDP when you want precise, repeatable scripting with no LLM in the loop. Use [AI Actions](/box/overall/browser/ai-actions) when describing the task is easier than scripting it.
