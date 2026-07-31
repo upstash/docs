@@ -1,0 +1,84 @@
+---
+title: "Recordings"
+---
+
+Recordings capture the browser to a replayable video. They cover all tabs, follow whichever one is in the foreground, and include everything an [AI task](/box/overall/browser/ai-actions) does. Use them for audit trails, debugging agent behavior, or showing users what happened after the fact.
+
+## Record a session
+
+<CodeGroup>
+```typescript box.ts
+// Start capturing (one active recording per box)
+const recording = await box.browser.recordings.start({
+  maxDurationSeconds: 120,
+})
+
+await tab.goto("https://upstash.com/docs")
+await tab.run("Find the quickstart and summarize it")
+
+// Finalize the video and upload it
+const saved = await recording.stop()
+
+console.log(saved.durationMs, saved.playlistUrl)
+console.log(saved.markers) // tab switches and AI run chapters
+```
+
+```python box.py
+# Start capturing (one active recording per box)
+recording = box.browser.recordings.start(max_duration_seconds=120)
+
+tab.goto("https://upstash.com/docs")
+tab.run("Find the quickstart and summarize it")
+
+# Finalize the video and upload it
+saved = recording.stop()
+
+print(saved.duration_ms, saved.playlist_url)
+print(saved.markers)  # tab switches and AI run chapters
+```
+</CodeGroup>
+
+A recording stops when you call `stop()`, when it reaches `maxDurationSeconds` (default and maximum: 600 seconds), or automatically after 3 minutes with no on-screen activity.
+
+## Playback
+
+A completed recording is an HLS video. `playlistUrl` points to its playlist, and `markers` holds chapters for tab switches (`tab_switch`) and AI runs (`run`) with their timestamps. A player can use the markers to jump straight to a specific run.
+
+<Note>
+  Unlike [live view](/box/overall/browser/live-view) URLs, the playlist URL is
+  not tokenized. Fetching it requires your Box API key, like any other API
+  call. Recordings are retained for 14 days.
+</Note>
+
+The easiest way to watch a recording is the **Browser** tab of your box in the [Upstash Console](https://console.upstash.com). To play recordings in your own product, keep the API key on your server: proxy the playlist and segment requests through your backend, attach the `X-Box-Api-Key` header there, and feed the proxied playlist to an HLS player such as [hls.js](https://github.com/video-dev/hls.js). Do not ship the key to end users.
+
+## Find recordings later
+
+Recordings belong to the box and can be discovered again after a restart or from another process:
+
+<CodeGroup>
+```typescript box.ts
+// Newest first
+const recordings = await box.browser.recordings.list()
+
+const same = await box.browser.recordings.get(recordings[0].id)
+console.log(same.status, same.durationMs, same.sizeBytes)
+```
+
+```python box.py
+# Newest first
+recordings = box.browser.recordings.list()
+
+same = box.browser.recordings.get(recordings[0].id)
+print(same.status, same.duration_ms, same.size_bytes)
+```
+</CodeGroup>
+
+Each recording reports its `status` (`recording`, `completed`, `failed`, or `deleted`), timing (`startedAt`, `endedAt`, `durationMs`), size, why it stopped (`stoppedReason`), and its expiry time.
+
+<Tip>
+  `recording.stop()` is safe to call on a stale handle. If that recording
+  already ended, for example because it auto-stopped and a newer one is
+  running, it returns the finished recording's metadata instead of stopping
+  the newer one.
+</Tip>
