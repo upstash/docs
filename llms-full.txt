@@ -1823,6 +1823,14 @@ Source: https://upstash.com/docs/box/guides/web-scraping-playwright
 
 In this guide, we use Upstash Box to run [Playwright](https://playwright.dev) against a JavaScript-heavy site, scrape structured data from it, and pull the results back to our own server. Because a Box is a real Linux container rather than a restricted serverless runtime, Chromium and its system dependencies install and run exactly like they would on your laptop.
 
+<Note>
+  Boxes also ship a managed, pre-installed browser. Create one with `browser:
+  true` and drive Chromium through the SDK, or [connect Playwright over
+  CDP](/docs/box/overall/browser/connect) with no install step. This guide shows
+  the manual route, where the box's agent installs and controls Playwright
+  itself. See [Browser](/docs/box/overall/browser/overview) for the built-in one.
+</Note>
+
 ***
 
 ## 1. Installation
@@ -2622,6 +2630,623 @@ The `Authorization` header is added by the proxy. The container never sees the s
 * Only HTTPS traffic on port `443` is intercepted
 * HTTP/2 connections through matched hosts are downgraded to HTTP/1.1
 * Header values are encrypted at rest and never returned by API responses
+
+# AI Actions
+Source: https://upstash.com/docs/box/overall/browser/ai-actions
+
+Beyond reading pages, a tab can act. A DOM-aware browser agent runs inside the box and resolves natural-language instructions against the live page. It can find elements, execute single actions, or complete multi-step tasks on its own.
+
+<Note>
+  AI actions use an LLM and are metered. They need an API key for the model's
+  provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
+  your account. Every method accepts a provider-prefixed `model` override such
+  as `"openai/gpt-4o"`. Without an override, the call uses the model the box
+  was configured with. If the box has no model, it falls back to
+  `anthropic/claude-sonnet-4-5`.
+</Note>
+
+## Observe
+
+`observe()` finds actionable elements matching an instruction. Use it to check the page before acting, or to build your own action loop:
+
+<CodeGroup>
+```typescript box.ts
+const { elements } = await tab.observe("find the login and signup buttons")
+
+for (const el of elements) {
+  console.log(el.description, el.selector)
+}
+```
+
+```python box.py
+result = tab.observe("find the login and signup buttons")
+
+for el in result.elements:
+    print(el.description, el.selector)
+```
+</CodeGroup>
+
+## Act
+
+`act()` resolves and executes exactly one action described in natural language:
+
+<CodeGroup>
+```typescript box.ts
+const action = await tab.act("click the primary call-to-action")
+
+console.log(action.success, action.actionDescription)
+console.log(action.inputTokens, action.outputTokens)
+```
+
+```python box.py
+action = tab.act("click the primary call-to-action")
+
+print(action.success, action.action_description)
+print(action.input_tokens, action.output_tokens)
+```
+</CodeGroup>
+
+The result reports what was done (`actions` with the resolved selectors), whether it succeeded, and the token usage of the call.
+
+## Run
+
+`run()` is the autonomous mode. The agent reads the page, acts, and repeats until the task is complete or it hits the step limit. Pass a schema to get structured data back at the end:
+
+<CodeGroup>
+```typescript box.ts
+import { z } from "zod"
+
+const { data, completed, steps } = await tab.run(
+  "Find the pricing page and summarize the free tier",
+  {
+    schema: z.object({ summary: z.string() }),
+    maxSteps: 15,
+    // model: "openai/gpt-4o", // any provider you hold a key for
+  },
+)
+
+console.log(completed, data.summary)
+for (const step of steps) {
+  console.log(step.step, step.action, step.url)
+}
+```
+
+```python box.py
+from pydantic import BaseModel
+
+class Summary(BaseModel):
+    summary: str
+
+result = tab.run(
+    "Find the pricing page and summarize the free tier",
+    schema=Summary,
+    max_steps=15,
+    # model="openai/gpt-4o",  # any provider you hold a key for
+)
+
+print(result.completed, result.data.summary)
+for step in result.steps:
+    print(step.step, step.action, step.url)
+```
+</CodeGroup>
+
+* `maxSteps`: defaults to `15`, capped at `30`.
+* `schema`: optional. Without it, `run` returns its findings as text in `result`.
+* The result includes `completed`, a step-by-step trace in `steps` (each with the action taken, its reasoning, and the URL), and total token usage.
+
+## Which one to use
+
+| Method | Does | Best for |
+|---|---|---|
+| `observe` | Finds elements, executes nothing | Inspecting a page, building custom loops |
+| `act` | Executes one action | Flows where your code decides each step |
+| `run` | Executes a whole task autonomously | Open-ended or navigation-heavy tasks |
+
+For fully scripted control with no LLM in the loop, [connect over CDP](/docs/box/overall/browser/connect) with Playwright or Puppeteer instead. Both drive the same tabs, so you can mix scripted steps with AI steps. To watch or replay what the agent did, see [Live View](/docs/box/overall/browser/live-view) and [Recordings](/docs/box/overall/browser/recordings).
+
+# Connect over CDP
+Source: https://upstash.com/docs/box/overall/browser/connect
+
+The box browser is a real Chromium, and you can drive it with the tools you already use. `cdpUrl()` returns an authenticated Chrome DevTools Protocol WebSocket URL that Playwright, Puppeteer, or Stagehand can connect to directly. There is no browser to install and nothing to manage.
+
+<CodeGroup>
+```typescript box.ts
+const cdpUrl = await box.browser.cdpUrl()
+// wss://…?token=…
+```
+
+```python box.py
+cdp_url = box.browser.cdp_url()
+# wss://…?token=…
+```
+</CodeGroup>
+
+Like [live view](/docs/box/overall/browser/live-view) URLs, the CDP URL carries its auth token in the URL. Anyone who has it gets full control of the browser, so treat it as a secret.
+
+## Playwright
+
+`playwright-core` is enough here, since you connect to the box's Chromium instead of launching one locally:
+
+<CodeGroup>
+```typescript scrape.ts
+import { chromium } from "playwright-core"
+
+const browser = await chromium.connectOverCDP(cdpUrl)
+
+const context = browser.contexts()[0] ?? (await browser.newContext())
+const page = context.pages()[0] ?? (await context.newPage())
+
+await page.goto("https://upstash.com")
+console.log(await page.title())
+```
+
+```python scrape.py
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp(cdp_url)
+    context = browser.contexts[0] if browser.contexts else browser.new_context()
+    page = context.pages[0] if context.pages else context.new_page()
+    page.goto("https://upstash.com")
+    print(page.title())
+```
+</CodeGroup>
+
+## Puppeteer
+
+```typescript scrape.ts
+import puppeteer from "puppeteer-core"
+
+const browser = await puppeteer.connect({ browserWSEndpoint: cdpUrl })
+
+const page = (await browser.pages())[0] ?? (await browser.newPage())
+await page.goto("https://upstash.com")
+```
+
+## Stagehand
+
+[Stagehand](https://www.stagehand.dev) can use the box browser as its local browser:
+
+```typescript agent.ts
+import { Stagehand } from "@browserbasehq/stagehand"
+
+const stagehand = new Stagehand({
+  env: "LOCAL",
+  localBrowserLaunchOptions: { cdpUrl },
+})
+
+await stagehand.init()
+await stagehand.act("click the first link")
+```
+
+## Mixing CDP and SDK control
+
+CDP clients and the SDK drive the same browser and the same tabs. A page opened by Playwright shows up in `box.browser.listTabs()`, and a tab created by the SDK is visible to Playwright. You can script the predictable steps like login and pagination with Playwright, hand the tab to [`act` or `run`](/docs/box/overall/browser/ai-actions) for the steps that are easier to describe in natural language, and watch either through [Live View](/docs/box/overall/browser/live-view).
+
+As a rule of thumb: use CDP when you want precise, repeatable scripting with no LLM in the loop. Use [AI Actions](/docs/box/overall/browser/ai-actions) when describing the task is easier than scripting it.
+
+# Live View
+Source: https://upstash.com/docs/box/overall/browser/live-view
+
+Every tab can produce a live view URL: a shareable link that streams the tab in real time. Open it in any browser, or embed it in an `<iframe>` to show your users what their agent is doing.
+
+<CodeGroup>
+```typescript box.ts
+const liveUrl = await tab.liveViewUrl()
+
+console.log(liveUrl)
+// https://<box>-9223.<domain>/screencast?token=…&tab=…
+```
+
+```python box.py
+live_url = tab.live_view_url()
+
+print(live_url)
+# https://<box>-9223.<domain>/screencast?token=…&tab=…
+```
+</CodeGroup>
+
+The URL is self-contained. Authentication is a token embedded in the URL itself, so it works anywhere a browser can load a page. The viewing side needs no API key and no SDK.
+
+## Embedding
+
+```html
+<iframe
+  src="https://<box>-9223.<domain>/screencast?token=…&tab=…"
+  style="width: 100%; aspect-ratio: 16 / 10; border: 0;"
+></iframe>
+```
+
+A common pattern is to start a [`tab.run()`](/docs/box/overall/browser/ai-actions) task and render the live view next to it, so users can watch the agent work in real time.
+
+## View-only
+
+The live view streams frames out only. Viewers cannot click, type, or otherwise interact with the page. To drive the browser, use the SDK or [connect over CDP](/docs/box/overall/browser/connect).
+
+If you need an interactive viewer inside your own product, you can build one over CDP by streaming screencast frames out and sending input events back. This is how the console's browser tab works.
+
+<Warning>
+  Anyone with the URL can watch the tab, since the access token is part of the
+  URL. Treat live view URLs like secrets and share them only with people who
+  should see the session.
+</Warning>
+
+For an interactive version of the same view, open the **Browser** tab on your box's page in the [Upstash Console](https://console.upstash.com). If you want a replayable video instead of a live stream, see [Recordings](/docs/box/overall/browser/recordings).
+
+# Browser
+Source: https://upstash.com/docs/box/overall/browser/overview
+
+**Every box can come with its own browser.** Create a box with `browser: true` to get a managed, headless Chromium that you control through the SDK. You can open tabs, read pages, take screenshots, extract structured data, run AI agents on the live DOM, record sessions, and connect Playwright directly over CDP.
+
+Everything works headless. There is no desktop, no VNC, and nothing to install. Chromium is provisioned with the box and boots on first use.
+
+## Create a box with a browser
+
+<CodeGroup>
+```typescript box.ts
+import { Box } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  browser: true,
+})
+
+// Open a tab (boots Chromium on first use)
+const tab = await box.browser.tab.create("https://news.ycombinator.com")
+
+// Navigate the same tab and read the result
+const page = await tab.goto("https://upstash.com/docs")
+console.log(page.title)
+```
+
+```python box.py
+from upstash_box import Box
+
+box = Box.create(runtime="node", browser=True)
+
+# Open a tab (boots Chromium on first use)
+tab = box.browser.tab.create("https://news.ycombinator.com")
+
+# Navigate the same tab and read the result
+page = tab.goto("https://upstash.com/docs")
+print(page.title)
+```
+</CodeGroup>
+
+<Note>
+  The browser can only be provisioned when the box is created. It cannot be
+  enabled on an existing box. If you need a browser on a box that does not have
+  one, create a new box with `browser: true`.
+</Note>
+
+## How it's organized
+
+`box.browser` manages the browser itself: opening and listing tabs, recordings, and the CDP endpoint. Page-level operations live on a **Tab** handle, the object returned by `tab.create`, `listTabs`, or `getTab`. A tab handle is addressed by its Chrome DevTools Protocol target id, so it stays valid across navigations. You navigate, read, screenshot, and run AI tasks through the same handle.
+
+## What you can do
+
+<CardGroup cols={2}>
+  <Card title="Tabs & Navigation" href="/box/overall/browser/tabs">
+    Open tabs, navigate, list and re-attach to them, and close them.
+  </Card>
+
+  <Card title="Reading Pages" href="/box/overall/browser/reading-pages">
+    Page text and links, PNG screenshots, and schema-validated data extraction.
+  </Card>
+
+  <Card title="AI Actions" href="/box/overall/browser/ai-actions">
+    Natural-language actions and autonomous multi-step tasks on the live DOM.
+  </Card>
+
+  <Card title="Live View" href="/box/overall/browser/live-view">
+    A shareable, view-only live stream of any tab that you can embed in an iframe.
+  </Card>
+
+  <Card title="Recordings" href="/box/overall/browser/recordings">
+    Record browser sessions to replayable video with chapter markers.
+  </Card>
+
+  <Card title="Connect over CDP" href="/box/overall/browser/connect">
+    Drive the same browser with Playwright, Puppeteer, or Stagehand.
+  </Card>
+</CardGroup>
+
+<Note>
+  The AI-powered operations use an LLM and are metered:
+  [`extract`](/docs/box/overall/browser/reading-pages) and [`observe`, `act`,
+  `run`](/docs/box/overall/browser/ai-actions). They need an API key for the model's
+  provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
+  your account.
+</Note>
+
+You can also watch and control the browser from the **Browser** tab on your box's page in the [Upstash Console](https://console.upstash.com). It shows the live view, runs AI tasks, and includes the SDK snippet for everything you do there.
+
+# Reading Pages
+Source: https://upstash.com/docs/box/overall/browser/reading-pages
+
+There are three ways to get data out of a tab: read the DOM as text, capture a screenshot, or have an AI agent extract structured data against a schema.
+
+## Page content
+
+`content()` reads the tab's current title, URL, visible text, and links from the real DOM, including JavaScript-rendered content:
+
+<CodeGroup>
+```typescript box.ts
+const { title, url, text, links } = await tab.content()
+
+console.log(title)
+console.log(text.slice(0, 200))
+for (const link of links ?? []) {
+  console.log(link.text, link.href)
+}
+```
+
+```python box.py
+content = tab.content()
+
+print(content.title)
+print(content.text[:200])
+for link in content.links or []:
+    print(link.text, link.href)
+```
+</CodeGroup>
+
+## Screenshots
+
+`screenshot()` captures the tab as a PNG. It works headless, with no display needed. By default you get raw PNG bytes. Ask for base64 if you are passing the image on, for example to an LLM:
+
+<CodeGroup>
+```typescript box.ts
+import { writeFile } from "node:fs/promises"
+
+// PNG bytes (Uint8Array)
+const png = await tab.screenshot({ fullPage: true })
+await writeFile("page.png", png)
+
+// Base64-encoded PNG string
+const b64 = await tab.screenshot({ type: "base64" })
+```
+
+```python box.py
+# PNG bytes
+png = tab.screenshot(full_page=True)
+with open("page.png", "wb") as f:
+    f.write(png)
+
+# Base64-encoded PNG string
+b64 = tab.screenshot(encoding="base64")
+```
+</CodeGroup>
+
+Pass `fullPage: true` to capture the entire scrollable page instead of just the viewport.
+
+## Structured extraction
+
+`extract()` hands the page to a DOM-aware AI agent and returns data validated against your schema. The schema is a [Zod](https://zod.dev) object schema (v3 or v4) in TypeScript, and a [pydantic](https://docs.pydantic.dev) model class or a raw JSON schema dict in Python:
+
+<CodeGroup>
+```typescript box.ts
+import { z } from "zod"
+
+const article = await tab.extract(
+  "extract the article title and author",
+  z.object({
+    title: z.string(),
+    author: z.string(),
+  }),
+)
+
+console.log(article.title, article.author)
+```
+
+```python box.py
+from pydantic import BaseModel
+
+class Article(BaseModel):
+    title: str
+    author: str
+
+article = tab.extract(
+    "extract the article title and author",
+    Article,
+)
+
+print(article.title, article.author)
+```
+</CodeGroup>
+
+<Note>
+  `extract` uses an LLM and is metered. It needs a provider API key on the box
+  or your account, and accepts an optional `model` override just like the other
+  [AI Actions](/docs/box/overall/browser/ai-actions).
+</Note>
+
+The result is parsed with your schema before it is returned, so a successful call always gives you data in the shape you asked for.
+
+# Recordings
+Source: https://upstash.com/docs/box/overall/browser/recordings
+
+Recordings capture the browser to a replayable video. They cover all tabs, follow whichever one is in the foreground, and include everything an [AI task](/docs/box/overall/browser/ai-actions) does. Use them for audit trails, debugging agent behavior, or showing users what happened after the fact.
+
+## Record a session
+
+<CodeGroup>
+```typescript box.ts
+// Start capturing (one active recording per box)
+const recording = await box.browser.recordings.start({
+  maxDurationSeconds: 120,
+})
+
+await tab.goto("https://upstash.com/docs")
+await tab.run("Find the quickstart and summarize it")
+
+// Finalize the video and upload it
+const saved = await recording.stop()
+
+console.log(saved.durationMs, saved.playlistUrl)
+console.log(saved.markers) // tab switches and AI run chapters
+```
+
+```python box.py
+# Start capturing (one active recording per box)
+recording = box.browser.recordings.start(max_duration_seconds=120)
+
+tab.goto("https://upstash.com/docs")
+tab.run("Find the quickstart and summarize it")
+
+# Finalize the video and upload it
+saved = recording.stop()
+
+print(saved.duration_ms, saved.playlist_url)
+print(saved.markers)  # tab switches and AI run chapters
+```
+</CodeGroup>
+
+A recording stops when you call `stop()`, when it reaches `maxDurationSeconds` (default and maximum: 600 seconds), or automatically after 3 minutes with no on-screen activity.
+
+## Playback
+
+A completed recording is an HLS video. `playlistUrl` points to its playlist, and `markers` holds chapters for tab switches (`tab_switch`) and AI runs (`run`) with their timestamps. A player can use the markers to jump straight to a specific run.
+
+<Note>
+  Unlike [live view](/docs/box/overall/browser/live-view) URLs, the playlist URL is
+  not tokenized. Fetching it requires your Box API key, like any other API
+  call. Recordings are retained for 14 days.
+</Note>
+
+The easiest way to watch a recording is the **Browser** tab of your box in the [Upstash Console](https://console.upstash.com). To play recordings in your own product, keep the API key on your server: proxy the playlist and segment requests through your backend, attach the `X-Box-Api-Key` header there, and feed the proxied playlist to an HLS player such as [hls.js](https://github.com/video-dev/hls.js). Do not ship the key to end users.
+
+## Find recordings later
+
+Recordings belong to the box and can be discovered again after a restart or from another process:
+
+<CodeGroup>
+```typescript box.ts
+// Newest first
+const recordings = await box.browser.recordings.list()
+
+const same = await box.browser.recordings.get(recordings[0].id)
+console.log(same.status, same.durationMs, same.sizeBytes)
+```
+
+```python box.py
+# Newest first
+recordings = box.browser.recordings.list()
+
+same = box.browser.recordings.get(recordings[0].id)
+print(same.status, same.duration_ms, same.size_bytes)
+```
+</CodeGroup>
+
+Each recording reports its `status` (`recording`, `completed`, `failed`, or `deleted`), timing (`startedAt`, `endedAt`, `durationMs`), size, why it stopped (`stoppedReason`), and its expiry time.
+
+<Tip>
+  `recording.stop()` is safe to call on a stale handle. If that recording
+  already ended, for example because it auto-stopped and a newer one is
+  running, it returns the finished recording's metadata instead of stopping
+  the newer one.
+</Tip>
+
+# Tabs & Navigation
+Source: https://upstash.com/docs/box/overall/browser/tabs
+
+Tabs are the unit of work in the box browser. `box.browser` opens and lists them. Every page operation, from navigation to screenshots to AI actions, runs on a specific `Tab` handle.
+
+## Open a tab
+
+`tab.create` opens a tab, navigates it to a URL, and waits for the requested lifecycle state. The first call also boots Chromium if it is not running yet.
+
+<CodeGroup>
+```typescript box.ts
+const tab = await box.browser.tab.create("https://upstash.com", {
+  waitUntil: "domcontentloaded",
+  timeout: 30_000,
+})
+
+console.log(tab.id, tab.url, tab.title)
+```
+
+```python box.py
+tab = box.browser.tab.create(
+    "https://upstash.com",
+    wait_until="domcontentloaded",
+    timeout=30_000,
+)
+
+print(tab.id, tab.url, tab.title)
+```
+</CodeGroup>
+
+* `waitUntil`: when navigation counts as done. One of `"load"` (default), `"domcontentloaded"`, or `"networkidle"`.
+* `timeout`: navigation timeout in milliseconds. Defaults to `30000`. Pass `0` to disable it.
+
+## Navigate
+
+`goto` navigates the tab and returns the resulting page's content (title, URL, text, and links):
+
+<CodeGroup>
+```typescript box.ts
+const page = await tab.goto("https://upstash.com/docs")
+console.log(page.title, page.url)
+```
+
+```python box.py
+page = tab.goto("https://upstash.com/docs")
+print(page.title, page.url)
+```
+</CodeGroup>
+
+Unlike `tab.create`, `goto` has no `waitUntil` or `timeout` options. It waits for the page to load with a fixed 60 second deadline.
+
+## List and re-attach
+
+Tab handles are addressed by their Chrome DevTools Protocol target id, which stays stable across navigations. You can store a tab id and re-attach to the same tab later, even from a different process:
+
+<CodeGroup>
+```typescript box.ts
+// List the box's open tabs
+const tabs = await box.browser.listTabs()
+for (const t of tabs) {
+  console.log(t.id, t.url, t.title)
+}
+
+// Re-attach to a tab by id (no network call)
+const same = box.browser.getTab(tab.id)
+await same.goto("https://news.ycombinator.com")
+```
+
+```python box.py
+# List the box's open tabs
+tabs = box.browser.list_tabs()
+for t in tabs:
+    print(t.id, t.url, t.title)
+
+# Re-attach to a tab by id (no network call)
+same = box.browser.get_tab(tab.id)
+same.goto("https://news.ycombinator.com")
+```
+</CodeGroup>
+
+<Note>
+  A handle's `url` and `title` fields are the last known values from
+  `tab.create` or `listTabs`. They are not updated live. Use
+  [`tab.content()`](/docs/box/overall/browser/reading-pages) to read the current
+  state of the page.
+</Note>
+
+## Close a tab
+
+<CodeGroup>
+```typescript box.ts
+await tab.close()
+```
+
+```python box.py
+tab.close()
+```
+</CodeGroup>
+
+Multiple tabs can be open at once. Each is independent, and operations on one do not affect the others. This is useful for comparing pages side by side or running [AI tasks](/docs/box/overall/browser/ai-actions) against several pages in sequence.
 
 # How to Add a Custom Agent
 Source: https://upstash.com/docs/box/overall/custom-agent
@@ -5912,6 +6537,15 @@ Environment variables are visible to all code running inside the box. If you run
 ## Attach Headers
 
 For injecting secret HTTP headers into outbound HTTPS requests without exposing them inside the container, see [Attach Headers](/docs/box/overall/attach-headers).
+
+## Browser URLs
+
+Boxes created with [`browser: true`](/docs/box/overall/browser/overview) can hand out two kinds of URLs that carry their access token in the URL itself, so they work without an API key:
+
+* [Live view](/docs/box/overall/browser/live-view) URLs are **view-only**. Frames stream out and no input goes in, but anyone with the URL can watch the tab.
+* [CDP](/docs/box/overall/browser/connect) URLs give **full control** of the browser to anyone holding them.
+
+Treat both as secrets and share them only where that level of access is intended. Recording playlist URLs are not tokenized. Fetching them requires your Box API key, like any other API call.
 
 ## Blocked Environment Variables
 
