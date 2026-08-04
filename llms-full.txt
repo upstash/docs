@@ -1,5 +1,7 @@
 <Tip>
-  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to [`https://upstash.com/start-redis`](https://upstash.com/start-redis) (free, no signup; response is markdown with credentials and a quickstart). The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+
+  Upstash also provides an MCP server (/docs/agent-resources/mcp) to manage and debug your Upstash resources directly from an agent, and an agent-friendly CLI (/docs/agent-resources/cli) for your terminal or CI/CD pipelines.
 </Tip>
 
 # README
@@ -64,6 +66,22 @@ For agents, install the [Upstash Skill](/docs/agent-resources/skills) instead. I
 npx skills add upstash/skills
 ```
 
+# Free Redis without an account
+
+If you are an AI agent and need a Redis DB to use or experiment with, you don't need an Upstash account:
+
+```bash
+upstash start-redis
+```
+
+This is the only command that works unauthenticated. It sends a POST request to https://upstash.com/start-redis and prints markdown with the credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+
+Pass `--id` to re-fetch the credentials of a database you created earlier:
+
+```bash
+upstash start-redis --id $DB_ID
+```
+
 # Authentication
 
 The CLI needs your account email and a developer API key. Grab one from the [Upstash Console under Account → API Keys](https://console.upstash.com/account/api), then set credentials using whichever method fits your workflow.
@@ -115,6 +133,7 @@ upstash --email you@example.com --api-key your_api_key redis list
 # Usage
 
 ```bash
+upstash start-redis  # free temporary Redis database, no account needed
 upstash redis   # Redis databases
 upstash team    # Teams and members
 upstash vector  # Vector indexes
@@ -132,7 +151,7 @@ upstash redis create --help
 
 ## Output
 
-All successful output is JSON. Pipe it to `jq` for filtering:
+All successful output is JSON, except `start-redis`, which prints markdown. Pipe JSON output to `jq` for filtering:
 
 ```bash
 upstash redis list | jq '.[].database_id'
@@ -269,7 +288,15 @@ Source: https://upstash.com/docs/agent-resources/mcp
 
 The Upstash MCP server lets your agent manage and debug your Upstash resources directly, across Redis, QStash, Workflow, and [Upstash Box](/docs/box/overall/quickstart).
 
-Find the GitHub repository [here](https://github.com/upstash/mcp).
+<Tip>
+  Only running commands against a single Redis database? Use the dedicated [Redis MCP](/docs/redis/sdks/mcp) with only your REST/TCP credentials.
+</Tip>
+
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, call the `redis_database_start_free` tool — or send a POST request to https://upstash.com/start-redis directly. Free, no signup, no API key; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+</Tip>
+
+Find the GitHub repository [here](https://github.com/upstash/mcp-server).
 
 <Note>
   For most workflows, prefer installing the [Upstash Skill](/docs/agent-resources/skills) and letting your agent drive [`@upstash/cli`](/docs/agent-resources/cli) over running the MCP server.
@@ -279,6 +306,7 @@ Find the GitHub repository [here](https://github.com/upstash/mcp).
 
 ## Redis
 
+* "Start a free temporary Redis I can experiment with"
 * "Create a new Redis database in us-east-1"
 * "List my databases sorted by memory usage"
 * "Give me the schema of how users are stored in this Redis"
@@ -1172,6 +1200,115 @@ hermes gateway start > gateway.log 2>&1 &
 
 This command runs automatically whenever the box starts, so your gateway is always available without manual intervention.
 
+# LangChain Deep Agents
+Source: https://upstash.com/docs/box/guides/langchain-deep-agents
+
+In this guide we'll give a [LangChain Deep Agent](https://docs.langchain.com/oss/python/deepagents/overview) a real computer to work in. The [`langchain-upstash-box`](https://pypi.org/project/langchain-upstash-box/) package wraps an Upstash Box (a secure, isolated cloud container with a full Linux shell, filesystem, git, and a runtime) as a Deep Agents [sandbox backend](https://docs.langchain.com/oss/python/deepagents/backends). The agent's shell and file tools then run inside the box instead of on your machine.
+
+***
+
+## 1. Installation
+
+<CodeGroup>
+
+```bash pip
+pip install langchain-upstash-box
+```
+
+```bash uv
+uv add langchain-upstash-box
+```
+
+</CodeGroup>
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box) and export it:
+
+```bash
+export UPSTASH_BOX_API_KEY="box_xxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+***
+
+## 2. Create a sandbox backend
+
+`UpstashBoxSandbox.create()` provisions a new box, waits until it is ready, and returns a backend that implements the Deep Agents `SandboxBackendProtocol`:
+
+<Info>
+The API key and base URL can also be passed directly as `api_key=` and `base_url=` arguments instead of the `UPSTASH_BOX_API_KEY` and `UPSTASH_BOX_BASE_URL` environment variables. The base URL defaults to `https://us-east-1.box.upstash.com`.
+</Info>
+
+```python
+from langchain_upstash_box import UpstashBoxSandbox
+
+# Creates a box and waits until it is ready.
+sandbox = UpstashBoxSandbox.create(runtime="python")
+
+result = sandbox.execute("echo hello")
+print(result.output)     # "hello"
+print(result.exit_code)  # 0
+
+# Filesystem helpers (ls / read / write / edit / glob / grep) come for free.
+sandbox.write("/workspace/home/hello.py", "print('hi from box')")
+print(sandbox.execute("python3 /workspace/home/hello.py").output)
+
+sandbox.delete()
+```
+
+If you already have a box, wrap it by id instead of creating a new one:
+
+```python
+sandbox = UpstashBoxSandbox(box_id="current-wasp-05510")
+```
+
+***
+
+## 3. Use with a Deep Agent
+
+Pass the sandbox as the agent's `backend`. Every shell command and file operation the agent performs now runs inside the box:
+
+```python
+from deepagents import create_deep_agent
+from langchain_upstash_box import UpstashBoxSandbox
+
+sandbox = UpstashBoxSandbox.create(runtime="python")
+
+agent = create_deep_agent(
+    model="anthropic:claude-sonnet-4-6",
+    system_prompt="You are a coding assistant with sandbox access.",
+    backend=sandbox,
+)
+
+result = agent.invoke(
+    {
+        "messages": [
+            {"role": "user", "content": "Create a hello world Python script and run it"}
+        ]
+    }
+)
+print(result["messages"][-1].content)
+
+sandbox.delete()
+```
+
+<Note>
+The `model="anthropic:..."` shorthand requires `langchain-anthropic` (install with `pip install "langchain[anthropic]"`) and an `ANTHROPIC_API_KEY` environment variable. Any LangChain chat model works here.
+</Note>
+
+***
+
+## 4. Cleanup
+
+You own the box lifecycle, so call `sandbox.delete()` when you are done. An idle box pauses automatically: its compute is released but the filesystem is kept, and it wakes up on the next command. The box itself stays around until you delete it.
+
+Commands have a default execution timeout of 30 minutes. You can override it for the whole backend or per call:
+
+```python
+sandbox = UpstashBoxSandbox.create(runtime="python", timeout=600)
+result = sandbox.execute("sleep 5 && echo done", timeout=30)
+```
+
+To see everything else a box can do, like snapshots, git, previews, and schedules, check the [Box quickstart](/docs/box/overall/quickstart).
+
 # Next.js Setup
 Source: https://upstash.com/docs/box/guides/nextjs-setup
 
@@ -1366,6 +1503,126 @@ ssh -F /dev/null -o ControlMaster=no -o ServerAliveInterval=15 -o ServerAliveCou
 ```
 
 The most likely causes are a local `~/.ssh/config` entry (e.g. a stale `ControlMaster` socket or conflicting options) being applied to the connection, or a NAT/firewall on your network dropping idle TCP connections. The flags above bypass your local SSH config and keep the connection active with periodic keepalives.
+
+# Pi Setup
+Source: https://upstash.com/docs/box/guides/pi-setup
+
+This guide walks you through using [Pi](https://pi.dev) with the [`@upstash/box-pi`](https://pi.dev/packages/@upstash/box-pi) extension ([npm](https://www.npmjs.com/package/@upstash/box-pi)), which runs every tool call (`bash`, file I/O, and search) inside an Upstash Box. The agent and your model API keys stay on your machine; only tool execution happens in the box.
+
+<Note>
+  This is the inverse of running Pi *inside* a box as a [custom harness](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-pi-agent.ts). Here, Pi runs locally and only its tools execute remotely.
+</Note>
+
+***
+
+## 1. Get your API key
+
+Go to the [Upstash Console](https://console.upstash.com) and create a Box API key. See the [quickstart](/docs/box/overall/quickstart#1-get-your-api-key) for details.
+
+***
+
+## 2. Install Pi and the extension
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+pi install npm:@upstash/box-pi
+```
+
+<Note>
+  To update the extension later, run `pi update`. `pi install` won't refresh an existing install.
+</Note>
+
+***
+
+## 3. Set the API key
+
+Export your Box API key (e.g. in your shell profile):
+
+```bash
+export UPSTASH_BOX_API_KEY="box_xxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+If no key is set, Pi prompts you for one once per session.
+
+***
+
+## 4. Run Pi with `--box`
+
+Run Pi from inside a git repository whose `origin` is on GitHub:
+
+```bash
+cd my-project
+pi --box
+```
+
+The repo is cloned **from GitHub** into a fresh box. The box never sees your local files, so the repo must exist on github.com (private is fine) and anything you want in the box must be committed and pushed. The session's work syncs to its own GitHub branch (see step 5). You can also point at another repo, or run outside a git repo for a blank workspace:
+
+```bash
+pi --box --repo github.com/acme/api --branch dev
+```
+
+A footer badge in Pi shows that tool calls are running remotely. Everything else works exactly like a local Pi session: the agent reads, writes, and executes in the box transparently.
+
+### Flags
+
+| Flag               | Description                                                     |
+| ------------------ | --------------------------------------------------------------- |
+| `--box`            | Run tools inside an Upstash Box sandbox                         |
+| `--repo <url>`     | Git repo to clone into the box (defaults to the repo you're in) |
+| `--branch <name>`  | Branch to clone (defaults to your current branch)               |
+| `--runtime <name>` | Box runtime image: `node`, `python`, `golang`, `ruby`, `rust` (append `-alpine` for the musl variant) |
+| `--size <name>`    | Box size: `small` (default), `medium`, or `large`               |
+
+***
+
+## 5. Sync work to GitHub
+
+If you launched Pi in a **github.com** repo and you're logged in with the GitHub CLI (`gh auth login`), each session gets its own branch: the extension creates `pi/<short-session-id>` off your current branch, the agent commits its work, and the extension pushes those commits after each turn.
+
+Manage the branch with slash commands inside Pi:
+
+| Command    | What it does                                          |
+| ---------- | ----------------------------------------------------- |
+| `/sandbox` | Show the active box's status and its branch link      |
+| `/github`  | Open this session's branch on GitHub                  |
+| `/compare` | Open the branch compare view on GitHub                |
+| `/merge`   | Merge this session's branch into its base             |
+| `/pr`      | Create a pull request for this session's branch       |
+
+<Note>
+  Outside a github.com repo (or without `gh` authenticated), push is disabled. The box still has a local git repo, so the agent can commit, but nothing leaves the box.
+</Note>
+
+***
+
+## 6. Preview a running server
+
+When the agent starts a server in the box, ask it for a preview link. The `preview_url` tool returns a live, basic-auth-protected URL for any port:
+
+```
+https://<box-name>-8080.preview.box.upstash.com
+```
+
+The login is printed alongside the URL, and your browser prompts for it. Preview URLs are created fresh on every call, so ask again after a box resumes from idle. See [Preview URLs](/docs/box/overall/preview) for how these work.
+
+***
+
+## 7. Session lifecycle
+
+Each Pi session gets one box, and the box follows the session:
+
+* **Resume a session**, and its box is reattached, with your files and environment exactly where you left them.
+* **Idle sessions** pause the box automatically with the filesystem preserved; the next tool call transparently restarts it. Nothing to configure.
+* **Delete a session** from Pi's resume menu, and its box is deleted too. A box lives as long as its session.
+
+***
+
+## Troubleshooting
+
+* **The box is empty.** The box clones from GitHub; it never uploads local files. Make sure the repo exists on github.com and your checkout has an `origin` remote, then start a new session. Run `/sandbox` to see what was cloned.
+* **Local changes missing in the box?** Commit and push first. The box clones the branch from GitHub, not your working tree.
+* **Duplicate flag or tool errors** mean two copies of the extension are loaded. Run `pi list` and `pi uninstall` one of them.
+* **Pushes not appearing on GitHub?** Branch sync needs `gh auth login` and a github.com remote.
 
 # Remote Development
 Source: https://upstash.com/docs/box/guides/remote-development
@@ -1709,6 +1966,14 @@ Through all of this, the untrusted model-generated code and its dependencies sta
 Source: https://upstash.com/docs/box/guides/web-scraping-playwright
 
 In this guide, we use Upstash Box to run [Playwright](https://playwright.dev) against a JavaScript-heavy site, scrape structured data from it, and pull the results back to our own server. Because a Box is a real Linux container rather than a restricted serverless runtime, Chromium and its system dependencies install and run exactly like they would on your laptop.
+
+<Note>
+  Boxes also ship a managed, pre-installed browser. Create one with `browser:
+  true` and drive Chromium through the SDK, or [connect Playwright over
+  CDP](/docs/box/overall/browser/connect) with no install step. This guide shows
+  the manual route, where the box's agent installs and controls Playwright
+  itself. See [Browser](/docs/box/overall/browser/overview) for the built-in one.
+</Note>
 
 ***
 
@@ -2510,6 +2775,623 @@ The `Authorization` header is added by the proxy. The container never sees the s
 * HTTP/2 connections through matched hosts are downgraded to HTTP/1.1
 * Header values are encrypted at rest and never returned by API responses
 
+# AI Actions
+Source: https://upstash.com/docs/box/overall/browser/ai-actions
+
+Beyond reading pages, a tab can act. A DOM-aware browser agent runs inside the box and resolves natural-language instructions against the live page. It can find elements, execute single actions, or complete multi-step tasks on its own.
+
+<Note>
+  AI actions use an LLM and are metered. They need an API key for the model's
+  provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
+  your account. Every method accepts a provider-prefixed `model` override such
+  as `"openai/gpt-4o"`. Without an override, the call uses the model the box
+  was configured with. If the box has no model, it falls back to
+  `anthropic/claude-sonnet-4-5`.
+</Note>
+
+## Observe
+
+`observe()` finds actionable elements matching an instruction. Use it to check the page before acting, or to build your own action loop:
+
+<CodeGroup>
+```typescript box.ts
+const { elements } = await tab.observe("find the login and signup buttons")
+
+for (const el of elements) {
+  console.log(el.description, el.selector)
+}
+```
+
+```python box.py
+result = tab.observe("find the login and signup buttons")
+
+for el in result.elements:
+    print(el.description, el.selector)
+```
+</CodeGroup>
+
+## Act
+
+`act()` resolves and executes exactly one action described in natural language:
+
+<CodeGroup>
+```typescript box.ts
+const action = await tab.act("click the primary call-to-action")
+
+console.log(action.success, action.actionDescription)
+console.log(action.inputTokens, action.outputTokens)
+```
+
+```python box.py
+action = tab.act("click the primary call-to-action")
+
+print(action.success, action.action_description)
+print(action.input_tokens, action.output_tokens)
+```
+</CodeGroup>
+
+The result reports what was done (`actions` with the resolved selectors), whether it succeeded, and the token usage of the call.
+
+## Run
+
+`run()` is the autonomous mode. The agent reads the page, acts, and repeats until the task is complete or it hits the step limit. Pass a schema to get structured data back at the end:
+
+<CodeGroup>
+```typescript box.ts
+import { z } from "zod"
+
+const { data, completed, steps } = await tab.run(
+  "Find the pricing page and summarize the free tier",
+  {
+    schema: z.object({ summary: z.string() }),
+    maxSteps: 15,
+    // model: "openai/gpt-4o", // any provider you hold a key for
+  },
+)
+
+console.log(completed, data.summary)
+for (const step of steps) {
+  console.log(step.step, step.action, step.url)
+}
+```
+
+```python box.py
+from pydantic import BaseModel
+
+class Summary(BaseModel):
+    summary: str
+
+result = tab.run(
+    "Find the pricing page and summarize the free tier",
+    schema=Summary,
+    max_steps=15,
+    # model="openai/gpt-4o",  # any provider you hold a key for
+)
+
+print(result.completed, result.data.summary)
+for step in result.steps:
+    print(step.step, step.action, step.url)
+```
+</CodeGroup>
+
+* `maxSteps`: defaults to `15`, capped at `30`.
+* `schema`: optional. Without it, `run` returns its findings as text in `result`.
+* The result includes `completed`, a step-by-step trace in `steps` (each with the action taken, its reasoning, and the URL), and total token usage.
+
+## Which one to use
+
+| Method | Does | Best for |
+|---|---|---|
+| `observe` | Finds elements, executes nothing | Inspecting a page, building custom loops |
+| `act` | Executes one action | Flows where your code decides each step |
+| `run` | Executes a whole task autonomously | Open-ended or navigation-heavy tasks |
+
+For fully scripted control with no LLM in the loop, [connect over CDP](/docs/box/overall/browser/connect) with Playwright or Puppeteer instead. Both drive the same tabs, so you can mix scripted steps with AI steps. To watch or replay what the agent did, see [Live View](/docs/box/overall/browser/live-view) and [Recordings](/docs/box/overall/browser/recordings).
+
+# Connect over CDP
+Source: https://upstash.com/docs/box/overall/browser/connect
+
+The box browser is a real Chromium, and you can drive it with the tools you already use. `cdpUrl()` returns an authenticated Chrome DevTools Protocol WebSocket URL that Playwright, Puppeteer, or Stagehand can connect to directly. There is no browser to install and nothing to manage.
+
+<CodeGroup>
+```typescript box.ts
+const cdpUrl = await box.browser.cdpUrl()
+// wss://…?token=…
+```
+
+```python box.py
+cdp_url = box.browser.cdp_url()
+# wss://…?token=…
+```
+</CodeGroup>
+
+Like [live view](/docs/box/overall/browser/live-view) URLs, the CDP URL carries its auth token in the URL. Anyone who has it gets full control of the browser, so treat it as a secret.
+
+## Playwright
+
+`playwright-core` is enough here, since you connect to the box's Chromium instead of launching one locally:
+
+<CodeGroup>
+```typescript scrape.ts
+import { chromium } from "playwright-core"
+
+const browser = await chromium.connectOverCDP(cdpUrl)
+
+const context = browser.contexts()[0] ?? (await browser.newContext())
+const page = context.pages()[0] ?? (await context.newPage())
+
+await page.goto("https://upstash.com")
+console.log(await page.title())
+```
+
+```python scrape.py
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp(cdp_url)
+    context = browser.contexts[0] if browser.contexts else browser.new_context()
+    page = context.pages[0] if context.pages else context.new_page()
+    page.goto("https://upstash.com")
+    print(page.title())
+```
+</CodeGroup>
+
+## Puppeteer
+
+```typescript scrape.ts
+import puppeteer from "puppeteer-core"
+
+const browser = await puppeteer.connect({ browserWSEndpoint: cdpUrl })
+
+const page = (await browser.pages())[0] ?? (await browser.newPage())
+await page.goto("https://upstash.com")
+```
+
+## Stagehand
+
+[Stagehand](https://www.stagehand.dev) can use the box browser as its local browser:
+
+```typescript agent.ts
+import { Stagehand } from "@browserbasehq/stagehand"
+
+const stagehand = new Stagehand({
+  env: "LOCAL",
+  localBrowserLaunchOptions: { cdpUrl },
+})
+
+await stagehand.init()
+await stagehand.act("click the first link")
+```
+
+## Mixing CDP and SDK control
+
+CDP clients and the SDK drive the same browser and the same tabs. A page opened by Playwright shows up in `box.browser.listTabs()`, and a tab created by the SDK is visible to Playwright. You can script the predictable steps like login and pagination with Playwright, hand the tab to [`act` or `run`](/docs/box/overall/browser/ai-actions) for the steps that are easier to describe in natural language, and watch either through [Live View](/docs/box/overall/browser/live-view).
+
+As a rule of thumb: use CDP when you want precise, repeatable scripting with no LLM in the loop. Use [AI Actions](/docs/box/overall/browser/ai-actions) when describing the task is easier than scripting it.
+
+# Live View
+Source: https://upstash.com/docs/box/overall/browser/live-view
+
+Every tab can produce a live view URL: a shareable link that streams the tab in real time. Open it in any browser, or embed it in an `<iframe>` to show your users what their agent is doing.
+
+<CodeGroup>
+```typescript box.ts
+const liveUrl = await tab.liveViewUrl()
+
+console.log(liveUrl)
+// https://<box>-9223.<domain>/screencast?token=…&tab=…
+```
+
+```python box.py
+live_url = tab.live_view_url()
+
+print(live_url)
+# https://<box>-9223.<domain>/screencast?token=…&tab=…
+```
+</CodeGroup>
+
+The URL is self-contained. Authentication is a token embedded in the URL itself, so it works anywhere a browser can load a page. The viewing side needs no API key and no SDK.
+
+## Embedding
+
+```html
+<iframe
+  src="https://<box>-9223.<domain>/screencast?token=…&tab=…"
+  style="width: 100%; aspect-ratio: 16 / 10; border: 0;"
+></iframe>
+```
+
+A common pattern is to start a [`tab.run()`](/docs/box/overall/browser/ai-actions) task and render the live view next to it, so users can watch the agent work in real time.
+
+## View-only
+
+The live view streams frames out only. Viewers cannot click, type, or otherwise interact with the page. To drive the browser, use the SDK or [connect over CDP](/docs/box/overall/browser/connect).
+
+If you need an interactive viewer inside your own product, you can build one over CDP by streaming screencast frames out and sending input events back. This is how the console's browser tab works.
+
+<Warning>
+  Anyone with the URL can watch the tab, since the access token is part of the
+  URL. Treat live view URLs like secrets and share them only with people who
+  should see the session.
+</Warning>
+
+For an interactive version of the same view, open the **Browser** tab on your box's page in the [Upstash Console](https://console.upstash.com). If you want a replayable video instead of a live stream, see [Recordings](/docs/box/overall/browser/recordings).
+
+# Browser
+Source: https://upstash.com/docs/box/overall/browser/overview
+
+**Every box can come with its own browser.** Create a box with `browser: true` to get a managed, headless Chromium that you control through the SDK. You can open tabs, read pages, take screenshots, extract structured data, run AI agents on the live DOM, record sessions, and connect Playwright directly over CDP.
+
+Everything works headless. There is no desktop, no VNC, and nothing to install. Chromium is provisioned with the box and boots on first use.
+
+## Create a box with a browser
+
+<CodeGroup>
+```typescript box.ts
+import { Box } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  browser: true,
+})
+
+// Open a tab (boots Chromium on first use)
+const tab = await box.browser.tab.create("https://news.ycombinator.com")
+
+// Navigate the same tab and read the result
+const page = await tab.goto("https://upstash.com/docs")
+console.log(page.title)
+```
+
+```python box.py
+from upstash_box import Box
+
+box = Box.create(runtime="node", browser=True)
+
+# Open a tab (boots Chromium on first use)
+tab = box.browser.tab.create("https://news.ycombinator.com")
+
+# Navigate the same tab and read the result
+page = tab.goto("https://upstash.com/docs")
+print(page.title)
+```
+</CodeGroup>
+
+<Note>
+  The browser can only be provisioned when the box is created. It cannot be
+  enabled on an existing box. If you need a browser on a box that does not have
+  one, create a new box with `browser: true`.
+</Note>
+
+## How it's organized
+
+`box.browser` manages the browser itself: opening and listing tabs, recordings, and the CDP endpoint. Page-level operations live on a **Tab** handle, the object returned by `tab.create`, `listTabs`, or `getTab`. A tab handle is addressed by its Chrome DevTools Protocol target id, so it stays valid across navigations. You navigate, read, screenshot, and run AI tasks through the same handle.
+
+## What you can do
+
+<CardGroup cols={2}>
+  <Card title="Tabs & Navigation" href="/box/overall/browser/tabs">
+    Open tabs, navigate, list and re-attach to them, and close them.
+  </Card>
+
+  <Card title="Reading Pages" href="/box/overall/browser/reading-pages">
+    Page text and links, PNG screenshots, and schema-validated data extraction.
+  </Card>
+
+  <Card title="AI Actions" href="/box/overall/browser/ai-actions">
+    Natural-language actions and autonomous multi-step tasks on the live DOM.
+  </Card>
+
+  <Card title="Live View" href="/box/overall/browser/live-view">
+    A shareable, view-only live stream of any tab that you can embed in an iframe.
+  </Card>
+
+  <Card title="Recordings" href="/box/overall/browser/recordings">
+    Record browser sessions to replayable video with chapter markers.
+  </Card>
+
+  <Card title="Connect over CDP" href="/box/overall/browser/connect">
+    Drive the same browser with Playwright, Puppeteer, or Stagehand.
+  </Card>
+</CardGroup>
+
+<Note>
+  The AI-powered operations use an LLM and are metered:
+  [`extract`](/docs/box/overall/browser/reading-pages) and [`observe`, `act`,
+  `run`](/docs/box/overall/browser/ai-actions). They need an API key for the model's
+  provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
+  your account.
+</Note>
+
+You can also watch and control the browser from the **Browser** tab on your box's page in the [Upstash Console](https://console.upstash.com). It shows the live view, runs AI tasks, and includes the SDK snippet for everything you do there.
+
+# Reading Pages
+Source: https://upstash.com/docs/box/overall/browser/reading-pages
+
+There are three ways to get data out of a tab: read the DOM as text, capture a screenshot, or have an AI agent extract structured data against a schema.
+
+## Page content
+
+`content()` reads the tab's current title, URL, visible text, and links from the real DOM, including JavaScript-rendered content:
+
+<CodeGroup>
+```typescript box.ts
+const { title, url, text, links } = await tab.content()
+
+console.log(title)
+console.log(text.slice(0, 200))
+for (const link of links ?? []) {
+  console.log(link.text, link.href)
+}
+```
+
+```python box.py
+content = tab.content()
+
+print(content.title)
+print(content.text[:200])
+for link in content.links or []:
+    print(link.text, link.href)
+```
+</CodeGroup>
+
+## Screenshots
+
+`screenshot()` captures the tab as a PNG. It works headless, with no display needed. By default you get raw PNG bytes. Ask for base64 if you are passing the image on, for example to an LLM:
+
+<CodeGroup>
+```typescript box.ts
+import { writeFile } from "node:fs/promises"
+
+// PNG bytes (Uint8Array)
+const png = await tab.screenshot({ fullPage: true })
+await writeFile("page.png", png)
+
+// Base64-encoded PNG string
+const b64 = await tab.screenshot({ type: "base64" })
+```
+
+```python box.py
+# PNG bytes
+png = tab.screenshot(full_page=True)
+with open("page.png", "wb") as f:
+    f.write(png)
+
+# Base64-encoded PNG string
+b64 = tab.screenshot(encoding="base64")
+```
+</CodeGroup>
+
+Pass `fullPage: true` to capture the entire scrollable page instead of just the viewport.
+
+## Structured extraction
+
+`extract()` hands the page to a DOM-aware AI agent and returns data validated against your schema. The schema is a [Zod](https://zod.dev) object schema (v3 or v4) in TypeScript, and a [pydantic](https://docs.pydantic.dev) model class or a raw JSON schema dict in Python:
+
+<CodeGroup>
+```typescript box.ts
+import { z } from "zod"
+
+const article = await tab.extract(
+  "extract the article title and author",
+  z.object({
+    title: z.string(),
+    author: z.string(),
+  }),
+)
+
+console.log(article.title, article.author)
+```
+
+```python box.py
+from pydantic import BaseModel
+
+class Article(BaseModel):
+    title: str
+    author: str
+
+article = tab.extract(
+    "extract the article title and author",
+    Article,
+)
+
+print(article.title, article.author)
+```
+</CodeGroup>
+
+<Note>
+  `extract` uses an LLM and is metered. It needs a provider API key on the box
+  or your account, and accepts an optional `model` override just like the other
+  [AI Actions](/docs/box/overall/browser/ai-actions).
+</Note>
+
+The result is parsed with your schema before it is returned, so a successful call always gives you data in the shape you asked for.
+
+# Recordings
+Source: https://upstash.com/docs/box/overall/browser/recordings
+
+Recordings capture the browser to a replayable video. They cover all tabs, follow whichever one is in the foreground, and include everything an [AI task](/docs/box/overall/browser/ai-actions) does. Use them for audit trails, debugging agent behavior, or showing users what happened after the fact.
+
+## Record a session
+
+<CodeGroup>
+```typescript box.ts
+// Start capturing (one active recording per box)
+const recording = await box.browser.recordings.start({
+  maxDurationSeconds: 120,
+})
+
+await tab.goto("https://upstash.com/docs")
+await tab.run("Find the quickstart and summarize it")
+
+// Finalize the video and upload it
+const saved = await recording.stop()
+
+console.log(saved.durationMs, saved.playlistUrl)
+console.log(saved.markers) // tab switches and AI run chapters
+```
+
+```python box.py
+# Start capturing (one active recording per box)
+recording = box.browser.recordings.start(max_duration_seconds=120)
+
+tab.goto("https://upstash.com/docs")
+tab.run("Find the quickstart and summarize it")
+
+# Finalize the video and upload it
+saved = recording.stop()
+
+print(saved.duration_ms, saved.playlist_url)
+print(saved.markers)  # tab switches and AI run chapters
+```
+</CodeGroup>
+
+A recording stops when you call `stop()`, when it reaches `maxDurationSeconds` (default and maximum: 600 seconds), or automatically after 3 minutes with no on-screen activity.
+
+## Playback
+
+A completed recording is an HLS video. `playlistUrl` points to its playlist, and `markers` holds chapters for tab switches (`tab_switch`) and AI runs (`run`) with their timestamps. A player can use the markers to jump straight to a specific run.
+
+<Note>
+  Unlike [live view](/docs/box/overall/browser/live-view) URLs, the playlist URL is
+  not tokenized. Fetching it requires your Box API key, like any other API
+  call. Recordings are retained for 14 days.
+</Note>
+
+The easiest way to watch a recording is the **Browser** tab of your box in the [Upstash Console](https://console.upstash.com). To play recordings in your own product, keep the API key on your server: proxy the playlist and segment requests through your backend, attach the `X-Box-Api-Key` header there, and feed the proxied playlist to an HLS player such as [hls.js](https://github.com/video-dev/hls.js). Do not ship the key to end users.
+
+## Find recordings later
+
+Recordings belong to the box and can be discovered again after a restart or from another process:
+
+<CodeGroup>
+```typescript box.ts
+// Newest first
+const recordings = await box.browser.recordings.list()
+
+const same = await box.browser.recordings.get(recordings[0].id)
+console.log(same.status, same.durationMs, same.sizeBytes)
+```
+
+```python box.py
+# Newest first
+recordings = box.browser.recordings.list()
+
+same = box.browser.recordings.get(recordings[0].id)
+print(same.status, same.duration_ms, same.size_bytes)
+```
+</CodeGroup>
+
+Each recording reports its `status` (`recording`, `completed`, `failed`, or `deleted`), timing (`startedAt`, `endedAt`, `durationMs`), size, why it stopped (`stoppedReason`), and its expiry time.
+
+<Tip>
+  `recording.stop()` is safe to call on a stale handle. If that recording
+  already ended, for example because it auto-stopped and a newer one is
+  running, it returns the finished recording's metadata instead of stopping
+  the newer one.
+</Tip>
+
+# Tabs & Navigation
+Source: https://upstash.com/docs/box/overall/browser/tabs
+
+Tabs are the unit of work in the box browser. `box.browser` opens and lists them. Every page operation, from navigation to screenshots to AI actions, runs on a specific `Tab` handle.
+
+## Open a tab
+
+`tab.create` opens a tab, navigates it to a URL, and waits for the requested lifecycle state. The first call also boots Chromium if it is not running yet.
+
+<CodeGroup>
+```typescript box.ts
+const tab = await box.browser.tab.create("https://upstash.com", {
+  waitUntil: "domcontentloaded",
+  timeout: 30_000,
+})
+
+console.log(tab.id, tab.url, tab.title)
+```
+
+```python box.py
+tab = box.browser.tab.create(
+    "https://upstash.com",
+    wait_until="domcontentloaded",
+    timeout=30_000,
+)
+
+print(tab.id, tab.url, tab.title)
+```
+</CodeGroup>
+
+* `waitUntil`: when navigation counts as done. One of `"load"` (default), `"domcontentloaded"`, or `"networkidle"`.
+* `timeout`: navigation timeout in milliseconds. Defaults to `30000`. Pass `0` to disable it.
+
+## Navigate
+
+`goto` navigates the tab and returns the resulting page's content (title, URL, text, and links):
+
+<CodeGroup>
+```typescript box.ts
+const page = await tab.goto("https://upstash.com/docs")
+console.log(page.title, page.url)
+```
+
+```python box.py
+page = tab.goto("https://upstash.com/docs")
+print(page.title, page.url)
+```
+</CodeGroup>
+
+Unlike `tab.create`, `goto` has no `waitUntil` or `timeout` options. It waits for the page to load with a fixed 60 second deadline.
+
+## List and re-attach
+
+Tab handles are addressed by their Chrome DevTools Protocol target id, which stays stable across navigations. You can store a tab id and re-attach to the same tab later, even from a different process:
+
+<CodeGroup>
+```typescript box.ts
+// List the box's open tabs
+const tabs = await box.browser.listTabs()
+for (const t of tabs) {
+  console.log(t.id, t.url, t.title)
+}
+
+// Re-attach to a tab by id (no network call)
+const same = box.browser.getTab(tab.id)
+await same.goto("https://news.ycombinator.com")
+```
+
+```python box.py
+# List the box's open tabs
+tabs = box.browser.list_tabs()
+for t in tabs:
+    print(t.id, t.url, t.title)
+
+# Re-attach to a tab by id (no network call)
+same = box.browser.get_tab(tab.id)
+same.goto("https://news.ycombinator.com")
+```
+</CodeGroup>
+
+<Note>
+  A handle's `url` and `title` fields are the last known values from
+  `tab.create` or `listTabs`. They are not updated live. Use
+  [`tab.content()`](/docs/box/overall/browser/reading-pages) to read the current
+  state of the page.
+</Note>
+
+## Close a tab
+
+<CodeGroup>
+```typescript box.ts
+await tab.close()
+```
+
+```python box.py
+tab.close()
+```
+</CodeGroup>
+
+Multiple tabs can be open at once. Each is independent, and operations on one do not affect the others. This is useful for comparing pages side by side or running [AI tasks](/docs/box/overall/browser/ai-actions) against several pages in sequence.
+
 # How to Add a Custom Agent
 Source: https://upstash.com/docs/box/overall/custom-agent
 
@@ -2769,6 +3651,8 @@ Ready-to-run examples for popular open-source agents:
 * [Gemini](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-gemini-agent.ts) — Google Gemini via `@google/genai`
 * [Aider](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-aider-agent.ts) — git-aware code editor
 * [Goose](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-goose-agent.ts) — autonomous coding agent
+* [CrewAI](https://github.com/upstash/box/blob/main/packages/python-sdk/examples/custom_crewai_agent.py) — multi-agent orchestration framework
+* [Pydantic AI](https://github.com/upstash/box/blob/main/packages/python-sdk/examples/custom_pydantic_ai_agent.py) — type-safe agent framework
 
 ## Notes
 
@@ -5120,11 +6004,13 @@ Please check our [pricing page](https://upstash.com/pricing/box) for the most up
 # Quickstart
 Source: https://upstash.com/docs/box/overall/quickstart
 
+import { Catalog } from "/snippets/catalog.jsx";
+
 **Upstash Box lets you give your AI agents a computer.**
 
 Every Upstash Box is a **secure, isolated cloud container with an AI Agent built-in**. Spin up as many as you want in parallel. Each one includes a full environment with a filesystem, shell, git, and a runtime. Your agent can read files, write code, and execute tasks inside it.
 
-<Note>Upstash Box is in developer preview — APIs and pricing may change.</Note>
+<Note>Upstash Box is in developer preview. APIs and pricing may change.</Note>
 
 ### 1. Get your API key
 
@@ -5360,6 +6246,10 @@ Great example use cases:
     Boxes have Claude Code, Codex or OpenCode built-in.
   </Card>
 </CardGroup>
+
+## SDKs
+
+<Catalog product="box" type="sdk" cols={3} />
 
 # Schedules
 Source: https://upstash.com/docs/box/overall/schedules
@@ -5791,6 +6681,15 @@ Environment variables are visible to all code running inside the box. If you run
 ## Attach Headers
 
 For injecting secret HTTP headers into outbound HTTPS requests without exposing them inside the container, see [Attach Headers](/docs/box/overall/attach-headers).
+
+## Browser URLs
+
+Boxes created with [`browser: true`](/docs/box/overall/browser/overview) can hand out two kinds of URLs that carry their access token in the URL itself, so they work without an API key:
+
+* [Live view](/docs/box/overall/browser/live-view) URLs are **view-only**. Frames stream out and no input goes in, but anyone with the URL can watch the tab.
+* [CDP](/docs/box/overall/browser/connect) URLs give **full control** of the browser to anyone holding them.
+
+Treat both as secrets and share them only where that level of access is intended. Recording playlist URLs are not tokenized. Fetching them requires your Box API key, like any other API call.
 
 ## Blocked Environment Variables
 
@@ -7615,6 +8514,10 @@ Source: https://upstash.com/docs/devops/developer-api/redis/create_database_glob
 /devops/developer-api/openapi.yml post /redis/database
 This endpoint creates a new Redis database.
 
+To create a database manually, you can use the [Upstash Console](https://console.upstash.com/redis).
+
+For a quick development database, POST to https://upstash.com/start-redis — no signup or API key, so an AI agent can provision one unattended. Expires in 72 hours unless claimed.
+
 # Delete Database
 Source: https://upstash.com/docs/devops/developer-api/redis/delete_database
 
@@ -8584,54 +9487,24 @@ Secondary: #00E9A3 (Cyan Green)
 # Get Started
 Source: https://upstash.com/docs/introduction
 
-<CardGroup cols={2}>
-  <Card title="Serverless Redis" href="/redis/overall/getstarted">
-    Create a Redis Database within seconds
-  </Card>
-  <Card title="Serverless Vector" href="/vector/overall/getstarted">
-    Create a Vector Database for AI & LLMs
-  </Card>
-  <Card title="QStash" href="/qstash/overall/getstarted">
-    Publish your first message
-  </Card>
-  <Card title="Upstash Workflow" href="/workflow/getstarted">
-    Write durable serverless functions
-  </Card>
-  <Card title="Upstash Box" href="/box/overall/quickstart">
-    Run AI agents and code in secure sandboxes
-  </Card>
-</CardGroup>
+import { Hero, SectionHead, ProductGrid, AgentResources, Concepts, Community } from "/snippets/landing.jsx";
 
-## Concepts
+<Hero />
 
-<CardGroup cols={2}>
-  <Card title="Serverless" href="/common/concepts/serverless">
-    Upstash is serverless. You don't need to provision any infrastructure. Just
-    create a database and start using it.
-  </Card>
-  <Card title="Scale to Zero" href="/common/concepts/scale-to-zero">
-    Price scales to zero. You don't pay for idle or unused resources. You pay
-    only for what you use.
-  </Card>
-  <Card title="Global Replication" href="/common/concepts/global-replication">
-    Upstash Redis replicates your data for the best latency all over the world.
-  </Card>
-  <Card title="Access Anywhere" href="/common/concepts/access-anywhere">
-    Upstash REST APIs enable access from all types of runtimes.
-  </Card>
-</CardGroup>
+<div className="u-wrap">
+  <div id="products" />
+  <SectionHead eyebrow="Products" title="Pick a product and start building" sub={<>See <a href="https://upstash.com/pricing">pricing</a> for each product's plans, billing, and limits.</>} />
+  <ProductGrid />
 
-## Get In touch
+  <SectionHead eyebrow="Agent Resources" title="Build with AI agents" sub="Tools to manage and build on Upstash from coding agents and LLMs." />
+  <AgentResources />
 
-<CardGroup cols={2}>
-  <Card title="X" icon="x-twitter" href="https://x.com/upstash">
-    Follow us on X for the latest news and updates.
-  </Card>
-  <Card title="Discord" icon="discord" href="https://upstash.com/discord">
-    Join our Discord Community and ask your questions to the team and other
-    developers.
-  </Card>
-</CardGroup>
+  <SectionHead eyebrow="Concepts" title="How Upstash works" />
+  <Concepts />
+
+  <SectionHead eyebrow="Community" title="Get in touch" />
+  <Community />
+</div>
 
 # Bulk Delete DLQ messages
 Source: https://upstash.com/docs/qstash/api-reference/dlq/bulk-delete-dlq-messages
@@ -10522,9 +11395,8 @@ Many things can go wrong in a serverless environment. If your API does not
 respond with a success status code (2XX), we retry the request to ensure every
 message will be delivered.
 
-The maximum number of retries depends on your current plan. By default, we retry
-the maximum amount of times, but you can set it lower by sending the
-`Upstash-Retries` header:
+By default, we retry a failed delivery 3 times. You can change this per message
+by sending the `Upstash-Retries` header:
 
 <CodeGroup>
 ```shell cURL
@@ -10873,8 +11745,9 @@ Source: https://upstash.com/docs/qstash/features/security
 
 ### Request Authorization
 
-When interacting with the QStash API, you will need an authorization token. You
-can get your token from the [Console](https://console.upstash.com/qstash).
+When interacting with the QStash API, you will need an authorization token. To
+get your token, go to the [QStash tab in the Console](https://console.upstash.com/qstash),
+pick a region, and copy the `QSTASH_TOKEN` from the **Quickstart** section.
 
   <img />
 
@@ -11454,6 +12327,12 @@ QStash is available in two regions: **EU region** and **US region**. Each region
 
 * **EU Region**: `https://qstash-eu-central-1.upstash.io`, or `https://qstash.upstash.io`
 * **US Region**: `https://qstash-us-east-1.upstash.io`
+
+`QSTASH_URL` is optional. When it is not set, SDKs default to the EU region
+(`https://qstash.upstash.io`). To use the US region, set `QSTASH_URL` to the US
+regional URL together with that region's `QSTASH_TOKEN` and signing keys — you can
+copy all of them from the **Quickstart** section of the
+[QStash Console](https://console.upstash.com/qstash).
 
 ## Key Concepts
 
@@ -13585,7 +14464,7 @@ Source: https://upstash.com/docs/qstash/overall/changelog
 <Update label="August 2025">
 * **Console:**
     * Added ability to hide/show columns on the Schedules tab.
-    * Local mode is added to enable our users to use the console with their local development envrionment. See [docs](http://localhost:3000/qstash/howto/local-development) for details.
+    * Local mode is added to enable our users to use the console with their local development envrionment. See [docs](/docs/qstash/howto/local-development) for details.
 </Update>
 
 <Update label="July 2025">
@@ -13864,6 +14743,8 @@ Enterprise customers receive dedicated resources to ensure isolation and consist
 # Getting Started
 Source: https://upstash.com/docs/qstash/overall/getstarted
 
+import { Catalog } from "/snippets/catalog.jsx";
+
 QStash is a **serverless messaging and scheduling solution**. It fits easily into your existing workflow and allows you to build reliable systems without managing infrastructure.
 
 Instead of calling an endpoint directly, QStash acts as a middleman between you and an API to guarantee delivery, perform automatic retries on failure, and more.
@@ -13918,10 +14799,11 @@ messages to. If you don't, you can use something like
 
 For example, you can use this URL to test your messages: [https://firstqstashmessage.requestcatcher.com](https://firstqstashmessage.requestcatcher.com)
 
-### Get your token
+### Get your QStash Token
 
-Go to the [Upstash Console](https://console.upstash.com/qstash) and copy the
-`QSTASH_TOKEN`.
+Go to the [QStash tab in the Upstash Console](https://console.upstash.com/qstash),
+pick the region you want to use (see [Select a Region](/docs/qstash/howto/multi-region)),
+and copy the `QSTASH_TOKEN` from the **Quickstart** section.
 
   <img />
 
@@ -14011,6 +14893,10 @@ Learn more about different states [here](/docs/qstash/howto/debug-logs).
     features.
   </Card>
 </CardGroup>
+
+## SDKs
+
+<Catalog product="qstash" type="sdk" cols={3} />
 
 # llms.txt
 Source: https://upstash.com/docs/qstash/overall/llms-txt
@@ -16143,6 +17029,7 @@ When enabled:
 ## What If You Lose Your Credentials
 
 **Reset Credentials**: This function remains available and, when credential protection is enabled, will generate new protected credentials.
+Navigate to the settings tab of your database and click **Reset Credentials**. You will be prompted to save the new credentials.
 
   <img />
 
@@ -16226,7 +17113,7 @@ customize the eviction behavior according to their specific needs.
 Source: https://upstash.com/docs/redis/features/globaldatabase
 
 <Tip>
-  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to [`https://upstash.com/start-redis`](https://upstash.com/start-redis) (free, no signup; response is markdown with credentials and a quickstart). The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
 </Tip>
 
 In the global database, the replicas are distributed across multiple regions
@@ -16597,12 +17484,15 @@ Checkout [Read Your Writes](/docs/redis/howto/readyourwrites) for more details o
 # REST API
 Source: https://upstash.com/docs/redis/features/restapi
 
-REST API enables you to access your Upstash database using REST.
-
 ## Get Started
 
-If you do not have a database already, follow
-[these steps](../overall/getstarted) to create one.
+<Tip>
+  Looking for the URL and token of your database? First [create a Redis
+  database](/docs/redis/overall/getstarted), then [find your
+  credentials](/docs/redis/howto/connect-client) in the console.
+
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+</Tip>
 
 In the [Upstash Console](https://console.upstash.com/redis), select your database. Then, in the database page, you will see the section that includes the endpoint URL and token details. When you hover over the `Endpoint` or `Token / Readonly Token` fields, copy button will appear for each. You can click it to easily copy the values you need for your connection.
 
@@ -17773,6 +18663,10 @@ Simplest way to connect to your database is to use `redis-cli`.
 Because it is already covered in [Getting Started](../overall/getstarted), we
 will skip it here.
 
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+</Tip>
+
 ## Database
 
 After completing the [getting started](../overall/getstarted) guide, you will
@@ -17941,6 +18835,10 @@ It is the only connectionless (HTTP based) Redis client and designed for:
 See
 [the list of APIs](https://upstash.com/docs/redis/features/restapi#rest-redis-api-compatibility)
 supported.
+
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+</Tip>
 
 ## Quick Start
 
@@ -19561,9 +20459,6 @@ await db.$cache?.invalidate({ tags: ["custom_key"] })
 
 For more details on this integration, refer to the [Drizzle ORM caching documentation](https://cache.drizzle-orm-fe.pages.dev/docs/cache).
 
-# Upstash MCP
-Source: https://upstash.com/docs/redis/integrations/mcp
-
 # n8n with Upstash Redis
 Source: https://upstash.com/docs/redis/integrations/n8n
 
@@ -20498,6 +21393,9 @@ Source: https://upstash.com/docs/redis/overall/compatibility
 
 Upstash supports Redis client protocol up to version `8.2`. We are also gradually adding changes introduced in later versions.
 
+This page lists Redis command support at the Upstash Redis API level. SDK command references may cover a smaller set of typed helpers.
+For example, see the [TypeScript SDK command reference](/docs/redis/sdks/ts/commands/overview) for the commands documented in `@upstash/redis`.
+
 Most of the unsupported items are in our roadmap. If you need a feature that we do not support, please drop a note to [support@upstash.com](mailto:support@upstash.com).
 So we can inform you when we are planning to support it.
 
@@ -20958,6 +21856,8 @@ A Business Associate Agreement (BAA) and HIPAA compliance enablement is availabl
 # Getting Started
 Source: https://upstash.com/docs/redis/overall/getstarted
 
+import { Catalog } from "/snippets/catalog.jsx";
+
 Upstash Redis is a **highly available, infinitely scalable** Redis-compatible database:
 
 * 99.99% uptime guarantee with auto-scaling ([Prod Pack](/docs/redis/overall/enterprise#prod-pack-features))
@@ -20969,7 +21869,7 @@ Upstash Redis is a **highly available, infinitely scalable** Redis-compatible da
 * Optional SOC-2 compliance, encryption at rest and much more
 
 <Tip>
-  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to [`https://upstash.com/start-redis`](https://upstash.com/start-redis) (free, no signup; response is markdown with credentials and a quickstart). The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
 </Tip>
 
 ***
@@ -21024,7 +21924,7 @@ Congratulations! You have created an ultra-fast Upstash Redis database! 🎉
 <Check>
 **New: Manage Upstash Redis with your agent**
 
-Manage Upstash Redis databases from Claude and other AI tools by using our [MCP server](/docs/agent-resources/mcp).
+Manage Upstash Redis databases from Claude and other AI tools by using our [MCP server](/docs/agent-resources/mcp). To let an agent run commands directly against a single database, use the dedicated [Redis MCP](/docs/redis/sdks/mcp).
 </Check>
 
 ## Next steps
@@ -21034,6 +21934,10 @@ Manage Upstash Redis databases from Claude and other AI tools by using our [MCP 
 * [Upstash Redis Search](/docs/redis/search/introduction): full-text search built into Upstash Redis.
 * [REST API](/docs/redis/features/restapi): connect from edge and serverless runtimes where TCP is restricted.
 * [Pricing & Billing](/docs/redis/overall/billing): free tier, Pay-As-You-Go, and Fixed plan limits, plus how billing works.
+
+## SDKs
+
+<Catalog product="redis" type="sdk" cols={3} />
 
 # llms.txt
 Source: https://upstash.com/docs/redis/overall/llms-txt
@@ -21163,7 +22067,7 @@ We believe that Upstash is the best storage for your Lambda Functions because:
 - [Fastly](https://upstash.com/docs/redis/quickstarts/fastlycompute.md)
 - [Flask](https://upstash.com/docs/redis/quickstarts/flask.md)
 - [Fly.io](https://upstash.com/docs/redis/quickstarts/fly.md)
-- [Google Cloud Functions](https://upstash.com/docs/redis/quickstarts/google-cloud-functions.md)
+- [Google Cloud Run functions](https://upstash.com/docs/redis/quickstarts/google-cloud-functions.md)
 - [ioredis note](https://upstash.com/docs/redis/quickstarts/ioredisnote.md)
 - [Koyeb](https://upstash.com/docs/redis/quickstarts/koyeb.md)
 - [Laravel](https://upstash.com/docs/redis/quickstarts/laravel.md)
@@ -21755,25 +22659,25 @@ lives in [`examples/ai-sdk-demo`](https://github.com/upstash/agentkit/tree/main/
   </Card>
 </CardGroup>
 
-# Memory, RAG, Rate Limiting & Sandboxes for the Vercel Eve Agent Framework
+# Memory, Chat History, RAG, Rate Limiting & Sandboxes for the Vercel Eve Agent Framework
 Source: https://upstash.com/docs/redis/sdks/agentkit/eve
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
 conversation history, caching, and RAG, with no separate vector database. The semantic features run on
 [Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
 
-`@upstash/agentkit-eve` brings AgentKit to **Eve, the Vercel agent framework**. You drop these into your
-`agent/` tree:
+Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work together in one agent:
 
-| Import | Feature |
+| Package | What it is |
 | --- | --- |
-| `defineMemoryRecallTool` / `defineMemorySaveTool` | Long-term memory tools the model reads and writes. |
-| `defineSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
-| `createRateLimitAuth` | A rate-limit gate for your channel's `auth` walk. |
-| `upstash` (`@upstash/agentkit-eve/sandbox`) | Upstash Box sandbox backend for `defineSandbox`. |
-| `defineCachedTool` | A `defineTool` whose result is memoized in Redis. |
+| `@upstash/agentkit-eve-extension` | An [Eve extension](https://eve.dev/docs/extensions): one mount file adds memory, searchable chat history, and RAG. |
+| `@upstash/agentkit-eve` | Per-file building blocks, plus the two things an extension cannot contribute: rate limiting and a sandbox backend. |
 
-Start from an eve project. Scaffold one (it installs `eve` and an AI-SDK provider for you):
+Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
+Box sandbox, or control over an individual tool file.
+
+Start from an eve project (0.25.2 or later). Scaffold one, which installs `eve` and an AI-SDK provider
+for you:
 
 ```bash
 npx eve@latest init my-agent
@@ -21781,84 +22685,250 @@ npx eve@latest init my-agent
 npx eve@latest init my-agent --channel-web-nextjs
 ```
 
-Then add the AgentKit packages:
+<Note>
+  AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
+  Pass your own `@upstash/redis` client as `redis` to any helper to override.
+</Note>
+
+## The Eve extension: memory, chat history, and RAG
+
+Everything in this part comes from `@upstash/agentkit-eve-extension`, configured in one mount file.
+
+### How to mount the Upstash extension in Vercel Eve
+
+```bash
+npm install @upstash/agentkit-eve-extension
+```
+
+One file under `agent/extensions/` mounts everything. Every config field is optional, and the smallest
+mount gives the model long-term memory:
+
+```ts
+// agent/extensions/agentkit.ts
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit();
+```
+
+The filename supplies the namespace, so contributions compose as `agentkit__recall_memory`,
+`agentkit__save_memory`, and so on. The extension also merges a short instructions fragment into your
+system prompt telling the model when to save and recall.
+
+The three feature groups below are independent of each other. Memory holds facts the model decided to
+keep. Chat history is the transcript of what was said. Search is retrieval over documents you write
+into your own index. Each has its own Redis keyspace and its own search index.
+
+### How to add memory to Vercel Eve
+
+Long-term memory the model reads and writes itself. A bare mount already has it; the `memory` field
+only tunes recall:
+
+```ts
+// agent/extensions/agentkit.ts
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({
+  memory: { topK: 5, minScore: 1 },
+});
+```
+
+<Accordion title="Tools, options, and the userId tenant boundary">
+  * `agentkit__recall_memory` — searches the user's memories; called with no `query` it returns all of them.
+  * `agentkit__save_memory` — stores one durable fact about the user.
+  * `memory.topK` — max memories a recall returns.
+  * `memory.minScore` — relevance floor. Scores are unbounded BM25 values, not `[0,1]`.
+
+  `userId` is the only tenant boundary. It defaults to Eve's verified session auth
+  (`auth.current?.principalId`, then `auth.initiator?.principalId`, then the session id), so
+  configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) if you want the
+  principal to be trustworthy. You can also set it to a string, which puts every caller in one shared
+  scope, or derive it per call:
+
+  ```ts
+  export default agentkit({
+    userId: (ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+  });
+  ```
+
+  Memories are stored at `agentkit:memory:<userId>:<id>`.
+</Accordion>
+
+### How to add searchable chat history to Vercel Eve
+
+`chatHistory: true` persists every user and assistant message to Redis as the session streams, and
+gives the model two tools over that store. A user can then ask about something settled in a previous
+conversation:
+
+```ts
+// agent/extensions/agentkit.ts
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({ chatHistory: true });
+```
+
+* `agentkit__search_chat_history` runs a `$smart` (typo-tolerant) search over what was said and returns
+  the matching chats as summaries: `sessionId`, `title`, `updatedAt`, `messageCount`, `score`. The
+  current conversation is excluded, since it's already in context.
+* `agentkit__read_chat_history` reads one of those chats back by `sessionId`, newest messages last.
+
+Both tools take `userId` from the session, so the model cannot widen a lookup past the current user's
+own transcripts.
+
+Your own code reads the same store with `ChatHistory` from `@upstash/agentkit-sdk`, which is how you'd
+build a history sidebar or run evals over past sessions:
+
+```bash
+npm install @upstash/agentkit-sdk @upstash/redis
+```
+
+```ts
+// app/api/chats/route.ts — server-side only; `userId` comes from your session, never the client
+import { Redis } from "@upstash/redis";
+import { ChatHistory } from "@upstash/agentkit-sdk";
+
+// `ChatHistory` is generic over the message type, and the extension doesn't export the shape its
+// hook writes — declare it to get a typed `messages` array back.
+type StoredMessage = { role: "user" | "assistant"; content: string; createdAt: number };
+
+// Pass the same prefix / indexName / ttlSeconds you set on `chatHistory` in the mount file.
+const history = new ChatHistory<StoredMessage>({ redis: Redis.fromEnv() });
+
+// List: summaries only (no messages), newest-updated first.
+const chats = await history.listChats({ userId, limit: 50 });
+
+// Search: `$smart` fuzzy match, summaries plus a BM25 `score`. target: "user" | "model" | "both".
+const hits = await history.searchChats({ userId, query: "the retry schema", target: "both", limit: 20 });
+
+// Read: one full transcript, or null if this user has no chat with that sessionId.
+const chat = await history.getChat({ userId, sessionId: hits[0].sessionId });
+chat?.messages.forEach((m) => console.log(m.role, m.content));
+```
+
+`userId` must be the same value the extension resolved for those sessions, and both ids are Redis key
+parts, so `:` in a derived value is replaced with `_`. `deleteChat({ userId, sessionId })` removes a
+chat and its index entry.
+
+<Accordion title="Options and storage">
+  Pass an object in place of `true` to tune storage:
+
+  * `chatHistory.prefix` — base key prefix (default `agentkit:chat`).
+  * `chatHistory.indexName` — [Redis Search](/docs/redis/search/introduction) index name (defaults to the
+    identifier-safe `prefix`).
+  * `chatHistory.ttlSeconds` — per-chat TTL. Omit for no expiry.
+
+  Each session is one JSON document at `agentkit:chat:<userId>:<sessionId>`, holding the raw transcript
+  plus `$smart`-indexed user and model text. A search returns summaries, and a read is capped at 50
+  messages per call with a `truncated` flag, so neither can flood the context window.
+
+  Redis is the durable record here, since Eve's own workflow store is pruned after a run completes.
+
+  These tools look history up on demand. They don't resume a session: Eve does that through its own
+  session cursor.
+</Accordion>
+
+### How to add RAG to Vercel Eve
+
+Point the extension at an [Upstash Redis Search](/docs/redis/search/introduction) index and the model gets
+`search`, `search_aggregate`, and `search_count` tools over it. You build the schema with `s` from
+`@upstash/redis`, so your mount file imports it. Add the package to your app:
+
+```bash
+npm install @upstash/redis
+```
+
+```ts
+// agent/extensions/agentkit.ts
+import { s } from "@upstash/redis";
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({
+  search: {
+    schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+    indexName: "books",
+  },
+});
+```
+
+<Accordion title="Options and how the tools are described to the model">
+  * **`search.schema`** _(required)_ — built with `s` from `@upstash/redis`.
+  * `search.indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
+  * `search.prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
+  * `search.defaultLimit` — default page size for `search` (10).
+
+  Tool descriptions are generated from your schema (field names, types, and the filter operators that
+  apply to each), so the model learns the index without any prompt text from you. You write the
+  documents yourself with `redis.json.set` under the prefix, and the index is created on first read.
+
+  Omit `search` and these three tools don't exist at all. Like the chat-history tools, they resolve at
+  session start, which is why they don't appear in a static tool listing.
+</Accordion>
+
+### Extension configuration reference
+
+```ts
+// agent/extensions/agentkit.ts
+import { s } from "@upstash/redis";
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({
+  // optional: string, or (ctx) => string. Defaults to the verified principal, then the session id.
+  userId: (ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+  // optional: an explicit client; defaults to Redis.fromEnv()
+  // redis: new Redis({ url, token }),
+  // optional: tune memory recall
+  memory: { topK: 5, minScore: 1 },
+  // optional: omit and the search tools don't exist
+  search: {
+    schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+    indexName: "books",
+    prefix: "books:", // optional
+    defaultLimit: 10, // optional
+  },
+  // optional: off by default. `true`, or an object to tune storage
+  chatHistory: { ttlSeconds: 60 * 60 * 24 * 30 },
+});
+```
+
+<Accordion title="Dropping or overriding a contribution">
+  Mount as a directory and override a slot by filename. This is how you drop a tool you don't want,
+  for example to capture chat history without letting the model read it back:
+
+  ```
+  agent/extensions/agentkit/
+    extension.ts                     # the mount: export default agentkit({ ... })
+    tools/read_chat_history.ts       # your override for agentkit__read_chat_history
+  ```
+
+  ```ts
+  // agent/extensions/agentkit/tools/read_chat_history.ts
+  import { disableTool } from "eve/tools";
+
+  export default disableTool();
+  ```
+
+  You can also re-define the memory tools, say to gate saves behind approval, by importing them from
+  `@upstash/agentkit-eve-extension/tools` and spreading them into your own `defineTool`.
+</Accordion>
+
+<Note>
+  `@upstash/agentkit-eve` below offers memory and RAG as standalone tool files too. Use those when you
+  want to configure one tool at a time, and use the package alongside the extension for rate limiting
+  and sandboxes.
+</Note>
+
+## The Eve package: rate limiting, sandboxes, and tool files
+
+Everything in this part comes from `@upstash/agentkit-eve`, written as individual `agent/` files.
+Rate limiting and the sandbox backend live here because an extension cannot contribute a channel or
+a sandbox.
+
+### How to add rate limiting to Vercel Eve
 
 ```bash
 npm install @upstash/agentkit-eve @upstash/redis
-# only if you use the sandbox backend:
-npm install @upstash/box
 ```
 
-AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
-
-## How to add memory tools to Vercel Eve
-
-Long-term memory the model reads and writes itself: `recall_memory` and `save_memory`, one file each.
-
-```ts
-// agent/tools/recall_memory.ts
-import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
-
-export default defineMemoryRecallTool({
-  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-```ts
-// agent/tools/save_memory.ts
-import { defineMemorySaveTool } from "@upstash/agentkit-eve";
-
-export default defineMemorySaveTool({
-  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
-});
-```
-
-<Accordion title="Options and the userId tenant boundary">
-  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
-  * `topK` — max memories `recall` returns.
-  * `minScore` — BM25 relevance floor.
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from Eve's **verified
-  session auth** — `ctx.session.auth.current?.principalId` — not from anything the client supplies.
-  Configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) so `principalId`
-  is trustworthy; the `?? ctx.session.id` fallback only applies to unauthenticated requests. Memories
-  are stored at `agentkit:memory:<userId>:<id>`.
-</Accordion>
-
-## How to add RAG to Vercel Eve
-
-`search` / `aggregate` / `count` Eve tools over an Upstash Redis Search index. It is the counterpart to the
-[AI SDK adapter's](/docs/redis/sdks/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk)
-`createSearchTools`. Descriptions are generated from your schema.
-
-```ts
-// agent/tools/search_books.ts
-import { s } from "@upstash/redis";
-import { defineSearchTools } from "@upstash/agentkit-eve";
-
-export default defineSearchTools({
-  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
-  indexName: "books",
-}).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
-```
-
-<Accordion title="Options and the one-file-per-tool rule">
-  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
-  * `indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
-  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
-  * `defaultLimit` — default page size for `search` (10).
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
-  you want — repeat the same `schema` + `indexName` across `search_books.ts` / `aggregate_books.ts` /
-  `count_books.ts`. The index is created reactively on first use, and each returned tool is already
-  `defineTool`-branded.
-</Accordion>
-
-## How to add rate limiting to Vercel Eve
-
-A ready `AuthFn` that throttles inbound requests. Drop it into your channel's
+`createRateLimitAuth` is a ready `AuthFn` that throttles inbound requests. Drop it into your channel's
 [auth walk](https://eve.dev/docs/guides/auth-and-route-protection) ahead of your real authenticators.
 
 ```ts
@@ -21901,11 +22971,15 @@ export default eveChannel({
   </Accordion>
 </AccordionGroup>
 
-## How to add a sandbox to Vercel Eve
+### How to add a sandbox to Vercel Eve
 
 A drop-in replacement for Eve's `vercel()` backend, powered by
 [Upstash Box](https://github.com/upstash/box). Swap the import and keep the rest of your
 [sandbox file](https://eve.dev/docs/sandbox) the same.
+
+```bash
+npm install @upstash/box
+```
 
 ```ts
 // agent/sandbox.ts
@@ -21927,16 +23001,17 @@ export default defineSandbox({
 
 <AccordionGroup>
   <Accordion title="Config: Box's BoxConfig">
-    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim — whatever you'd pass to
+    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim, meaning whatever you'd pass to
     `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
-    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, … — plus an optional `redis` (defaults to
-    `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below). `@upstash/box` is an
-    optional peer dependency — only needed when you import `@upstash/agentkit-eve/sandbox`.
+    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, and so on. It also takes an optional
+    `redis` (defaults to `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below).
+    `@upstash/box` is an optional peer dependency, needed only when you import
+    `@upstash/agentkit-eve/sandbox`.
   </Accordion>
   <Accordion title="Security: network egress is deny-all by default">
     The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data
-    exfiltration / reaching your own infrastructure from inside the box. Open it per-session — in
-    `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob. Note that `env` passed
+    exfiltration / reaching your own infrastructure from inside the box. Open it per-session, in
+    `bootstrap`'s `use(...)` or the session `use(...)`, and never as a config knob. Note that `env` passed
     to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
     it to see.
   </Accordion>
@@ -21976,19 +23051,19 @@ export default defineSandbox({
     ```
   </Accordion>
   <Accordion title="Lifecycle: one box per conversation">
-    **Reuse** — Eve re-opens a session several times per turn; the backend reattaches to the same Box
+    **Reuse.** Eve re-opens a session several times per turn, and the backend reattaches to the same Box
     instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
-    (`keepAlive: false`) — auto-paused when idle, resumed on reattach, reaped by Box. Pass
+    (`keepAlive: false`): auto-paused when idle, resumed on reattach, reaped by Box. Pass
     `keepAlive: true` only for an always-running box you manage yourself.
 
-    **Template registry** — Eve builds your template (seed files + `bootstrap`) at build/startup, but
+    **Template registry.** Eve builds your template (seed files + `bootstrap`) at build/startup, but
     session creation runs per request in a different process, so the snapshot id is stored in a durable
     Redis registry (`redis`, defaulting to `Redis.fromEnv()`). Eve roots its tools at `/workspace` while
     a Box session lives at `/workspace/home`; the backend bridges the two automatically.
   </Accordion>
 </AccordionGroup>
 
-## How to cache tools in Vercel Eve
+### How to cache tools in Vercel Eve
 
 Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
 
@@ -22016,72 +23091,12 @@ export default defineCachedTool({
   Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
 </Accordion>
 
-## Working with Eve's `agent/` files
+### Memory and RAG as individual tool files
 
-Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it — it
-does **not** include shared `agent/`-source modules (e.g. a `agent/lib/redis.ts`). So inside `agent/`:
+The same two features the extension mounts, written as standalone `agent/tools/` files. Use these when
+you want to configure each tool on its own.
 
-* Import only from packages, never from other `agent/` files.
-* Lean on the defaults — **`redis` defaults to `Redis.fromEnv()`** in every helper, so you almost never pass it.
-* Repeat config (schema, names) per file rather than sharing a module.
-
-Shared app code (e.g. a seeder a page calls) lives in your project `lib/`, imported by the app — not by
-`agent/` files.
-
-## How to run the Vercel Eve example app
-
-A complete `eve` agent app (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox,
-with a chat UI that renders tool calls inline) lives in
-[`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo).
-
-<CardGroup cols={2}>
-  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
-    Source, packages, and the full example apps.
-  </Card>
-  <Card title="Eve" icon="up-right-from-square" href="https://eve.dev">
-    The Vercel agent framework this adapter targets.
-  </Card>
-</CardGroup>
-
-# Memory, RAG, Rate Limiting & Sandboxes for the Vercel Eve Agent Framework
-Source: https://upstash.com/docs/redis/sdks/agentkit/eve
-
-[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
-
-`@upstash/agentkit-eve` brings AgentKit to **Eve, the Vercel agent framework**. You drop these into your
-`agent/` tree:
-
-| Import | Feature |
-| --- | --- |
-| `defineMemoryRecallTool` / `defineMemorySaveTool` | Long-term memory tools the model reads and writes. |
-| `defineSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
-| `createRateLimitAuth` | A rate-limit gate for your channel's `auth` walk. |
-| `upstash` (`@upstash/agentkit-eve/sandbox`) | Upstash Box sandbox backend for `defineSandbox`. |
-| `defineCachedTool` | A `defineTool` whose result is memoized in Redis. |
-
-Start from an eve project. Scaffold one (it installs `eve` and an AI-SDK provider for you):
-
-```bash
-npx eve@latest init my-agent
-# or, to start with a Next.js app:
-npx eve@latest init my-agent --channel-web-nextjs
-```
-
-Then add the AgentKit packages:
-
-```bash
-npm install @upstash/agentkit-eve @upstash/redis
-# only if you use the sandbox backend:
-npm install @upstash/box
-```
-
-AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
-
-## How to add memory tools to Vercel Eve
-
-Long-term memory the model reads and writes itself: `recall_memory` and `save_memory`, one file each.
+Memory takes one file per tool:
 
 ```ts
 // agent/tools/recall_memory.ts
@@ -22101,24 +23116,8 @@ export default defineMemorySaveTool({
 });
 ```
 
-<Accordion title="Options and the userId tenant boundary">
-  * **`userId`** _(required)_ — a string, or `(input, ctx) => string`.
-  * `topK` — max memories `recall` returns.
-  * `minScore` — BM25 relevance floor.
-  * `redis` — defaults to `Redis.fromEnv()`.
-
-  `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from Eve's **verified
-  session auth** — `ctx.session.auth.current?.principalId` — not from anything the client supplies.
-  Configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) so `principalId`
-  is trustworthy; the `?? ctx.session.id` fallback only applies to unauthenticated requests. Memories
-  are stored at `agentkit:memory:<userId>:<id>`.
-</Accordion>
-
-## How to add RAG to Vercel Eve
-
-`search` / `aggregate` / `count` Eve tools over an Upstash Redis Search index. It is the counterpart to the
-[AI SDK adapter's](/docs/redis/sdks/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk)
-`createSearchTools`. Descriptions are generated from your schema.
+RAG is `defineSearchTools`, the counterpart to the
+[AI SDK adapter's](/docs/redis/sdks/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk) `createSearchTools`:
 
 ```ts
 // agent/tools/search_books.ts
@@ -22132,21 +23131,323 @@ export default defineSearchTools({
 ```
 
 <Accordion title="Options and the one-file-per-tool rule">
-  * **`schema`** _(required)_ — built with `s` from `@upstash/redis`.
-  * `indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
-  * `prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
-  * `defaultLimit` — default page size for `search` (10).
-  * `redis` — defaults to `Redis.fromEnv()`.
+  `defineMemoryRecallTool` / `defineMemorySaveTool` take a required `userId` (string or
+  `(input, ctx) => string`), plus `topK`, `minScore`, and `redis`. `defineSearchTools` takes a required
+  `schema`, plus `indexName`, `prefix`, `defaultLimit`, and `redis`.
 
   Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
-  you want — repeat the same `schema` + `indexName` across `search_books.ts` / `aggregate_books.ts` /
-  `count_books.ts`. The index is created reactively on first use, and each returned tool is already
+  you want, repeating the same `schema` and `indexName` across `search_books.ts`, `aggregate_books.ts`,
+  and `count_books.ts`. The index is created on first use, and every returned tool is already
   `defineTool`-branded.
+
+  This package has no chat history. It comes from the extension, or from
+  [`ChatHistory` in `@upstash/agentkit-sdk`](#how-to-add-searchable-chat-history-to-vercel-eve) if
+  you're writing the code yourself.
 </Accordion>
 
-## How to add rate limiting to Vercel Eve
+## Working with Eve's `agent/` files
 
-A ready `AuthFn` that throttles inbound requests. Drop it into your channel's
+Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it. It
+does **not** include shared `agent/`-source modules such as an `agent/lib/redis.ts`. So inside `agent/`:
+
+* Import only from packages, never from other `agent/` files.
+* Lean on the defaults. `redis` falls back to `Redis.fromEnv()` in every helper, so you almost never pass it.
+* Repeat config (schema, names) in each file instead of sharing a module.
+
+Shared app code, like a seeder a page calls, belongs in your project `lib/` and is imported by the app,
+not by `agent/` files. Extensions are exempt from all of this. The extension package ships as one
+compiled unit, which is why its whole configuration fits in a single mount file.
+
+## How to run the Vercel Eve example apps
+
+Two complete `eve` apps live in the AgentKit repo:
+
+* [`examples/eve-extension-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-extension-demo)
+  is a minimal agent whose whole configuration is one extension mount, with memory, chat history, and
+  book search turned on.
+* [`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo) uses the
+  file-by-file package (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox),
+  with a chat UI that renders tool calls inline.
+
+<CardGroup cols={2}>
+  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
+    Source, packages, and the full example apps.
+  </Card>
+  <Card title="Eve" icon="up-right-from-square" href="https://eve.dev">
+    The Vercel agent framework this adapter targets.
+  </Card>
+</CardGroup>
+
+# Memory, Chat History, RAG, Rate Limiting & Sandboxes for the Vercel Eve Agent Framework
+Source: https://upstash.com/docs/redis/sdks/agentkit/eve
+
+[Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
+conversation history, caching, and RAG, with no separate vector database. The semantic features run on
+[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+
+Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work together in one agent:
+
+| Package | What it is |
+| --- | --- |
+| `@upstash/agentkit-eve-extension` | An [Eve extension](https://eve.dev/docs/extensions): one mount file adds memory, searchable chat history, and RAG. |
+| `@upstash/agentkit-eve` | Per-file building blocks, plus the two things an extension cannot contribute: rate limiting and a sandbox backend. |
+
+Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
+Box sandbox, or control over an individual tool file.
+
+Start from an eve project (0.25.2 or later). Scaffold one, which installs `eve` and an AI-SDK provider
+for you:
+
+```bash
+npx eve@latest init my-agent
+# or, to start with a Next.js app:
+npx eve@latest init my-agent --channel-web-nextjs
+```
+
+<Note>
+  AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
+  Pass your own `@upstash/redis` client as `redis` to any helper to override.
+</Note>
+
+## The Eve extension: memory, chat history, and RAG
+
+Everything in this part comes from `@upstash/agentkit-eve-extension`, configured in one mount file.
+
+### How to mount the Upstash extension in Vercel Eve
+
+```bash
+npm install @upstash/agentkit-eve-extension
+```
+
+One file under `agent/extensions/` mounts everything. Every config field is optional, and the smallest
+mount gives the model long-term memory:
+
+```ts
+// agent/extensions/agentkit.ts
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit();
+```
+
+The filename supplies the namespace, so contributions compose as `agentkit__recall_memory`,
+`agentkit__save_memory`, and so on. The extension also merges a short instructions fragment into your
+system prompt telling the model when to save and recall.
+
+The three feature groups below are independent of each other. Memory holds facts the model decided to
+keep. Chat history is the transcript of what was said. Search is retrieval over documents you write
+into your own index. Each has its own Redis keyspace and its own search index.
+
+### How to add memory to Vercel Eve
+
+Long-term memory the model reads and writes itself. A bare mount already has it; the `memory` field
+only tunes recall:
+
+```ts
+// agent/extensions/agentkit.ts
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({
+  memory: { topK: 5, minScore: 1 },
+});
+```
+
+<Accordion title="Tools, options, and the userId tenant boundary">
+  * `agentkit__recall_memory` — searches the user's memories; called with no `query` it returns all of them.
+  * `agentkit__save_memory` — stores one durable fact about the user.
+  * `memory.topK` — max memories a recall returns.
+  * `memory.minScore` — relevance floor. Scores are unbounded BM25 values, not `[0,1]`.
+
+  `userId` is the only tenant boundary. It defaults to Eve's verified session auth
+  (`auth.current?.principalId`, then `auth.initiator?.principalId`, then the session id), so
+  configure a real authenticator (`vercelOidc()`, an OIDC/JWT provider like Clerk, …) if you want the
+  principal to be trustworthy. You can also set it to a string, which puts every caller in one shared
+  scope, or derive it per call:
+
+  ```ts
+  export default agentkit({
+    userId: (ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+  });
+  ```
+
+  Memories are stored at `agentkit:memory:<userId>:<id>`.
+</Accordion>
+
+### How to add searchable chat history to Vercel Eve
+
+`chatHistory: true` persists every user and assistant message to Redis as the session streams, and
+gives the model two tools over that store. A user can then ask about something settled in a previous
+conversation:
+
+```ts
+// agent/extensions/agentkit.ts
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({ chatHistory: true });
+```
+
+* `agentkit__search_chat_history` runs a `$smart` (typo-tolerant) search over what was said and returns
+  the matching chats as summaries: `sessionId`, `title`, `updatedAt`, `messageCount`, `score`. The
+  current conversation is excluded, since it's already in context.
+* `agentkit__read_chat_history` reads one of those chats back by `sessionId`, newest messages last.
+
+Both tools take `userId` from the session, so the model cannot widen a lookup past the current user's
+own transcripts.
+
+Your own code reads the same store with `ChatHistory` from `@upstash/agentkit-sdk`, which is how you'd
+build a history sidebar or run evals over past sessions:
+
+```bash
+npm install @upstash/agentkit-sdk @upstash/redis
+```
+
+```ts
+// app/api/chats/route.ts — server-side only; `userId` comes from your session, never the client
+import { Redis } from "@upstash/redis";
+import { ChatHistory } from "@upstash/agentkit-sdk";
+
+// `ChatHistory` is generic over the message type, and the extension doesn't export the shape its
+// hook writes — declare it to get a typed `messages` array back.
+type StoredMessage = { role: "user" | "assistant"; content: string; createdAt: number };
+
+// Pass the same prefix / indexName / ttlSeconds you set on `chatHistory` in the mount file.
+const history = new ChatHistory<StoredMessage>({ redis: Redis.fromEnv() });
+
+// List: summaries only (no messages), newest-updated first.
+const chats = await history.listChats({ userId, limit: 50 });
+
+// Search: `$smart` fuzzy match, summaries plus a BM25 `score`. target: "user" | "model" | "both".
+const hits = await history.searchChats({ userId, query: "the retry schema", target: "both", limit: 20 });
+
+// Read: one full transcript, or null if this user has no chat with that sessionId.
+const chat = await history.getChat({ userId, sessionId: hits[0].sessionId });
+chat?.messages.forEach((m) => console.log(m.role, m.content));
+```
+
+`userId` must be the same value the extension resolved for those sessions, and both ids are Redis key
+parts, so `:` in a derived value is replaced with `_`. `deleteChat({ userId, sessionId })` removes a
+chat and its index entry.
+
+<Accordion title="Options and storage">
+  Pass an object in place of `true` to tune storage:
+
+  * `chatHistory.prefix` — base key prefix (default `agentkit:chat`).
+  * `chatHistory.indexName` — [Redis Search](/docs/redis/search/introduction) index name (defaults to the
+    identifier-safe `prefix`).
+  * `chatHistory.ttlSeconds` — per-chat TTL. Omit for no expiry.
+
+  Each session is one JSON document at `agentkit:chat:<userId>:<sessionId>`, holding the raw transcript
+  plus `$smart`-indexed user and model text. A search returns summaries, and a read is capped at 50
+  messages per call with a `truncated` flag, so neither can flood the context window.
+
+  Redis is the durable record here, since Eve's own workflow store is pruned after a run completes.
+
+  These tools look history up on demand. They don't resume a session: Eve does that through its own
+  session cursor.
+</Accordion>
+
+### How to add RAG to Vercel Eve
+
+Point the extension at an [Upstash Redis Search](/docs/redis/search/introduction) index and the model gets
+`search`, `search_aggregate`, and `search_count` tools over it. You build the schema with `s` from
+`@upstash/redis`, so your mount file imports it. Add the package to your app:
+
+```bash
+npm install @upstash/redis
+```
+
+```ts
+// agent/extensions/agentkit.ts
+import { s } from "@upstash/redis";
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({
+  search: {
+    schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+    indexName: "books",
+  },
+});
+```
+
+<Accordion title="Options and how the tools are described to the model">
+  * **`search.schema`** _(required)_ — built with `s` from `@upstash/redis`.
+  * `search.indexName` — defaults to `"agentkit:search"`; ties all three tools to one index.
+  * `search.prefix` — key prefix for indexed JSON docs (defaults to `"<indexName>:"`).
+  * `search.defaultLimit` — default page size for `search` (10).
+
+  Tool descriptions are generated from your schema (field names, types, and the filter operators that
+  apply to each), so the model learns the index without any prompt text from you. You write the
+  documents yourself with `redis.json.set` under the prefix, and the index is created on first read.
+
+  Omit `search` and these three tools don't exist at all. Like the chat-history tools, they resolve at
+  session start, which is why they don't appear in a static tool listing.
+</Accordion>
+
+### Extension configuration reference
+
+```ts
+// agent/extensions/agentkit.ts
+import { s } from "@upstash/redis";
+import agentkit from "@upstash/agentkit-eve-extension";
+
+export default agentkit({
+  // optional: string, or (ctx) => string. Defaults to the verified principal, then the session id.
+  userId: (ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+  // optional: an explicit client; defaults to Redis.fromEnv()
+  // redis: new Redis({ url, token }),
+  // optional: tune memory recall
+  memory: { topK: 5, minScore: 1 },
+  // optional: omit and the search tools don't exist
+  search: {
+    schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+    indexName: "books",
+    prefix: "books:", // optional
+    defaultLimit: 10, // optional
+  },
+  // optional: off by default. `true`, or an object to tune storage
+  chatHistory: { ttlSeconds: 60 * 60 * 24 * 30 },
+});
+```
+
+<Accordion title="Dropping or overriding a contribution">
+  Mount as a directory and override a slot by filename. This is how you drop a tool you don't want,
+  for example to capture chat history without letting the model read it back:
+
+  ```
+  agent/extensions/agentkit/
+    extension.ts                     # the mount: export default agentkit({ ... })
+    tools/read_chat_history.ts       # your override for agentkit__read_chat_history
+  ```
+
+  ```ts
+  // agent/extensions/agentkit/tools/read_chat_history.ts
+  import { disableTool } from "eve/tools";
+
+  export default disableTool();
+  ```
+
+  You can also re-define the memory tools, say to gate saves behind approval, by importing them from
+  `@upstash/agentkit-eve-extension/tools` and spreading them into your own `defineTool`.
+</Accordion>
+
+<Note>
+  `@upstash/agentkit-eve` below offers memory and RAG as standalone tool files too. Use those when you
+  want to configure one tool at a time, and use the package alongside the extension for rate limiting
+  and sandboxes.
+</Note>
+
+## The Eve package: rate limiting, sandboxes, and tool files
+
+Everything in this part comes from `@upstash/agentkit-eve`, written as individual `agent/` files.
+Rate limiting and the sandbox backend live here because an extension cannot contribute a channel or
+a sandbox.
+
+### How to add rate limiting to Vercel Eve
+
+```bash
+npm install @upstash/agentkit-eve @upstash/redis
+```
+
+`createRateLimitAuth` is a ready `AuthFn` that throttles inbound requests. Drop it into your channel's
 [auth walk](https://eve.dev/docs/guides/auth-and-route-protection) ahead of your real authenticators.
 
 ```ts
@@ -22189,11 +23490,15 @@ export default eveChannel({
   </Accordion>
 </AccordionGroup>
 
-## How to add a sandbox to Vercel Eve
+### How to add a sandbox to Vercel Eve
 
 A drop-in replacement for Eve's `vercel()` backend, powered by
 [Upstash Box](https://github.com/upstash/box). Swap the import and keep the rest of your
 [sandbox file](https://eve.dev/docs/sandbox) the same.
+
+```bash
+npm install @upstash/box
+```
 
 ```ts
 // agent/sandbox.ts
@@ -22215,16 +23520,17 @@ export default defineSandbox({
 
 <AccordionGroup>
   <Accordion title="Config: Box's BoxConfig">
-    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim — whatever you'd pass to
+    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim, meaning whatever you'd pass to
     `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
-    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, … — plus an optional `redis` (defaults to
-    `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below). `@upstash/box` is an
-    optional peer dependency — only needed when you import `@upstash/agentkit-eve/sandbox`.
+    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, and so on. It also takes an optional
+    `redis` (defaults to `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below).
+    `@upstash/box` is an optional peer dependency, needed only when you import
+    `@upstash/agentkit-eve/sandbox`.
   </Accordion>
   <Accordion title="Security: network egress is deny-all by default">
     The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data
-    exfiltration / reaching your own infrastructure from inside the box. Open it per-session — in
-    `bootstrap`'s `use(...)` or the session `use(...)` — never as a config knob. Note that `env` passed
+    exfiltration / reaching your own infrastructure from inside the box. Open it per-session, in
+    `bootstrap`'s `use(...)` or the session `use(...)`, and never as a config knob. Note that `env` passed
     to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
     it to see.
   </Accordion>
@@ -22264,19 +23570,19 @@ export default defineSandbox({
     ```
   </Accordion>
   <Accordion title="Lifecycle: one box per conversation">
-    **Reuse** — Eve re-opens a session several times per turn; the backend reattaches to the same Box
+    **Reuse.** Eve re-opens a session several times per turn, and the backend reattaches to the same Box
     instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
-    (`keepAlive: false`) — auto-paused when idle, resumed on reattach, reaped by Box. Pass
+    (`keepAlive: false`): auto-paused when idle, resumed on reattach, reaped by Box. Pass
     `keepAlive: true` only for an always-running box you manage yourself.
 
-    **Template registry** — Eve builds your template (seed files + `bootstrap`) at build/startup, but
+    **Template registry.** Eve builds your template (seed files + `bootstrap`) at build/startup, but
     session creation runs per request in a different process, so the snapshot id is stored in a durable
     Redis registry (`redis`, defaulting to `Redis.fromEnv()`). Eve roots its tools at `/workspace` while
     a Box session lives at `/workspace/home`; the backend bridges the two automatically.
   </Accordion>
 </AccordionGroup>
 
-## How to cache tools in Vercel Eve
+### How to cache tools in Vercel Eve
 
 Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
 
@@ -22304,23 +23610,83 @@ export default defineCachedTool({
   Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
 </Accordion>
 
+### Memory and RAG as individual tool files
+
+The same two features the extension mounts, written as standalone `agent/tools/` files. Use these when
+you want to configure each tool on its own.
+
+Memory takes one file per tool:
+
+```ts
+// agent/tools/recall_memory.ts
+import { defineMemoryRecallTool } from "@upstash/agentkit-eve";
+
+export default defineMemoryRecallTool({
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+```ts
+// agent/tools/save_memory.ts
+import { defineMemorySaveTool } from "@upstash/agentkit-eve";
+
+export default defineMemorySaveTool({
+  userId: (_, ctx) => ctx.session.auth.current?.principalId ?? ctx.session.id,
+});
+```
+
+RAG is `defineSearchTools`, the counterpart to the
+[AI SDK adapter's](/docs/redis/sdks/agentkit/ai-sdk#how-to-add-rag-with-the-ai-sdk) `createSearchTools`:
+
+```ts
+// agent/tools/search_books.ts
+import { s } from "@upstash/redis";
+import { defineSearchTools } from "@upstash/agentkit-eve";
+
+export default defineSearchTools({
+  schema: s.object({ title: s.string(), author: s.string().noTokenize(), year: s.number() }),
+  indexName: "books",
+}).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
+```
+
+<Accordion title="Options and the one-file-per-tool rule">
+  `defineMemoryRecallTool` / `defineMemorySaveTool` take a required `userId` (string or
+  `(input, ctx) => string`), plus `topK`, `minScore`, and `redis`. `defineSearchTools` takes a required
+  `schema`, plus `indexName`, `prefix`, `defaultLimit`, and `redis`.
+
+  Each tool file must be self-contained, so call `defineSearchTools` in each one and export the member
+  you want, repeating the same `schema` and `indexName` across `search_books.ts`, `aggregate_books.ts`,
+  and `count_books.ts`. The index is created on first use, and every returned tool is already
+  `defineTool`-branded.
+
+  This package has no chat history. It comes from the extension, or from
+  [`ChatHistory` in `@upstash/agentkit-sdk`](#how-to-add-searchable-chat-history-to-vercel-eve) if
+  you're writing the code yourself.
+</Accordion>
+
 ## Working with Eve's `agent/` files
 
-Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it — it
-does **not** include shared `agent/`-source modules (e.g. a `agent/lib/redis.ts`). So inside `agent/`:
+Eve's runtime snapshots each tool/channel/hook file and resolves only **package** imports from it. It
+does **not** include shared `agent/`-source modules such as an `agent/lib/redis.ts`. So inside `agent/`:
 
 * Import only from packages, never from other `agent/` files.
-* Lean on the defaults — **`redis` defaults to `Redis.fromEnv()`** in every helper, so you almost never pass it.
-* Repeat config (schema, names) per file rather than sharing a module.
+* Lean on the defaults. `redis` falls back to `Redis.fromEnv()` in every helper, so you almost never pass it.
+* Repeat config (schema, names) in each file instead of sharing a module.
 
-Shared app code (e.g. a seeder a page calls) lives in your project `lib/`, imported by the app — not by
-`agent/` files.
+Shared app code, like a seeder a page calls, belongs in your project `lib/` and is imported by the app,
+not by `agent/` files. Extensions are exempt from all of this. The extension package ships as one
+compiled unit, which is why its whole configuration fits in a single mount file.
 
-## How to run the Vercel Eve example app
+## How to run the Vercel Eve example apps
 
-A complete `eve` agent app (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox,
-with a chat UI that renders tool calls inline) lives in
-[`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo).
+Two complete `eve` apps live in the AgentKit repo:
+
+* [`examples/eve-extension-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-extension-demo)
+  is a minimal agent whose whole configuration is one extension mount, with memory, chat history, and
+  book search turned on.
+* [`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo) uses the
+  file-by-file package (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox),
+  with a chat UI that renders tool calls inline.
 
 <CardGroup cols={2}>
   <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
@@ -22330,6 +23696,102 @@ with a chat UI that renders tool calls inline) lives in
     The Vercel agent framework this adapter targets.
   </Card>
 </CardGroup>
+
+# Upstash Redis MCP
+Source: https://upstash.com/docs/redis/sdks/mcp
+
+The Upstash Redis MCP server connects your agent directly to a Redis database. It is lightweight and ships with just two tools:
+
+* **`redis_run_commands`**: run any Redis command (including the `SEARCH.*` family), as a pipeline or an atomic transaction.
+* **`redis_search_docs`**: search the Upstash Redis docs live, so the agent can look up commands and features on demand.
+
+Find the GitHub repository [here](https://github.com/upstash/redis-mcp).
+
+<Note>
+  To manage your whole Upstash account (create databases, read QStash and Workflow logs, drive Upstash Box), use the [Upstash MCP server](/docs/agent-resources/mcp) instead.
+</Note>
+
+# Installation
+
+Grab your database's REST URL and token from the [Upstash Console](https://console.upstash.com) (open your Redis database and copy `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the **REST API** section), then add the server to your MCP client.
+
+To connect over TCP instead, set `UPSTASH_REDIS_TCP_URL` to your `rediss://` connection string in place of the two REST variables.
+
+<AccordionGroup>
+  <Accordion title="Claude Code">
+    ```sh
+    claude mcp add upstash-redis \
+      -e UPSTASH_REDIS_REST_URL=https://YOUR_DB.upstash.io \
+      -e UPSTASH_REDIS_REST_TOKEN=YOUR_REST_TOKEN \
+      -- npx -y @upstash/redis-mcp
+    ```
+  </Accordion>
+
+  <Accordion title="Cursor">
+    [![Add to Cursor]()](https://cursor.com/install-mcp?name=upstash-redis&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkB1cHN0YXNoL3JlZGlzLW1jcCJdfQ==)
+
+    ```json
+    {
+      "mcpServers": {
+        "upstash-redis": {
+          "command": "npx",
+          "args": ["-y", "@upstash/redis-mcp"],
+          "env": {
+            "UPSTASH_REDIS_REST_URL": "https://YOUR_DB.upstash.io",
+            "UPSTASH_REDIS_REST_TOKEN": "YOUR_REST_TOKEN"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="VS Code">
+    ```json
+    {
+      "servers": {
+        "upstash-redis": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "@upstash/redis-mcp"],
+          "env": {
+            "UPSTASH_REDIS_REST_URL": "https://YOUR_DB.upstash.io",
+            "UPSTASH_REDIS_REST_TOKEN": "YOUR_REST_TOKEN"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="OpenAI Codex">
+    ```toml
+    [mcp_servers.upstash-redis]
+    command = "npx"
+    args = ["-y", "@upstash/redis-mcp"]
+    env = { UPSTASH_REDIS_REST_URL = "https://YOUR_DB.upstash.io", UPSTASH_REDIS_REST_TOKEN = "YOUR_REST_TOKEN" }
+    ```
+  </Accordion>
+
+  <Accordion title="OpenCode">
+    ```json
+    {
+      "mcp": {
+        "upstash-redis": {
+          "type": "local",
+          "command": ["npx", "-y", "@upstash/redis-mcp"],
+          "environment": {
+            "UPSTASH_REDIS_REST_URL": "https://YOUR_DB.upstash.io",
+            "UPSTASH_REDIS_REST_TOKEN": "YOUR_REST_TOKEN"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+Any MCP-compatible client works. If yours isn't listed, add a stdio server that runs `npx -y @upstash/redis-mcp` with the two env vars above.
 
 - [ECHO](https://upstash.com/docs/redis/sdks/py/commands/auth/echo.md)
 - [PING](https://upstash.com/docs/redis/sdks/py/commands/auth/ping.md): Send a ping to the server and get a response if the server is alive.
@@ -22632,7 +24094,7 @@ redis = Redis(
 Source: https://upstash.com/docs/redis/sdks/py/gettingstarted
 
 <Tip>
-  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to [`https://upstash.com/start-redis`](https://upstash.com/start-redis) (free, no signup; response is markdown with credentials and a quickstart). The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
 </Tip>
 
 ## Install
@@ -25043,7 +26505,7 @@ and for his continued efforts to keep it up to date with Upstash.
 Source: https://upstash.com/docs/redis/sdks/ts/getstarted
 
 <Tip>
-  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to [`https://upstash.com/start-redis`](https://upstash.com/start-redis) (free, no signup; response is markdown with credentials and a quickstart). The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
 </Tip>
 
 `@upstash/redis` is written in Deno and can be imported from
@@ -25130,7 +26592,8 @@ It is the only connectionless (HTTP based) Redis client and designed for:
 
 See
 [the list of APIs](/docs/redis/features/restapi#rest-redis-api-compatibility)
-supported.
+supported by the Upstash REST API. For typed `@upstash/redis` command helpers,
+see the [TypeScript SDK command reference](/docs/redis/sdks/ts/commands/overview).
 
 # Auto-Pipelining
 Source: https://upstash.com/docs/redis/sdks/ts/pipelining/auto-pipeline
@@ -28713,6 +30176,8 @@ SEARCH.QUERY products '{"name": "new"}'
 # Introduction
 Source: https://upstash.com/docs/redis/search/introduction
 
+import { Catalog } from "/snippets/catalog.jsx";
+
 Upstash Redis Search is our first extension beyond the official Redis spec. Using the Rust-based Tantivy under the hood, we provide an extremely fast way to search through Redis data.
 
 <img />
@@ -28755,6 +30220,10 @@ Upstash Redis Search is our first extension beyond the official Redis spec. Usin
     Complete, real-world examples you can adapt to your own use cases
   </Card>
 </CardGroup>
+
+## Demos
+
+<Catalog product="redis" type="demo" search cols={3} />
 
 # $boost
 Source: https://upstash.com/docs/redis/search/query-operators/boolean-operators/boost
@@ -31912,7 +33381,7 @@ from the list of the associated group and consumer.
 - [Serverless API with Java and Redis](https://upstash.com/docs/redis/tutorials/serverless_java_redis.md)
 - [TanStack AI Chat Persistance](https://upstash.com/docs/redis/tutorials/tanstack_chat_persistence.md): Use Upstash Redis to persist TanStack AI chat histories across reloads, navigation, and devices with a simple adapter.
 - [Using AWS SAM](https://upstash.com/docs/redis/tutorials/using_aws_sam.md)
-- [Serverless Redis on Google Cloud Functions](https://upstash.com/docs/redis/tutorials/using_google_cloud_functions.md)
+- [Serverless Redis on Google Cloud Run functions](https://upstash.com/docs/redis/tutorials/using_google_cloud_functions.md)
 - [Using Serverless Framework](https://upstash.com/docs/redis/tutorials/using_serverless_framework.md)
 
 # Advanced Settings
@@ -33195,6 +34664,8 @@ For more details on how this integration works, check out [the official reposito
 # Getting Started
 Source: https://upstash.com/docs/search/overall/getstarted
 
+import { Catalog } from "/snippets/catalog.jsx";
+
 ***
 
 <iframe
@@ -33387,6 +34858,10 @@ But this is just the beginning. Upstash Search also supports:
 * Metadata-based filtering
 
 We'll get into those features in the next sections of this documentation. For now, you've already mastered the basics!
+
+## SDKs
+
+<Catalog product="search" type="sdk" cols={3} />
 
 # Pricing & Limits
 Source: https://upstash.com/docs/search/overall/pricing
@@ -36364,12 +37839,96 @@ Example:
 # Examples
 Source: https://upstash.com/docs/vector/examples
 
-<iframe
-  src="https://vector-example-dashboard.vercel.app"
-  width="100%"
-  height="1000px"
-  style={{ border: "0" }}
-></iframe>
+A collection of examples, notebooks, and blog posts for building with Upstash Vector.
+
+<CardGroup cols={2}>
+  <Card
+    title="Image Search"
+    icon="python"
+    href="https://colab.research.google.com/drive/1y7ZBBxzEOAeSRDhyOeTxIJADxBC-0Fue"
+  >
+    Image Similarity Search using CLIP
+
+    `CLIP` `HuggingFace`
+  </Card>
+  <Card
+    title="Learn Vector Stores"
+    icon="python"
+    href="https://colab.research.google.com/drive/1CpKUuPr1458sBZkqvL6Km_HBj-IS0fNa"
+  >
+    Learn How Vector Stores Work by Building a Recommendation Engine
+  </Card>
+  <Card
+    title="RAG Chatbot"
+    icon="python"
+    href="https://colab.research.google.com/drive/1zSzb2lajFMxf6FDxDM0sUe5wpIx4KyU2"
+  >
+    RAG (Retrieval Augmented Generation) Chatbot with OpenAI and Upstash Vector
+
+    `OpenAI` `text-embedding-ada-002`
+  </Card>
+  <Card
+    title="Semantic Search with Sentence Transformers"
+    icon="python"
+    href="https://colab.research.google.com/drive/1NhqEzjKdAGfI-nhEa3pfqmBXWl2oN0Ve"
+  >
+    Semantic Search using Sentence Transformers and Upstash Vector
+
+    `Sentence Transformers` `HuggingFace`
+  </Card>
+  <Card
+    title="Semantic Search with BERT"
+    icon="python"
+    href="https://colab.research.google.com/drive/1xXSLtG2uItaBWAxXYgzwa5jo669mDk2p"
+  >
+    Semantic Search with DistilBERT on HuggingFace
+
+    `BERT` `HuggingFace`
+  </Card>
+  <Card
+    title="Semantic Search with OpenAI"
+    icon="python"
+    href="https://colab.research.google.com/drive/1WGSEe11RsG1_TwyQ09-lONOrEDwDLaC1"
+  >
+    Semantic Search with OpenAI and Upstash Vector
+
+    `OpenAI` `text-embedding-ada-002`
+  </Card>
+  <Card
+    title="API Examples"
+    icon="python"
+    href="https://colab.research.google.com/drive/1RLcGtNEkGrdj6f6yBK78cSrSdl6ht-5S"
+  >
+    Upstash Vector API Examples
+  </Card>
+  <Card
+    title="Upsy"
+    icon="js"
+    href="https://github.com/upstash/upsy"
+  >
+    Upsy is a RAG based Slackbot which remembers all conversations.
+
+    `OpenAI` `text-embedding-ada-002`
+  </Card>
+  <Card
+    title="Semantic Search on Stackoverflow"
+    icon="newspaper"
+    href="https://upstash.com/blog/semantic-search-vector"
+  >
+    Blog: Semantic Search using all-MiniLM-L6-v2 model on HuggingFace
+
+    `HuggingFace` `Sentence Transformers`
+  </Card>
+  <Card
+    title="Image Similarity Search"
+    icon="newspaper"
+    href="https://upstash.com/blog/image-similarity-search"
+  >
+    Blog: Image Search using CLIP model on HuggingFace
+
+    `HuggingFace` `CLIP`
+  </Card>
+</CardGroup>
 
 # Algorithm
 Source: https://upstash.com/docs/vector/features/algorithm
@@ -41241,6 +42800,8 @@ Source: https://upstash.com/docs/vector/overall/compare
 # Getting Started
 Source: https://upstash.com/docs/vector/overall/getstarted
 
+import { Catalog } from "/snippets/catalog.jsx";
+
 <Check >
 **Prerequisite**
 
@@ -41456,6 +43017,10 @@ In Upstash console, you can see the charts of your index:
 You can also query your index with a simple UI:
 
   <img />
+
+## SDKs
+
+<Catalog product="vector" type="sdk" cols={3} />
 
 # llms.txt
 Source: https://upstash.com/docs/vector/overall/llms-txt
@@ -48744,6 +50309,8 @@ Choose webhooks when integrating with external services that support callback UR
 # Overview
 Source: https://upstash.com/docs/workflow/getstarted
 
+import { Catalog } from "/snippets/catalog.jsx";
+
 Upstash Workflow lets you write **durable, reliable and performant serverless functions**. Get delivery guarantees, automatic retries on failure, scheduling and more without managing any infrastructure.
 
 <iframe
@@ -48926,6 +50493,10 @@ Need help or have questions? We're here to support you:
 
 * Join our Discord community to ask questions and share feedback
 * Open a ticket through the Intercom chatbox in the dashboard for any issue
+
+## SDKs
+
+<Catalog product="workflow" type="sdk" cols={3} />
 
 # Cancel a Run
 Source: https://upstash.com/docs/workflow/howto/cancel
@@ -49208,6 +50779,22 @@ For example, let's debug the following failed run. Judging by the status code `4
 
 # Flow control
 Source: https://upstash.com/docs/workflow/howto/flow-control
+
+# Get your QStash Token
+Source: https://upstash.com/docs/workflow/howto/get-token
+
+Upstash Workflow is powered by [QStash](/docs/qstash/overall/getstarted), so your app
+authenticates with a QStash token. Go to the
+[Workflow tab in the Upstash Console](https://console.upstash.com/workflow), pick
+the region you want to use, and copy the `QSTASH_TOKEN` from the **Quickstart**
+section.
+
+  <img />
+
+<Info>
+If you want to safely share a token with your team or AI agents, you can use a
+[read-only token](/docs/workflow/howto/readonly-token) instead.
+</Info>
 
 # Development Server
 Source: https://upstash.com/docs/workflow/howto/local-development/development-server
