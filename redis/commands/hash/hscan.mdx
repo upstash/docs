@@ -1,0 +1,181 @@
+---
+title: "HSCAN"
+description: "Incrementally iterate hash fields."
+---
+
+Use `HSCAN` to incrementally iterate hash fields.
+
+## Syntax
+
+```redis
+HSCAN <key> <cursor> [MATCH <pattern>] [COUNT <count>] [NOVALUES]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Redis key targeted by the command. |
+| `<cursor>` | Yes | No | Cursor returned by the previous call; start at `0`. |
+| `MATCH <pattern>` | No | No | Return only elements matching this glob-style pattern. |
+| `COUNT <count>` | No | No | Hint for how much work each iteration should do. |
+| `NOVALUES` | No | No | Return only field names, without their values. |
+
+## Important points
+
+- This operation can inspect a large part of the database. Prefer cursor-based scans where possible and avoid unbounded use on hot paths.
+- The cursor is opaque. Start with `0` and continue until the server returns cursor `0`; a single iteration may return no elements.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Two-element array: cursor and flat field/value array, or field array with `NOVALUES` |
+| RESP3 | Two-element array: cursor and flat field/value array, or field array with `NOVALUES` |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<Tabs>
+
+<Tab title="@upstash/redis">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+await redis.hset("key", {
+  id: 1,
+  username: "chronark",
+  name: "andreas"
+ });
+const [newCursor, fields] = await redis.hscan("key", 0);
+console.log(newCursor); // likely `0` since this is a very small hash
+console.log(fields); // ["id", 1, "username", "chronark", "name", "andreas"]
+```
+
+</Tab>
+
+<Tab title="upstash_redis">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.hscan("my-key", 0)
+print(result)
+```
+
+</Tab>
+
+<Tab title="ioredis">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.hscan("my-key", "0");
+console.log(result);
+```
+
+</Tab>
+
+<Tab title="node-redis">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.hScan("my-key", "0");
+console.log(result);
+```
+
+</Tab>
+
+<Tab title="redis-py">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.hscan("my-key", 0)
+print(result)
+```
+
+</Tab>
+
+<Tab title="go-redis">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, _, err := client.HScan(context.Background(), "my-key", 0, "*", 0).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Tab>
+
+<Tab title="jedis">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.hscan("my-key", "0");
+  System.out.println(result);
+}
+```
+
+</Tab>
+
+<Tab title="redis-rs">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("HSCAN");
+    command.arg("my-key");
+    command.arg("0");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Tab>
+
+</Tabs>

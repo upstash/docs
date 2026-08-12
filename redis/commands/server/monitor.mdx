@@ -1,0 +1,126 @@
+---
+title: "MONITOR"
+description: "Stream all commands received."
+---
+
+Use `MONITOR` to stream all commands received.
+
+## Syntax
+
+```redis
+MONITOR
+```
+
+## Arguments
+
+This command takes no arguments.
+
+## Important points
+
+- This is a connection-oriented command and is available over native Redis TCP, not the stateless REST endpoint.
+- This command can expose administrative information or make a broad destructive change. Restrict it to trusted code paths.
+- MONITOR changes the TCP connection into a continuous command stream. Use a dedicated connection and close it to stop monitoring.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Simple string `OK`, then a stream of bulk strings, one per command the server executes |
+| RESP3 | Simple string `OK`, then a stream of bulk strings, one per command the server executes |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<Tabs>
+
+<Tab title="ioredis">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+redis.monitor((error, monitor) => {
+  if (error) throw error;
+  monitor.on("monitor", (time, args, source, database) => {
+    console.log({ time, args, source, database });
+  });
+});
+```
+
+</Tab>
+
+<Tab title="node-redis">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+
+await client.monitor((command) => {
+  console.log(command);
+});
+```
+
+</Tab>
+
+<Tab title="redis-py">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+with client.monitor() as monitor:
+    for command in monitor.listen():
+        print(command)
+```
+
+</Tab>
+
+<Tab title="jedis">
+
+```java
+import java.net.URI;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisMonitor;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  jedis.monitor(new JedisMonitor() {
+    @Override
+    public void onCommand(String command) {
+      System.out.println(command);
+    }
+  });
+}
+```
+
+</Tab>
+
+<Tab title="redis-rs">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let packed = redis::cmd("MONITOR").get_packed_command();
+    connection.send_packed_command(&packed)?;
+    loop {
+        println!("{:?}", connection.recv_response()?);
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
