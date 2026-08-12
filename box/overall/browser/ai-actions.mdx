@@ -5,24 +5,26 @@ title: "AI Actions"
 Beyond reading pages, a tab can act. A DOM-aware browser agent runs inside the box and resolves natural-language instructions against the live page. It can find elements, execute single actions, or complete multi-step tasks on its own.
 
 <Note>
-  AI actions use an LLM and are metered. They need an API key for the model's
+  LLM-resolved AI actions are metered and need an API key for the model's
   provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
   your account. Every method accepts a provider-prefixed `model` override such
   as `"openai/gpt-4o"`. Without an override, the call uses the model the box
   was configured with. If the box has no model, it falls back to
-  `anthropic/claude-sonnet-4-5`.
+  `anthropic/claude-sonnet-4-5`. Replaying a pre-resolved action with
+  `act(action)` is the exception: it uses no LLM and needs no key (see
+  [Replay an action without an LLM](#replay-an-action-without-an-llm)).
 </Note>
 
 ## Observe
 
-`observe()` finds actionable elements matching an instruction. Use it to check the page before acting, or to build your own action loop:
+`observe()` finds actionable elements matching an instruction. Use it to check the page before acting, or to build your own action loop. Each element carries a `selector` plus a suggested `method` and `arguments`, so you can replay it directly with `act(el)` (see [below](#replay-an-action-without-an-llm)):
 
 <CodeGroup>
 ```typescript box.ts
 const { elements } = await tab.observe("find the login and signup buttons")
 
 for (const el of elements) {
-  console.log(el.description, el.selector)
+  console.log(el.description, el.selector, el.method)
 }
 ```
 
@@ -30,13 +32,13 @@ for (const el of elements) {
 result = tab.observe("find the login and signup buttons")
 
 for el in result.elements:
-    print(el.description, el.selector)
+    print(el.description, el.selector, el.method)
 ```
 </CodeGroup>
 
 ## Act
 
-`act()` resolves and executes exactly one action described in natural language:
+`act()` resolves and executes exactly one action described in natural language. It also accepts a pre-resolved action from `observe()` to replay without an LLM (see [Replay an action without an LLM](#replay-an-action-without-an-llm)):
 
 <CodeGroup>
 ```typescript box.ts
@@ -55,6 +57,32 @@ print(action.input_tokens, action.output_tokens)
 </CodeGroup>
 
 The result reports what was done (`actions` with the resolved selectors), whether it succeeded, and the token usage of the call.
+
+### Replay an action without an LLM
+
+`observe()` returns each element's resolved `selector` plus a suggested `method` and `arguments`. Pass that element straight back into `act()` to replay it deterministically: no LLM call, no tokens, and no model provider key required. Resolve once with the model, then reuse the action as many times as you like.
+
+<CodeGroup>
+```typescript box.ts
+// Resolve once (metered, needs a model key)
+const { elements } = await tab.observe("the primary call-to-action")
+const action = elements[0]
+
+// Replay as many times as you like: no LLM, no key
+await tab.act(action)
+```
+
+```python box.py
+# Resolve once (metered, needs a model key)
+result = tab.observe("the primary call-to-action")
+action = result.elements[0]
+
+# Replay as many times as you like: no LLM, no key
+tab.act(action)
+```
+</CodeGroup>
+
+Observe narrowly (or check the element) before relying on a fixed index like `elements[0]`. Cache the returned action (in your own store or on the box filesystem) and replay it across pages or runs. This is the built-in path for turning an AI-discovered step into a fast, repeatable one. If the page changes and the selector no longer matches, `observe()` again to re-resolve.
 
 ## Run
 
@@ -107,7 +135,7 @@ for step in result.steps:
 | Method | Does | Best for |
 |---|---|---|
 | `observe` | Finds elements, executes nothing | Inspecting a page, building custom loops |
-| `act` | Executes one action | Flows where your code decides each step |
+| `act` | Executes one action (natural language, metered; or a pre-resolved action, no LLM) | Flows where your code decides each step, or replaying a resolved action |
 | `run` | Executes a whole task autonomously | Open-ended or navigation-heavy tasks |
 
-For fully scripted control with no LLM in the loop, [connect over CDP](/box/overall/browser/connect) with Playwright or Puppeteer instead. Both drive the same tabs, so you can mix scripted steps with AI steps. To watch or replay what the agent did, see [Live View](/box/overall/browser/live-view) and [Recordings](/box/overall/browser/recordings).
+To turn a single AI-resolved step into a no-LLM one, replay an `observe()` result through `act()` (see [Replay an action without an LLM](#replay-an-action-without-an-llm)). For fully scripted control with no LLM anywhere in the loop, [connect over CDP](/box/overall/browser/connect) with Playwright or Puppeteer instead. Both drive the same tabs, so you can mix scripted steps with AI steps. To watch or replay what the agent did, see [Live View](/box/overall/browser/live-view) and [Recordings](/box/overall/browser/recordings).
