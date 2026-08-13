@@ -46421,50 +46421,28 @@ curl -X POST https://YOUR_ENDPOINT.upstash.io \
 
 </AccordionGroup>
 
-# ACL
-Source: https://upstash.com/docs/redis/commands/server/acl
+# ACL CAT
+Source: https://upstash.com/docs/redis/commands/server/acl-cat
 
-Use `ACL` to inspect and manage the users, rules, and permissions of the database's access control list.
+Use `ACL CAT` to discover the category names usable in [`ACL SETUSER`](/docs/redis/commands/server/acl-setuser) rules such as `+@read` or `-@dangerous`.
 
-`SETUSER` creates or updates a user and applies rules from left to right: rules enable or disable the user (`on`, `off`), set passwords (`>password`, `<password`), and grant or revoke access to commands (`+get`, `-@admin`) and to key patterns (`~cache:*`). `GETUSER` shows the resulting rules for one user, `USERS` and `LIST` enumerate users in short and full form, and `DELUSER` removes them. `WHOAMI` reports the user the current connection is authenticated as, `CAT` lists the command categories that can be used in rules, and `GENPASS` returns a cryptographically strong random password. `LOG` shows recent authentication and permission failures, which is where to look when a client is unexpectedly denied, and `RESET` on that subcommand clears it. `LOAD` and `SAVE` reload and persist the ACL file.
-
-Upstash adds two deployment-specific forms: `RESTTOKEN` returns the REST token of an existing user, given that user's password, and `GENTOKEN` builds a token for a username and password pair, generating a strong password when none is given, so the token can be passed to `SETUSER` as the user's password. Together they are how an ACL user is given access to the REST API alongside the TCP endpoint.
-
-Changes take effect immediately on new and existing connections, so a rule that narrows access can lock out a running application; check with `GETUSER` before applying it broadly.
+Called without an argument, it returns every category name the server knows, for example `read`, `write`, `keyspace`, `dangerous`, `admin`, `scripting`, and the categories for individual data types such as `string`, `hash`, or `json`. Called with a category name, it instead returns the commands that belong to that category, which is the fastest way to check exactly what a rule like `+@json` grants before applying it to a user.
 
 ## Syntax
 
 ```redis
 ACL CAT [category]
-ACL DELUSER <username> [username ...]
-ACL GENPASS [bits]
-ACL GETUSER <username>
-ACL HELP
-ACL LIST
-ACL LOAD
-ACL RESTTOKEN <username> <password>
-ACL GENTOKEN <username> [password]
-ACL LOG [count | RESET]
-ACL SAVE
-ACL SETUSER <username> [rule ...]
-ACL USERS
-ACL WHOAMI
 ```
 
 ## Arguments
 
 | Argument | Required | Repeatable | Description |
 | --- | --- | --- | --- |
-| `subcommand` | Yes | No | One of the supported ACL operations shown in the syntax block. |
-| `username` | Depends | Some forms | ACL user selected by the subcommand. |
-| `rule` | No | Yes | ACL SETUSER rule; rules are applied from left to right. |
-| `count \| RESET` | No | No | Limit ACL LOG output or clear the log. |
+| `category` | No | No | When given, list the commands in this category instead of listing category names. |
 
 ## Important points
 
-* This command can expose administrative information or make a broad destructive change. Restrict it to trusted code paths.
-* ACL is an administrative command. Changing users or rules can immediately revoke application access.
-* Upstash also supports the deployment-specific `RESTTOKEN` and `GENTOKEN` subcommands.
+* An unknown category name returns an error rather than an empty list.
 
 ## Response
 
@@ -46472,8 +46450,2087 @@ The reply reports the result of the operation. Error replies have the same shape
 
 | Protocol | Reply |
 | --- | --- |
-| RESP2 | Simple string `OK`; Integer; Bulk string; array of bulk strings or nested metadata arrays; flat array of alternating keys and values; or Null bulk string or null array |
-| RESP3 | Simple string `OK`; Integer; Bulk string; array of bulk strings or nested metadata arrays; Map; or Null |
+| RESP2 | Array of bulk strings |
+| RESP3 | Array of bulk strings |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL CAT read
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("CAT", "read");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclCat("read");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_cat("read")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ACLCatArgs(context.Background(), &redis.ACLCatArgs{
+        Category: "read",
+    }).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclCat("read");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.acl_cat_categoryname("read")?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL DELUSER
+Source: https://upstash.com/docs/redis/commands/server/acl-deluser
+
+Use `ACL DELUSER` to remove one or more ACL users and close any connections currently authenticated as them.
+
+Multiple usernames can be deleted in a single call. The reply is the number of users that actually existed and were removed, which can be lower than the number of names passed in.
+
+## Syntax
+
+```redis
+ACL DELUSER <username> [username ...]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `username` | Yes | Yes | Name of an ACL user to delete. |
+
+## Important points
+
+* The `default` user cannot be deleted; the command returns an error if it is included.
+* Deleting a user immediately terminates any of its active connections and subscriptions.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Integer |
+| RESP3 | Integer |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL DELUSER app
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("DELUSER", "app");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclDelUser("app");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_deluser("app")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+<Note>
+  `ACLDelUser` accepts a single username per call. To delete more than one user, call it once per username.
+</Note>
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ACLDelUser(context.Background(), "app").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclDelUser("app");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.acl_deluser(&["app"])?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL GENPASS
+Source: https://upstash.com/docs/redis/commands/server/acl-genpass
+
+Use `ACL GENPASS` to generate a random, hex-encoded password suitable for a new ACL user.
+
+The optional `bits` argument controls the strength of the generated password, rounded up to the nearest multiple of 8, and defaults to 256 bits when omitted. This only generates the password string; it does not create or update a user. To actually authenticate an ACL user over the REST API, generate credentials with [`ACL GENTOKEN`](/docs/redis/commands/server/acl-gentoken) instead, since a plain password from `GENPASS` cannot be passed to [`ACL SETUSER`](/docs/redis/commands/server/acl-setuser).
+
+## Syntax
+
+```redis
+ACL GENPASS [bits]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `bits` | No | No | Password strength in bits, from 1 to 4096. Defaults to 256 and is rounded up to a multiple of 8. |
+
+## Important points
+
+* The returned password is not stored anywhere; it is only generated and returned.
+* This value cannot be added to a user with `ACL SETUSER ... >password`. Use [`ACL GENTOKEN`](/docs/redis/commands/server/acl-gentoken) to create credentials that `SETUSER` will accept.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Bulk string |
+| RESP3 | Bulk string |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL GENPASS
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("GENPASS");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclGenPass();
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_genpass()
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ACLGenPass(context.Background(), 0).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclGenPass();
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.acl_genpass()?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL GENTOKEN
+Source: https://upstash.com/docs/redis/commands/server/acl-gentoken
+
+Use `ACL GENTOKEN` to create the credential you need before you can give an ACL user a password.
+
+[`ACL SETUSER`](/docs/redis/commands/server/acl-setuser) does not accept arbitrary passwords with `>password`: the value must come from `GENTOKEN`. Call it with just a username to have a strong password generated for you, or supply your own password to wrap instead. Either way, the reply is a token string that does two things at once: pass it to `SETUSER` as `>token` to set the user's password, and later use it directly as `UPSTASH_REDIS_REST_TOKEN`, or exchange it (or the password it wraps) for a fresh one with [`ACL RESTTOKEN`](/docs/redis/commands/server/acl-resttoken). `GENTOKEN` is an Upstash extension.
+
+## Syntax
+
+```redis
+ACL GENTOKEN <username> [password]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `username` | Yes | No | ACL user this token will belong to. The user does not need to exist yet. |
+| `password` | No | No | Password to wrap in the token. When omitted, a strong random password is generated instead. |
+
+## Important points
+
+* A supplied `password` is checked for minimum entropy and rejected if too weak.
+* This only generates a token; it does not create or modify the user. Pass the result to `ACL SETUSER <username> >token` to actually set it as the user's password.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Bulk string |
+| RESP3 | Bulk string |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL GENTOKEN app
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("GENTOKEN", "app");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.sendCommand(["ACL", "GENTOKEN", "app"]);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.execute_command("ACL", "GENTOKEN", "app")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.Do(context.Background(), "ACL", "GENTOKEN", "app").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.commands.ProtocolCommand;
+
+ProtocolCommand command = () -> "ACL".getBytes(StandardCharsets.UTF_8);
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.sendCommand(command, "GENTOKEN", "app");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("ACL");
+    command.arg("GENTOKEN");
+    command.arg("app");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL GETUSER
+Source: https://upstash.com/docs/redis/commands/server/acl-getuser
+
+Use `ACL GETUSER` to inspect the resulting permissions of a single ACL user, broken out into structured fields instead of the raw rule string that [`ACL LIST`](/docs/redis/commands/server/acl-list) returns.
+
+The reply describes the user's on/off and other flags, its passwords, the commands it can call as a single space-separated permission string, the key patterns it can access, and the channel patterns it can publish to or subscribe on. A username that does not exist returns a null reply rather than an error, which makes this command a convenient way to check whether a user exists before creating or modifying it.
+
+## Syntax
+
+```redis
+ACL GETUSER <username>
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `username` | Yes | No | ACL user to inspect. |
+
+## Important points
+
+* Returns null when the given username does not exist, instead of an error.
+* The reply has five fields: `flags`, `passwords`, `commands`, `keys`, and `channels`. Standard Redis 7+ also returns a `selectors` field; this deployment does not support selectors, so client libraries that expect one will simply receive an empty or undefined value for it.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Flat array of alternating field names and values, with nested arrays for `flags`, `passwords`, `keys`, and `channels`; or Null array |
+| RESP3 | Map of five fields, with a Set for `flags` and Arrays for `passwords`, `keys`, and `channels`; or Null |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL GETUSER app
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("GETUSER", "app");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclGetUser("app");
+console.log(result);
+// { flags: [...], passwords: [...], commands: '...', keys: [...], channels: [...], selectors: undefined }
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_getuser("app")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+<Note>
+  go-redis has no typed `ACLGetUser` method; call `ACL GETUSER` through `Do`.
+</Note>
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.Do(context.Background(), "ACL", "GETUSER", "app").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclGetUser("app");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.acl_getuser("app")?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL LIST
+Source: https://upstash.com/docs/redis/commands/server/acl-list
+
+Use `ACL LIST` to see every configured user together with their full rule set, formatted the same way a Redis ACL config file would describe them.
+
+Each entry is a single string starting with `user <username>`, followed by its on/off flag, passwords, key patterns, channel patterns, and command permissions. This is the quickest way to audit every user's effective permissions at once; to inspect a single user as structured fields instead, use [`ACL GETUSER`](/docs/redis/commands/server/acl-getuser).
+
+## Syntax
+
+```redis
+ACL LIST
+```
+
+## Arguments
+
+This command takes no arguments.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Array of bulk strings |
+| RESP3 | Array of bulk strings |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL LIST
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("LIST");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclList();
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_list()
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ACLList(context.Background()).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclList();
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.acl_list()?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL LOAD
+Source: https://upstash.com/docs/redis/commands/server/acl-load
+
+Use `ACL LOAD` to make sure the node you are connected to has the latest ACL users and rules.
+
+Standard Redis reads `ACL LOAD` from an `aclfile` on disk. This deployment has no such file: instead, `ACL LOAD` refreshes this node's in-memory copy of the ACL definitions from the primary, which is useful right after a failover or when reconnecting to a node that may be slightly behind. Changes made with [`ACL SETUSER`](/docs/redis/commands/server/acl-setuser) and [`ACL DELUSER`](/docs/redis/commands/server/acl-deluser) are already propagated to replicas automatically, so `LOAD` is rarely needed in normal operation.
+
+## Syntax
+
+```redis
+ACL LOAD
+```
+
+## Arguments
+
+This command takes no arguments.
+
+## Important points
+
+* There is no ACL file to load from; this refreshes the node's ACL state from the primary instead.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Simple string `OK` |
+| RESP3 | Simple string `OK` |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL LOAD
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("LOAD");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclLoad();
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_load()
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+<Note>
+  go-redis has no typed `ACLLoad` method; call `ACL LOAD` through `Do`.
+</Note>
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.Do(context.Background(), "ACL", "LOAD").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclLoad();
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    connection.acl_load()?;
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL LOG
+Source: https://upstash.com/docs/redis/commands/server/acl-log
+
+Use `ACL LOG` to inspect recent authentication and permission failures, and `ACL LOG RESET` to clear it.
+
+On standard Redis this is where to look when a client is unexpectedly denied: each entry records the reason, the username, and the command or key involved. This deployment does not yet record ACL failures, so `ACL LOG` currently always returns an empty array regardless of the optional count, while `ACL LOG RESET` still succeeds.
+
+## Syntax
+
+```redis
+ACL LOG [count | RESET]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `count` | No | No | Maximum number of log entries to return. |
+| `RESET` | No | No | Clear the log instead of reading it. |
+
+## Important points
+
+* `ACL LOG` currently always returns an empty array; this deployment does not yet track authentication or permission failures.
+* `ACL LOG RESET` still returns `OK`.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Array (currently always empty); or Simple string `OK` for `RESET` |
+| RESP3 | Array (currently always empty); or Simple string `OK` for `RESET` |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL LOG
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("LOG");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclLog();
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_log()
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ACLLog(context.Background(), 10).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclLog();
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.acl_log(10)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL RESTTOKEN
+Source: https://upstash.com/docs/redis/commands/server/acl-resttoken
+
+Use `ACL RESTTOKEN` to get a REST API token for an ACL user you already created, given that user's username and password.
+
+The password is the same value used with `>password` in [`ACL SETUSER`](/docs/redis/commands/server/acl-setuser), which is itself a value produced by [`ACL GENTOKEN`](/docs/redis/commands/server/acl-gentoken); passing the full token string that `GENTOKEN` returned also works. The result is a bearer token scoped to that user's permissions that can be set as `UPSTASH_REDIS_REST_TOKEN`, which is how a database user created for TCP access is also given REST API access. `RESTTOKEN` is an Upstash extension.
+
+## Syntax
+
+```redis
+ACL RESTTOKEN <username> <password>
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `username` | Yes | No | Existing ACL user to generate a REST token for. |
+| `password` | Yes | No | That user's password, as set with `>password` in `ACL SETUSER`. |
+
+## Important points
+
+* Returns an error if the username does not exist or the password does not match.
+* The returned token carries the same permissions as the underlying user; revoking or narrowing the user with `ACL SETUSER` also affects every token issued for it.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Bulk string |
+| RESP3 | Bulk string |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL RESTTOKEN app AQIDBAUGBwgJCgsMDQ4PEBESExQVFhc
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("RESTTOKEN", "app", "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhc");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.sendCommand(["ACL", "RESTTOKEN", "app", "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhc"]);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.execute_command("ACL", "RESTTOKEN", "app", "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhc")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.Do(context.Background(), "ACL", "RESTTOKEN", "app", "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhc").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.commands.ProtocolCommand;
+
+ProtocolCommand command = () -> "ACL".getBytes(StandardCharsets.UTF_8);
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.sendCommand(command, "RESTTOKEN", "app", "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhc");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("ACL");
+    command.arg("RESTTOKEN");
+    command.arg("app");
+    command.arg("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhc");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL SAVE
+Source: https://upstash.com/docs/redis/commands/server/acl-save
+
+Use `ACL SAVE` to make sure this node's ACL users and rules have been propagated to its replicas.
+
+Standard Redis writes `ACL SAVE` to an `aclfile` on disk. This deployment has no such file: instead, `ACL SAVE` pushes the current primary's in-memory ACL definitions out to its replicas. Changes made with [`ACL SETUSER`](/docs/redis/commands/server/acl-setuser) and [`ACL DELUSER`](/docs/redis/commands/server/acl-deluser) are already propagated automatically, so `SAVE` is rarely needed in normal operation.
+
+## Syntax
+
+```redis
+ACL SAVE
+```
+
+## Arguments
+
+This command takes no arguments.
+
+## Important points
+
+* There is no ACL file to save to; this pushes the primary's ACL state to its replicas instead.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Simple string `OK` |
+| RESP3 | Simple string `OK` |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL SAVE
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("SAVE");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclSave();
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_save()
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+<Note>
+  go-redis has no typed `ACLSave` method; call `ACL SAVE` through `Do`.
+</Note>
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.Do(context.Background(), "ACL", "SAVE").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclSave();
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    connection.acl_save()?;
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL SETUSER
+Source: https://upstash.com/docs/redis/commands/server/acl-setuser
+
+Use `ACL SETUSER` to create a new ACL user or change the rules of an existing one.
+
+Rules are applied left to right in a single call: they enable or disable the user (`on`, `off`), grant or revoke access to key patterns (`~pattern`), channel patterns (`&pattern`), commands and categories (`+get`, `-@admin`), and manage passwords. Because rules are cumulative, calling `SETUSER` again only adds to or removes from what a user already has; use `reset` to start over from a clean slate.
+
+## Syntax
+
+```redis
+ACL SETUSER <username> [rule ...]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `username` | Yes | No | ACL user to create or modify. |
+| `rule` | No | Yes | One rule token, applied in order. See the table below. |
+
+| Rule | Effect |
+| --- | --- |
+| `on` / `off` | Enable or disable authentication for the user. |
+| `>token` | Add a password. `token` must be a value returned by [`ACL GENTOKEN`](/docs/redis/commands/server/acl-gentoken), not an arbitrary string. |
+| `<token` | Remove a password previously added this way. |
+| `!hash` | Remove a password by its 64-character lowercase SHA-256 hash. |
+| `resetpass` | Remove every password set on the user. |
+| `~pattern` | Grant access to keys matching `pattern`. |
+| `allkeys` | Alias for `~*`. |
+| `resetkeys` | Remove every key pattern granted so far. |
+| `&pattern` | Grant access to pub/sub channels matching `pattern`. |
+| `allchannels` | Alias for `&*`. |
+| `resetchannels` | Remove every channel pattern granted so far. |
+| `+command` / `-command` | Grant or revoke a single command. |
+| `+@category` / `-@category` | Grant or revoke every command in a category; see [`ACL CAT`](/docs/redis/commands/server/acl-cat). |
+| `allcommands` | Alias for `+@all`. |
+| `nocommands` | Alias for `-@all`. |
+| `reset` | Reset the user to its just-created state: `resetpass`, `resetkeys`, `resetchannels`, `off`, `nocommands`. |
+
+## Important points
+
+* This command can expose administrative information or make a broad destructive change. Restrict it to trusted code paths.
+* `nopass` is rejected. Every user must have at least one password; there is no way to allow authentication with any password.
+* Plain-text passwords (`>password`) and pre-hashed passwords (`#hash`) are rejected. Passwords must be generated with [`ACL GENTOKEN`](/docs/redis/commands/server/acl-gentoken) and added with `>token`; this is what lets the same credential authenticate on both the TCP and REST endpoints.
+* Subcommand-scoped rules such as `+client|list` are not supported and return an error.
+* The `default` user cannot be modified; the command returns an error if it is the target.
+* Changes take effect immediately on new and existing connections, so a rule that narrows access can lock out a running application. Check with [`ACL GETUSER`](/docs/redis/commands/server/acl-getuser) before applying it broadly.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Simple string `OK` |
+| RESP3 | Simple string `OK` |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL SETUSER app on ~cache:* +get +set
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("SETUSER", "app", "on", "~cache:*", "+get", "+set");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclSetUser("app", ["on", "~cache:*", "+get", "+set"]);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_setuser(
+    "app",
+    enabled=True,
+    keys=["cache:*"],
+    commands=["+get", "+set"],
+)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ACLSetUser(context.Background(), "app", "on", "~cache:*", "+get", "+set").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclSetUser("app", "on", "~cache:*", "+get", "+set");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+use redis::acl::Rule;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let rules = [
+        Rule::On,
+        Rule::Pattern("cache:*".to_string()),
+        Rule::AddCommand("get".to_string()),
+        Rule::AddCommand("set".to_string()),
+    ];
+    connection.acl_setuser_rules("app", &rules)?;
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL USERS
+Source: https://upstash.com/docs/redis/commands/server/acl-users
+
+Use `ACL USERS` to list the usernames of every user currently configured on the database, including `default`.
+
+This returns only the names, with no rules or permissions attached. Use [`ACL GETUSER`](/docs/redis/commands/server/acl-getuser) on a specific username to inspect what it can do, or [`ACL LIST`](/docs/redis/commands/server/acl-list) to get every user's full rule set in one call.
+
+## Syntax
+
+```redis
+ACL USERS
+```
+
+## Arguments
+
+This command takes no arguments.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Array of bulk strings |
+| RESP3 | Array of bulk strings |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL USERS
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("USERS");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclUsers();
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_users()
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ACLUsers(context.Background()).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclUsers();
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.acl_users()?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+# ACL WHOAMI
+Source: https://upstash.com/docs/redis/commands/server/acl-whoami
+
+Use `ACL WHOAMI` to find out which ACL user the current connection is authenticated as.
+
+This is useful in shared code paths where the same client library is reused across users or environments, and you want to confirm which credentials actually ended up on the connection rather than assuming the ones you configured.
+
+## Syntax
+
+```redis
+ACL WHOAMI
+```
+
+## Arguments
+
+This command takes no arguments.
+
+## Important points
+
+* The connection must be authenticated. An unauthenticated connection returns an error instead of a username.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Bulk string |
+| RESP3 | Bulk string |
 
 <Note>
   Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
@@ -47981,7 +50038,19 @@ fn main() -> redis::RedisResult<()> {
 Source: https://upstash.com/docs/redis/commands/server/overview
 
 <CardGroup cols={2}>
-<Card title="ACL" href="/redis/commands/server/acl">Manage access control list</Card>
+<Card title="ACL CAT" href="/redis/commands/server/acl-cat">List command categories</Card>
+<Card title="ACL DELUSER" href="/redis/commands/server/acl-deluser">Delete one or more ACL users</Card>
+<Card title="ACL GENPASS" href="/redis/commands/server/acl-genpass">Generate a random password</Card>
+<Card title="ACL GENTOKEN" href="/redis/commands/server/acl-gentoken">Generate a REST token for SETUSER</Card>
+<Card title="ACL GETUSER" href="/redis/commands/server/acl-getuser">Get the user's details</Card>
+<Card title="ACL LIST" href="/redis/commands/server/acl-list">Show users details in config file format</Card>
+<Card title="ACL LOAD" href="/redis/commands/server/acl-load">Reload ACL definitions from the primary node</Card>
+<Card title="ACL LOG" href="/redis/commands/server/acl-log">Show the ACL log entries</Card>
+<Card title="ACL RESTTOKEN" href="/redis/commands/server/acl-resttoken">Generate a REST token for an existing user</Card>
+<Card title="ACL SAVE" href="/redis/commands/server/acl-save">Push ACL definitions to replica nodes</Card>
+<Card title="ACL SETUSER" href="/redis/commands/server/acl-setuser">Create or modify a user</Card>
+<Card title="ACL USERS" href="/redis/commands/server/acl-users">List all the registered usernames</Card>
+<Card title="ACL WHOAMI" href="/redis/commands/server/acl-whoami">Return the current connection username</Card>
 <Card title="COMMAND" href="/redis/commands/server/command">Get command metadata</Card>
 <Card title="CONFIG GET" href="/redis/commands/server/config-get">Read runtime configuration</Card>
 <Card title="CONFIG SET" href="/redis/commands/server/config-set">Change runtime configuration</Card>
@@ -66311,7 +68380,7 @@ curl https://us1-merry-cat-32748.upstash.io/set/foo/bar?_token=2553feg6a2d9842h2
 ## API Semantics
 
 Upstash REST API follows the same convention with
-[Redis Protocol](https://redis.io/commands). Give the command name and
+[Redis Protocol](/docs/redis/commands/overview). Give the command name and
 parameters in the same order as Redis protocol by separating them with a `/`.
 
 ```shell
@@ -66660,7 +68729,7 @@ And transaction response will be:
 
 ## Monitor Command
 
-Upstash REST API provides Redis [`MONITOR`](https://redis.io/docs/latest/commands/monitor/) command using
+Upstash REST API provides Redis [`MONITOR`](/docs/redis/commands/server/monitor) command using
 [Server Send Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) mechanism. API endpoint is `/monitor`.
 
 ```shell
@@ -66681,8 +68750,8 @@ data: 1721284030.601034 [0 0.0.0.0:0] "KEYS" "*"
 
 ## Subscribe & Publish Commands
 
-Simiar to `MONITOR` command, Upstash REST API provides Redis [`SUBSCRIBE`](https://redis.io/docs/latest/commands/subscribe/) and
-[`PUBLISH`](https://redis.io/docs/latest/commands/publish/) commands. The `SUBSCRIBE` endpoint works using
+Simiar to `MONITOR` command, Upstash REST API provides Redis [`SUBSCRIBE`](/docs/redis/commands/pub-sub/subscribe) and
+[`PUBLISH`](/docs/redis/commands/pub-sub/publish) commands. The `SUBSCRIBE` endpoint works using
 [Server Send Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) mechanism.
 API endpoints are `/subscribe` and `/publish`
 
@@ -66752,9 +68821,9 @@ You can get/copy the tokens by clicking the copy button next to
 ### REST Token for ACL Users
 
 In addition to the tokens provided by default, you can create REST tokens for
-the users created via [`ACL SETUSER`](https://redis.io/commands/acl-setuser/)
+the users created via [`ACL SETUSER`](/docs/redis/commands/server/acl-setuser)
 command. Upstash provides a custom `ACL` subcommand to generate REST tokens:
-`ACL RESTTOKEN`. It expects two arguments; username and user's password. And
+[`ACL RESTTOKEN`](/docs/redis/commands/server/acl-resttoken). It expects two arguments; username and user's password. And
 returns the REST token for the user as a string response.
 
 ```
@@ -66822,23 +68891,23 @@ summary about the performance of your APIs.
 
 | Feature                                                       | REST Support? |                               Notes                               |
 | ------------------------------------------------------------- | :-----------: | :---------------------------------------------------------------: |
-| [String](https://redis.io/commands/?group=string)             |      ✅       |                                                                   |
-| [Bitmap](https://redis.io/commands/?group=bitmap)             |      ✅       |                                                                   |
-| [Hash](https://redis.io/commands/?group=hash)                 |      ✅       |                                                                   |
-| [List](https://redis.io/commands/?group=list)                 |      ✅       | Blocking commands (BLPOP - BRPOP - BRPOPLPUSH) are not supported. |
-| [Set](https://redis.io/commands/?group=set)                   |      ✅       |                                                                   |
-| [SortedSet](https://redis.io/commands/?group=sorted_set)      |      ✅       |    Blocking commands (BZPOPMAX - BZPOPMIN) are not supported.     |
-| [Geo](https://redis.io/commands/?group=geo)                   |      ✅       |                                                                   |
-| [HyperLogLog](https://redis.io/commands/?group=hyperloglog)   |      ✅       |                                                                   |
-| [Transactions](https://redis.io/commands/?group=transactions) |      ✅       |             WATCH/UNWATCH/DISCARD are not supported               |
-| [Generic](https://redis.io/commands/?group=generic)           |      ✅       |                                                                   |
-| [Server](https://redis.io/commands/?group=server)             |      ✅       |                                                                   |
-| [Scripting](https://redis.io/commands/?group=scripting)       |      ✅       |                                                                   |
-| [Pub/Sub](https://redis.io/commands/?group=pubsub)            |      ✅       |                                                                   |
-| [Connection](https://redis.io/commands/?group=connection)     |      ⚠️       |                 Only PING and ECHO are supported.                 |
-| [JSON](https://redis.io/commands/?group=json)                 |      ✅       |                                                                   |
-| [Streams](https://redis.io/commands/?group=stream)            |      ✅       |    Supported, except blocking versions of XREAD and XREADGROUP.   |
-| [Cluster](https://redis.io/commands#cluster)                  |      ❌       |                                                                   |
+| [String](/docs/redis/commands/string/overview)             |      ✅       |                                                                   |
+| [Bitmap](/docs/redis/commands/bitmap/overview)             |      ✅       |                                                                   |
+| [Hash](/docs/redis/commands/hash/overview)                 |      ✅       |                                                                   |
+| [List](/docs/redis/commands/list/overview)                 |      ✅       | Blocking commands (BLPOP - BRPOP - BRPOPLPUSH) are not supported. |
+| [Set](/docs/redis/commands/set/overview)                   |      ✅       |                                                                   |
+| [SortedSet](/docs/redis/commands/sorted-set/overview)      |      ✅       |    Blocking commands (BZPOPMAX - BZPOPMIN) are not supported.     |
+| [Geo](/docs/redis/commands/geo/overview)                   |      ✅       |                                                                   |
+| [HyperLogLog](/docs/redis/commands/hyperloglog/overview)   |      ✅       |                                                                   |
+| [Transactions](/docs/redis/commands/transactions/overview) |      ✅       |             WATCH/UNWATCH/DISCARD are not supported               |
+| [Generic](/docs/redis/commands/generic/overview)           |      ✅       |                                                                   |
+| [Server](/docs/redis/commands/server/overview)             |      ✅       |                                                                   |
+| [Scripting](/docs/redis/commands/scripting/overview)       |      ✅       |                                                                   |
+| [Pub/Sub](/docs/redis/commands/pub-sub/overview)            |      ✅       |                                                                   |
+| [Connection](/docs/redis/commands/connection/overview)     |      ⚠️       |                 Only PING and ECHO are supported.                 |
+| [JSON](/docs/redis/commands/json/overview)                 |      ✅       |                                                                   |
+| [Streams](/docs/redis/commands/streams/overview)            |      ✅       |    Supported, except blocking versions of XREAD and XREADGROUP.   |
+| Cluster                                               |      ❌       |                                                                   |
 
 # Security
 Source: https://upstash.com/docs/redis/features/security
@@ -69959,18 +72028,18 @@ New Redis Search commands:
 
 <Update label="December 2025">
 Added [Redis Functions](https://redis.io/docs/latest/develop/programmability/functions-intro/) support. New commands are:
-* [`FCALL`](https://redis.io/docs/latest/commands/fcall/): Call a function with read/write capabilities
-* [`FCALL_RO`](https://redis.io/docs/latest/commands/fcall_ro/): Call a function in read-only mode
+* [`FCALL`](/docs/redis/commands/functions/fcall): Call a function with read/write capabilities
+* [`FCALL_RO`](/docs/redis/commands/functions/fcall-ro): Call a function in read-only mode
 * `FUNCTION DELETE`, `FUNCTION FLUSH`, `FUNCTION KILL`, `FUNCTION LIST`, `FUNCTION LOAD` and `FUNCTION STATS`
 
 New Hash commands:
-* [`HGETDEL`](https://redis.io/docs/latest/commands/hgetdel/): Get and delete hash fields atomically
-* [`HGETEX`](https://redis.io/docs/latest/commands/hgetex/): Get hash fields with expiration support
-* [`HSETEX`](https://redis.io/docs/latest/commands/hsetex/): Set hash fields with expiration support
+* [`HGETDEL`](/docs/redis/commands/hash/hgetdel): Get and delete hash fields atomically
+* [`HGETEX`](/docs/redis/commands/hash/hgetex): Get hash fields with expiration support
+* [`HSETEX`](/docs/redis/commands/hash/hsetex): Set hash fields with expiration support
 
 New Stream Commands:
-* [`XDELEX`](https://redis.io/docs/latest/commands/xdelex/): Extended delete for streams
-* [`XACKDEL`](https://redis.io/docs/latest/commands/xackdel/): Acknowledge and delete stream entries
+* [`XDELEX`](/docs/redis/commands/streams/xdelex): Extended delete for streams
+* [`XACKDEL`](/docs/redis/commands/streams/xackdel): Acknowledge and delete stream entries
 
 New Bit operations added:
 * `BITOP DIFF`: A bit is set only if it's set in all source bitmaps
@@ -69981,27 +72050,27 @@ New Bit operations added:
 
 <Update label="April 2025">
 Added HASH expiration support. New commands are:
-* [`HEXPIRE`](https://redis.io/docs/latest/commands/hexpire/): Set expiration time in seconds
-* [`HPEXPIRE`](https://redis.io/docs/latest/commands/hpexpire/): Set expiration time in milliseconds
-* [`HEXPIREAT`](https://redis.io/docs/latest/commands/hexpireat/): Set expiration time as Unix timestamp in seconds
-* [`HPEXPIREAT`](https://redis.io/docs/latest/commands/hpexpireat/): Set expiration time as Unix timestamp in milliseconds
-* [`HTTL`](https://redis.io/docs/latest/commands/httl/): Get remaining time to live in seconds
-* [`HPTTL`](https://redis.io/docs/latest/commands/hpttl/): Get remaining time to live in milliseconds
-* [`HEXPIRETIME`](https://redis.io/docs/latest/commands/hexpiretime/): Get absolute expiration time as Unix timestamp in seconds
-* [`HPEXPIRETIME`](https://redis.io/docs/latest/commands/hpexpiretime/): Get absolute expiration time as Unix timestamp in milliseconds
-* [`HPERSIST`](https://redis.io/docs/latest/commands/hpersist/): Remove expiration from hash fields
+* [`HEXPIRE`](/docs/redis/commands/hash/hexpire): Set expiration time in seconds
+* [`HPEXPIRE`](/docs/redis/commands/hash/hpexpire): Set expiration time in milliseconds
+* [`HEXPIREAT`](/docs/redis/commands/hash/hexpireat): Set expiration time as Unix timestamp in seconds
+* [`HPEXPIREAT`](/docs/redis/commands/hash/hpexpireat): Set expiration time as Unix timestamp in milliseconds
+* [`HTTL`](/docs/redis/commands/hash/httl): Get remaining time to live in seconds
+* [`HPTTL`](/docs/redis/commands/hash/hpttl): Get remaining time to live in milliseconds
+* [`HEXPIRETIME`](/docs/redis/commands/hash/hexpiretime): Get absolute expiration time as Unix timestamp in seconds
+* [`HPEXPIRETIME`](/docs/redis/commands/hash/hpexpiretime): Get absolute expiration time as Unix timestamp in milliseconds
+* [`HPERSIST`](/docs/redis/commands/hash/hpersist): Remove expiration from hash fields
 </Update>
 
 <Update label="Feb 2025">
-Added [`EVAL_RO`](https://redis.io/docs/latest/commands/eval_ro/) and [`EVALSHA_RO`](https://redis.io/docs/latest/commands/evalsha_ro/)
+Added [`EVAL_RO`](/docs/redis/commands/scripting/eval-ro) and [`EVALSHA_RO`](/docs/redis/commands/scripting/evalsha-ro)
 commands introduced in Redis 7.
 </Update>
 
 <Update label="July 2024">
-* Added REST API support for [`MONITOR`](https://redis.io/docs/latest/commands/monitor/) and [`SUBSCRIBE`](https://redis.io/docs/latest/commands/subscribe/)
+* Added REST API support for [`MONITOR`](/docs/redis/commands/server/monitor) and [`SUBSCRIBE`](/docs/redis/commands/pub-sub/subscribe)
 commands using [SSE](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events).
 See [Monitor](../features/restapi#monitor-command) and [Subscribe](../features/restapi#subscribe-command) docs.
-* Added [`JSON.MSET`](https://redis.io/docs/latest/commands/json.mset/) and [`JSON.MERGE`](https://redis.io/docs/latest/commands/json.merge/) commands.
+* Added [`JSON.MSET`](/docs/redis/commands/json/json-mset) and [`JSON.MERGE`](/docs/redis/commands/json/json-merge) commands.
 * Introduced the `IP Allowlist` feature for enhanced security on newly created databases. By default, all IP addresses will be allowed.
 However, access can be restricted by specifying permitted IP addresses or CIDR ranges.
 </Update>
@@ -70013,12 +72082,12 @@ See [REST API docs](/docs/redis/features/restapi#resp2-format-responses) for mor
 </Update>
 
 <Update label="April 2024">
-* Implemented [`MONITOR`](https://redis.io/docs/latest/commands/monitor/) command
+* Implemented [`MONITOR`](/docs/redis/commands/server/monitor) command
 * Implemented Redis [keyspace notifications](/docs/redis/howto/keyspacenotifications)
-* Implemented [`WAIT`](https://redis.io/docs/latest/commands/wait/) and [`WAITAOF`](https://redis.io/docs/latest/commands/waitaof/) commands
-* Added `lag` field to [`XINFO GROUPS`](https://redis.io/docs/latest/commands/xinfo-groups/)
-* Added [`CLIENT ID`](https://redis.io/docs/latest/commands/client-id/) subcommand
-* Added password strength check to [`ACL SETUSER`](https://redis.io/docs/latest/commands/acl-setuser/) command
+* Implemented [`WAIT`](/docs/redis/commands/generic/wait) and [`WAITAOF`](/docs/redis/commands/generic/waitaof) commands
+* Added `lag` field to [`XINFO GROUPS`](/docs/redis/commands/streams/xinfo-groups)
+* Added [`CLIENT ID`](/docs/redis/commands/connection/client-id) subcommand
+* Added password strength check to [`ACL SETUSER`](/docs/redis/commands/server/acl-setuser) command
 </Update>
 
 <Update label="February 2024">
@@ -81479,12 +83548,12 @@ ReplyError: ERR XReadGroup is cancelled. Pending Entries List limit per consumer
 Pending Entries List of the stream for the consumer is full. For each consumer
 in a consumer group, there is a pending entries list. This list keeps the
 messages that are delivered to a consumer but not yet acknowledged via
-[XACK](https://redis.io/commands/xack/). This list is populated via
-[XREADGROUP](https://redis.io/commands/xreadgroup/).
+[XACK](/docs/redis/commands/streams/xack). This list is populated via
+[XREADGROUP](/docs/redis/commands/streams/xreadgroup).
 
 ### Solution
 
-Acknowledge the consumed messages via [XACK](https://redis.io/commands/xack/)
+Acknowledge the consumed messages via [XACK](/docs/redis/commands/streams/xack)
 from the list of the associated group and consumer.
 
 - [Agent Memory with Redis Search](https://upstash.com/docs/redis/tutorials/agent_memory.md): Build short-term and long-term memory for AI agents on Upstash Redis. Store working memory with TTLs and recall long-term memories with Redis Search full-text queries.

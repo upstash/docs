@@ -1,0 +1,206 @@
+---
+title: "ACL SETUSER"
+description: "Create or modify a user with the specified attributes."
+---
+
+Use `ACL SETUSER` to create a new ACL user or change the rules of an existing one.
+
+Rules are applied left to right in a single call: they enable or disable the user (`on`, `off`), grant or revoke access to key patterns (`~pattern`), channel patterns (`&pattern`), commands and categories (`+get`, `-@admin`), and manage passwords. Because rules are cumulative, calling `SETUSER` again only adds to or removes from what a user already has; use `reset` to start over from a clean slate.
+
+## Syntax
+
+```redis
+ACL SETUSER <username> [rule ...]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `username` | Yes | No | ACL user to create or modify. |
+| `rule` | No | Yes | One rule token, applied in order. See the table below. |
+
+| Rule | Effect |
+| --- | --- |
+| `on` / `off` | Enable or disable authentication for the user. |
+| `>token` | Add a password. `token` must be a value returned by [`ACL GENTOKEN`](/redis/commands/server/acl-gentoken), not an arbitrary string. |
+| `<token` | Remove a password previously added this way. |
+| `!hash` | Remove a password by its 64-character lowercase SHA-256 hash. |
+| `resetpass` | Remove every password set on the user. |
+| `~pattern` | Grant access to keys matching `pattern`. |
+| `allkeys` | Alias for `~*`. |
+| `resetkeys` | Remove every key pattern granted so far. |
+| `&pattern` | Grant access to pub/sub channels matching `pattern`. |
+| `allchannels` | Alias for `&*`. |
+| `resetchannels` | Remove every channel pattern granted so far. |
+| `+command` / `-command` | Grant or revoke a single command. |
+| `+@category` / `-@category` | Grant or revoke every command in a category; see [`ACL CAT`](/redis/commands/server/acl-cat). |
+| `allcommands` | Alias for `+@all`. |
+| `nocommands` | Alias for `-@all`. |
+| `reset` | Reset the user to its just-created state: `resetpass`, `resetkeys`, `resetchannels`, `off`, `nocommands`. |
+
+## Important points
+
+- This command can expose administrative information or make a broad destructive change. Restrict it to trusted code paths.
+- `nopass` is rejected. Every user must have at least one password; there is no way to allow authentication with any password.
+- Plain-text passwords (`>password`) and pre-hashed passwords (`#hash`) are rejected. Passwords must be generated with [`ACL GENTOKEN`](/redis/commands/server/acl-gentoken) and added with `>token`; this is what lets the same credential authenticate on both the TCP and REST endpoints.
+- Subcommand-scoped rules such as `+client|list` are not supported and return an error.
+- The `default` user cannot be modified; the command returns an error if it is the target.
+- Changes take effect immediately on new and existing connections, so a rule that narrows access can lock out a running application. Check with [`ACL GETUSER`](/redis/commands/server/acl-getuser) before applying it broadly.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Simple string `OK` |
+| RESP3 | Simple string `OK` |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ACL SETUSER app on ~cache:* +get +set
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.acl("SETUSER", "app", "on", "~cache:*", "+get", "+set");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.aclSetUser("app", ["on", "~cache:*", "+get", "+set"]);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.acl_setuser(
+    "app",
+    enabled=True,
+    keys=["cache:*"],
+    commands=["+get", "+set"],
+)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ACLSetUser(context.Background(), "app", "on", "~cache:*", "+get", "+set").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aclSetUser("app", "on", "~cache:*", "+get", "+set");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+use redis::acl::Rule;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let rules = [
+        Rule::On,
+        Rule::Pattern("cache:*".to_string()),
+        Rule::AddCommand("get".to_string()),
+        Rule::AddCommand("set".to_string()),
+    ];
+    connection.acl_setuser_rules("app", &rules)?;
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
