@@ -2,32 +2,324 @@
 title: Use Cases
 ---
 
-TODO: andreas: rework and reenable this page after we have 2 use cases ready
-https://linear.app/upstash/issue/QSTH-84/use-cases-summaryhighlights-of-recipes
+QStash is an HTTP-based messaging and scheduling service. You hand it a request,
+and QStash delivers it to your endpoint later — with retries, delays, ordering,
+rate limits, and a dead letter queue when things go wrong.
 
-This section is still a work in progress.
+That makes it a fit for any work that shouldn't happen inside the request that
+triggered it: tasks that take too long, tasks that must survive a failure, tasks
+that must run on a schedule, and tasks that must not overwhelm the service they
+call.
 
-We will be adding detailed tutorials for each use case soon.
+Because everything is HTTP, there is no consumer to keep running. Your existing
+API endpoints *are* the consumers, wherever they are deployed — Vercel, AWS
+Lambda, Cloudflare Workers, Fly.io, or your own servers.
 
-Tell us on [Discord](https://discord.gg/w9SenAtbme) or
-[X](https://x.com/upstash) what you would like to see here.
+## Background jobs
 
-### Triggering Nextjs Functions on a schedule
+Serverless platforms cap how long a function can run. Anything heavier than a
+few seconds — video processing, report generation, importing a CSV, calling a
+slow third-party API — risks a timeout, and the user is waiting for it.
 
-Create a schedule in QStash that runs every hour and calls a Next.js serverless
-function hosted on Vercel.
+With QStash, your handler publishes a message and returns immediately. QStash
+calls a second endpoint that does the real work, retrying if it fails.
 
-### Reset Billing Cycle in your Database
+```typescript
+import { Client } from "@upstash/qstash";
 
-Once a month, reset database entries to start a new billing cycle.
+const client = new Client({ token: process.env.QSTASH_TOKEN! });
 
-### Fanning out alerts to Slack, email, Opsgenie, etc.
+await client.publishJSON({
+  url: "https://your-app.com/api/process-video",
+  body: { videoId },
+  retries: 3,
+});
+```
 
-Createa QStash URL Group that receives alerts from a single source and delivers them
-to multiple destinations.
+If the job itself is longer than a single function invocation allows, use
+[callbacks](/qstash/features/callbacks) so QStash delivers the response to
+another endpoint once it's ready, instead of your caller blocking on it.
 
-### Send delayed message when a new user signs up
+<Card
+  title="Background Jobs"
+  icon="share-all"
+  href="/qstash/features/background-jobs"
+>
+  Full walkthrough, including local development
+</Card>
 
-Publish delayed messages whenever a new user signs up in your app. After a
-certain delay (e.g. 10 minutes), QStash will send a request to your API,
-allowing you to email the user a welcome message.
+## Scheduled and recurring tasks
+
+Anything you would put in a cron job — nightly reports, resetting billing
+cycles, expiring trials, syncing a search index, warming a cache — becomes a
+[schedule](/qstash/features/schedules) that calls your endpoint on a cron
+expression.
+
+```typescript
+await client.schedules.create({
+  destination: "https://your-app.com/api/daily-report",
+  cron: "0 8 * * *",
+});
+```
+
+Schedules run in UTC by default and support
+[timezones](/qstash/features/schedules#timezones). Unlike platform-native cron
+(such as Vercel Cron), schedules are not tied to a deploy, are not limited to
+one per plan tier, and retry on failure.
+
+## Reliable webhook delivery
+
+Webhooks are the most common reason people reach for QStash, in both
+directions:
+
+**Receiving webhooks.** Point Stripe, GitHub, Shopify, or Clerk at a QStash
+publish URL instead of your endpoint directly. QStash absorbs the burst, retries
+if your app is down or mid-deploy, and applies whatever delay, timeout, or
+[flow control](/qstash/features/flowcontrol) you configure. The provider gets a
+fast 2xx even when your processing is slow.
+
+**Sending webhooks.** If you deliver webhooks to your own customers, QStash
+handles the part nobody wants to build: exponential retries, per-customer
+concurrency limits, and a [dead letter queue](/qstash/features/dlq) for
+endpoints that stay down.
+
+<CardGroup cols={2}>
+  <Card title="Use as Webhook Receiver" icon="webhook" href="/qstash/howto/webhook">
+    Publish URLs, URL Groups, and header forwarding
+  </Card>
+  <Card
+    title="Building Reliable & Type-Safe Webhooks"
+    icon="book"
+    href="https://upstash.com/blog/webhook-system-with-qstash"
+  >
+    Designing an outbound webhook system on QStash
+  </Card>
+</CardGroup>
+
+## Fan-out to multiple services
+
+One event often needs to reach several places: a purchase should trigger a
+receipt email, a Slack notification, an analytics event, and a warehouse
+webhook.
+
+Publish once to a [URL Group](/qstash/features/url-groups) and QStash creates an
+independent, independently-retried delivery for each subscribed endpoint. Adding
+or removing a consumer is a URL Group change — no redeploy of the producer.
+
+```typescript
+await client.publishJSON({
+  urlGroup: "order-created",
+  body: { orderId },
+});
+```
+
+The same shape works for alerting: one alert source fanned out to Slack, email,
+and PagerDuty.
+
+## Rate-limited and fragile third-party APIs
+
+When you call an API with a quota — OpenAI, Resend, Shopify, a partner's
+internal service — the hard part is not calling it, it's not calling it too
+often. [Flow Control](/qstash/features/flowcontrol) lets QStash hold messages
+back for you, by request rate, by concurrency, or both.
+
+```typescript
+await client.publishJSON({
+  url: "https://your-app.com/api/summarize",
+  body: { articleId },
+  flowControl: { key: "openai", parallelism: 5, rate: 60, period: "1m" },
+});
+```
+
+You can publish ten thousand messages at once and let QStash drip them out at
+the rate your downstream tolerates, instead of building a queue and a limiter
+yourself. Limits apply per key, so the same key can span multiple URLs.
+
+<Card
+  title="Efficient Article Summarization with QStash"
+  icon="book"
+  href="https://upstash.com/blog/article-summarizer-qstash-python"
+>
+  Handling API rate limits and parallel processing in Python
+</Card>
+
+## AI and LLM requests
+
+LLM calls are slow, variable, and expensive to retry by hand — a bad match for a
+10-second serverless timeout. QStash gives them a 2-hour HTTP timeout, delivers
+the response to a [callback](/qstash/features/callbacks) endpoint when it's
+done, and can [batch](/qstash/features/batch) many requests in one publish.
+
+There are built-in integrations for [OpenAI-compatible
+providers](/qstash/integrations/llm) and [Anthropic](/qstash/integrations/anthropic),
+so QStash calls the provider for you and you only handle the callback.
+
+Combined with flow control, this is a practical way to run bulk embedding jobs,
+document summarization, or content generation without hitting provider rate
+limits.
+
+## Delayed and time-based messages
+
+Some work is defined by *when* it should happen: a welcome email 10 minutes
+after signup, a trial-ending reminder 3 days out, an abandoned-cart nudge, a
+retry of a payment tomorrow.
+
+[Delay](/qstash/features/delay) a message by a duration or to an absolute
+timestamp, and QStash holds it until then — up to 7 days on the free plan and up
+to a year on pay-as-you-go.
+
+```typescript
+await client.publishJSON({
+  url: "https://your-app.com/api/send-welcome-email",
+  body: { userId },
+  delay: "10m",
+});
+```
+
+With the [Resend integration](/qstash/integrations/resend) you can skip the
+endpoint entirely and have QStash send the email itself at the scheduled time.
+
+<CardGroup cols={2}>
+  <Card
+    title="Scheduling emails in the user's timezone"
+    icon="book"
+    href="https://upstash.com/blog/timezone-scheduling-emails"
+  >
+    Per-user send times with QStash
+  </Card>
+  <Card
+    title="Building an Email Scheduler"
+    icon="book"
+    href="https://upstash.com/blog/email-scheduler-qstash-python"
+  >
+    An email scheduler with the Python SDK
+  </Card>
+</CardGroup>
+
+## Ordered processing
+
+Some pipelines break if messages overtake each other — applying a sequence of
+updates to the same record, processing a customer's events in order, or writing
+to a system that can't handle concurrent writes.
+
+[Queues](/qstash/features/queues) deliver messages one at a time in FIFO order.
+The next message only becomes active after the current one is delivered, has
+exhausted its retries, or its callback has finished.
+
+```typescript
+const queue = client.queue({ queueName: "user-123-events" });
+
+await queue.enqueueJSON({
+  url: "https://your-app.com/api/apply-event",
+  body: { event },
+});
+```
+
+## Syncing and periodic data updates
+
+Instead of querying a slow or rate-limited third-party API on every request,
+schedule a job that pulls fresh data into your own database, and serve reads
+from there. The same pattern covers flushing Redis state to a primary database,
+refreshing a cache, and rebuilding a search index.
+
+<CardGroup cols={2}>
+  <Card
+    title="Periodic Data Updates"
+    icon="rotate"
+    href="/qstash/recipes/periodic-data-updates"
+  >
+    Recipe: keep third-party data fresh in your own database
+  </Card>
+  <Card
+    title="Sync Redis state to your database"
+    icon="book"
+    href="https://upstash.com/blog/syncing-state-with-qstash"
+  >
+    Write-behind from Redis using QStash
+  </Card>
+</CardGroup>
+
+## Decoupling services
+
+Beyond individual jobs, QStash works as the messaging layer between your
+services: producers publish, QStash guarantees
+[at-least-once delivery](/qstash/features/at-least-once), and consumers are just
+HTTP endpoints. [Deduplication](/qstash/features/deduplication) keeps retries
+from double-processing, [signature verification](/qstash/features/security)
+proves a request came from QStash, and the DLQ holds anything that never
+succeeded.
+
+This is the pattern behind cutting serverless costs, too: move expensive work
+out of long-running function invocations and let QStash drive short, cheap ones.
+
+<Card
+  title="Get Rid of Function Timeouts and Reduce Vercel Costs"
+  icon="book"
+  href="https://upstash.com/blog/vercel-cost-workflow"
+>
+  Why offloading work changes your bill
+</Card>
+
+## Multi-step workflows
+
+If your task has several dependent steps — call an API, wait for a human,
+branch, then call another — chaining QStash messages by hand gets awkward.
+[Upstash Workflow](/workflow/getstarted) is built on QStash and gives you
+durable, resumable functions where each step is checkpointed automatically.
+
+<Tip href="/workflow/getstarted">
+Use QStash directly for single messages, schedules, and fan-out. Reach for
+[Upstash Workflow](/workflow/getstarted) when the logic spans multiple dependent
+steps.
+</Tip>
+
+## More examples
+
+<CardGroup cols={2}>
+  <Card
+    title="Building a seriously reliable serverless API"
+    icon="book"
+    href="https://upstash.com/blog/build-reliable-serverless-api"
+  >
+    Retries, idempotency, and failure handling end to end
+  </Card>
+  <Card
+    title="Decouple Webhook Processing on Next.js"
+    icon="book"
+    href="https://upstash.com/blog/webhook-qstash"
+  >
+    Taking webhook work off the request path
+  </Card>
+  <Card
+    title="Build a Subscription Service with Next.js & Prisma"
+    icon="book"
+    href="https://upstash.com/blog/saas-subscription"
+  >
+    Recurring billing cycles driven by schedules
+  </Card>
+  <Card
+    title="Refresh stale data in a SvelteKit app"
+    icon="book"
+    href="https://upstash.com/blog/sveltekit-qstash"
+  >
+    Scheduled revalidation outside the request path
+  </Card>
+  <Card
+    title="Serverless Background Jobs and Message Queues Compared"
+    icon="scale-balanced"
+    href="https://upstash.com/blog/serverless-background-jobs-and-message-queues-every-major-option-in-2026"
+  >
+    How QStash compares to the alternatives
+  </Card>
+  <Card
+    title="Why We Chose QStash at Scale"
+    icon="book"
+    href="https://upstash.com/blog/qstash-workflow-at-scale"
+  >
+    A production user's account of running QStash
+  </Card>
+</CardGroup>
+
+More posts are on the [QStash blog](https://upstash.com/blog/tag/qstash). If
+there's a use case you'd like documented, tell us on
+[Discord](https://upstash.com/discord) or [X](https://x.com/upstash).
