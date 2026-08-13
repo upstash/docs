@@ -1,0 +1,173 @@
+---
+title: "SEARCH.QUERY"
+description: "Search documents with a JSON filter."
+---
+
+Use `SEARCH.QUERY` to search for documents matching a JSON filter.
+
+The filter is a JSON object naming index fields and the values to match, so `'{"name": "headphones", "inStock": true}'` combines conditions with an implicit AND. Text fields are matched with the analysis configured in the schema while other types are matched exactly, and operators such as `$fuzzy`, `$prefix`, `$range`, `$or`, and `$mustNot` cover the cases where plain field matching is not enough. Querying an index that does not exist returns null.
+
+Results come back ordered by relevance score by default. `ORDERBY` sorts by a `FAST` field instead, `LIMIT` and `OFFSET` page through the matches, `SELECT` and `NOCONTENT` cut the payload down to the fields you need, `HIGHLIGHT` wraps the matched terms in tags for display, and `SCOREFUNC` blends numeric fields such as popularity or recency into the relevance score.
+
+See [Querying and filtering](/redis/search/querying) for the full filter syntax and worked examples, and [`SEARCH.COUNT`](/redis/commands/search/search-count) when you only need the number of matches.
+
+## Syntax
+
+```redis
+SEARCH.QUERY <name> '<query>'
+  [LIMIT <count>]
+  [OFFSET <offset>]
+  [ORDERBY <field> [ASC|DESC]]
+  [SELECT <count> <field> [<field> ...]]
+  [NOCONTENT]
+  [HIGHLIGHT FIELDS <count> <field> [<field> ...] [TAGS <open> <close>]]
+  [SCOREFUNC
+    FIELDVALUE <field>
+      [MODIFIER <NONE|LOG|LOG1P|LOG2P|LN|LN1P|LN2P|SQUARE|SQRT|RECIPROCAL>]
+      [FACTOR <number>]
+      [MISSING <number>]
+    [FIELDVALUE ...]
+    [SCOREMODE <SUM|MULTIPLY|REPLACE>]
+    [COMBINEMODE <SUM|MULTIPLY>]]
+```
+
+## Arguments
+
+| Argument | Description | Default |
+| --- | --- | --- |
+| `LIMIT` | Maximum number of results to return. Must be between 1 and 1000. | `10` |
+| `OFFSET` | Number of results to skip for pagination. Must be between 0 and 10,000. | `0` |
+| `ORDERBY` | Sort by a `FAST` field. The direction defaults to `DESC` when omitted. | Relevance score, descending |
+| `SELECT` | Return only the specified number of document fields. When the schema uses `FROM`, specify the source document field rather than its index alias. | All fields |
+| `NOCONTENT` | Return keys and scores without document content. | Disabled |
+| `HIGHLIGHT` | Wrap matching terms in tags. The default tags are `<em>` and `</em>`. | Disabled |
+| `SCOREFUNC` | Adjust relevance scores using one or more `FAST` numeric fields. `FACTOR` defaults to `1`, `MISSING` to `0`, `MODIFIER` to `NONE`, `SCOREMODE` to `SUM`, and `COMBINEMODE` to `SUM`. | Disabled |
+<Warning>
+  `NOCONTENT` cannot be combined with `SELECT` or `HIGHLIGHT`. `SCOREFUNC` cannot be combined with `ORDERBY`. Inside `MULTI` or `EVAL`, the command requires `NOCONTENT`.
+</Warning>
+
+See [Querying and filtering](/redis/search/querying) for the JSON filter operators and detailed query examples.
+
+## Response
+
+Returns an array of `[key, score, content]` results, or `null` if the index does not exist:
+
+- `key` is the Redis key of the matching document.
+- `score` is the floating-point relevance score.
+- `content` is an array of field-value pairs. JSON indexes return `[["$", "<json_string>"]]`; hash indexes return `[["field", "value"], ...]`.
+
+When `NOCONTENT` is used, each result is `[key, score]`. When `SELECT` is used, only fields that exist in the document appear in the content.
+
+```text
+[
+  ["key1", 1.25, [["$", "{\"name\":\"...\"}"]]],
+  ["key2", 0.75, [["$", "{\"name\":\"...\"}"]]]
+]
+```
+
+## Examples
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+SEARCH.QUERY products '{"name": "wireless"}' LIMIT 10 OFFSET 0
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+const products = redis.search.index({
+  name: "products",
+  schema: s.object({ name: s.string() }),
+});
+
+const results = await products.query({
+  filter: { name: "wireless" },
+  limit: 10,
+  offset: 0,
+});
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+products = redis.search.index(name="products")
+
+results = products.query(
+    filter={"name": "wireless"},
+    limit=10,
+    offset=0,
+)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import IORedis from "ioredis";
+import { createSearch, s } from "@upstash/search-ioredis";
+
+const redis = new IORedis(process.env.REDIS_URL!);
+const search = createSearch(redis);
+const products = search.index({
+  name: "products",
+  schema: s.object({ name: s.string() }),
+});
+
+const results = await products.query({
+  filter: { name: "wireless" },
+  limit: 10,
+  offset: 0,
+});
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+import { createSearch, s } from "@upstash/search-redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const search = createSearch(client);
+const products = search.index({
+  name: "products",
+  schema: s.object({ name: s.string() }),
+});
+
+const results = await products.query({
+  filter: { name: "wireless" },
+  limit: 10,
+  offset: 0,
+});
+```
+
+</Accordion>
+
+<Accordion title="curl">
+
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.QUERY", "products", "{\"name\": \"wireless\"}", "LIMIT", "10", "OFFSET", "0"]'
+```
+
+</Accordion>
+
+</AccordionGroup>

@@ -1,0 +1,190 @@
+---
+title: "EVAL_RO"
+description: "Execute read-only Lua script."
+---
+
+Use `EVAL_RO` to run a Lua script that is not allowed to write.
+
+It behaves like [`EVAL`](/redis/commands/scripting/eval), with `<numkeys>` splitting the arguments into the `KEYS` and `ARGV` tables, except that any write command called from the script fails with an error. Declaring the read-only intent lets the server serve the call on replicas and turns an accidental write into a clear error instead of an unexpected modification, which is worth doing for every script that only computes over existing data.
+
+Being read-only is not by itself enough to run concurrently with other commands: like `EVAL`, this command takes the global lock unless the script's shebang sets the `allow-key-locking` flag. With the flag, the script takes shared read locks on the keys passed in `KEYS`, so several readers of the same key proceed together. Combine the two flags with a comma, as in `#!lua flags=no-writes,allow-key-locking`, and see [Key-Based Locking](/redis/features/key-locking) for the full rules.
+
+## Syntax
+
+```redis
+EVAL_RO <script> <numkeys> [<key> [<key> ...]] [<arg> [<arg> ...]]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<script>` | Yes | No | Lua script source. |
+| `<numkeys>` | Yes | No | Number of key arguments that follow. |
+| `<key>` | No | Yes | Redis key targeted by the command. |
+| `<arg>` | No | Yes | Additional argument, available to the script as `ARGV`. |
+
+## Important points
+
+- `numkeys` must equal the number of key arguments that immediately follow it; remaining arguments are available to the script or function as ordinary arguments.
+- A read-only script still takes the global lock unless its shebang sets the `allow-key-locking` flag. See [Key-Based Locking](/redis/features/key-locking).
+- Pass every key the script reads through `KEYS` whether or not `allow-key-locking` is set. A key built inside the script is read from disk under the lock when it is not in memory, and it is rejected outright when the flag is set. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Reply produced by the evaluated read-only script |
+| RESP3 | Reply produced by the evaluated read-only script |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+EVAL_RO "return ARGV[1]" 0 hello
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const script = `
+    return ARGV[1]
+`
+const result = await redis.evalRo(script, [], ["hello"]);
+console.log(result) // "hello"
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.eval_ro("return ARGV[1]", args=["value"])
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.eval_ro("return ARGV[1]", "0", "value");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.evalRo("return ARGV[1]", { arguments: ["value"] });
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.eval_ro("return ARGV[1]", 0, "value")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.EvalRO(context.Background(), "return ARGV[1]", nil, "value").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.evalReadonly("return ARGV[1]", java.util.List.of(), java.util.List.of("value"));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("EVAL_RO");
+    command.arg("return ARGV[1]");
+    command.arg("1");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

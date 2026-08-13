@@ -1,0 +1,190 @@
+---
+title: "EVALSHA"
+description: "Execute cached Lua script by SHA."
+---
+
+Use `EVALSHA` to run a script that is already in the server's script cache, identified by its SHA1 digest.
+
+It behaves exactly like [`EVAL`](/redis/commands/scripting/eval) but sends only the 40-character digest instead of the script body, which keeps the request small when a script is called often. The digest is what [`SCRIPT LOAD`](/redis/commands/scripting/script-load) returns, and it is also computed as a side effect of any `EVAL` call.
+
+Locking behaviour comes from the cached script body, not from the call: the script takes the global lock unless its shebang sets the `allow-key-locking` flag, in which case only the keys passed in `KEYS` are locked. Because the flag lives in the body, changing it means loading a new script and calling the new digest. See [Key-Based Locking](/redis/features/key-locking).
+
+When the script is not in the cache the server replies with a `NOSCRIPT` error, and the client is expected to fall back to `EVAL`. Most client libraries do this automatically. The cache does not survive a restart and is cleared by [`SCRIPT FLUSH`](/redis/commands/scripting/script-flush), so applications must always be able to resend the script body.
+
+## Syntax
+
+```redis
+EVALSHA <sha1> <numkeys> [<key> [<key> ...]] [<arg> [<arg> ...]]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<sha1>` | Yes | No | SHA1 digest of a script cached with `SCRIPT LOAD`. |
+| `<numkeys>` | Yes | No | Number of key arguments that follow. |
+| `<key>` | No | Yes | Redis key targeted by the command. |
+| `<arg>` | No | Yes | Additional argument, available to the script as `ARGV`. |
+
+## Important points
+
+- `numkeys` must equal the number of key arguments that immediately follow it; remaining arguments are available to the script or function as ordinary arguments.
+- The cached script takes the global lock unless its shebang sets the `allow-key-locking` flag. See [Key-Based Locking](/redis/features/key-locking).
+- A script queued inside a `MULTI`/`EXEC` transaction always runs under the global lock, even when it sets `allow-key-locking`. Call it directly if you want per-key locking.
+- Pass every key the script touches through `KEYS` whether or not `allow-key-locking` is set. A key built inside the script is read from disk under the lock when it is not in memory, and it is rejected outright when the flag is set. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Reply produced by the cached script |
+| RESP3 | Reply produced by the cached script |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+EVALSHA fb67a0c03b48ddbf8b4c9b011e779563bdbc28cb 0 value
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const result = await redis.evalsha("fb67a0c03b48ddbf8b4c9b011e779563bdbc28cb", [], ["hello"]);
+console.log(result) // "hello"
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.evalsha("<sha1>", args=["value"])
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.evalsha("<sha1>", "0", "value");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.evalSha("<sha1>", { arguments: ["value"] });
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.evalsha("<sha1>", 0, "value")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.EvalSha(context.Background(), "<sha1>", nil, "value").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.evalsha("<sha1>", java.util.List.of(), java.util.List.of("value"));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("EVALSHA");
+    command.arg("<sha1>");
+    command.arg("1");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

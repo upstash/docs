@@ -1,0 +1,194 @@
+---
+title: "HSCAN"
+description: "Incrementally iterate hash fields."
+---
+
+Use `HSCAN` to iterate the fields of a hash in batches instead of reading it all at once.
+
+Each call takes a cursor and returns the next cursor together with a batch of field and value pairs. Start at cursor `0` and keep calling with the cursor from the previous reply until the server returns `0`, which ends the iteration. Because each call does a bounded amount of work, this avoids the long single reply that [`HGETALL`](/redis/commands/hash/hgetall) produces on a large hash.
+
+`MATCH` filters field names with a glob-style pattern, `COUNT` hints at how much work each call should do, and `NOVALUES` returns field names only, which is noticeably cheaper when values are large and you do not need them. Filtering is applied after a batch has been read, so a call can return nothing while the cursor is still non-zero: only a cursor of `0` means the iteration is over. Fields present for the whole iteration are returned at least once, and fields added or removed while it runs may or may not appear.
+
+## Syntax
+
+```redis
+HSCAN <key> <cursor> [MATCH <pattern>] [COUNT <count>] [NOVALUES]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Redis key targeted by the command. |
+| `<cursor>` | Yes | No | Cursor returned by the previous call; start at `0`. |
+| `MATCH <pattern>` | No | No | Return only elements matching this glob-style pattern. |
+| `COUNT <count>` | No | No | Hint for how much work each iteration should do. |
+| `NOVALUES` | No | No | Return only field names, without their values. |
+
+## Important points
+
+- This operation can inspect a large part of the database. Prefer cursor-based scans where possible and avoid unbounded use on hot paths.
+- The cursor is opaque. Start with `0` and continue until the server returns cursor `0`; a single iteration may return no elements.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Two-element array: cursor and flat field/value array, or field array with `NOVALUES` |
+| RESP3 | Two-element array: cursor and flat field/value array, or field array with `NOVALUES` |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+HSCAN my-key 0
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+await redis.hset("key", {
+  id: 1,
+  username: "chronark",
+  name: "andreas"
+ });
+const [newCursor, fields] = await redis.hscan("key", 0);
+console.log(newCursor); // likely `0` since this is a very small hash
+console.log(fields); // ["id", 1, "username", "chronark", "name", "andreas"]
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.hscan("my-key", 0)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.hscan("my-key", "0");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.hScan("my-key", "0");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.hscan("my-key", 0)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, _, err := client.HScan(context.Background(), "my-key", 0, "*", 0).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.hscan("my-key", "0");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let iter: redis::Iter<(String, String)> = connection.hscan("my-key")?;
+    for (field, value) in iter {
+        println!("{field}: {value}");
+    }
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

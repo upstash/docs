@@ -1,0 +1,216 @@
+---
+title: "FCALL"
+description: "Call a function."
+---
+
+Use `FCALL` to invoke a function from a library loaded with [`FUNCTION LOAD`](/redis/commands/functions/function-load).
+
+`<numkeys>` tells the server how many of the arguments that follow are key names. Those keys reach the function in `KEYS` and every remaining argument in `ARGV`. Passing key names as keys instead of hardcoding them in the function body matters, because Redis uses that list for routing and access checks.
+
+The function runs on the server as a single atomic step, so a sequence of reads and writes that would otherwise need several round trips and a transaction becomes one command. Use [`FCALL_RO`](/redis/commands/functions/fcall-ro) when the function only reads. Functions are the successor to [`EVAL`](/redis/commands/scripting/eval) scripts: they are named, registered once as part of a library, and persisted with the dataset instead of being sent or looked up by digest on every call.
+
+Upstash runs a function under the global lock by default, since the engine cannot know in advance which keys it will touch. Registering the function with the `allow-key-locking` flag makes the call lock only the keys passed in the key list, so calls that work on disjoint keys run in parallel:
+
+```lua
+redis.register_function{
+  function_name='incr_quota',
+  callback=incr_quota,
+  flags={'allow-key-locking'}
+}
+```
+
+Unlike Lua scripts, where the flag goes on the library shebang, this flag is set per registered function. With it set, every key the function touches must be passed as a key in the `FCALL` call: keys sent as ordinary arguments are not locked, and commands that need database-wide access, such as `FLUSHDB`, are rejected. See [Key-Based Locking](/redis/features/key-locking) for the full rules.
+
+<Warning>
+  Pass every key the function touches in the key list, even when it runs under
+  the global lock. Upstash keeps idle entries
+  [on disk](/redis/features/durability): keys given in the key list are loaded
+  before the function starts and the lock is released during that read, but a
+  key that the function builds from `ARGV` while it runs is read from disk with
+  the lock held, stalling every command waiting on it. See
+  [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+</Warning>
+
+## Syntax
+
+```redis
+FCALL <function> <numkeys> [<key> [<key> ...]] [<arg> [<arg> ...]]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<function>` | Yes | No | Name of the registered function to call. |
+| `<numkeys>` | Yes | No | Number of key arguments that follow. |
+| `<key>` | No | Yes | Redis key targeted by the command. |
+| `<arg>` | No | Yes | Additional argument passed to the function. |
+
+## Important points
+
+- `numkeys` must equal the number of key arguments that immediately follow it; remaining arguments are available to the script or function as ordinary arguments.
+- The function takes the global lock unless it was registered with the `allow-key-locking` flag, in which case only the keys passed in the key list are locked. See [Key-Based Locking](/redis/features/key-locking).
+- Pass every key the function touches in the key list whether or not `allow-key-locking` is set. A key built inside the function is read from disk under the lock when it is not in memory, and it is rejected outright when the flag is set. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Reply returned by the invoked function |
+| RESP3 | Reply returned by the invoked function |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+FCALL my_function 1 my-key value
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const code = `
+#!lua name=mylib
+redis.register_function('helloworld',
+  function()
+    return 'Hello World!'
+  end
+)
+`;
+
+await redis.functions.load({ code, replace: true });
+
+const res = await redis.functions.call("helloworld");
+console.log(res); // "Hello World!"
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.fcall("my_function", "1", "my-key", "value");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.fCall("my_function", { keys: ["my-key"], arguments: ["value"] });
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.fcall("my_function", 1, "my-key", "value")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.FCall(context.Background(), "my_function", []string{"my-key"}, "value").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.fcall("my_function", java.util.List.of("my-key"), java.util.List.of("value"));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("FCALL");
+    command.arg("my_function");
+    command.arg("1");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

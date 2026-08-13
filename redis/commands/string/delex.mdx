@@ -1,0 +1,175 @@
+---
+title: "DELEX"
+description: "Delete a string when a condition matches."
+---
+
+Use `DELEX` to delete a string when a condition matches.
+
+`IFEQ` deletes the key only when its current value equals the given one and `IFNE` only when it differs. `IFDEQ` and `IFDNE` do the same against a digest of the value, as returned by [`DIGEST`](/redis/commands/string/digest), which avoids sending a large value over the wire just to compare it.
+
+The comparison and the delete are one atomic step, which is what makes the command the correct way to release a lock or a claim: delete the key only if it still holds your token, so you never remove a lock that has expired and been taken by someone else. With no condition it simply deletes the key. The conditional forms require a string value, and a key of another type returns an error without being deleted.
+
+## Syntax
+
+```redis
+DELEX <key> [IFEQ <value> | IFNE <value> | IFDEQ <digest> | IFDNE <digest>]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `key` | Yes | No | String key to delete. |
+| `IFEQ value \| IFNE value` | No | No | Delete when the stored string is equal to or different from the supplied value. |
+| `IFDEQ digest \| IFDNE digest` | No | No | Delete when the stored string digest is equal to or different from the supplied 16-character digest. |
+
+## Important points
+
+- Supply at most one condition. With no condition, `DELEX` behaves like deleting a single key.
+- Conditional forms accept string keys only. A non-string value returns an error and is not deleted.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Integer |
+| RESP3 | Integer |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+DELEX lock:job-1 IFEQ worker-1
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.call("DELEX", "lock:job-1", "IFEQ", "worker-1");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.delEx("lock:job-1", { condition: "IFEQ", matchValue: "worker-1" });
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.execute_command("DELEX", "lock:job-1", "IFEQ", "worker-1")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.DelExArgs(context.Background(), "lock:job-1", redis.DelExArgs{Mode: "IFEQ", MatchValue: "worker-1"}).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.delex("lock:job-1", redis.clients.jedis.util.CompareCondition.valueEq("worker-1"));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.del_ex("lock:job-1", redis::ValueComparison::ifeq("worker-1"))?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

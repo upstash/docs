@@ -1,0 +1,189 @@
+---
+title: "HPEXPIREAT"
+description: "Set field expiry as ms timestamp."
+---
+
+Use `HPEXPIREAT` to schedule individual hash fields for deletion at a fixed point in time, given as a Unix timestamp in milliseconds.
+
+It combines the absolute deadline of [`HEXPIREAT`](/redis/commands/hash/hexpireat) with millisecond precision, which is what you need when fields spread over several hashes have to expire at exactly the same instant. A timestamp in the past removes the fields right away, and the key is deleted when its last field expires.
+
+`FIELDS <numfields>` introduces the field list and the count must match. The optional condition applies the deadline only when the field has no expiration (`NX`), already has one (`XX`), or when the new deadline is later (`GT`) or earlier (`LT`) than the current one. The reply holds one status code per field: `1` when set, `0` when the condition prevented it, `2` when the field was deleted immediately, and `-2` when it does not exist.
+
+## Syntax
+
+```redis
+HPEXPIREAT <key> <unix-time-milliseconds>
+  [NX | XX | GT | LT]
+  FIELDS <numfields> <field> [<field> ...]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Redis key targeted by the command. |
+| `<unix-time-milliseconds>` | Yes | No | Expiration time as a Unix timestamp in milliseconds. |
+| `(NX \| XX \| GT \| LT)` | No | No | Choose one form: `NX` (only when the field has no expiration); `XX` (only when the field already has one); `GT` (only when the new expiration is later than the current one); `LT` (only when it is earlier). |
+| `FIELDS <numfields> <field> [<field> ...]` | Yes | No | Fields to target. Give the field count first, then that many field names. |
+
+## Important points
+
+- `NX` cannot be combined with `XX`, `GT`, or `LT`, and `GT` and `LT` cannot be used together.
+- A field with no expiration counts as an infinite one, so `GT` never sets an expiration on such a field and `LT` always does.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Array of integer status codes, one per field |
+| RESP3 | Array of integer status codes, one per field |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+HPEXPIREAT my-key 1735689600 FIELDS 1 field
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+await redis.hset("my-key", "my-field", "my-value");
+const expirationSet = await redis.hpexpireat("my-key", "my-field", Date.now() + 1000);
+
+console.log(expirationSet); // [1]
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.hpexpireat("my-key", "field", 1735689600)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.hpexpireat("my-key", "1735689600", "FIELDS", "1", "field");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.hpExpireAt("my-key", "field", 1735689600);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.hpexpireat("my-key", 1735689600, "field")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.HPExpireAt(context.Background(), "my-key", time.UnixMilli(1735689600), "field").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.hpexpireAt("my-key", 1735689600, "field");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.hpexpire_at("my-key", 1735689600, redis::ExpireOption::NONE, &["field"])?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

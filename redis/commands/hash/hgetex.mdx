@@ -1,0 +1,185 @@
+---
+title: "HGETEX"
+description: "Get fields and set their expiry."
+---
+
+Use `HGETEX` to read hash fields and change their expiration in the same call.
+
+Without an expiration option it simply returns the values, like [`HMGET`](/redis/commands/hash/hmget). `EX`, `PX`, `EXAT`, and `PXAT` give every requested field a new lifetime or deadline, and `PERSIST` removes the expiration so the fields stop expiring altogether.
+
+Doing both in one command is what makes sliding expirations possible per field: reading a session attribute can extend it, with no window in which another client sees the field without its refreshed lifetime. `FIELDS <numfields>` introduces the field list and the count must match.
+
+## Syntax
+
+```redis
+HGETEX <key>
+  [EX <seconds> | PX <milliseconds> | EXAT <unix-time-seconds> |
+    PXAT <unix-time-milliseconds> | PERSIST]
+  FIELDS <numfields> <field> [<field> ...]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Redis key targeted by the command. |
+| `(EX <seconds> \| PX <milliseconds> \| EXAT <unix-time-seconds> \| PXAT <unix-time-milliseconds> \| PERSIST)` | No | No | Choose one form: `EX` (set a lifetime in seconds); `PX` (set a lifetime in milliseconds); `EXAT` (expire at a Unix timestamp in seconds); `PXAT` (expire at a Unix timestamp in milliseconds); `PERSIST` (remove the expiration). Left unchanged when omitted. |
+| `FIELDS <numfields> <field> [<field> ...]` | Yes | No | Fields to target. Give the field count first, then that many field names. |
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Array of bulk-string values or null values, one per field |
+| RESP3 | Array of bulk-string values or null values, one per field |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+HGETEX my-key FIELDS 1 field
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+await redis.hset("user:123", { name: "John", email: "john@example.com" });
+
+// Get fields and set expiration to 60 seconds
+const result = await redis.hgetex("user:123", { ex: 60 }, "name", "email");
+console.log(result); // { name: "John", email: "john@example.com" }
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.hgetex("my-key", "field")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.hgetex("my-key", "FIELDS", "1", "field");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.hGetEx("my-key", "field");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.hgetex("my-key", "field")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.HGetEX(context.Background(), "my-key", "1", "field").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.hgetex("my-key", redis.clients.jedis.params.HGetExParams.hGetExParams(), "field");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.hget_ex("my-key", &["field"], redis::Expiry::PERSIST)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

@@ -1,0 +1,185 @@
+---
+title: "SCRIPT LOAD"
+description: "Load script into cache."
+---
+
+Use `SCRIPT LOAD` to compile a script and put it in the server's script cache without running it.
+
+The reply is the script's SHA1 digest, which is what [`EVALSHA`](/redis/commands/scripting/evalsha) takes. Loading the same script twice is harmless and always yields the same digest, so applications typically load their scripts once at startup and then call them by digest.
+
+The cache is lost on restart and cleared by [`SCRIPT FLUSH`](/redis/commands/scripting/script-flush), so keep the script source available and be ready to handle a `NOSCRIPT` error by loading it again.
+
+Shebang flags are part of the source, so they are fixed at load time and a change to them produces a different digest. This includes `allow-key-locking`, which opts the script out of the global lock and into locking only the keys passed in `KEYS`; see [Key-Based Locking](/redis/features/key-locking).
+
+Whether or not you set that flag, write the script so that every key it touches arrives through `KEYS` rather than being assembled from `ARGV` inside the script, since an undeclared key can force a disk read while the lock is held. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+
+## Syntax
+
+```redis
+SCRIPT LOAD <script>
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<script>` | Yes | No | Lua script source. |
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Bulk string |
+| RESP3 | Bulk string |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+SCRIPT LOAD "return ARGV[1]"
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const script = `
+  local value = redis.call('GET', KEYS[1])
+  return value
+`;
+const sha1 = await redis.scriptLoad(script);
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.script_load("return ARGV[1]")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.script("LOAD", "return ARGV[1]");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.scriptLoad("return ARGV[1]");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.script_load("return ARGV[1]")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ScriptLoad(context.Background(), "return ARGV[1]").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.scriptLoad("return ARGV[1]");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::{Script, TypedCommands};
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let script = Script::new("return ARGV[1]");
+    let result: String = connection.load_script(&script)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

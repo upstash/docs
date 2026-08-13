@@ -1,0 +1,203 @@
+---
+title: "FCALL_RO"
+description: "Call a read-only function."
+---
+
+Use `FCALL_RO` to invoke a function that is declared read-only.
+
+The function must have been registered with the `no-writes` flag; calling a function without it returns an error. In exchange the server knows the call cannot modify data, so it can serve it on replicas and reject accidental writes outright.
+
+Apart from that restriction it behaves like [`FCALL`](/redis/commands/functions/fcall): `<numkeys>` splits the arguments into the keys the function receives in `KEYS` and the plain arguments it receives in `ARGV`.
+
+Being read-only does not by itself make the call concurrent with others. The function takes the global lock unless it was also registered with the `allow-key-locking` flag, as in `flags={'no-writes', 'allow-key-locking'}`. With both flags, the call takes shared read locks on the keys passed in the key list, so several readers of the same key proceed together. See [Key-Based Locking](/redis/features/key-locking).
+
+## Syntax
+
+```redis
+FCALL_RO <function> <numkeys> [<key> [<key> ...]] [<arg> [<arg> ...]]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<function>` | Yes | No | Name of the registered function to call. |
+| `<numkeys>` | Yes | No | Number of key arguments that follow. |
+| `<key>` | No | Yes | Redis key targeted by the command. |
+| `<arg>` | No | Yes | Additional argument passed to the function. |
+
+## Important points
+
+- `numkeys` must equal the number of key arguments that immediately follow it; remaining arguments are available to the script or function as ordinary arguments.
+- A `no-writes` function still takes the global lock unless it was also registered with the `allow-key-locking` flag. See [Key-Based Locking](/redis/features/key-locking).
+- Pass every key the function reads in the key list whether or not `allow-key-locking` is set. A key built inside the function is read from disk under the lock when it is not in memory, and it is rejected outright when the flag is set. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Reply returned by the invoked read-only function |
+| RESP3 | Reply returned by the invoked read-only function |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+FCALL_RO my_function 1 my-key value
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const code = `
+#!lua name=ro_lib
+
+local function get_value(keys, args)
+  return redis.call('GET', keys[1])
+end
+
+redis.register_function({
+  function_name='get_value',
+  callback=get_value,
+  flags={ 'no-writes' }
+})
+`;
+
+await redis.functions.load({ code, replace: true });
+
+// Call the read-only function
+// Note: We can modify the keys usage here, but since it represents a read-only operation
+// and we marked it with 'no-writes', it is safe to use callRo.
+const value = await redis.functions.callRo("get_value", ["mykey"])
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.fcall_ro("my_function", "1", "my-key", "value");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.fCallRo("my_function", { keys: ["my-key"], arguments: ["value"] });
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.fcall_ro("my_function", 1, "my-key", "value")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.FCallRO(context.Background(), "my_function", []string{"my-key"}, "value").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.fcallReadonly("my_function", java.util.List.of("my-key"), java.util.List.of("value"));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("FCALL_RO");
+    command.arg("my_function");
+    command.arg("1");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

@@ -1,0 +1,169 @@
+---
+title: "SEARCH.CREATE"
+description: "Create a search index."
+---
+
+Use `SEARCH.CREATE` to create a search index over JSON, hash, or string values.
+
+`ON` names the type of key to index and `PREFIX` the key prefixes to watch, so the index covers exactly the keys that match both, including keys written after it was created. The `SCHEMA` then declares which fields are searchable and how: `TEXT` fields are analyzed for full-text search, with `NOSTEM` and `NOTOKENIZE` to turn parts of that off, numeric, boolean, and date fields are matched exactly and can be marked `FAST` to make them usable for sorting and scoring, and `KEYWORD` and `FACET` fields are kept whole for exact matching and faceting. `FROM` maps a schema field to a differently named field in the document.
+
+Creating an index starts an initial scan of the matching keys, which `SKIPINITIALSCAN` skips when you only want to index data written from now on; [`SEARCH.REINDEX`](/redis/commands/search/search-reindex) can run that scan later. `EXISTSOK` makes the command succeed instead of failing when the index already exists.
+
+See [Index Management](/redis/search/index-management#creating-an-index) for a feature-level guide to creating indexes and [Schema Definition](/redis/search/schema-definition) for field types and schema design.
+
+<Note>
+  Upstash Redis Search uses `SEARCH.*` commands. They are separate from and incompatible with the `FT.*` commands in the open-source RediSearch module.
+</Note>
+
+## Syntax
+
+```redis
+SEARCH.CREATE <name> ON <JSON|HASH|STRING>
+  PREFIX <count> <prefix> [<prefix> ...]
+  [LANGUAGE <language>]
+  [SKIPINITIALSCAN]
+  [EXISTSOK]
+  SCHEMA
+    <field> TEXT [NOSTEM] [NOTOKENIZE] [FROM <source_field>]
+    | <field> <U64|I64|F64|BOOL|DATE> [FAST] [FROM <source_field>]
+    | <field> <KEYWORD|FACET> [FROM <source_field>]
+    [...]
+```
+
+## Arguments
+
+| Argument | Description |
+| --- | --- |
+| `ON` | Type of Redis value to index: `JSON`, `HASH`, or `STRING`. A `STRING` value must contain a JSON object. |
+| `PREFIX` | One or more key prefixes. Prefixes in the same index cannot be duplicates or overlap one another. |
+| `LANGUAGE` | Stemming language for `TEXT` fields. Defaults to `english`. Supported values are `arabic`, `danish`, `dutch`, `english`, `finnish`, `french`, `german`, `greek`, `hungarian`, `italian`, `norwegian`, `portuguese`, `romanian`, `russian`, `spanish`, `swedish`, `tamil`, and `turkish`. |
+| `SKIPINITIALSCAN` | Create the index without scanning existing keys. Later writes are still indexed; use [`SEARCH.REINDEX`](/redis/commands/search/search-reindex) to add the current matching data. |
+| `EXISTSOK` | Return `0` when an index with the same data type, prefixes, and schema already exists. A configuration mismatch returns an error. |
+| `SCHEMA` | One or more field definitions. `SCHEMA` must be the final top-level clause. |
+
+### Schema field options
+
+| Option | Valid field types | Description |
+| --- | --- | --- |
+| `FAST` | `U64`, `I64`, `F64`, `BOOL`, `DATE` | Store the field for operations such as sorting and aggregations. Score functions accept `FAST` fields of type `U64`, `I64`, or `F64`. |
+| `NOSTEM` | `TEXT` | Index text without stemming words to their roots. |
+| `NOTOKENIZE` | `TEXT` | Index the entire value as one token. |
+| `FROM <source_field>` | All field types | Read the value from a different document field or nested dot path while exposing it under `<field>` in the index. |
+
+## Response
+
+Returns `1` when the index is created. With `EXISTSOK`, returns `0` if the existing index has the same data type, prefixes, and schema. Returns an error for a different configuration or when `<name>` is already used by a non-index Redis key.
+
+## Examples
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST inStock BOOL
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const products = await redis.search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema: s.object({
+    name: s.string(),
+    price: s.number("F64"),
+    inStock: s.boolean(),
+  }),
+});
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+products = redis.search.create_index(
+    name="products",
+    data_type="json",
+    prefixes="product:",
+    schema={
+        "name": "TEXT",
+        "price": {"type": "F64", "fast": True},
+        "inStock": "BOOL",
+    },
+)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import IORedis from "ioredis";
+import { createSearch, s } from "@upstash/search-ioredis";
+
+const redis = new IORedis(process.env.REDIS_URL!);
+const search = createSearch(redis);
+
+const products = await search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema: s.object({
+    name: s.string(),
+    price: s.number("F64"),
+    inStock: s.boolean(),
+  }),
+});
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+import { createSearch, s } from "@upstash/search-redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const search = createSearch(client);
+
+const products = await search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema: s.object({
+    name: s.string(),
+    price: s.number("F64"),
+    inStock: s.boolean(),
+  }),
+});
+```
+
+</Accordion>
+
+<Accordion title="curl">
+
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["SEARCH.CREATE", "products", "ON", "JSON", "PREFIX", "1", "product:", "SCHEMA", "name", "TEXT", "price", "F64", "FAST", "inStock", "BOOL"]'
+```
+
+</Accordion>
+
+</AccordionGroup>

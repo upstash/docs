@@ -1,0 +1,188 @@
+---
+title: "BITFIELD"
+description: "Perform arbitrary bitfield operations."
+---
+
+Use `BITFIELD` to treat a string as an array of packed integers and run several operations on it in a single atomic call.
+
+Every operation names an encoding and a bit offset. The encoding is `u<bits>` for unsigned integers (up to 63 bits) or `i<bits>` for signed integers (up to 64 bits). The offset is counted in bits from the start of the value or, when prefixed with `#`, in units of the encoding width, so `#2` with `u8` addresses the third 8-bit field. The string grows automatically with zero bits when an operation addresses an offset past its current end.
+
+`GET` reads a field, `SET` writes one and returns its previous value, and `INCRBY` adds a possibly negative increment and returns the new value. `OVERFLOW` sets how the `SET` and `INCRBY` operations that follow it behave when a value does not fit the encoding: `WRAP` wraps around like modular arithmetic and is the default, `SAT` saturates at the minimum or maximum of the encoding, and `FAIL` leaves the field unchanged and returns null for that operation. The reply is an array with one entry per operation, in the order the operations were given.
+
+Packing many small counters into a single key this way saves memory and keeps the whole update atomic, which makes it a good fit for rate limiters and compact per-user counters.
+
+## Syntax
+
+```redis
+BITFIELD <key>
+  [GET <encoding> <offset> |
+    [OVERFLOW WRAP | SAT | FAIL]
+    (SET <encoding> <offset> <value> |
+      INCRBY <encoding> <offset> <increment>)
+    [GET <encoding> <offset> |
+      [OVERFLOW WRAP | SAT | FAIL]
+      (SET <encoding> <offset> <value> |
+        INCRBY <encoding> <offset> <increment>)
+      ...]]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Redis key targeted by the command. |
+| `(GET <encoding> <offset> \| [OVERFLOW WRAP \| SAT \| FAIL] (SET <encoding> <offset> <value> \| INCRBY <encoding> <offset> <increment>))` | No | Yes | An operation on a field of `<encoding>` (`u<bits>` unsigned up to 63 bits, or `i<bits>` signed up to 64 bits) at `<offset>` bits, or at `#<n>` to address the n-th field of that width: `GET` reads it, `SET` writes it and returns the previous value, and `INCRBY` adds an increment and returns the new value. `OVERFLOW` sets how the `SET` and `INCRBY` operations after it handle a value that does not fit: `WRAP` wraps around (the default), `SAT` saturates at the encoding's limits, and `FAIL` leaves the field unchanged and returns null. Repeat to run several operations in one atomic call. |
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Array of integer or null replies, one per subcommand |
+| RESP3 | Array of integer or null replies, one per subcommand |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+BITFIELD my-key GET u8 0
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+const result = await redis.bitfield("my-key").get("u8", 0).exec();
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.bitfield("my-key").get("u8", 0).execute()
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.bitfield("my-key", "GET", "u8", "0");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.bitField("my-key", [{ operation: "GET", encoding: "u8", offset: 0 }]);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.bitfield("my-key").get("u8", 0).execute()
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.BitField(context.Background(), "my-key", "GET", "u8", 0).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.bitfield("my-key", "GET", "u8", "0");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("BITFIELD");
+    command.arg("my-key");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

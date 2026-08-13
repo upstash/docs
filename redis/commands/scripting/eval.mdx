@@ -1,0 +1,214 @@
+---
+title: "EVAL"
+description: "Execute a Lua script."
+---
+
+Use `EVAL` to run a Lua script on the server.
+
+`<numkeys>` says how many of the arguments that follow are key names. The script receives those in the `KEYS` table and every remaining argument in `ARGV`. Passing key names as keys rather than hardcoding them in the script body matters, because Redis uses that list for routing and access checks. Inside the script, `redis.call` runs Redis commands and its return value is converted to a Lua value.
+
+The script runs as a single atomic step, which makes it the standard way to do read, decide, and write logic, such as a rate limiter or a compare-and-set update, in one round trip and without a transaction. Keep scripts short, since a script that holds the database blocks everything else, and keep them deterministic by deriving values from `KEYS`, `ARGV`, or data read inside the script rather than from clock or random sources.
+
+Upstash isolates a script with a lock. By default that is the global lock, because the engine cannot know in advance which keys the script will touch, so no other command runs while the script does. Adding the `allow-key-locking` flag to the script's shebang line makes it lock only the keys passed in `KEYS` instead, so calls that work on disjoint keys run in parallel:
+
+```lua
+#!lua flags=allow-key-locking
+
+redis.call('INCR', KEYS[1])
+return 1
+```
+
+With the flag set, every key the script touches must appear in `KEYS`, and commands that need database-wide access, such as `FLUSHDB`, are rejected. See [Key-Based Locking](/redis/features/key-locking) for the full rules.
+
+<Warning>
+  Pass every key the script touches through `KEYS`, even when the script runs
+  under the global lock. Upstash keeps idle entries
+  [on disk](/redis/features/durability): declared keys are loaded before the
+  script starts and the lock is released during that read, but a key that the
+  script builds while it runs is read from disk with the lock held, stalling
+  every command waiting on it. See
+  [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+</Warning>
+
+Sending a script also caches it under its SHA1 digest, so later calls can use [`EVALSHA`](/redis/commands/scripting/evalsha) and avoid resending the body. Use [`EVAL_RO`](/redis/commands/scripting/eval-ro) for scripts that only read.
+
+## Syntax
+
+```redis
+EVAL <script> <numkeys> [<key> [<key> ...]] [<arg> [<arg> ...]]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<script>` | Yes | No | Lua script source. |
+| `<numkeys>` | Yes | No | Number of key arguments that follow. |
+| `<key>` | No | Yes | Redis key targeted by the command. |
+| `<arg>` | No | Yes | Additional argument, available to the script as `ARGV`. |
+
+## Important points
+
+- `numkeys` must equal the number of key arguments that immediately follow it; remaining arguments are available to the script or function as ordinary arguments.
+- The script takes the global lock unless its shebang sets the `allow-key-locking` flag, in which case it locks only the keys passed in `KEYS`. See [Key-Based Locking](/redis/features/key-locking).
+- A script queued inside a `MULTI`/`EXEC` transaction always runs under the global lock, even when it sets `allow-key-locking`. Call it directly if you want per-key locking.
+- Pass every key the script touches through `KEYS` whether or not `allow-key-locking` is set. A key built inside the script is read from disk under the lock when it is not in memory, and it is rejected outright when the flag is set. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Reply produced by the evaluated script |
+| RESP3 | Reply produced by the evaluated script |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+EVAL "return ARGV[1]" 0 hello
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const script = `
+    return ARGV[1]
+`
+const result = await redis.eval(script, [], ["hello"]);
+console.log(result) // "hello"
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.eval("return ARGV[1]", args=["value"])
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.eval("return ARGV[1]", "0", "value");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.eval("return ARGV[1]", { arguments: ["value"] });
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.eval("return ARGV[1]", 0, "value")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.Eval(context.Background(), "return ARGV[1]", nil, "value").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.eval("return ARGV[1]", java.util.List.of(), java.util.List.of("value"));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("EVAL");
+    command.arg("return ARGV[1]");
+    command.arg("1");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

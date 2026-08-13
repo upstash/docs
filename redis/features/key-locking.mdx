@@ -48,12 +48,16 @@ the global lock. This includes commands such as `FLUSHDB` and `FLUSHALL`.
 
 Lua scripts queued inside a transaction always execute under the global lock,
 even if the script declares [`allow-key-locking`](#lua-scripts). If you want
-script-level key locking, run the script directly with `EVAL`/`EVALSHA`
-outside of a transaction.
+script-level key locking, run the script directly with
+[`EVAL`](/redis/commands/scripting/eval) /
+[`EVALSHA`](/redis/commands/scripting/evalsha) outside of a transaction.
 
 ## Lua Scripts
 
-Lua scripts (`EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`) default to the global
+Lua scripts ([`EVAL`](/redis/commands/scripting/eval),
+[`EVALSHA`](/redis/commands/scripting/evalsha),
+[`EVAL_RO`](/redis/commands/scripting/eval-ro),
+[`EVALSHA_RO`](/redis/commands/scripting/evalsha-ro)) default to the global
 lock because the engine cannot know in advance which keys the script will use.
 To opt into key-based locking, add the `allow-key-locking` flag to the script's
 shebang line:
@@ -82,7 +86,10 @@ keys can run in parallel.
   ```
 
   In practice, this means you should pass fully resolved keys through `KEYS`
-  rather than reconstructing them from `ARGV` inside the script.
+  rather than reconstructing them from `ARGV` inside the script. This is worth
+  doing even for scripts that run under the global lock, because an undeclared
+  key can force a disk read while the lock is held. See
+  [Dynamic Keys and Latency](#dynamic-keys-and-latency).
 
 - **Database-wide writes are not allowed.** Commands that require database-wide
   exclusive access, such as `FLUSHDB` and `FLUSHALL`, cannot be called from a
@@ -130,9 +137,11 @@ concurrently, each holding a lock only on its own `user:<id>:quota` key.
 
 ## Redis Functions
 
-Redis functions (`FCALL`, `FCALL_RO`) also default to the global lock. For
-functions, `allow-key-locking` is set on each registered function, not on the
-library shebang:
+Redis functions ([`FCALL`](/redis/commands/functions/fcall),
+[`FCALL_RO`](/redis/commands/functions/fcall-ro)) also default to the global
+lock. For functions, `allow-key-locking` is set on each registered function,
+not on the library shebang, and takes effect when the library is loaded with
+[`FUNCTION LOAD`](/redis/commands/functions/function-load):
 
 ```lua
 #!lua name=locks
@@ -170,3 +179,37 @@ registration:
 ```lua
 flags={'no-writes', 'allow-key-locking'}
 ```
+
+## Dynamic Keys and Latency
+
+Pass every key a script or function touches through the key list of the call,
+where it arrives as `KEYS`, even when you are not using `allow-key-locking`.
+With the flag set, a key that was not declared is rejected outright. Without it
+the call still succeeds, but it can be slow, and the slowdown is not limited to
+the caller.
+
+Upstash keeps data [in memory and on disk](/redis/features/durability), and an
+entry that has been idle long enough to be evicted from memory is read back from
+disk on the next access. Declared keys are loaded before the script body starts
+running, and the engine releases the lock while it waits for that read, so other
+commands keep making progress. A key that only becomes known in the middle of
+the script cannot be handled that way: script execution has to stay atomic, so
+the engine holds the lock across the disk read. Under the global lock, that
+means the whole database waits for a disk read in the middle of your script.
+It is also why dynamic keys are rejected when `allow-key-locking` is set: a key
+the engine was never told about can be neither locked nor loaded up front.
+
+```lua
+-- Dynamic key: resolved inside the script, may be read from disk under the lock
+local key = 'user:' .. ARGV[1] .. ':quota'
+redis.call('INCR', key)
+```
+
+```lua
+-- Declared key: loaded before the script runs, outside the locked section
+redis.call('INCR', KEYS[1])
+```
+
+The cost only appears when the key is not already in memory, so it is easy to
+miss against a small, warm test dataset and easy to hit in production against a
+large one. Resolve key names in your application and pass them in the key list.

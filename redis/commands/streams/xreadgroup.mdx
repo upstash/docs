@@ -1,0 +1,196 @@
+---
+title: "XREADGROUP"
+description: "Read as consumer group."
+---
+
+Use `XREADGROUP` to read entries from a stream as a member of a consumer group, so that each entry goes to one consumer and Redis keeps track of what has not been acknowledged.
+
+After `STREAMS`, all keys come first and then one ID per key. The special ID `>` delivers entries that have never been delivered to the group and records them as pending for this consumer. Any other ID re-reads that consumer's own pending entries instead, starting after the given ID, which is how a consumer resumes after a restart: read from `0` first to finish old work, then switch to `>`.
+
+The consumer is created on first use. `COUNT` limits the batch size and `BLOCK <milliseconds>` waits for new entries rather than returning empty, with `0` waiting indefinitely. `NOACK` skips the pending entries list entirely, trading the delivery guarantee for speed.
+
+Entries stay pending until acknowledged with [`XACK`](/redis/commands/streams/xack). That is what makes recovery possible: work left behind by a crashed consumer is visible in [`XPENDING`](/redis/commands/streams/xpending) and can be taken over with [`XAUTOCLAIM`](/redis/commands/streams/xautoclaim).
+
+## Syntax
+
+```redis
+XREADGROUP GROUP <group> <consumer>
+  [COUNT <count>]
+  [BLOCK <milliseconds>]
+  [NOACK]
+  STREAMS <key> [<key> ...] <ID> [<ID> ...]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `GROUP <group> <consumer>` | Yes | No | Consumer group to read from, and the consumer within it that claims the entries. |
+| `COUNT <count>` | No | No | Maximum number of entries to return per stream. |
+| `BLOCK <milliseconds>` | No | No | Milliseconds to block waiting for new entries; `0` blocks indefinitely. |
+| `NOACK` | No | No | Do not add delivered entries to the pending list. |
+| `STREAMS <key> [<key> ...] <ID> [<ID> ...]` | Yes | No | Streams to read. List every key first, then one ID per key in the same order. |
+
+## Important points
+
+- A blocking form holds the request until data arrives or its timeout expires. Set the client/network timeout longer than the command timeout.
+- After `STREAMS`, provide all keys first and then exactly one ID for each key, in the same order.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Null bulk string or null array or Flat array of alternating keys and values |
+| RESP3 | Null or Map |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+XREADGROUP GROUP workers worker-1 STREAMS my-key 0-0
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const result = await redis.xreadgroup("mygroup", "consumer1", "mystream", ">");
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.xreadgroup("workers", "worker-1", {"my-key": "0-0"})
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.xreadgroup("GROUP", "workers", "worker-1", "STREAMS", "my-key", "0-0");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.xReadGroup("workers", "worker-1", { key: "my-key", id: "0-0" });
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.xreadgroup("workers", "worker-1", {"my-key": "0-0"})
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.XReadGroup(context.Background(), &redis.XReadGroupArgs{Group: "workers", Consumer: "worker-1", Streams: []string{"my-key", "0-0"}}).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.xreadGroup("workers", "worker-1", redis.clients.jedis.params.XReadGroupParams.xReadGroupParams(), java.util.Map.of("my-key", new redis.clients.jedis.StreamEntryID("0-0")));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("XREADGROUP");
+    command.arg("GROUP");
+    command.arg("workers");
+    command.arg("worker-1");
+    command.arg("STREAMS");
+    command.arg("my-key");
+    command.arg("0-0");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
