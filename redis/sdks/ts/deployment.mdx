@@ -104,7 +104,7 @@ Examples: [Deno Deploy](https://deno.com/deploy),
 [Netlify Edge](https://www.netlify.com/products/edge/)
 
 ```ts
-import { Redis } from "https://deno.land/x/upstash_redis/mod.ts"
+import { Redis } from "npm:@upstash/redis"
 
 const redis = new Redis({
   url: <UPSTASH_REDIS_REST_URL>,
