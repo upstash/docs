@@ -2778,27 +2778,29 @@ The `Authorization` header is added by the proxy. The container never sees the s
 # AI Actions
 Source: https://upstash.com/docs/box/overall/browser/ai-actions
 
-Beyond reading pages, a tab can act. A DOM-aware browser agent runs inside the box and resolves natural-language instructions against the live page. It can find elements, execute single actions, or complete multi-step tasks on its own.
+Beyond reading pages, a tab can act. A DOM-aware browser agent runs inside the box and resolves natural-language instructions against the live page. It can find elements and execute single actions.
 
 <Note>
-  AI actions use an LLM and are metered. They need an API key for the model's
+  LLM-resolved AI actions are metered and need an API key for the model's
   provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
   your account. Every method accepts a provider-prefixed `model` override such
   as `"openai/gpt-4o"`. Without an override, the call uses the model the box
   was configured with. If the box has no model, it falls back to
-  `anthropic/claude-sonnet-4-5`.
+  `anthropic/claude-sonnet-4-5`. Replaying a pre-resolved action with
+  `act(action)` is the exception: it uses no LLM and needs no key (see
+  [Replay an action without an LLM](#replay-an-action-without-an-llm)).
 </Note>
 
 ## Observe
 
-`observe()` finds actionable elements matching an instruction. Use it to check the page before acting, or to build your own action loop:
+`observe()` finds actionable elements matching an instruction. Use it to check the page before acting, or to build your own action loop. Each element carries a `selector` plus a suggested `method` and `arguments`, so you can replay it directly with `act(el)` (see [below](#replay-an-action-without-an-llm)):
 
 <CodeGroup>
 ```typescript box.ts
 const { elements } = await tab.observe("find the login and signup buttons")
 
 for (const el of elements) {
-  console.log(el.description, el.selector)
+  console.log(el.description, el.selector, el.method)
 }
 ```
 
@@ -2806,13 +2808,13 @@ for (const el of elements) {
 result = tab.observe("find the login and signup buttons")
 
 for el in result.elements:
-    print(el.description, el.selector)
+    print(el.description, el.selector, el.method)
 ```
 </CodeGroup>
 
 ## Act
 
-`act()` resolves and executes exactly one action described in natural language:
+`act()` resolves and executes exactly one action described in natural language. It also accepts a pre-resolved action from `observe()` to replay without an LLM (see [Replay an action without an LLM](#replay-an-action-without-an-llm)):
 
 <CodeGroup>
 ```typescript box.ts
@@ -2832,66 +2834,47 @@ print(action.input_tokens, action.output_tokens)
 
 The result reports what was done (`actions` with the resolved selectors), whether it succeeded, and the token usage of the call.
 
-## Run
+### Replay an action without an LLM
 
-`run()` is the autonomous mode. The agent reads the page, acts, and repeats until the task is complete or it hits the step limit. Pass a schema to get structured data back at the end:
+`observe()` returns each element's resolved `selector` plus a suggested `method` and `arguments`. Pass that element straight back into `act()` to replay it deterministically: no LLM call, no tokens, and no model provider key required. Resolve once with the model, then reuse the action as many times as you like.
 
 <CodeGroup>
 ```typescript box.ts
-import { z } from "zod"
+// Resolve once (metered, needs a model key)
+const { elements } = await tab.observe("the primary call-to-action")
+const action = elements[0]
 
-const { data, completed, steps } = await tab.run(
-  "Find the pricing page and summarize the free tier",
-  {
-    schema: z.object({ summary: z.string() }),
-    maxSteps: 15,
-    // model: "openai/gpt-4o", // any provider you hold a key for
-  },
-)
-
-console.log(completed, data.summary)
-for (const step of steps) {
-  console.log(step.step, step.action, step.url)
-}
+// Replay as many times as you like: no LLM, no key
+await tab.act(action)
 ```
 
 ```python box.py
-from pydantic import BaseModel
+# Resolve once (metered, needs a model key)
+result = tab.observe("the primary call-to-action")
+action = result.elements[0]
 
-class Summary(BaseModel):
-    summary: str
-
-result = tab.run(
-    "Find the pricing page and summarize the free tier",
-    schema=Summary,
-    max_steps=15,
-    # model="openai/gpt-4o",  # any provider you hold a key for
-)
-
-print(result.completed, result.data.summary)
-for step in result.steps:
-    print(step.step, step.action, step.url)
+# Replay as many times as you like: no LLM, no key
+tab.act(action)
 ```
 </CodeGroup>
 
-* `maxSteps`: defaults to `15`, capped at `30`.
-* `schema`: optional. Without it, `run` returns its findings as text in `result`.
-* The result includes `completed`, a step-by-step trace in `steps` (each with the action taken, its reasoning, and the URL), and total token usage.
+Observe narrowly (or check the element) before relying on a fixed index like `elements[0]`. Cache the returned action (in your own store or on the box filesystem) and replay it across pages or runs. This is the built-in path for turning an AI-discovered step into a fast, repeatable one. The action must carry a resolved `selector`: `act()` throws if it is missing (an `observe()` element it could not resolve). The replay form runs no model, so a `model` override does not apply. If the page changes and the selector no longer matches, `observe()` again to re-resolve.
 
 ## Which one to use
 
 | Method | Does | Best for |
 |---|---|---|
 | `observe` | Finds elements, executes nothing | Inspecting a page, building custom loops |
-| `act` | Executes one action | Flows where your code decides each step |
-| `run` | Executes a whole task autonomously | Open-ended or navigation-heavy tasks |
+| `act` | Executes one action (natural language, metered; or a pre-resolved action, no LLM) | Flows where your code decides each step, or replaying a resolved action |
 
-For fully scripted control with no LLM in the loop, [connect over CDP](/docs/box/overall/browser/connect) with Playwright or Puppeteer instead. Both drive the same tabs, so you can mix scripted steps with AI steps. To watch or replay what the agent did, see [Live View](/docs/box/overall/browser/live-view) and [Recordings](/docs/box/overall/browser/recordings).
+To turn a single AI-resolved step into a no-LLM one, replay an `observe()` result through `act()` (see [Replay an action without an LLM](#replay-an-action-without-an-llm)). For fully scripted control with no LLM anywhere in the loop, [connect over CDP](/docs/box/overall/browser/connect) with Playwright or Puppeteer instead. Both drive the same tabs, so you can mix scripted steps with AI steps. To watch or replay what the agent did, see [Live View](/docs/box/overall/browser/live-view) and [Recordings](/docs/box/overall/browser/recordings).
 
 # Connect over CDP
 Source: https://upstash.com/docs/box/overall/browser/connect
 
 The box browser is a real Chromium, and you can drive it with the tools you already use. `cdpUrl()` returns an authenticated Chrome DevTools Protocol WebSocket URL that Playwright, Puppeteer, or Stagehand can connect to directly. There is no browser to install and nothing to manage.
+
+For a single no-LLM step without wiring up a CDP client, replaying an observed action with [`act(action)`](/docs/box/overall/browser/ai-actions#replay-an-action-without-an-llm) is often enough. Reach for CDP when you want fully scripted, multi-step control.
 
 <CodeGroup>
 ```typescript box.ts
@@ -2965,9 +2948,9 @@ await stagehand.act("click the first link")
 
 ## Mixing CDP and SDK control
 
-CDP clients and the SDK drive the same browser and the same tabs. A page opened by Playwright shows up in `box.browser.listTabs()`, and a tab created by the SDK is visible to Playwright. You can script the predictable steps like login and pagination with Playwright, hand the tab to [`act` or `run`](/docs/box/overall/browser/ai-actions) for the steps that are easier to describe in natural language, and watch either through [Live View](/docs/box/overall/browser/live-view).
+CDP clients and the SDK drive the same browser and the same tabs. A page opened by Playwright shows up in `box.browser.listTabs()`, and a tab created by the SDK is visible to Playwright. You can script the predictable steps like login and pagination with Playwright, hand the tab to [`act`](/docs/box/overall/browser/ai-actions) for the steps that are easier to describe in natural language, and watch either through [Live View](/docs/box/overall/browser/live-view).
 
-As a rule of thumb: use CDP when you want precise, repeatable scripting with no LLM in the loop. Use [AI Actions](/docs/box/overall/browser/ai-actions) when describing the task is easier than scripting it.
+As a rule of thumb: replay a cached [`act(action)`](/docs/box/overall/browser/ai-actions#replay-an-action-without-an-llm) for a single no-LLM step, reach for CDP when you want precise, repeatable multi-step scripting with no LLM in the loop, and use [AI Actions](/docs/box/overall/browser/ai-actions) when describing the task is easier than scripting it.
 
 # Cookbook
 Source: https://upstash.com/docs/box/overall/browser/cookbook
@@ -3100,7 +3083,7 @@ The URL is self-contained. Authentication is a token embedded in the URL itself,
 ></iframe>
 ```
 
-A common pattern is to start a [`tab.run()`](/docs/box/overall/browser/ai-actions) task and render the live view next to it, so users can watch the agent work in real time.
+A common pattern is to render the live view next to your own [`act`/`observe`/`extract`](/docs/box/overall/browser/ai-actions) loop, so users can watch the browser respond in real time.
 
 ## View-only
 
@@ -3119,7 +3102,7 @@ For an interactive version of the same view, open the **Browser** tab on your bo
 # Browser
 Source: https://upstash.com/docs/box/overall/browser/overview
 
-**Every box can come with its own browser.** Create a box with `browser: true` to get a managed, headless Chromium that you control through the SDK. You can open tabs, read pages, take screenshots, extract structured data, run AI agents on the live DOM, record sessions, and connect Playwright directly over CDP.
+**Every box can come with its own browser.** Create a box with `browser: true` to get a managed, headless Chromium that you control through the SDK. You can open tabs, read pages, take screenshots, extract structured data, act on the live DOM with AI, record sessions, and connect Playwright directly over CDP.
 
 Everything works headless. There is no desktop, no VNC, and nothing to install. Chromium is provisioned with the box and boots on first use.
 
@@ -3178,7 +3161,7 @@ print(page.title)
   </Card>
 
   <Card title="AI Actions" href="/box/overall/browser/ai-actions">
-    Natural-language actions and autonomous multi-step tasks on the live DOM.
+    Natural-language actions on the live DOM, and replaying resolved actions with no LLM.
   </Card>
 
   <Card title="Live View" href="/box/overall/browser/live-view">
@@ -3196,10 +3179,12 @@ print(page.title)
 
 <Note>
   The AI-powered operations use an LLM and are metered:
-  [`extract`](/docs/box/overall/browser/reading-pages) and [`observe`, `act`,
-  `run`](/docs/box/overall/browser/ai-actions). They need an API key for the model's
+  [`extract`](/docs/box/overall/browser/reading-pages) and [`observe`,
+  `act`](/docs/box/overall/browser/ai-actions). They need an API key for the model's
   provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
-  your account.
+  your account. The exception is replaying a resolved action with
+  [`act(action)`](/docs/box/overall/browser/ai-actions#replay-an-action-without-an-llm),
+  which uses no LLM and needs no key.
 </Note>
 
 You can also watch and control the browser from the **Browser** tab on your box's page in the [Upstash Console](https://console.upstash.com). It shows the live view, runs AI tasks, and includes the SDK snippet for everything you do there.
@@ -3321,13 +3306,13 @@ const recording = await box.browser.recordings.start({
 })
 
 await tab.goto("https://upstash.com/docs")
-await tab.run("Find the quickstart and summarize it")
+await tab.act("open the quickstart guide")
 
 // Finalize the video and upload it
 const saved = await recording.stop()
 
 console.log(saved.durationMs, saved.playlistUrl)
-console.log(saved.markers) // tab switches and AI run chapters
+console.log(saved.markers) // tab switches
 ```
 
 ```python box.py
@@ -3335,13 +3320,13 @@ console.log(saved.markers) // tab switches and AI run chapters
 recording = box.browser.recordings.start(max_duration_seconds=120)
 
 tab.goto("https://upstash.com/docs")
-tab.run("Find the quickstart and summarize it")
+tab.act("open the quickstart guide")
 
 # Finalize the video and upload it
 saved = recording.stop()
 
 print(saved.duration_ms, saved.playlist_url)
-print(saved.markers)  # tab switches and AI run chapters
+print(saved.markers)  # tab switches
 ```
 </CodeGroup>
 
@@ -3349,7 +3334,7 @@ A recording stops when you call `stop()`, when it reaches `maxDurationSeconds` (
 
 ## Playback
 
-A completed recording is an HLS video. `playlistUrl` points to its playlist, and `markers` holds chapters for tab switches (`tab_switch`) and AI runs (`run`) with their timestamps. A player can use the markers to jump straight to a specific run.
+A completed recording is an HLS video. `playlistUrl` points to its playlist, and `markers` holds chapters for tab switches (`tab_switch`) with their timestamps. A player can use the markers to jump straight to a specific point.
 
 <Note>
   Unlike [live view](/docs/box/overall/browser/live-view) URLs, the playlist URL is
