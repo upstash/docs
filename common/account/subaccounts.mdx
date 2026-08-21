@@ -1,0 +1,192 @@
+---
+title: "Sub-Accounts"
+description: "Create and manage isolated sub-accounts for your platform's end users using the Upstash API."
+---
+
+Sub-accounts allow partners to create isolated tenants under their team. Each sub-account is a separate Upstash environment with its own resources (Redis databases, Vector indices, QStash), its own API key, and optional console access via SSO. Billing for all sub-accounts is consolidated under the parent team.
+
+This feature is designed for partners who integrate Upstash into their platform and need to provision Upstash resources on behalf of their end users.
+
+<Note>
+Sub-accounts are an API-only feature. To get started, contact
+partnerships@upstash.com for enablement and guidance.
+</Note>
+
+## Prerequisites
+
+Before creating sub-accounts, you need:
+
+1. **A team** -- Sub-accounts can only be created under a team, not a personal account. See [Teams and Users](/common/account/teams) to create one.
+2. **A payment method** -- The parent team must have a valid payment method on file. See [Add a Payment Method](/common/account/addapaymentmethod).
+3. **A team API key** -- Generate an API key from the Upstash Console while switched to your team context. See [Developer API](/common/account/developerapi).
+
+All sub-account management endpoints use HTTP Basic authentication with your team email and API key:
+
+```bash
+curl https://api.upstash.com/v2/subaccount \
+  -u 'EMAIL:API_KEY'
+```
+
+Replace `EMAIL` with your account email and `API_KEY` with your team's Developer API key.
+
+## Integration Flow
+
+The typical integration flow is:
+
+1. Create a sub-account for each of your end users
+2. Store the sub-account `customer_id` and `api_key` securely
+3. Use the sub-account API key to create Upstash resources (Redis, Vector, QStash) via the standard Developer API
+4. Optionally, generate SSO tokens to give sub-accounts direct console access
+
+## Create a Sub-Account
+
+**Endpoint:** `POST /v2/subaccount`
+
+Creates a new sub-account under your team. The `slug` is a unique identifier for this sub-account within your team.
+
+```bash
+curl -X POST https://api.upstash.com/v2/subaccount \
+  -u 'EMAIL:API_KEY' \
+  -d '{"slug": "my-customer"}'
+```
+
+**Response:**
+
+```json
+{
+  "customer_id": "sub_<team_uuid>_my-customer",
+  "slug": "my-customer",
+  "api_key": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+}
+```
+
+<Note>
+The `api_key` is returned **only once** at creation time. Store it securely -- there is
+no way to retrieve it later.
+</Note>
+
+**Slug requirements:**
+- Printable ASCII characters only
+- Cannot be empty or start with a space
+- Maximum 50 characters
+- Must be unique within your team
+
+> You can create up to 100 sub-accounts per team. If you need a higher limit,
+> email support@upstash.com.
+
+## List Sub-Accounts
+
+**Endpoint:** `GET /v2/subaccounts`
+
+Returns all active sub-accounts under your team.
+
+```bash
+curl https://api.upstash.com/v2/subaccounts \
+  -u 'EMAIL:API_KEY'
+```
+
+**Response:**
+
+```json
+[
+  {
+    "customer_id": "sub_<team_uuid>_my-customer",
+    "slug": "my-customer"
+  },
+  {
+    "customer_id": "sub_<team_uuid>_another-customer",
+    "slug": "another-customer"
+  }
+]
+```
+
+> The `api_key` is not included in the list response. It is only available at
+> creation time.
+
+## Delete a Sub-Account
+
+**Endpoint:** `DELETE /v2/subaccount/{slug}`
+
+Deletes a sub-account. Before deleting, you must remove all resources owned by the sub-account.
+
+```bash
+curl -X DELETE https://api.upstash.com/v2/subaccount/my-customer \
+  -u 'EMAIL:API_KEY'
+```
+
+**Response:**
+
+```json
+"OK"
+```
+
+<Note>
+All Redis databases, Vector indices, and QStash resources under the sub-account
+must be deleted before the sub-account itself can be deleted. The API will return
+a `400` error if active resources remain.
+</Note>
+
+## Sub-Account SSO
+
+**Endpoint:** `POST /v2/subaccount/sso`
+
+Generates a JWT token that allows a sub-account to access the Upstash Console directly. This endpoint is authenticated with the **sub-account's own credentials**, not the parent team's credentials.
+
+```bash
+curl -X POST https://api.upstash.com/v2/subaccount/sso \
+  -u 'CUSTOMER_ID:SUB_ACCOUNT_API_KEY'
+```
+
+Replace `CUSTOMER_ID` with the sub-account's `customer_id` (starts with `sub_`) and `SUB_ACCOUNT_API_KEY` with the API key returned when the sub-account was created.
+
+**Response:**
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIs..."
+}
+```
+
+The token can be used to access the Upstash Console at:
+
+```
+https://console.upstash.com/login?token=TOKEN
+```
+
+> The SSO token expires after 72 hours.
+
+<Info>
+This endpoint can **only** be called using the sub-account's own API key. The
+parent team's API key will not work for SSO token generation.
+</Info>
+
+## Managing Resources
+
+Once a sub-account is created, you can provision Upstash resources under it by using the sub-account's `customer_id` and `api_key` with the standard [Developer API](/devops/developer-api/introduction) endpoints.
+
+### Create a Redis Database
+
+```bash
+curl -X POST https://api.upstash.com/v2/redis/database \
+  -u 'CUSTOMER_ID:SUB_ACCOUNT_API_KEY' \
+  -d '{"name": "my-redis", "region": "us-east-1", "tls": true}'
+```
+
+### Create a Vector Index
+
+```bash
+curl -X POST https://api.upstash.com/v2/vector/index \
+  -u 'CUSTOMER_ID:SUB_ACCOUNT_API_KEY' \
+  -d '{"name": "my-index", "similarity_function": "COSINE", "dimension": 1536, "region": "us-east-1"}'
+```
+
+Resources created under a sub-account are fully isolated. They are not visible to the parent team or other sub-accounts.
+
+## Important Notes
+
+- **Billing** -- All usage across sub-accounts is billed to the parent team's payment method.
+- **API key security** -- Sub-account API keys are shown only once at creation. Treat them like passwords and store them in a secrets manager.
+- **Isolation** -- Each sub-account is a separate tenant. Resources, credentials, and data are fully isolated between sub-accounts.
+- **Limits** -- Each team can create up to 100 sub-accounts. Contact support@upstash.com to increase this limit.
+- **Deletion order** -- Delete all resources under a sub-account before deleting the sub-account itself.
+- **SSO authentication** -- The SSO endpoint requires the sub-account's own credentials, not the parent team's.
