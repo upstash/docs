@@ -45,10 +45,12 @@ session = box.exec.session(
 )
 
 print(session.pid)        # in-box process id
-code = session.wait(300)  # seconds to wait
+code = session.wait()
 print(code)               # exit code
 ```
 </CodeGroup>
+
+`wait()` blocks until the process exits and returns its exit code. In Python you can pass a timeout in **seconds** to bound the wait, and it raises `TimeoutError` if that elapses. The JavaScript `wait()` takes no timeout, so cap it with your own timer if you need one.
 
 Use `cmd` instead of `argv` when you want a shell, for pipes, globs, or `&&`. It runs through `bash -lc`.
 
@@ -96,7 +98,7 @@ session = box.exec.session(argv=["sort"], on_stdout=chunks.append)
 session.write("banana\napple\n")
 session.end_stdin()  # EOF, so sort can finish
 
-session.wait(30)
+session.wait()
 print(b"".join(chunks).decode())  # "apple\nbanana\n"
 ```
 </CodeGroup>
@@ -175,18 +177,18 @@ session = box.exec.session(
 
 <CodeGroup>
 ```typescript box.ts
-session.terminate(5000) // SIGTERM, then SIGKILL after 5s
+session.terminate(5000) // milliseconds: SIGTERM, then SIGKILL after 5s
 await session.wait()
 ```
 
 ```python box.py
-session.terminate(5000)  # SIGTERM, then SIGKILL after 5s
-session.wait(30)
+session.terminate(5000)  # milliseconds: SIGTERM, then SIGKILL after 5s
+session.wait()
 ```
 </CodeGroup>
 
 <Note>
-  Only the first `terminate` starts the sequence. Later calls are ignored, so the grace period cannot be changed once it is running. Send `KILL` to stop the process immediately instead.
+  Only the first `terminate` starts the sequence. Later calls are ignored, so the grace period cannot be changed once it is running. Use `kill("KILL")` to stop the process immediately instead.
 </Note>
 
 `kill` sends a single signal to the whole process tree, so background children started by the command are signalled too. It defaults to `TERM`, and accepts `TERM`, `KILL`, `INT`, `HUP`, `TSTP`, `QUIT`, `USR1`, and `USR2`.
@@ -213,7 +215,7 @@ A session is a live connection, and the process belongs to it. Closing the handl
   Sessions cannot be reattached. Once the connection is gone the process is gone with it, so a session is the wrong tool for work that must outlive your program. Use [schedules](/box/overall/schedules) or a `keep_alive` box with `box.exec.command` for that.
 </Warning>
 
-Both SDKs expose this as a context manager, which stops the process on the way out even if your code raises.
+Always stop the session on your way out, including when your code raises. In Python the handle is a context manager. In JavaScript, close it in a `finally` block.
 
 <CodeGroup>
 ```typescript box.ts
@@ -277,7 +279,7 @@ for expr in ["import math", "math.factorial(10)", "sum(range(100))"]:
     time.sleep(0.2)
 
 repl.end_stdin()
-repl.wait(30)
+repl.wait()
 print(b"".join(chunks).decode())
 ```
 </CodeGroup>
@@ -327,7 +329,7 @@ while "Select a framework" not in out and time.monotonic() < deadline:
     time.sleep(0.1)
 session.write("\n")  # accept the default
 
-session.wait(300)
+session.wait()
 ```
 </CodeGroup>
 
@@ -339,7 +341,8 @@ session.wait(300)
 ```typescript box.ts
 const build = await box.exec.session({ argv: ["npm", "run", "build"] })
 
-const timer = setTimeout(() => build.terminate(5000), 60000)
+// wait() has no timeout in JS, so cap the build with a timer.
+const timer = setTimeout(() => build.terminate(5000), 60000) // ms
 const code = await build.wait()
 clearTimeout(timer)
 
@@ -350,10 +353,10 @@ console.log(code === 0 ? "built" : `stopped with ${code}`)
 build = box.exec.session(argv=["npm", "run", "build"])
 
 try:
-    code = build.wait(60)
+    code = build.wait(60)  # seconds
 except TimeoutError:
-    build.terminate(5000)
-    code = build.wait(30)
+    build.terminate(5000)  # milliseconds
+    code = build.wait()
 
 print("built" if code == 0 else f"stopped with {code}")
 ```
