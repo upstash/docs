@@ -1,0 +1,192 @@
+---
+title: "AROP"
+description: "Aggregate array values in an index range."
+---
+
+Use `AROP` to reduce the values in an index range to a single number, on the server.
+
+`SUM`, `MIN`, and `MAX` treat the values as numbers; `AND`, `OR`, and `XOR` fold them together as 64-bit integers, with fractional values truncated. All six ignore values that cannot be parsed as a number, and reply with null when the range contains nothing they could use, which distinguishes "no data" from a real result of `0`. `USED` counts the occupied slots in the range and `MATCH` counts the slots whose value equals a given string; both always reply with an integer.
+
+Running the reduction where the data lives keeps a range scan off the wire, which is the point when the array is a window of samples and you only need its total, extremes, or population.
+
+See the [array command overview](/redis/commands/array/overview) for the data model these commands share.
+
+## Syntax
+
+```redis
+AROP <key> <start> <end> <SUM | MIN | MAX | AND | OR | XOR | USED | MATCH <value>>
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Array key targeted by the command. |
+| `<start>` | Yes | No | First index of the range, inclusive. |
+| `<end>` | Yes | No | Last index of the range, inclusive. |
+| `SUM` | No | No | Sum of the numeric values in the range. |
+| `MIN` | No | No | Smallest numeric value in the range. |
+| `MAX` | No | No | Largest numeric value in the range. |
+| `AND` | No | No | Bitwise AND of the values in the range, as 64-bit integers. |
+| `OR` | No | No | Bitwise OR of the values in the range, as 64-bit integers. |
+| `XOR` | No | No | Bitwise XOR of the values in the range, as 64-bit integers. |
+| `USED` | No | No | Number of occupied slots in the range. |
+| `MATCH <value>` | No | No | Number of slots in the range whose value equals `<value>`. |
+
+## Important points
+
+- Exactly one operation must be given.
+- Values that are not numbers are skipped by `SUM`, `MIN`, `MAX`, `AND`, `OR`, and `XOR`, and counted normally by `USED` and `MATCH`.
+- `SUM`, `MIN`, `MAX`, `AND`, `OR`, and `XOR` reply with null when no value in the range could be used. `USED` and `MATCH` reply with `0`.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Bulk string for `SUM`, `MIN`, and `MAX`; Integer for `AND`, `OR`, `XOR`, `USED`, and `MATCH`; Null bulk string when there is nothing to aggregate |
+| RESP3 | Bulk string for `SUM`, `MIN`, and `MAX`; Integer for `AND`, `OR`, `XOR`, `USED`, and `MATCH`; Null when there is nothing to aggregate |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+AROP my-array 0 999 SUM
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.arop("my-array", 0, 999, "SUM");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.arOp("my-array", 0, 999, "SUM");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+from redis.commands.core import ArrayAggregateOperations
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.arop("my-array", 0, 999, ArrayAggregateOperations.SUM)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.AROpSum(context.Background(), "my-array", 0, 999).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.args.ArrayAggregate;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.aropAggregate("my-array", 0, 999, ArrayAggregate.SUM);
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("AROP");
+    command.arg("my-array");
+    command.arg("0");
+    command.arg("999");
+    command.arg("SUM");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
