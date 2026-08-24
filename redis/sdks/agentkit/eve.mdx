@@ -18,8 +18,9 @@ Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work to
 Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
 Box sandbox, or control over an individual tool file.
 
-Start from an eve project (0.25.2 or later). Scaffold one, which installs `eve` and an AI-SDK provider
-for you:
+Start from an eve project (**0.43.0 or later** — the published extension is prebuilt, and its
+compatibility manifest requires eve ≥ 0.43's contribution formats). Scaffold one, which installs `eve`
+and an AI-SDK provider for you:
 
 ```bash
 npx eve@latest init my-agent
