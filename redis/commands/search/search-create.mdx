@@ -3,9 +3,13 @@ title: "SEARCH.CREATE"
 description: "Create a search index."
 ---
 
-Use `SEARCH.CREATE` to create a search index over JSON, hash, or string values.
+Use `SEARCH.CREATE` to create a search index over JSON, hash, or string values, or over a stream.
 
 `ON` names the type of key to index and `PREFIX` the key prefixes to watch, so the index covers exactly the keys that match both, including keys written after it was created. The `SCHEMA` then declares which fields are searchable and how: `TEXT` fields are analyzed for full-text search, with `NOSTEM` and `NOTOKENIZE` to turn parts of that off, numeric, boolean, and date fields are matched exactly and can be marked `FAST` to make them usable for sorting and scoring, and `KEYWORD` and `FACET` fields are kept whole for exact matching and faceting. `FROM` maps a schema field to a differently named field in the document.
+
+`ON STREAM` indexes a single stream instead of a set of keys, so it takes the stream key in place of `PREFIX`. Each entry added with [`XADD`](/redis/commands/streams/xadd) becomes a document whose fields are the entry's fields and whose ID is the entry ID, which is what makes a stream searchable by content rather than only by ID range. Entries removed from the stream leave the index as well.
+
+A `KEYWORD` or `TEXT` field whose value is a JSON array of values is indexed as several values rather than as one string. A document matches when any element matches, so a tags field or a list of descriptions needs no separate key per value. `HIGHLIGHT` follows the same shape: the reply keeps the array, with the matching elements marked up and the others, including any non-string elements, left as they are.
 
 Creating an index starts an initial scan of the matching keys, which `SKIPINITIALSCAN` skips when you only want to index data written from now on; [`SEARCH.REINDEX`](/redis/commands/search/search-reindex) can run that scan later. `EXISTSOK` makes the command succeed instead of failing when the index already exists.
 
@@ -18,8 +22,9 @@ See [Index Management](/redis/search/index-management#creating-an-index) for a f
 ## Syntax
 
 ```redis
-SEARCH.CREATE <name> ON <JSON|HASH|STRING>
-  PREFIX <count> <prefix> [<prefix> ...]
+SEARCH.CREATE <name>
+  ON <JSON|HASH|STRING> PREFIX <count> <prefix> [<prefix> ...]
+  | ON STREAM <stream-key>
   [LANGUAGE <language>]
   [SKIPINITIALSCAN]
   [EXISTSOK]
@@ -34,8 +39,9 @@ SEARCH.CREATE <name> ON <JSON|HASH|STRING>
 
 | Argument | Description |
 | --- | --- |
-| `ON` | Type of Redis value to index: `JSON`, `HASH`, or `STRING`. A `STRING` value must contain a JSON object. |
-| `PREFIX` | One or more key prefixes. Prefixes in the same index cannot be duplicates or overlap one another. |
+| `ON` | Type of Redis value to index: `JSON`, `HASH`, `STRING`, or `STREAM`. A `STRING` value must contain a JSON object. |
+| `PREFIX` | One or more key prefixes. Prefixes in the same index cannot be duplicates or overlap one another. Not allowed with `ON STREAM`. |
+| `<stream-key>` | Key of the stream to index. Required with `ON STREAM`, and given in place of `PREFIX`. |
 | `LANGUAGE` | Stemming language for `TEXT` fields. Defaults to `english`. Supported values are `arabic`, `danish`, `dutch`, `english`, `finnish`, `french`, `german`, `greek`, `hungarian`, `italian`, `norwegian`, `portuguese`, `romanian`, `russian`, `spanish`, `swedish`, `tamil`, and `turkish`. |
 | `SKIPINITIALSCAN` | Create the index without scanning existing keys. Later writes are still indexed; use [`SEARCH.REINDEX`](/redis/commands/search/search-reindex) to add the current matching data. |
 | `EXISTSOK` | Return `0` when an index with the same data type, prefixes, and schema already exists. A configuration mismatch returns an error. |
@@ -50,6 +56,8 @@ SEARCH.CREATE <name> ON <JSON|HASH|STRING>
 | `NOTOKENIZE` | `TEXT` | Index the entire value as one token. |
 | `FROM <source_field>` | All field types | Read the value from a different document field or nested dot path while exposing it under `<field>` in the index. |
 
+`KEYWORD` and `TEXT` fields accept multiple values: a field whose value is a JSON array is indexed element by element, and a document matches when any element matches.
+
 ## Response
 
 Returns `1` when the index is created. With `EXISTSOK`, returns `0` if the existing index has the same data type, prefixes, and schema. Returns an error for a different configuration or when `<name>` is already used by a non-index Redis key.
@@ -62,6 +70,9 @@ Returns `1` when the index is created. With `EXISTSOK`, returns `0` if the exist
 
 ```bash
 SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST inStock BOOL
+
+# Index a stream instead of a set of keys
+SEARCH.CREATE events ON STREAM stream:events SCHEMA message TEXT level KEYWORD
 ```
 
 </Accordion>
