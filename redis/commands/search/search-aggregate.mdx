@@ -9,6 +9,10 @@ The command takes two JSON arguments. The first is a filter, in the same languag
 
 Metric operators like `$avg`, `$sum`, `$min`, `$max`, `$stats`, and `$cardinality` reduce the selected documents to a single number, while bucket operators like `$terms`, `$range`, `$histogram`, and `$dateHistogram` group them and report a count per bucket. Bucket operators accept nested `$aggs`, so you can compute a metric inside each bucket, for example the average price per category, and several aggregations can be requested in one call since they all run over the same selected document set.
 
+`$composite` buckets by several sources at once, producing one bucket per combination of their values, and pages through the result instead of returning it whole. Each entry in `sources` names a source and gives it a `$terms`, `$histogram`, or `$dateHistogram` definition over a `FAST` field. `size` sets the page size, defaulting to `10`, and the reply carries an `afterKey`; passing that value back as `after` returns the next page. This is how you enumerate a large cross-product of buckets, which `$terms` alone cannot do because it returns only its top terms.
+
+By default `$sum` reports `0` for a bucket that matched no documents, matching Elasticsearch. Setting `"nullIfNoMatch": true` makes it report `null` instead, which separates "nothing matched" from a total that genuinely came to zero. It only affects empty buckets; a sum over matching documents is unchanged.
+
 See [Aggregations](/redis/search/aggregations) for the full operator reference and examples.
 
 ## Syntax
@@ -32,6 +36,25 @@ In `redis-cli --json`, the response is an object keyed by aggregation alias:
 
 Raw RESP output may be rendered differently by client or protocol settings, but each top-level alias maps to its aggregation result. Returns `null` if the index does not exist.
 
+A `$composite` aggregation replies with its buckets and the cursor to resume from:
+
+```json
+{
+  "by_cat_and_price": {
+    "buckets": [
+      { "key": { "by_cat": "books", "by_price": 20 }, "docCount": 1 }
+    ],
+    "afterKey": { "by_cat": "str:books", "by_price": "f64:20" }
+  }
+}
+```
+
+Pass the `afterKey` object back verbatim as the aggregation's `after` option to get the next page.
+
+<Note>
+  A boolean `false` in an aggregation result is encoded as `0` under RESP2 and over the REST API, and as a boolean under RESP3. Earlier versions encoded it as null under RESP2.
+</Note>
+
 ## Examples
 
 <AccordionGroup>
@@ -40,6 +63,9 @@ Raw RESP output may be rendered differently by client or protocol settings, but 
 
 ```bash
 SEARCH.AGGREGATE products '{}' '{"avg_price": {"$avg": {"field": "price"}}}'
+
+# Page through every category and price bucket combination
+SEARCH.AGGREGATE products '{}' '{"by_cat_and_price": {"$composite": {"size": 100, "sources": [{"by_cat": {"$terms": {"field": "category"}}}, {"by_price": {"$histogram": {"field": "price", "interval": 10}}}]}}}'
 ```
 
 </Accordion>
