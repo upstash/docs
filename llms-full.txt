@@ -84407,22 +84407,26 @@ SEARCH.COUNT products '{"inStock": true, "price": {"$lt": 100}}'
 # Document Updates
 Source: https://upstash.com/docs/redis/search/document-updates
 
-Documents in a search index are regular Redis keys.
+For JSON, hash, and string indexes, documents are regular Redis keys. For a stream index, each stream
+entry is a separate document.
 
-When a key matches an index prefix, it is indexed automatically. When the key changes, the index is updated automatically.
+Keys matching an index prefix and entries in an indexed stream are indexed automatically. When the
+indexed data changes, the index is updated automatically.
 
 <Note>
 There is no separate update command for search. Use regular Redis write commands to change your data.
 </Note>
 
-Any command that modifies a matching key updates the index. For example, this includes commands such as:
+Any command that modifies indexed document data updates the index. For example, this includes commands such as:
 
 * JSON commands such as `JSON.SET`, `JSON.MERGE`, ...
 * Hash commands such as `HSET`, `HINCRBY`, ...
 * String commands such as `SET`, `SETEX`, ...
+* Stream commands such as `XADD`, `XDEL`, `XTRIM`, ...
 * Generic commands such as `DEL`, `EXPIRE`, `PEXPIRE`, ...
 
-This is not an exhaustive list. The rule is that if the command changes a key tracked by the index, the index is updated.
+This is not an exhaustive list. The rule is that if a command changes data represented by an indexed
+document, the index is updated.
 
 Index updates are batched for performance, so recent writes may not immediately appear in search results.
 Use [`SEARCH.WAITINDEXING`](/docs/redis/commands/search/search-waitindexing) when you need to ensure queries reflect recent changes.
@@ -84572,9 +84576,30 @@ SEARCH.QUERY notes '{"status":"done"}'
 
 </Tabs>
 
+## Stream Entries
+
+For a stream index, `XADD` adds one document whose ID is the stream entry ID. Commands that remove
+entries, including `XDEL` and `XTRIM`, remove the corresponding documents from the index.
+
+```bash
+SEARCH.CREATE event-search ON STREAM events SCHEMA message TEXT severity U64 FAST
+
+XADD events 1-0 message "Payment authorization failed" severity 4
+
+SEARCH.WAITINDEXING event-search
+SEARCH.QUERY event-search '{"message":"authorization"}'
+```
+
+Deleting or expiring the entire stream clears its documents but keeps the index definition. New
+entries are indexed if the stream is later recreated under the same key.
+
+See [Searching Streams](/docs/redis/search/streams) for stream-specific schema rules and operational
+constraints.
+
 ## Deletes
 
-Deleting a matching key removes the document from the index.
+Deleting a matching key removes the document from a JSON, hash, or string index. Deleting a stream
+removes all of that stream's entry documents from its stream index.
 
 <Tabs>
 
@@ -84836,19 +84861,19 @@ Source: https://upstash.com/docs/redis/search/index-management
 
 An index is a data structure that enables **fast full-text search and filtering across your Redis data**. Without an index, searching requires scanning every key in your database: an operation that becomes very slow as your data grows.
 
-When you create a search index, Upstash Redis builds an optimized lookup structure for the schema you specify. This allows queries to find matching documents in milliseconds, regardless of dataset size. The index automatically stays in sync with your data: any keys matching the index prefix are indexed when created, updated when modified, and removed from the index when deleted.
+When you create a search index, Upstash Redis builds an optimized lookup structure for the schema you specify. This allows queries to find matching documents in milliseconds, regardless of dataset size. The index automatically stays in sync with your data: keys matching an index prefix and entries in an indexed stream are added and removed as the underlying data changes.
 
 You define an index once by specifying:
 
 * A **name** to identify the index
-* A **prefix** pattern to determine which keys to track (e.g., `user:`)
+* One or more **prefixes** that determine which keys to track, or the exact key of a stream
 * A **schema** describing which fields to index and their types
 
 ***
 
 ### Creating an Index
 
-The [`SEARCH.CREATE`](/docs/redis/commands/search/search-create) command creates an index identified by a name, which must be a unique key in Redis. Each index works with a single key type (JSON, hash, or string).
+The [`SEARCH.CREATE`](/docs/redis/commands/search/search-create) command creates an index identified by a name, which must be a unique key in Redis. Each index works with a single data type: JSON, hash, string, or stream.
 
 <Tabs>
 
@@ -84911,6 +84936,10 @@ SEARCH.CREATE users on JSON PREFIX 1 user: SCHEMA name TEXT email TEXT age u64
 
 * For **string** indices, indexed keys must be valid JSON strings. A field on any nesting level
   can be indexed, similar to JSON indices.
+
+* For **stream** indices, each entry in one exact stream is a separate document. Stream fields are
+  flat, and query results use the entry ID as the document ID. See
+  [Searching Streams](/docs/redis/search/streams) for setup, schema conversion, and lifecycle behavior.
 
 <Tabs>
 
@@ -85023,10 +85052,11 @@ SEARCH.CREATE comments ON STRING PREFIX 1 comment: SCHEMA user.name TEXT user.em
 
 </Tabs>
 
-By default, when an index is created, all existing keys matching the specified type and prefixes are scanned and indexed.
+By default, creating an index scans and indexes all existing keys matching its type and prefixes, or
+all existing entries in its bound stream.
 Use `SKIPINITIALSCAN` to defer indexing, which is useful for large datasets where you want to start fresh or handle
 existing data differently. Run [`SEARCH.REINDEX`](/docs/redis/commands/search/search-reindex) later to rebuild the index from
-the current matching keys.
+the current matching keys or stream entries.
 
 <Tabs>
 
@@ -85286,21 +85316,21 @@ On response, the following information is returned:
 | Field      | Description                              |
 | ---------- | ---------------------------------------- |
 | `name`     | Index name                               |
-| `type`     | Data type (`STRING`, `HASH`, or `JSON`)  |
-| `prefixes` | List of tracked key prefixes             |
+| `type`     | Data type (`STRING`, `HASH`, `JSON`, or `STREAM`) |
+| `prefixes` | Tracked key prefixes, or the bound key for a stream index |
 | `language` | Stemming language                        |
 | `schema`   | Field definitions with types and options |
 
 ### Listing Indexes
 
-[`SEARCH.LISTINDEXES`](/docs/redis/commands/search/search-listindexes) lists all search indexes in the database, reporting each index's `name` and backing `type` (`HASH` or `JSON`). Optionally filter names with `MATCH` and paginate with `LIMIT` and `OFFSET`.
+[`SEARCH.LISTINDEXES`](/docs/redis/commands/search/search-listindexes) lists all search indexes in the database, reporting each index's `name` and backing `type` (`HASH`, `JSON`, `STRING`, or `STREAM`). Optionally filter names with `MATCH` and paginate with `LIMIT` and `OFFSET`.
 
 <Tabs>
 
 <Tab title="Redis CLI">
 ```bash
 SEARCH.LISTINDEXES
-# Returns: [["name", "productIdx", "type", "HASH"], ["name", "blogIdx", "type", "JSON"]]
+# Returns: [["name", "productIdx", "type", "HASH"], ["name", "eventIdx", "type", "STREAM"]]
 
 SEARCH.LISTINDEXES MATCH 'product*' LIMIT 10 OFFSET 0
 ```
@@ -85419,7 +85449,7 @@ Upstash Redis Search is our first extension beyond the official Redis spec. Usin
 
 <img />
 
-* **Easy Integration**: Works with JSON, Hashes and Strings out of the box
+* **Easy Integration**: Works with JSON, hashes, strings, and streams out of the box
 * **Auto-Synchronization**: Once you created an index, all write operations are automatically tracked
 * **Intuitive Query Language**: A type-safe JSON-based query syntax with boolean operators, fuzzy matching, phrase queries,
   regex support, and more.
@@ -85448,6 +85478,13 @@ Upstash Redis Search is our first extension beyond the official Redis spec. Usin
     href="/redis/search/querying"
   >
     Learn the JSON-based query language with filters and operators
+  </Card>
+  <Card
+    title="Searching Streams"
+    icon="water"
+    href="/redis/search/streams"
+  >
+    Search individual stream entries by their field values
   </Card>
   <Card
     title="Recipes"
@@ -87178,7 +87215,9 @@ SEARCH.QUERY products '{"inStock": true}' ORDERBY rating DESC LIMIT 5
 By default, search results include document key, relevance score, and the contents of the document
 (including the non-indexed fields).
 
-For JSON and string indexes, that means the stored JSON objects as whole. For hash indexes, it means all fields and values.
+For JSON and string indexes, that means the stored JSON objects as a whole. For hash indexes, it
+means all fields and values. For stream indexes, the document key is the stream entry ID and the
+content contains that entry's field-value pairs.
 
 <Tabs>
 
@@ -87978,6 +88017,120 @@ SEARCH.CREATE users ON JSON PREFIX 1 users: SCHEMA username TEXT NOTOKENIZE prof
 </Tab>
 
 </Tabs>
+
+# Searching Streams
+Source: https://upstash.com/docs/redis/search/streams
+
+Upstash Redis Search can index the entries of a Redis stream. Each stream entry becomes a separate
+search document, so you can search event fields without scanning the stream or knowing an entry ID.
+
+## How stream indexes work
+
+A stream index differs from a JSON, hash, or string index in two ways:
+
+* It is bound to one exact stream key instead of one or more key prefixes.
+* Each stream entry is a document. The document ID returned by Search is the stream entry ID.
+
+The fields added with [`XADD`](/docs/redis/commands/streams/xadd) provide the document fields. Stream
+payloads are flat field-value pairs, so schema fields refer to stream fields rather than nested paths.
+
+<Note>
+The stream does not need to exist when you create the index. Entries added later are indexed
+automatically.
+</Note>
+
+## Create a stream index
+
+Use `ON STREAM` followed by the exact stream key. `PREFIX` is not supported for stream indexes.
+
+```bash
+SEARCH.CREATE event-search ON STREAM events SCHEMA message TEXT service KEYWORD severity U64 FAST occurredAt DATE FAST
+```
+
+Only one search index can be bound to a stream at a time. To bind the stream to a different index,
+first drop the existing index with [`SEARCH.DROP`](/docs/redis/commands/search/search-drop).
+
+## Add and search entries
+
+Add entries with regular stream commands. The field names do not need to appear in the schema, but
+only schema fields are searchable.
+
+```bash
+XADD events 1-0 message "Payment authorization failed" service checkout severity 4 occurredAt 2026-08-24T09:30:00Z
+XADD events 2-0 message "Order completed" service checkout severity 1 occurredAt 2026-08-24T09:31:00Z
+
+SEARCH.WAITINDEXING event-search
+
+SEARCH.QUERY event-search '{"message":"authorization","severity":{"$gte":3}}' SELECT 3 message service severity
+```
+
+The matching result has `1-0` as its document ID. Without `NOCONTENT`, its content is returned as the
+stream entry's field-value pairs. All regular query features, including filtering, highlighting,
+sorting, pagination, and score functions, use the fields declared in the schema.
+
+<Note>
+Index updates are asynchronous. Use
+[`SEARCH.WAITINDEXING`](/docs/redis/commands/search/search-waitindexing) when a query must include preceding
+writes, especially in tests and setup scripts.
+</Note>
+
+## Schema values
+
+Redis stores stream field values as strings. Search converts each value according to its schema type:
+
+* `U64`, `I64`, and `F64` fields require values in the corresponding numeric format.
+* `BOOL` fields accept `true` or `false`.
+* `DATE` fields require an RFC 3339 timestamp, such as `2026-08-24T09:30:00Z`.
+* `TEXT`, `KEYWORD`, and `FACET` fields use string values.
+
+Missing fields and values that cannot be converted are omitted from the indexed document. If an entry
+has no valid schema fields, it is not added to the index.
+
+You can use `FROM` to expose a stream field under a different index field name:
+
+```bash
+SEARCH.CREATE event-search ON STREAM events SCHEMA description TEXT FROM message severity U64 FAST
+```
+
+Queries use the schema name (`description`), while `SELECT` and returned content use the original
+stream field name (`message`).
+
+## Existing entries and reindexing
+
+Creating an index scans entries already present in the stream. Use `SKIPINITIALSCAN` to index only new
+entries at first:
+
+```bash
+SEARCH.CREATE event-search SKIPINITIALSCAN ON STREAM events SCHEMA message TEXT severity U64 FAST
+```
+
+Run [`SEARCH.REINDEX`](/docs/redis/commands/search/search-reindex) later to rebuild the index from all
+entries currently in the stream.
+
+## Entry deletion and trimming
+
+The index follows the contents of the stream:
+
+| Stream change | Search index change |
+| --- | --- |
+| `XADD` | Adds a document for the new entry. Entries removed by an `XADD` trim are removed too. |
+| `XDEL`, `XDELEX`, or `XACKDEL` | Removes the documents for deleted entries. |
+| `XTRIM` | Removes the documents for trimmed entries. |
+| `DEL`, `UNLINK`, or expiration of the stream key | Removes all documents but keeps the index definition. |
+
+If a deleted or expired stream is recreated under the same key, new entries are added to the existing
+index. Consumer-group operations that do not change entry data, such as `XACK`, do not change the
+index.
+
+<Warning>
+`RENAME`, `RENAMENX`, and `COPY` are not supported for stream keys.
+</Warning>
+
+## Next steps
+
+* See [Schema Definition](/docs/redis/search/schema-definition) for field types and options.
+* See [Querying and filtering](/docs/redis/search/querying) for the JSON query syntax.
+* See [Aggregations](/docs/redis/search/aggregations) to group and summarize stream entries.
 
 # Troubleshooting
 Source: https://upstash.com/docs/redis/search/troubleshooting

@@ -1,0 +1,115 @@
+---
+title: Searching Streams
+description: Index and search individual Redis stream entries.
+---
+
+Upstash Redis Search can index the entries of a Redis stream. Each stream entry becomes a separate
+search document, so you can search event fields without scanning the stream or knowing an entry ID.
+
+## How stream indexes work
+
+A stream index differs from a JSON, hash, or string index in two ways:
+
+- It is bound to one exact stream key instead of one or more key prefixes.
+- Each stream entry is a document. The document ID returned by Search is the stream entry ID.
+
+The fields added with [`XADD`](/redis/commands/streams/xadd) provide the document fields. Stream
+payloads are flat field-value pairs, so schema fields refer to stream fields rather than nested paths.
+
+<Note>
+The stream does not need to exist when you create the index. Entries added later are indexed
+automatically.
+</Note>
+
+## Create a stream index
+
+Use `ON STREAM` followed by the exact stream key. `PREFIX` is not supported for stream indexes.
+
+```bash
+SEARCH.CREATE event-search ON STREAM events SCHEMA message TEXT service KEYWORD severity U64 FAST occurredAt DATE FAST
+```
+
+Only one search index can be bound to a stream at a time. To bind the stream to a different index,
+first drop the existing index with [`SEARCH.DROP`](/redis/commands/search/search-drop).
+
+## Add and search entries
+
+Add entries with regular stream commands. The field names do not need to appear in the schema, but
+only schema fields are searchable.
+
+```bash
+XADD events 1-0 message "Payment authorization failed" service checkout severity 4 occurredAt 2026-08-24T09:30:00Z
+XADD events 2-0 message "Order completed" service checkout severity 1 occurredAt 2026-08-24T09:31:00Z
+
+SEARCH.WAITINDEXING event-search
+
+SEARCH.QUERY event-search '{"message":"authorization","severity":{"$gte":3}}' SELECT 3 message service severity
+```
+
+The matching result has `1-0` as its document ID. Without `NOCONTENT`, its content is returned as the
+stream entry's field-value pairs. All regular query features, including filtering, highlighting,
+sorting, pagination, and score functions, use the fields declared in the schema.
+
+<Note>
+Index updates are asynchronous. Use
+[`SEARCH.WAITINDEXING`](/redis/commands/search/search-waitindexing) when a query must include preceding
+writes, especially in tests and setup scripts.
+</Note>
+
+## Schema values
+
+Redis stores stream field values as strings. Search converts each value according to its schema type:
+
+- `U64`, `I64`, and `F64` fields require values in the corresponding numeric format.
+- `BOOL` fields accept `true` or `false`.
+- `DATE` fields require an RFC 3339 timestamp, such as `2026-08-24T09:30:00Z`.
+- `TEXT`, `KEYWORD`, and `FACET` fields use string values.
+
+Missing fields and values that cannot be converted are omitted from the indexed document. If an entry
+has no valid schema fields, it is not added to the index.
+
+You can use `FROM` to expose a stream field under a different index field name:
+
+```bash
+SEARCH.CREATE event-search ON STREAM events SCHEMA description TEXT FROM message severity U64 FAST
+```
+
+Queries use the schema name (`description`), while `SELECT` and returned content use the original
+stream field name (`message`).
+
+## Existing entries and reindexing
+
+Creating an index scans entries already present in the stream. Use `SKIPINITIALSCAN` to index only new
+entries at first:
+
+```bash
+SEARCH.CREATE event-search SKIPINITIALSCAN ON STREAM events SCHEMA message TEXT severity U64 FAST
+```
+
+Run [`SEARCH.REINDEX`](/redis/commands/search/search-reindex) later to rebuild the index from all
+entries currently in the stream.
+
+## Entry deletion and trimming
+
+The index follows the contents of the stream:
+
+| Stream change | Search index change |
+| --- | --- |
+| `XADD` | Adds a document for the new entry. Entries removed by an `XADD` trim are removed too. |
+| `XDEL`, `XDELEX`, or `XACKDEL` | Removes the documents for deleted entries. |
+| `XTRIM` | Removes the documents for trimmed entries. |
+| `DEL`, `UNLINK`, or expiration of the stream key | Removes all documents but keeps the index definition. |
+
+If a deleted or expired stream is recreated under the same key, new entries are added to the existing
+index. Consumer-group operations that do not change entry data, such as `XACK`, do not change the
+index.
+
+<Warning>
+`RENAME`, `RENAMENX`, and `COPY` are not supported for stream keys.
+</Warning>
+
+## Next steps
+
+- See [Schema Definition](/redis/search/schema-definition) for field types and options.
+- See [Querying and filtering](/redis/search/querying) for the JSON query syntax.
+- See [Aggregations](/redis/search/aggregations) to group and summarize stream entries.
