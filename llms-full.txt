@@ -2349,6 +2349,29 @@ box = Box.create(
 </CodeGroup>
 
 </Tab>
+<Tab title="OpenCode">
+
+Get your API key from [OpenCode](https://opencode.ai).
+
+```bash title=".env" {2}
+UPSTASH_BOX_API_KEY=abx_xxxxxxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
+```
+
+```tsx {5-8}
+import { Box, Agent, OpenCodeModel } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    provider: Agent.OpenCode,
+    model: OpenCodeModel.Claude_Sonnet_4_5,
+    apiKey: process.env.ANTHROPIC_API_KEY!,
+  },
+})
+```
+
+</Tab>
 </Tabs>
 
 ### Agent Options
@@ -8502,24 +8525,40 @@ Check out [our blog post](https://upstash.com/blog/global-database) to learn mor
 # Scale to Zero
 Source: https://upstash.com/docs/common/concepts/scale-to-zero
 
-Traditionally, cloud services required users to predict their resource needs and provision servers or instances based on those predictions. This often led to over-provisioning to handle potential peak loads, resulting in paying for unused resources during periods of low demand.
+Traditionally, cloud services required users to predict their resource needs and provision servers based on those predictions. This often led to over-provisioning for potential peak loads and paying for unused resources during periods of low demand.
 
-By _scaling to zero_, our pricing model aligns more closely with actual usage.
+Upstash solves this with two pricing models:
+
+* **Pay-as-you-go** databases _scale to zero_: you're billed per command, and an idle database costs $0.
+* **Fixed plans** offer a flat monthly price with unlimited commands for sustained, high-throughput workloads.
+
+Both run on the same high-performance production infrastructure.
 
 ## Pay for usage
 
-You're only charged for the resources you actively use. When your application experiences low activity or no incoming requests, the system automatically scales down resources to a minimal level. This means you're no longer paying for idle capacity, resulting in cost savings.
+On pay-as-you-go, you're only charged for the commands you run ($0.20 per 100K commands). When your application has little or no traffic, you pay little or nothing.
 
-<img />
+This is ideal for:
 
-## Flexibility
-"Scaling to zero" offers flexibility in scaling both up and down. As your application experiences traffic spikes, the system scales up resources to meet demand. Conversely, during quiet periods, resources scale down.
+* Small teams and side projects that don't want a fixed monthly bill
+* Spiky traffic, where provisioning for peak would mean paying for idle capacity most of the time
+* Prototypes and internal tools with low or intermittent usage
 
-## Focus on Innovation
+## Fixed plans for high throughput
 
-Developers can concentrate on building and improving the application without constantly worrying about resource optimization. Upstash handles the scaling, allowing developers to focus on creating features that enhance user experiences.
+Once your traffic is sustained, per-command billing may no longer be the best fit. Fixed plans start at $10/month and offer:
 
-In essence, this aligns pricing with actual utilization, increases cost efficiency, and promotes a more sustainable approach to resource consumption. This model empowers businesses to leverage cloud resources without incurring unnecessary expenses, making cloud computing more accessible and attractive to a broader range of organizations.
+* **Unlimited commands** at a flat monthly price, so costs stay predictable no matter how much traffic you serve
+* **Higher throughput limits**: up to 16,000 commands per second on larger fixed plans, and 100K+ commands per second with dedicated resources on Enterprise
+* **Graceful behavior under load**: requests beyond your plan's throughput limit are briefly queued instead of rejected, so traffic spikes don't turn into errors
+
+See [Redis pricing](https://upstash.com/pricing/redis) for the full plan comparison, or a [live throughput benchmark](https://upstash.com/blog/upstash-vs-aws-elasticache-serverless-redis-pricing-and-performance-2026) sustaining 16,000+ commands per second on a fixed plan.
+
+## Scale up, not just down
+
+Because scaling is automatic in both directions, you never manage capacity yourself. During traffic spikes, Upstash scales up to meet demand; during quiet periods, resources (and your bill, on pay-as-you-go) scale back down.
+
+You can start on the free tier, move to pay-as-you-go as you grow, and switch to a fixed plan once sustained throughput makes a flat price the cheaper, more predictable option.
 
 # Serverless
 Source: https://upstash.com/docs/common/concepts/serverless
@@ -71923,6 +71962,88 @@ await db.$cache?.invalidate({ tags: ["custom_key"] })
 
 For more details on this integration, refer to the [Drizzle ORM caching documentation](https://cache.drizzle-orm-fe.pages.dev/docs/cache).
 
+# effect-mq with Upstash Redis
+Source: https://upstash.com/docs/redis/integrations/effect-mq
+
+You can use [effect-mq](https://www.effect-mq.com) with Upstash Redis. effect-mq is a background job library for [Effect](https://effect.website): you define a job once with a schema-typed payload, enqueue it from anywhere, and run it in a worker. Its Redis store (`effect-mq/redis`) keeps every operation atomic with a single Lua script, so you can use Upstash Redis as its storage.
+
+## Install
+
+```bash
+npm install effect-mq effect@4.0.0-rc @effect/platform-node redis
+```
+
+`effect-mq` targets Effect v4. The Redis store does not bundle a client; on Node.js it uses `node-redis` through `@effect/platform-node`. On Bun, install `@effect/platform-bun` instead and use `BunRedis` (no extra client needed).
+
+## Usage
+
+Create the Redis store layer with your Upstash connection string. The URL must start with `rediss://` since Upstash requires TLS:
+
+```typescript
+import { RedisJobStore } from "effect-mq/redis"
+import { NodeRedis } from "@effect/platform-node"
+import { Layer } from "effect"
+
+const StoreLive = RedisJobStore.layer({
+  prefix: "myapp-jobs", // key namespace (default "effect-mq")
+  historyTtl: "7 days"  // optional retention ceiling for finished jobs
+}).pipe(
+  Layer.provide(
+    NodeRedis.layer({
+      url: "rediss://default:UPSTASH_REDIS_PASSWORD@UPSTASH_REDIS_ENDPOINT:6379"
+    })
+  )
+)
+```
+
+Define a job, enqueue it, and run a worker:
+
+```typescript
+import { Job, Worker } from "effect-mq"
+import { Effect, Layer, Schema } from "effect"
+
+// Define the job once; producers and workers share this definition
+class SendEmail extends Job.make("SendEmail", {
+  payload: { to: Schema.String, subject: Schema.String },
+  success: Schema.String,
+  queue: "email",
+  defaults: {
+    attempts: 3,
+    backoff: { type: "exponential", delay: "1 second" }
+  }
+}) {}
+
+// Enqueue from anywhere that has the store in context
+const producer = Effect.gen(function* () {
+  const jobId = yield* SendEmail.enqueue({ to: "ada@example.com", subject: "hi" })
+
+  // ...or enqueue and await the typed result
+  const messageId = yield* SendEmail.execute(
+    { to: "grace@example.com", subject: "now" },
+    { delay: "5 seconds", priority: 2 }
+  )
+})
+
+// Run a worker
+const RunnerLive = SendEmail.toLayer(
+  (payload) => Effect.succeed(`sent to ${payload.to}`),
+  { concurrency: 5 }
+).pipe(
+  Layer.provideMerge(Worker.layer()),
+  Layer.provideMerge(StoreLive)
+)
+```
+
+Provide `RunnerLive` to your app and the worker claims, runs, retries, and records jobs. The producer only needs `StoreLive`, so your API server can enqueue without depending on any handler code.
+
+<Note>
+  effect-mq's Redis store uses plain-prefixed keys without hash tags, so it does not support Redis Cluster. Upstash Redis databases are cluster-unaware from the client's point of view, so this is not an issue.
+</Note>
+
+## Billing Optimization
+
+effect-mq workers poll Redis regularly (`pollInterval`), heartbeat locks on active jobs, and sweep for stalled jobs and history, even when there is no queue activity. This can incur extra costs because Upstash charges per request on the Pay-As-You-Go plan. With the introduction of [our Fixed plans](/docs/redis/overall/pricing#all-plans-and-limits), **we recommend switching to a Fixed plan to avoid increased command count and high costs in effect-mq use cases.**
+
 # n8n with Upstash Redis
 Source: https://upstash.com/docs/redis/integrations/n8n
 
@@ -73079,7 +73200,7 @@ cases such as:
 * General caching
 * Session caching
 * Rate limiting (see [`@upstash/ratelimit`](https://github.com/upstash/ratelimit))
-* Queues and background jobs (works with [Sidekiq](/docs/redis/integrations/sidekiq), [BullMQ](/docs/redis/integrations/bullmq), [Celery](/docs/redis/integrations/celery))
+* Queues and background jobs (works with [Sidekiq](/docs/redis/integrations/sidekiq), [BullMQ](/docs/redis/integrations/bullmq), [effect-mq](/docs/redis/integrations/effect-mq), [Celery](/docs/redis/integrations/celery))
 * Distributed locking
 * Pub/Sub
 * Feature flags
