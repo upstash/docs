@@ -77,6 +77,7 @@ interface Entry {
 }
 
 const entries: Entry[] = [];
+const entryPaths = new Set<string>();
 const openApiSpecs: { url: string }[] = [];
 
 addMdxEntry("README");
@@ -104,7 +105,7 @@ function handle(item: WalkItem): void {
 
   if (item.type === "openapi") {
     for (const op of expandOpenApi(DOCS_ROOT, item.source, item.directory)) {
-      entries.push({
+      addEntry({
         title: op.title,
         path: op.path,
         shortDescription: firstParagraph(op.description),
@@ -119,7 +120,8 @@ function handle(item: WalkItem): void {
   }
 
   // type === "page"
-  entries.push({
+  if (item.metadata.url) return;
+  addEntry({
     title: item.metadata.title,
     path: item.path,
     shortDescription: firstParagraph(item.metadata.description),
@@ -128,12 +130,21 @@ function handle(item: WalkItem): void {
   });
 }
 
+function addEntry(entry: Entry): void {
+  if (entryPaths.has(entry.path)) return;
+  entryPaths.add(entry.path);
+  entries.push(entry);
+}
+
 function addMdxEntry(path: string): void {
   const filePath = join(DOCS_ROOT, `${path}.mdx`);
   if (!existsSync(filePath)) return;
   const raw = readFileSync(filePath, "utf-8");
   const { metadata, body } = parseFrontmatter(raw);
-  entries.push({
+  // Mintlify uses `url` files as redirects or external navigation links.
+  // They are not documentation pages and do not belong in either llms file.
+  if (metadata.url) return;
+  addEntry({
     title: metadata.title || titleFromBasename(path),
     path,
     shortDescription: firstParagraph(metadata.description),
@@ -143,7 +154,6 @@ function addMdxEntry(path: string): void {
 }
 
 function addOrphanMdxFiles(): void {
-  const seen = new Set(entries.map((e) => e.path));
   walkMdx(DOCS_ROOT);
 
   function walkMdx(dir: string): void {
@@ -157,8 +167,7 @@ function addOrphanMdxFiles(): void {
       }
       if (!entry.name.endsWith(".mdx")) continue;
       const rel = relative(DOCS_ROOT, abs).replace(/\.mdx$/, "");
-      if (seen.has(rel)) continue;
-      seen.add(rel);
+      if (entryPaths.has(rel)) continue;
       addMdxEntry(rel);
     }
   }

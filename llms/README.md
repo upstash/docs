@@ -46,7 +46,7 @@ one item per node:
 type WalkItem =
   | { type: "group";   group: string; depth: number }
   | { type: "openapi"; source: string; directory?: string }
-  | { type: "page";    path: string; metadata: { title; description? };
+  | { type: "page";    path: string; metadata: { title; description?; url? };
                        content: string };
 ```
 
@@ -79,11 +79,14 @@ Collects entries from three sources:
 
 1. `README.mdx` at the docs root (Mintlify includes it even though it isn't
    in `docs.json`).
-2. `walkNavigation` — every MDX page and every OpenAPI operation.
+2. `walkNavigation` — every content MDX page and every OpenAPI operation.
 3. An orphan-MDX scan — any `.mdx` file in the tree that isn't referenced
    from `docs.json`, since Mintlify still publishes them.
 
-Entries are sorted alphabetically by site-relative path (without `.md`).
+MDX files with `url` frontmatter are navigation links or redirects, not
+content pages, so both collection paths skip them. Repeated navigation entries
+keep their first occurrence. The remaining unique entries are sorted
+alphabetically by site-relative path (without `.md`).
 Two files are then written:
 
 - **`llms.txt`** — flat `## Docs` list, then a `## OpenAPI Specs` footer

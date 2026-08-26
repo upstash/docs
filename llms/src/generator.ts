@@ -36,6 +36,8 @@ interface DocsJson {
 export interface PageMetadata {
   title: string;
   description?: string;
+  /** Mintlify treats this file as a navigation link, not a content page. */
+  url?: string;
 }
 
 export type WalkItem =
@@ -149,6 +151,7 @@ function readPage(path: string, docsRoot: string): WalkItem | null {
     metadata: {
       title: metadata.title || deriveTitleFromPath(path),
       description: metadata.description,
+      url: metadata.url,
     },
     content: body,
   };
