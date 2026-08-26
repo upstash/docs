@@ -105,7 +105,7 @@ function handle(item: WalkItem): void {
 
   if (item.type === "openapi") {
     for (const op of expandOpenApi(DOCS_ROOT, item.source, item.directory)) {
-      addEntry({
+      addUniqueEntry({
         title: op.title,
         path: op.path,
         shortDescription: firstParagraph(op.description),
@@ -121,7 +121,7 @@ function handle(item: WalkItem): void {
 
   // type === "page"
   if (item.metadata.url) return;
-  addEntry({
+  addUniqueEntry({
     title: item.metadata.title,
     path: item.path,
     shortDescription: firstParagraph(item.metadata.description),
@@ -130,7 +130,7 @@ function handle(item: WalkItem): void {
   });
 }
 
-function addEntry(entry: Entry): void {
+function addUniqueEntry(entry: Entry): void {
   if (entryPaths.has(entry.path)) return;
   entryPaths.add(entry.path);
   entries.push(entry);
@@ -144,7 +144,7 @@ function addMdxEntry(path: string): void {
   // Mintlify uses `url` files as redirects or external navigation links.
   // They are not documentation pages and do not belong in either llms file.
   if (metadata.url) return;
-  addEntry({
+  addUniqueEntry({
     title: metadata.title || titleFromBasename(path),
     path,
     shortDescription: firstParagraph(metadata.description),
