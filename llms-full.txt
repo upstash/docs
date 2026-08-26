@@ -72260,6 +72260,88 @@ const RunnerLive = SendEmail.toLayer(
 
 Provide `RunnerLive` to your app and the worker claims, runs, retries, and records jobs. The producer only needs `StoreLive`, so your API server can enqueue without depending on any handler code.
 
+## Connecting over HTTP
+
+The setup above talks to Upstash over a TCP connection, which suits a long-running worker process. You may prefer to connect over HTTP with [`@upstash/redis`](/docs/redis/sdks/ts/overview) instead when:
+
+* **You enqueue jobs from serverless or edge functions.** Vercel Functions, Cloudflare Workers, Lambda, and similar runtimes either have no TCP sockets or would open a fresh TLS connection on every cold start. `@upstash/redis` uses `fetch`, so it works anywhere and has no connection to manage.
+* **You run many short-lived instances.** Each TCP client holds a connection open (two for the worker, one of them for pub/sub), which adds up across many serverless invocations or autoscaled replicas. HTTP requests are stateless, so there is no connection count to watch.
+
+effect-mq does not need a separate storage driver for this. Its Redis store talks to Effect's client-agnostic `Redis` service, which only requires a `send` function for raw commands and a `subscribe` function for pub/sub wake-ups. `@upstash/redis` provides both (`exec` and `subscribe`), so the same store, Lua scripts, and key layout work unchanged.
+
+Install the client:
+
+```bash
+npm install @upstash/redis
+```
+
+Add the following layer, which provides the `Redis` service over the Upstash REST API:
+
+```typescript upstash-redis.ts
+import { Redis as Upstash, type RedisConfigNodejs } from "@upstash/redis"
+import { Redis } from "effect/unstable/persistence"
+import { Deferred, Effect, Layer } from "effect"
+
+const make = (options: Omit<RedisConfigNodejs, "automaticDeserialization">) =>
+  Effect.gen(function* () {
+    // The store reads back the JSON strings it wrote, so replies must not be auto-parsed
+    const client = new Upstash({ ...options, automaticDeserialization: false })
+    const fail = (cause: unknown) => new Redis.RedisError({ cause })
+
+    return yield* Redis.make({
+      send: <A = unknown>(command: string, ...args: ReadonlyArray<string>) =>
+        Effect.tryPromise({ try: () => client.exec<A>([command, ...args]), catch: fail }),
+
+      subscribe: (channel, onMessage) =>
+        Effect.gen(function* () {
+          const terminal = yield* Deferred.make<void, Redis.RedisError>()
+          yield* Effect.acquireRelease(
+            Effect.try({
+              try: () => {
+                const subscriber = client.subscribe<string>(channel)
+                subscriber.on("message", (event) =>
+                  onMessage({ channel: event.channel, message: String(event.message) })
+                )
+                subscriber.on("error", (error) => Effect.runSync(Deferred.fail(terminal, fail(error))))
+                return subscriber
+              },
+              catch: fail
+            }),
+            (subscriber) => Effect.promise(() => subscriber.unsubscribe().catch(() => {}))
+          )
+          return Deferred.await(terminal)
+        })
+    })
+  })
+
+export const UpstashRedis = {
+  /** Provides Effect's `Redis` service over the Upstash REST API. */
+  layer: (options: Omit<RedisConfigNodejs, "automaticDeserialization">) =>
+    Layer.effect(Redis.Redis, make(options))
+}
+```
+
+Then provide it to the store in place of `NodeRedis`, using the REST URL and token from the **REST** tab of the **Connect** section on your database page:
+
+```typescript
+import { RedisJobStore } from "effect-mq/redis"
+import { Layer } from "effect"
+import { UpstashRedis } from "./upstash-redis"
+
+const StoreLive = RedisJobStore.layer({ prefix: "myapp-jobs" }).pipe(
+  Layer.provide(
+    UpstashRedis.layer({
+      url: "UPSTASH_REDIS_REST_URL",
+      token: "UPSTASH_REDIS_REST_TOKEN"
+    })
+  )
+)
+```
+
+Everything else on this page stays the same: jobs, `enqueue`, `execute`, and workers all work over HTTP, including pub/sub wake-ups so idle workers pick up new jobs immediately instead of waiting for `pollInterval`.
+
+Because both clients run the same Lua scripts against the same keys, you can mix them under one `prefix`. A common split is to enqueue over HTTP from serverless functions and run the worker over TCP on a long-running process.
+
 ## Billing Optimization
 
 effect-mq workers poll Redis regularly (`pollInterval`), heartbeat locks on active jobs, and sweep for stalled jobs and history, even when there is no queue activity. This can incur extra costs because Upstash charges per request on the Pay-As-You-Go plan. With the introduction of [our Fixed plans](/docs/redis/overall/pricing#all-plans-and-limits), **we recommend switching to a Fixed plan to avoid increased command count and high costs in effect-mq use cases.**
