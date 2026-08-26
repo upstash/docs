@@ -1,0 +1,83 @@
+---
+title: "effect-mq with Upstash Redis"
+sidebarTitle: "effect-mq"
+---
+
+You can use [effect-mq](https://www.effect-mq.com) with Upstash Redis. effect-mq is a background job library for [Effect](https://effect.website): you define a job once with a schema-typed payload, enqueue it from anywhere, and run it in a worker. Its Redis store (`effect-mq/redis`) keeps every operation atomic with a single Lua script, so you can use Upstash Redis as its storage.
+
+## Install
+
+```bash
+npm install effect-mq effect@4.0.0-rc @effect/platform-node redis
+```
+
+`effect-mq` targets Effect v4. The Redis store does not bundle a client; on Node.js it uses `node-redis` through `@effect/platform-node`. On Bun, install `@effect/platform-bun` instead and use `BunRedis` (no extra client needed).
+
+## Usage
+
+Create the Redis store layer with your Upstash connection string. The URL must start with `rediss://` since Upstash requires TLS:
+
+```typescript
+import { RedisJobStore } from "effect-mq/redis"
+import { NodeRedis } from "@effect/platform-node"
+import { Layer } from "effect"
+
+const StoreLive = RedisJobStore.layer({
+  prefix: "myapp-jobs", // key namespace (default "effect-mq")
+  historyTtl: "7 days"  // optional retention ceiling for finished jobs
+}).pipe(
+  Layer.provide(
+    NodeRedis.layer({
+      url: "rediss://default:UPSTASH_REDIS_PASSWORD@UPSTASH_REDIS_ENDPOINT:6379"
+    })
+  )
+)
+```
+
+Define a job, enqueue it, and run a worker:
+
+```typescript
+import { Job, Worker } from "effect-mq"
+import { Effect, Layer, Schema } from "effect"
+
+// Define the job once; producers and workers share this definition
+class SendEmail extends Job.make("SendEmail", {
+  payload: { to: Schema.String, subject: Schema.String },
+  success: Schema.String,
+  queue: "email",
+  defaults: {
+    attempts: 3,
+    backoff: { type: "exponential", delay: "1 second" }
+  }
+}) {}
+
+// Enqueue from anywhere that has the store in context
+const producer = Effect.gen(function* () {
+  const jobId = yield* SendEmail.enqueue({ to: "ada@example.com", subject: "hi" })
+
+  // ...or enqueue and await the typed result
+  const messageId = yield* SendEmail.execute(
+    { to: "grace@example.com", subject: "now" },
+    { delay: "5 seconds", priority: 2 }
+  )
+})
+
+// Run a worker
+const RunnerLive = SendEmail.toLayer(
+  (payload) => Effect.succeed(`sent to ${payload.to}`),
+  { concurrency: 5 }
+).pipe(
+  Layer.provideMerge(Worker.layer()),
+  Layer.provideMerge(StoreLive)
+)
+```
+
+Provide `RunnerLive` to your app and the worker claims, runs, retries, and records jobs. The producer only needs `StoreLive`, so your API server can enqueue without depending on any handler code.
+
+<Note>
+  effect-mq's Redis store uses plain-prefixed keys without hash tags, so it does not support Redis Cluster. Upstash Redis databases are cluster-unaware from the client's point of view, so this is not an issue.
+</Note>
+
+## Billing Optimization
+
+effect-mq workers poll Redis regularly (`pollInterval`), heartbeat locks on active jobs, and sweep for stalled jobs and history, even when there is no queue activity. This can incur extra costs because Upstash charges per request on the Pay-As-You-Go plan. With the introduction of [our Fixed plans](/redis/overall/pricing#all-plans-and-limits), **we recommend switching to a Fixed plan to avoid increased command count and high costs in effect-mq use cases.**
