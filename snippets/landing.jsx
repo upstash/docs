@@ -49,9 +49,9 @@ export const ProductGrid = () => {
 export const AgentResources = () => {
   // Tabler icons (MIT) from https://tabler.io/icons
   const items = [
+    { name: "Connect your AI agent", desc: "Set up Claude Code, Cursor, Codex, and more with Upstash.", href: "/agent-resources/overview", paths: ["M6 6a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v4a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2l0 -4", "M12 2v2", "M9 12v9", "M15 12v9", "M5 16l4 -2", "M15 14l4 2", "M9 18h6", "M10 8v.01", "M14 8v.01"] },
     { name: "MCP Server", desc: "Manage Upstash from AI agents over MCP.", href: "/agent-resources/mcp", paths: ["M7 12l5 5l-1.5 1.5a3.536 3.536 0 1 1 -5 -5l1.5 -1.5", "M17 12l-5 -5l1.5 -1.5a3.536 3.536 0 1 1 5 5l-1.5 1.5", "M3 21l2.5 -2.5", "M18.5 5.5l2.5 -2.5", "M10 11l-2 2", "M13 14l-2 2"] },
     { name: "Skills", desc: "Ready-made skills for coding agents.", href: "/agent-resources/skills", paths: ["M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2m0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2m-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6"] },
-    { name: "CLI", desc: "Manage Upstash from your terminal.", href: "/agent-resources/cli", paths: ["M8 9l3 3l-3 3", "M13 15l3 0", "M3 6a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2l0 -12"] },
     { name: "Context7", desc: "Up-to-date code docs for LLMs and agents.", href: "https://context7.com", icon: "https://upstash.com/docs/img/icons/context7.svg" },
   ];
   return (
