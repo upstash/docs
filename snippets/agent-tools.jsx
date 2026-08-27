@@ -93,7 +93,7 @@ export const AgentGrid = () => {
 
   const AGENTS = [
     { name: "Claude Code", slug: "claude-code", icon: "claude", desc: "Anthropic's terminal and IDE agent. Install Upstash as a plugin from the marketplace.", badges: [SKILLS, MCP] },
-    { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. One-click MCP install; skills via the Agent Skills CLI for now.", badges: [SKILLS, MCP] },
+    { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. One-click MCP install button; skills via the Agent Skills CLI.", badges: [SKILLS, MCP] },
     { name: "OpenAI Codex", slug: "openai-codex", icon: "openai", desc: "OpenAI's coding agent. Install the plugin and the MCP server with the Codex CLI.", badges: [SKILLS, MCP] },
     { name: "OpenCode", slug: "opencode", icon: "opencode", desc: "Open-source terminal agent that loads Agent Skills natively. MCP via its config.", badges: [SKILLS, MCP] },
     { name: "Zed", slug: "zed", icon: "zed", desc: "Editor with a built-in Agent Panel. Skills via the CLI, MCP via the Zed extension.", badges: [SKILLS, MCP] },
