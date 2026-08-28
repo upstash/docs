@@ -2,22 +2,26 @@
 title: Document Updates
 ---
 
-Documents in a search index are regular Redis keys.
+For JSON, hash, and string indexes, documents are regular Redis keys. For a stream index, each stream
+entry is a separate document.
 
-When a key matches an index prefix, it is indexed automatically. When the key changes, the index is updated automatically.
+Keys matching an index prefix and entries in an indexed stream are indexed automatically. When the
+indexed data changes, the index is updated automatically.
 
 <Note>
 There is no separate update command for search. Use regular Redis write commands to change your data.
 </Note>
 
-Any command that modifies a matching key updates the index. For example, this includes commands such as:
+Any command that modifies indexed document data updates the index. For example, this includes commands such as:
 
 - JSON commands such as `JSON.SET`, `JSON.MERGE`, ...
 - Hash commands such as `HSET`, `HINCRBY`, ...
 - String commands such as `SET`, `SETEX`, ...
+- Stream commands such as `XADD`, `XDEL`, `XTRIM`, ...
 - Generic commands such as `DEL`, `EXPIRE`, `PEXPIRE`, ...
 
-This is not an exhaustive list. The rule is that if the command changes a key tracked by the index, the index is updated.
+This is not an exhaustive list. The rule is that if a command changes data represented by an indexed
+document, the index is updated.
 
 Index updates are batched for performance, so recent writes may not immediately appear in search results.
 Use [`SEARCH.WAITINDEXING`](/redis/commands/search/search-waitindexing) when you need to ensure queries reflect recent changes.
@@ -167,9 +171,30 @@ SEARCH.QUERY notes '{"status":"done"}'
 
 </Tabs>
 
+## Stream Entries
+
+For a stream index, `XADD` adds one document whose ID is the stream entry ID. Commands that remove
+entries, including `XDEL` and `XTRIM`, remove the corresponding documents from the index.
+
+```bash
+SEARCH.CREATE event-search ON STREAM events SCHEMA message TEXT severity U64 FAST
+
+XADD events 1-0 message "Payment authorization failed" severity 4
+
+SEARCH.WAITINDEXING event-search
+SEARCH.QUERY event-search '{"message":"authorization"}'
+```
+
+Deleting or expiring the entire stream clears its documents but keeps the index definition. New
+entries are indexed if the stream is later recreated under the same key.
+
+See [Searching Streams](/redis/search/streams) for stream-specific schema rules and operational
+constraints.
+
 ## Deletes
 
-Deleting a matching key removes the document from the index.
+Deleting a matching key removes the document from a JSON, hash, or string index. Deleting a stream
+removes all of that stream's entry documents from its stream index.
 
 <Tabs>
 

@@ -1,0 +1,42 @@
+---
+title: "Vector commands"
+sidebarTitle: "Overview"
+description: "Commands for storing embeddings and running nearest-neighbour search inside Redis."
+---
+
+<Note>
+  Vector indexes are an Upstash extension. They are not part of open-source Redis, and client libraries reach them through their generic command interface. They are also separate from [Upstash Vector](/vector/overall/getstarted), which is a standalone vector database with its own API and SDKs.
+</Note>
+
+A vector index stores embeddings under IDs and answers nearest-neighbour queries over them. It lives at an ordinary Redis key, so [`EXISTS`](/redis/commands/generic/exists), [`EXPIRE`](/redis/commands/generic/expire), and [`DEL`](/redis/commands/generic/del) apply to it, and a key already holding another type cannot be turned into one.
+
+[`VECTOR.CREATE`](/redis/commands/vector/vector-create) fixes two properties for the life of the index: `DIM`, the number of elements every vector must have, and `METRIC`, how similarity is measured. Use `COSINE` when only the direction of the embedding matters, which is the usual choice for text embeddings, `DOT` when magnitude carries meaning, and `EUCLIDEAN` when straight-line distance does. Neither can be changed afterwards; to change one, drop the index and create it again.
+
+[`VECTOR.ADD`](/redis/commands/vector/vector-add) upserts a vector under an ID and [`VECTOR.QUERY`](/redis/commands/vector/vector-query) returns the nearest IDs with a score. Scores are normalized to `0` through `1` for every metric, so a higher score always means a closer match. Search is approximate: `PROFILE` moves a query along the recall and latency trade-off without changing anything stored.
+
+Vectors can be given three ways. `VALUES` lists the elements as decimal numbers, `FP32` takes the raw little-endian 32-bit float blob, and `BASE64-FP32` takes that blob base64-encoded, which is the form that survives the JSON body of the [REST API](/redis/features/restapi).
+
+<CardGroup cols={2}>
+<Card title="VECTOR.CREATE" href="/redis/commands/vector/vector-create">Create a vector index</Card>
+<Card title="VECTOR.ADD" href="/redis/commands/vector/vector-add">Add or replace a vector in an index</Card>
+<Card title="VECTOR.GET" href="/redis/commands/vector/vector-get">Get the vector stored under an ID</Card>
+<Card title="VECTOR.QUERY" href="/redis/commands/vector/vector-query">Find the nearest vectors to a query vector</Card>
+<Card title="VECTOR.DEL" href="/redis/commands/vector/vector-del">Remove a vector from an index</Card>
+<Card title="VECTOR.COUNT" href="/redis/commands/vector/vector-count">Count the vectors in an index</Card>
+<Card title="VECTOR.INFO" href="/redis/commands/vector/vector-info">Get the configuration of a vector index</Card>
+<Card title="VECTOR.DROP" href="/redis/commands/vector/vector-drop">Delete a vector index</Card>
+</CardGroup>
+
+## SDK support
+
+No client library has typed helpers for these commands yet, the Upstash [`@upstash/redis`](/redis/sdks/ts/overview) and [`upstash-redis`](/redis/sdks/py/overview) SDKs included. Send them through the generic command interface: `redis.call("VECTOR.QUERY", ...)` in ioredis, `client.sendCommand(["VECTOR.QUERY", ...])` in node-redis, `client.execute_command("VECTOR.QUERY", ...)` in redis-py, `client.Do(ctx, "VECTOR.QUERY", ...)` in go-redis, and `redis::cmd("VECTOR.QUERY")` in redis-rs.
+
+## REST API usage
+
+Vector commands work over the [REST API](/redis/features/restapi) like any other command, as a JSON array where each element is one token of the command. Since the body is JSON, pass binary vectors as `BASE64-FP32` rather than `FP32`.
+
+```bash
+curl -X POST https://YOUR_ENDPOINT.upstash.io \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+  -d '["VECTOR.QUERY", "my-index", "TOPK", "5", "BASE64-FP32", "zczMPc3MTD6amZk+"]'
+```

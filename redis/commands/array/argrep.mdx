@@ -1,0 +1,200 @@
+---
+title: "ARGREP"
+description: "Search array values with predicates."
+---
+
+Use `ARGREP` to find the array slots whose value matches one or more predicates.
+
+Each predicate is a keyword and a pattern: `EXACT` compares the whole value, `MATCH` looks for a substring, `GLOB` applies a glob pattern with `*` and `?`, and `RE` applies a regular expression. Several predicates can be given in one call; by default a slot matches when any of them matches, and `AND` switches that to requiring all of them. `NOCASE` makes every predicate in the call case-insensitive.
+
+The bounds accept `-` and `+` as shorthand for the first and last possible index, so a whole array can be searched without knowing its extent. By default the reply is the list of matching indexes; `WITHVALUES` returns index-value pairs instead, which saves a follow-up [`ARMGET`](/redis/commands/array/armget) when you need the data as well as its position.
+
+See the [array command overview](/redis/commands/array/overview) for the data model these commands share.
+
+## Syntax
+
+```redis
+ARGREP <key> <start> <end>
+  <EXACT <value> | MATCH <substring> | GLOB <pattern> | RE <regex>> [...]
+  [AND | OR] [NOCASE] [WITHVALUES] [LIMIT <limit>]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Array key targeted by the command. |
+| `<start>` | Yes | No | First index of the range, inclusive. `-` means the lowest possible index. |
+| `<end>` | Yes | No | Last index of the range, inclusive. `+` means the highest possible index. |
+| `EXACT <value>` | No | Yes | Match slots whose value equals `<value>`. |
+| `MATCH <substring>` | No | Yes | Match slots whose value contains `<substring>`. |
+| `GLOB <pattern>` | No | Yes | Match slots whose value matches the glob `<pattern>`. |
+| `RE <regex>` | No | Yes | Match slots whose value matches the regular expression `<regex>`. |
+| `(AND \| OR)` | No | No | Combine several predicates. `OR` matches a slot when any predicate matches and is the default; `AND` requires all of them. |
+| `NOCASE` | No | No | Compare case-insensitively. |
+| `WITHVALUES` | No | No | Return index-value pairs instead of bare indexes. |
+| `LIMIT <limit>` | No | No | Maximum number of matches to return. Must be greater than `0`. |
+
+## Important points
+
+- At least one predicate is required, and a call may carry at most 250 of them.
+- A regular expression may be at most 2048 bytes long, and backreferences (`\1` through `\9`) are not supported.
+- `AND` and `OR` apply to the whole call, not to the predicate they follow.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Array of indexes, or array of two-element index-value arrays with `WITHVALUES` |
+| RESP3 | Array of indexes, or array of two-element index-value arrays with `WITHVALUES` |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ARGREP my-array - + GLOB error:* LIMIT 10
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.argrep("my-array", "-", "+", "GLOB", "error:*", "LIMIT", 10);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.arGrep("my-array", "-", "+", [["GLOB", "error:*"]], { LIMIT: 10 });
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+from redis.commands.core import ArrayPredicateType
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.argrep("my-array", "-", "+", [(ArrayPredicateType.GLOB, "error:*")], limit=10)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ARGrep(context.Background(), "my-array", "-", "+", &redis.ARGrepArgs{
+        Predicates: []redis.ARGrepPredicate{{Type: redis.ARGrepGlob, Value: "error:*"}},
+        Limit:      10,
+    }).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.params.ArgrepParams;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.argrep("my-array", ArgrepParams.unbounded().glob("error:*").limit(10));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("ARGREP");
+    command.arg("my-array");
+    command.arg("-");
+    command.arg("+");
+    command.arg("GLOB");
+    command.arg("error:*");
+    command.arg("LIMIT");
+    command.arg("10");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

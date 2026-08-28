@@ -4,19 +4,19 @@ title: Indices
 
 An index is a data structure that enables **fast full-text search and filtering across your Redis data**. Without an index, searching requires scanning every key in your database: an operation that becomes very slow as your data grows.
 
-When you create a search index, Upstash Redis builds an optimized lookup structure for the schema you specify. This allows queries to find matching documents in milliseconds, regardless of dataset size. The index automatically stays in sync with your data: any keys matching the index prefix are indexed when created, updated when modified, and removed from the index when deleted.
+When you create a search index, Upstash Redis builds an optimized lookup structure for the schema you specify. This allows queries to find matching documents in milliseconds, regardless of dataset size. The index automatically stays in sync with your data: keys matching an index prefix and entries in an indexed stream are added and removed as the underlying data changes.
 
 You define an index once by specifying:
 
 - A **name** to identify the index
-- A **prefix** pattern to determine which keys to track (e.g., `user:`)
+- One or more **prefixes** that determine which keys to track, or the exact key of a stream
 - A **schema** describing which fields to index and their types
 
 ---
 
 ### Creating an Index
 
-The [`SEARCH.CREATE`](/redis/commands/search/search-create) command creates an index identified by a name, which must be a unique key in Redis. Each index works with a single key type (JSON, hash, or string).
+The [`SEARCH.CREATE`](/redis/commands/search/search-create) command creates an index identified by a name, which must be a unique key in Redis. Each index works with a single data type: JSON, hash, string, or stream.
 
 <Tabs>
 
@@ -79,6 +79,10 @@ SEARCH.CREATE users on JSON PREFIX 1 user: SCHEMA name TEXT email TEXT age u64
 
 - For **string** indices, indexed keys must be valid JSON strings. A field on any nesting level
   can be indexed, similar to JSON indices.
+
+- For **stream** indices, each entry in one exact stream is a separate document. Stream fields are
+  flat, and query results use the entry ID as the document ID. See
+  [Searching Streams](/redis/search/streams) for setup, schema conversion, and lifecycle behavior.
 
 <Tabs>
 
@@ -191,10 +195,11 @@ SEARCH.CREATE comments ON STRING PREFIX 1 comment: SCHEMA user.name TEXT user.em
 
 </Tabs>
 
-By default, when an index is created, all existing keys matching the specified type and prefixes are scanned and indexed.
+By default, creating an index scans and indexes all existing keys matching its type and prefixes, or
+all existing entries in its bound stream.
 Use `SKIPINITIALSCAN` to defer indexing, which is useful for large datasets where you want to start fresh or handle
 existing data differently. Run [`SEARCH.REINDEX`](/redis/commands/search/search-reindex) later to rebuild the index from
-the current matching keys.
+the current matching keys or stream entries.
 
 <Tabs>
 
@@ -454,21 +459,21 @@ On response, the following information is returned:
 | Field      | Description                              |
 | ---------- | ---------------------------------------- |
 | `name`     | Index name                               |
-| `type`     | Data type (`STRING`, `HASH`, or `JSON`)  |
-| `prefixes` | List of tracked key prefixes             |
+| `type`     | Data type (`STRING`, `HASH`, `JSON`, or `STREAM`) |
+| `prefixes` | Tracked key prefixes, or the bound key for a stream index |
 | `language` | Stemming language                        |
 | `schema`   | Field definitions with types and options |
 
 ### Listing Indexes
 
-[`SEARCH.LISTINDEXES`](/redis/commands/search/search-listindexes) lists all search indexes in the database, reporting each index's `name` and backing `type` (`HASH` or `JSON`). Optionally filter names with `MATCH` and paginate with `LIMIT` and `OFFSET`.
+[`SEARCH.LISTINDEXES`](/redis/commands/search/search-listindexes) lists all search indexes in the database, reporting each index's `name` and backing `type` (`HASH`, `JSON`, `STRING`, or `STREAM`). Optionally filter names with `MATCH` and paginate with `LIMIT` and `OFFSET`.
 
 <Tabs>
 
 <Tab title="Redis CLI">
 ```bash
 SEARCH.LISTINDEXES
-# Returns: [["name", "productIdx", "type", "HASH"], ["name", "blogIdx", "type", "JSON"]]
+# Returns: [["name", "productIdx", "type", "HASH"], ["name", "eventIdx", "type", "STREAM"]]
 
 SEARCH.LISTINDEXES MATCH 'product*' LIMIT 10 OFFSET 0
 ```

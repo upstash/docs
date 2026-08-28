@@ -1,0 +1,193 @@
+---
+title: "VECTOR.QUERY"
+description: "Find the nearest vectors to a query vector."
+---
+
+Use `VECTOR.QUERY` to find the IDs whose vectors are closest to a query vector.
+
+`TOPK` sets how many results to return, and the query vector is given in the same three forms [`VECTOR.ADD`](/redis/commands/vector/vector-add) accepts. The reply is a list of ID and score pairs, best match first. Scores are normalized to the range `0` to `1` for every metric, so a higher score always means a closer match and a threshold can be applied without knowing which metric the index uses.
+
+`PROFILE` trades recall against latency. `FAST` examines less of the index and returns sooner, `PRECISE` examines more and is likelier to return the true nearest neighbours, and `BALANCED`, the default, sits between them. The profile only changes how the query reads the index, never what is stored, so it can be varied per call.
+
+Search is approximate: a query may miss a true neighbour, and raising `TOPK` or moving to `PRECISE` reduces how often that happens. Asking for more results than the index holds simply returns everything it has.
+
+Vector indexes are an Upstash extension. See the [vector command overview](/redis/commands/vector/overview) for how an index is created, written to, and queried.
+
+## Syntax
+
+```redis
+VECTOR.QUERY <index> TOPK <count>
+  <VALUES <count> <element> [<element> ...] | FP32 <blob> | BASE64-FP32 <blob>>
+  [PROFILE <FAST | BALANCED | PRECISE>]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<index>` | Yes | No | Key holding the vector index. |
+| `TOPK <count>` | Yes | No | Maximum number of results to return. Must be between `1` and `1000`. |
+| `VALUES <count> <element> [<element> ...]` | No | No | Vector given as `<count>` decimal elements. |
+| `FP32 <blob>` | No | No | Vector given as a raw binary blob of little-endian 32-bit floats. Its length must be a non-zero multiple of 4. |
+| `BASE64-FP32 <blob>` | No | No | Vector given as the standard base64 encoding of an `FP32` blob. |
+| `PROFILE <profile>` | No | No | Recall and latency trade-off: `FAST`, `BALANCED`, or `PRECISE`. Defaults to `BALANCED`. |
+
+## Important points
+
+- `TOPK` and the query vector are both required; the clauses may be given in any order.
+- The three vector forms are mutually exclusive and exactly one must be given. `VALUES` is the readable form; `FP32` avoids decimal formatting on a binary-safe connection; `BASE64-FP32` carries the same bytes through JSON, which is what the [REST API](/redis/features/restapi) needs.
+- Results are ordered by score, highest first. Scores are normalized to `0` through `1` for every metric.
+- A query vector whose length differs from the index's `DIM` returns `ERR vector dimension mismatch: expected <dim>, got <n>`.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Array of two-element arrays, each an ID and its score as a bulk string containing a number |
+| RESP3 | Array of two-element arrays, each an ID and its score as a double |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+VECTOR.QUERY my-index TOPK 5 VALUES 3 0.1 0.2 0.3
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.call("VECTOR.QUERY", "my-index", "TOPK", "5", "VALUES", "3", "0.1", "0.2", "0.3");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.sendCommand(["VECTOR.QUERY", "my-index", "TOPK", "5", "VALUES", "3", "0.1", "0.2", "0.3"]);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.execute_command("VECTOR.QUERY", "my-index", "TOPK", "5", "VALUES", "3", "0.1", "0.2", "0.3")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.Do(context.Background(), "VECTOR.QUERY", "my-index", "TOPK", "5", "VALUES", "3", "0.1", "0.2", "0.3").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.sendCommand(() -> "VECTOR.QUERY".getBytes(), "my-index", "TOPK", "5", "VALUES", "3", "0.1", "0.2", "0.3");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("VECTOR.QUERY");
+    command.arg("my-index");
+    command.arg("TOPK");
+    command.arg("5");
+    command.arg("VALUES");
+    command.arg("3");
+    command.arg("0.1");
+    command.arg("0.2");
+    command.arg("0.3");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
