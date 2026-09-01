@@ -7,9 +7,9 @@ Reading covers everything that gets bytes or facts back out of a bucket: `get` f
 Every example below starts from a bucket:
 
 ```ts lib/bucket.ts
-import { Bucket } from '@upstash/blob';
+import { Bucket } from "@upstash/blob"
 
-export const bucket = Bucket.fromEnv(); // reads UPSTASH_BLOB_TOKEN
+export const bucket = Bucket.fromEnv() // reads UPSTASH_BLOB_TOKEN
 ```
 
 See [Quickstart](/blob/overall/quickstart) for the token, and [Writing](/blob/bucket/writing) for the other half of the API.
@@ -49,20 +49,20 @@ In this SDK `blob` always names a record, and never the bytes of one. The DOM al
 `get` returns the whole record plus the response body as a stream. Nothing is buffered for you, so a large object costs whatever you do with the stream and no more.
 
 ```ts
-const res = await bucket.get('reports/2026-01.pdf');
+const res = await bucket.get("reports/2026-01.pdf")
 
-res.contentType;  // 'application/pdf'
-res.size;         // 184_302
-res.etag;         // '"9f3c..."'
-res.metadata;     // { owner: 'u7' }
-res.body;         // ReadableStream<Uint8Array>
+res.contentType  // 'application/pdf'
+res.size         // 184_302
+res.etag         // '"9f3c..."'
+res.metadata     // { owner: 'u7' }
+res.body         // ReadableStream<Uint8Array>
 ```
 
 Wrap the body in a `Response` to get the usual conversions:
 
 ```ts
-const text = await new Response((await bucket.get('notes/1.md')).body).text();
-const buffer = await new Response((await bucket.get('img/1.png')).body).arrayBuffer();
+const text = await new Response((await bucket.get("notes/1.md")).body).text()
+const buffer = await new Response((await bucket.get("img/1.png")).body).arrayBuffer()
 ```
 
 A missing object is a throw, not an `undefined` return: `get` raises a `BlobError` with code `not_found` and status 404. See [Errors](/blob/bucket/errors) for the code list and for `BlobError.is`.
@@ -76,40 +76,20 @@ There is no range option. Reading part of an object is what [the S3 escape hatch
 `info` is the same record with no bytes: one HEAD request, so it costs nothing to read a 2 GB object's facts.
 
 ```ts
-const info = await bucket.info('reports/2026-01.pdf');
+const info = await bucket.info("reports/2026-01.pdf")
 
-info.size;         // 184_302
-info.etag;         // '"9f3c..."'
-info.contentType;  // 'application/pdf'
-info.metadata;     // { owner: 'u7' }
-info.uploadedAt;   // Date
+info.size         // 184_302
+info.etag         // '"9f3c..."'
+info.contentType  // 'application/pdf'
+info.metadata     // { owner: 'u7' }
+info.uploadedAt   // Date
 ```
 
 Like `get`, a missing object throws `not_found` rather than answering `undefined`.
 
-<Note>
-  Metadata keys come back lowercased. They cross the wire as `x-amz-meta-*` headers, and header names are case-insensitive, so `{ uploadedBy: 'u1' }` written at upload reads back as `metadata.uploadedby`. Values are printable ASCII, because storage does not carry anything else back unchanged.
-</Note>
+Metadata keys come back lowercased, since they cross the wire as `x-amz-meta-*` headers: `{ uploadedBy: 'u1' }` written at upload reads back as `metadata.uploadedby`. The rules that govern what can be written are in [Writing](/blob/bucket/writing#metadata).
 
-`metadata` is the reason this call exists next to `exists()`. It comes back from `get` and from `info`, and from nothing else: a listing does not carry it. So `info` is the call a cleanup cron makes before it deletes anything, to confirm the object at that path is the one its row reserved rather than a later upload that reused the path.
-
-```ts scripts/sweep.ts
-import { BlobError } from '@upstash/blob';
-import { bucket } from '@/lib/bucket';
-
-for (const row of await db.uploads.pendingOlderThan('1d')) {
-  try {
-    const info = await bucket.info(row.path);
-    if (info.metadata.rowid !== row.id) continue; // somebody else's object
-    await bucket.del(row.path);
-  } catch (e) {
-    if (!BlobError.is(e) || e.code !== 'not_found') throw e;
-  }
-  await db.uploads.markSwept(row.id);
-}
-```
-
-The pattern that sweep belongs to, and why the row is the only thing that can tell an abandoned upload from a finished one, is in [Abandoned uploads](/blob/browser/abandoned-uploads).
+`metadata` is the reason this call exists next to `exists()`. It comes back from `get` and from `info`, and from nothing else: a listing does not carry it. So `info` is the call a cleanup cron makes before it deletes anything, to confirm the object at that path is the one its row reserved rather than a later upload that reused the path. That sweep, and why a row is the only thing that can tell an abandoned upload from a finished one, is in [Abandoned uploads](/blob/browser/abandoned-uploads).
 
 ---
 
@@ -118,7 +98,7 @@ The pattern that sweep belongs to, and why the row is the only thing that can te
 `exists` answers `false` instead of throwing. It is the same HEAD request as `info`, with the record thrown away.
 
 ```ts
-if (await bucket.exists('avatars/u7.png')) {
+if (await bucket.exists("avatars/u7.png")) {
   // ...
 }
 ```
@@ -138,23 +118,23 @@ Prefer `info()` whenever you are going to want the etag, the size or the metadat
 | `cursor` | `string` | The `cursor` from the previous page. |
 
 ```ts
-const page = await bucket.list({ prefix: 'avatars/', limit: 100 });
+const page = await bucket.list({ prefix: "avatars/", limit: 100 })
 
-page.blobs;  // BlobObject[]
-page.cursor; // string | undefined
+page.blobs  // BlobObject[]
+page.cursor // string | undefined
 ```
 
 `cursor` is set only while more remains, so a full walk is a `do ... while` and never needs a separate "is there more" check:
 
 ```ts
-let cursor: string | undefined;
-const paths: string[] = [];
+let cursor: string | undefined
+const paths: string[] = []
 
 do {
-  const page = await bucket.list({ prefix: 'avatars/', limit: 1000, cursor });
-  for (const blob of page.blobs) paths.push(blob.path);
-  cursor = page.cursor;
-} while (cursor);
+  const page = await bucket.list({ prefix: "avatars/", limit: 1000, cursor })
+  for (const blob of page.blobs) paths.push(blob.path)
+  cursor = page.cursor
+} while (cursor)
 ```
 
 A listing carries `BlobObject`, which means it has the path, size, etag, timestamp and URLs, and it does not have `contentType` or `metadata`. Storage does not return those in a listing, and fetching them would be one HEAD per key.
@@ -168,7 +148,7 @@ A listing carries `BlobObject`, which means it has the path, size, etag, timesta
 On a public bucket every record already carries `url`, and you can compute one for any path without a record:
 
 ```ts
-bucket.publicUrl('avatars/u7.png');
+bucket.publicUrl("avatars/u7.png")
 // 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
 ```
 
@@ -181,8 +161,8 @@ There is no network call. The bucket's public DNS label is carried in the token 
 It exists for the stable path. If `avatars/u7.png` is overwritten every time the user picks a new picture, the URL never changes, so every cache between your object and the reader is free to keep serving the old bytes. `versionedUrl` changes whenever the content changes, because the etag does, which turns "the URL is stale" into "the URL is different".
 
 ```tsx
-const avatar = await bucket.info(`avatars/${user.id}.png`);
-<img src={avatar.versionedUrl} />;
+const avatar = await bucket.info(`avatars/${user.id}.png`)
+<img src={avatar.versionedUrl} />
 ```
 
 Pair it with `cache: 'immutable'` at upload: the bytes at any one versioned URL genuinely never change, so a year-long `max-age` is honest and the new picture is a new URL rather than a revalidation. See [Caching](/blob/bucket/caching) for the other cache options and when `'revalidate'` is the better trade.
@@ -194,12 +174,12 @@ Pair it with `cache: 'immutable'` at upload: the bytes at any one versioned URL 
 A private bucket has no public host, so a URL on one of its records would be a link that 404s. Declare it and `url` and `versionedUrl` are dropped from every record the SDK builds:
 
 ```ts
-const bucket = new Bucket({ token, visibility: 'private' });
+const bucket = new Bucket({ token, visibility: "private" })
 
-const blob = await bucket.put('reports/2026-01.pdf', pdf);
-blob.url;          // undefined
-blob.versionedUrl; // undefined
-bucket.publicUrl('reports/2026-01.pdf'); // undefined
+const blob = await bucket.put("reports/2026-01.pdf", pdf)
+blob.url          // undefined
+blob.versionedUrl // undefined
+bucket.publicUrl("reports/2026-01.pdf")  // undefined
 ```
 
 A `visibility` in the credentials response wins over what you declared, so a bucket that is private in the console stays private here even if the code says otherwise. Reads on a private bucket go through `signedReadUrl()`.
@@ -211,10 +191,10 @@ A `visibility` in the credentials response wins over what you declared, so a buc
 A time-limited URL anyone can GET, for a private bucket or for an object you do not want linked from a public page.
 
 ```ts
-const { url, expiresAt } = await bucket.signedReadUrl('reports/2026-01.pdf', {
-  expiresIn: '2m',
-  downloadAs: 'Report Q3.pdf',
-});
+const { url, expiresAt } = await bucket.signedReadUrl("reports/2026-01.pdf", {
+  expiresIn: "2m",
+  downloadAs: "Report Q3.pdf",
+})
 ```
 
 | Option | Type | |
@@ -230,14 +210,14 @@ The return is `{ url, expiresAt }`.
 Links are signed with the bucket's short-lived credential, and a signature cannot outlive the credential that made it. So `expiresIn` is what you ask for, and `expiresAt` is what you got: it is never later than the signing credential's own expiry, and it is the value to cache the link against rather than a duration you compute yourself.
 
 ```ts
-const cached = await cache.get(key);
+const cached = await cache.get(key)
 if (!cached || cached.expiresAt < new Date()) {
-  const link = await bucket.signedReadUrl(path, { expiresIn: '5m' });
-  await cache.set(key, link);
+  const link = await bucket.signedReadUrl(path, { expiresIn: "5m" })
+  await cache.set(key, link)
 }
 ```
 
-The default with no `expiresIn` is 5 minutes, shortened if the credential has less than that left. Asking for more than the credential can cover re-mints where that helps, and is capped where it does not. [Signed URLs](/blob/overall/signing) covers the mechanism, and `signedUploadUrl` for the write direction.
+The default with no `expiresIn` is 5 minutes, shortened if the credential has less than that left. Asking for more than the credential can cover re-mints where that helps, and is capped where it does not. [How signing works](/blob/overall/signing) covers the mechanism, and `signedUploadUrl` for the write direction.
 
 ### `downloadAs`
 
@@ -246,7 +226,7 @@ The default with no `expiresIn` is 5 minutes, shortened if the credential has le
 The name is carried as an RFC 6266 `filename*` ext-value, percent-encoded, with an ASCII `filename` fallback cut back to characters that cannot end the quoted string. A name with a quote, a semicolon or a CRLF in it cannot add a parameter or a second header, and a Unicode name arrives intact:
 
 ```ts
-await bucket.signedReadUrl(path, { downloadAs: 'café ☕.pdf' });
+await bucket.signedReadUrl(path, { downloadAs: "café ☕.pdf" })
 // content-disposition: attachment; filename="caf_ _.pdf"; filename*=UTF-8''caf%C3%A9%20%E2%98%95.pdf
 ```
 
@@ -257,7 +237,7 @@ The disposition is signed into the URL along with everything else, so it cannot 
 `contentType` overrides what storage answers with, without rewriting the object:
 
 ```ts
-await bucket.signedReadUrl('exports/rows.bin', { contentType: 'text/csv' });
+await bucket.signedReadUrl("exports/rows.bin", { contentType: "text/csv" })
 ```
 
 It is validated as a media type and throws `invalid_input` if it is not one, for the same reason `downloadAs` is encoded: this value becomes a response header.
@@ -269,11 +249,11 @@ It is validated as a media type and throws `invalid_input` if it is not one, for
 `listMultipartUploads()` is the one read that does not answer with objects.
 
 ```ts
-const uploads = await bucket.listMultipartUploads({ prefix: 'uploads/' });
+const uploads = await bucket.listMultipartUploads({ prefix: "uploads/" })
 // [{ path: 'uploads/big.bin', uploadId: 'mp-1', initiatedAt: Date }]
 ```
 
-A multipart upload that was started and never completed or aborted is billed storage that `list()` cannot see, and a bucket cannot be deleted while one exists. That makes this the only call that can find them. Finding them is not the job though: sweeping them is, and `abortStaleMultipartUploads()` is in [Deleting](/blob/bucket/deleting), with the reason a browser leaves one behind in [Abandoned uploads](/blob/browser/abandoned-uploads).
+A multipart upload that was started and never completed or aborted is billed storage that `list()` cannot see, which makes this the only call that can find them. Finding them is not the job though: sweeping them is, and `abortStaleMultipartUploads()` is in [Deleting](/blob/bucket/deleting#incomplete-multipart-uploads).
 
 ---
 
@@ -282,18 +262,18 @@ A multipart upload that was started and never completed or aborted is billed sto
 The bucket is S3-compatible, and `bucket.s3()` hands the aws-sdk what it needs for anything the SDK does not model: byte ranges, conditional GETs, delimiters and common prefixes, object tagging.
 
 ```ts
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { bucket } from '@/lib/bucket';
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3"
+import { bucket } from "@/lib/bucket"
 
-const { endpoint, region, bucket: name, credentials } = bucket.s3();
-const s3 = new S3Client({ endpoint, region, credentials });
+const { endpoint, region, bucket: name, credentials } = bucket.s3()
+const s3 = new S3Client({ endpoint, region, credentials })
 
 const res = await s3.send(
-  new GetObjectCommand({ Bucket: name, Key: 'reports/2026-01.pdf', Range: 'bytes=0-1023' }),
-);
+  new GetObjectCommand({ Bucket: name, Key: "reports/2026-01.pdf", Range: "bytes=0-1023" }),
+)
 ```
 
-`endpoint` and `credentials` are async providers rather than values. The bucket's credential is short-lived and the endpoint is only known from a credentials response, so handing over providers is what lets the aws-sdk re-read both when the current one expires, instead of holding a credential that dies a few minutes in.
+`endpoint` and `credentials` are async providers rather than values, for the reason given in [Writing](/blob/bucket/writing#the-s3-escape-hatch).
 
 ---
 
@@ -312,7 +292,7 @@ const res = await s3.send(
     One path, a list, a prefix, and sweeping incomplete uploads.
   </Card>
 
-  <Card title="Signed URLs" href="/blob/overall/signing">
+  <Card title="How signing works" href="/blob/overall/signing">
     How links are signed, and the upload direction.
   </Card>
 

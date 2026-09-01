@@ -4,7 +4,7 @@ title: "How Signing Works"
 
 Your server holds a bucket token. It exchanges that token for short-lived S3 credentials from Upstash, signs individual URLs with those credentials, and hands only the URLs to the browser. The token, the credentials and the bucket password never leave your server. Every URL a browser holds is scoped to one object, one method, one set of headers, and a few minutes.
 
-This page follows that chain from the token in your environment down to the bytes landing in storage, so you can reason about what a browser holding one of these URLs can and cannot do. If you only want to upload a file, start with the [quickstart](/blob/overall/quickstart) instead.
+This page follows that chain from the token in your environment down to the bytes landing in storage, so you can reason about what a browser holding one of these URLs can and cannot do. If you only want to upload a file, start with the [Quickstart](/blob/overall/quickstart) instead.
 
 ---
 
@@ -27,13 +27,13 @@ The three fields do different jobs.
 
 | Field | What it is for |
 | --- | --- |
-| `bucketId` | Names the bucket. It goes into the object URL path and into every completion token, which is what stops a token minted for one bucket from being spent against another. |
+| `bucketId` | Names the bucket inside your account. It is the `b` claim in every completion token, checked when one is spent, which is what stops a token minted for one bucket from being spent against another. It is also the bucket name `bucket.s3()` hands the aws-sdk. It is not in the public object URL: that is built from `hashForDomain`, and storage request paths use the `bucket` the credentials response names. |
 | `hashForDomain` | The bucket's public DNS label. Objects are served from `<hashForDomain>.blob.upstash.io`, so `bucket.publicUrl(path)` is pure string work with no request. On a private bucket it returns `undefined`, because nothing serves that host. |
 | `password` | The HMAC key for [completion tokens](#the-completion-token). It is never sent anywhere, not to Upstash and not to storage. It only ever keys a MAC inside your process. |
 
-<Warning>
+<Note>
 The token is a bearer secret. Anything holding it can mint credentials for the whole bucket. Keep it server side, never in `NEXT_PUBLIC_`, `VITE_`, or any other variable your bundler inlines into client code.
-</Warning>
+</Note>
 
 ---
 
@@ -41,7 +41,7 @@ The token is a bearer secret. Anything holding it can mint credentials for the w
 
 The token is not an S3 credential. To touch storage, the SDK exchanges it:
 
-```http credential request
+```http
 POST https://blob.upstash.io/v1/credentials
 Authorization: Bearer <UPSTASH_BLOB_TOKEN>
 ```
@@ -60,7 +60,7 @@ The response is the whole picture of where this bucket lives:
 | `visibility` | `'public'` or `'private'`. Private drops `url` and `versionedUrl` from every record. |
 | `signing` | Optional, and longer lived. A read-only credential used only for presigning reads. |
 
-Because the `endpoint` decides where every subsequent request goes, the SDK refuses to take it on faith. It must parse as a URL, its protocol must be `https:`, and its hostname must end in `.r2.cloudflarestorage.com`. Anything else is `request_failed` with the message `credentials response named an unexpected endpoint`, before a single byte is signed.
+Because the `endpoint` decides where every subsequent request goes, the SDK refuses to take it on faith. It must parse as a URL, its protocol must be `https:`, and its hostname must end in `.r2.cloudflarestorage.com`. Anything else is `request_failed` with the message `Credentials response named an unexpected endpoint`, before a single byte is signed.
 
 ### Caching
 
@@ -84,7 +84,7 @@ Concurrent callers share one in-flight mint rather than racing.
 | 503 after the retries | `not_ready` |
 | anything else | `request_failed` with status 502 |
 
-See [errors](/blob/bucket/errors) for the full code list.
+See [Errors](/blob/bucket/errors) for the full code list.
 
 ---
 
@@ -111,7 +111,7 @@ Query parameters work the same way. `response-content-disposition` on a signed r
 
 S3 wants every character outside `A-Za-z0-9-_.~` percent-encoded, including the ones `encodeURIComponent` leaves alone, and encoded as uppercase hex UTF-8 bytes. `uriEncode` does that; `encodeKey` applies it per path segment so slashes stay structural.
 
-`encodeKey` also refuses any path containing a `.` or `..` segment outright, rather than normalising it. The reason is the trust model: a temporary credential authorizes the whole bucket, and the URL parser resolves `..` before the request is signed, so a traversing key would sign a request against a different object than the one your code named. Rejecting is the only safe answer. `uniquePath` guards the same boundary from the other side: slashes in the literal chunks of the template are structure, and slashes inside an interpolated value are stripped along with the rest of the directory component.
+`encodeKey` also refuses any path containing a `.` or `..` segment outright, rather than normalising it. The reason is the trust model: a temporary credential authorizes the whole bucket, and the URL parser resolves `..` before the request is signed, so a traversing key would sign a request against a different object than the one your code named. Rejecting is the only safe answer. `uniquePath` guards the same boundary from the other side, by stripping directory components out of every interpolated value. Its rules are on [Writing](/blob/bucket/writing#uniquepath).
 
 ---
 
@@ -134,7 +134,7 @@ Reads are signed with the `signing` credential when one is present, which is why
 
 All of which is why `signedReadUrl()` returns `expiresAt` rather than making you compute it:
 
-```ts read link
+```ts
 const { url, expiresAt } = await bucket.signedReadUrl('private/report.pdf');
 // expiresAt is the real answer for this link: min(what you asked for, what the signer had left)
 ```
@@ -147,7 +147,7 @@ Cache the link until `expiresAt` and re-sign after. Do not assume five minutes.
 
 A direct browser upload is four phases against your own route. Your route is the only thing that ever sees the token or the credentials.
 
-```text upload handshake
+```text
 browser          your route           blob.upstash.io              R2
    |                  |                      |                      |
    |  phase 'begin'   |                      |                      |
@@ -182,14 +182,14 @@ browser          your route           blob.upstash.io              R2
 
 | Phase | What your route does | What it signs | What it returns |
 | --- | --- | --- | --- |
-| `begin` | Enforces [constraints](/blob/browser/constraints), runs `onBeforeUpload`, and for a large file creates the multipart upload | The first PUT URL, or the first batch of part URLs | `WireBeginResponse`: `completionToken`, `path`, and an upload plan carrying `partSize`, `multipart` and `parts` |
+| `begin` | Enforces [Constraints](/blob/browser/constraints), runs `onBeforeUpload`, and for a large file creates the multipart upload | The first PUT URL, or the first batch of part URLs | `WireBeginResponse`: `completionToken`, `path`, and an upload plan carrying `partSize`, `multipart` and `parts` |
 | `parts` | Verifies the completion token, asks R2 `ListParts` for what already landed | The next batch of part URLs, 16 at a time | `WirePartsResponse`: `partSize`, `size`, `multipart`, `parts`, `landed` |
 | `end` | Verifies the token, completes the multipart or checks the marker, reads the object back, runs `onUploadComplete` | Nothing new | `WireEndResponse`: the blob record plus whatever `onUploadComplete` returned |
 | `cancel` | Verifies the token, aborts the multipart or deletes a matching single-PUT object | Nothing | `{ ok: true }` |
 
-Said plainly: the browser never sees the bucket token and never sees an S3 credential. It sees per-object presigned URLs, the headers those URLs pin, and a completion token. Nothing it holds can list the bucket, read another object, or write to a path your `onBeforeUpload` did not choose.
+The browser never sees the bucket token and never sees an S3 credential. It sees per-object presigned URLs, the headers those URLs pin, and a completion token. Nothing it holds can list the bucket, read another object, or write to a path your `onBeforeUpload` did not choose.
 
-`GET` on the same route serves the constraints document, with an ETag and `max-age=60`, so a file picker can be filled from the same list that does the refusing. See [upload handler](/blob/browser/upload-handler) for the callbacks and [large files](/blob/browser/large-files) for the multipart path.
+`GET` on the same route serves the constraints document, with an ETag and `max-age=60`, so a file picker can be filled from the same list that does the refusing. See [Upload handler](/blob/browser/upload-handler) for the callbacks and [Large files](/blob/browser/large-files) for the multipart path.
 
 ---
 
@@ -197,15 +197,15 @@ Said plainly: the browser never sees the bucket token and never sees an S3 crede
 
 The completion token is what carries an upload's identity between phases without keeping server state. It is a base64url JSON payload and an HMAC-SHA256 over that payload, joined by a dot:
 
-```text shape
+```text
 <base64url(JSON payload)>.<base64url(HMAC-SHA256)>
 ```
 
 The key is `upstash-blob-completion:<bucket password>`, so it is derived from the token you already hold and never from anything the request supplies. Comparison is timing safe.
 
-<Warning>
+<Note>
 The token is signed, not encrypted. Anyone can open devtools, base64-decode the first half, and read the whole payload including `ctx`. Whatever `onBeforeUpload` returns as `state` must be a row id or something equally boring. Never a secret, never a signed URL, never an internal flag you would not print on the page.
-</Warning>
+</Note>
 
 The payload:
 
@@ -251,9 +251,7 @@ Signed, not merely sent. An unsigned header would be the browser's to choose, an
 
 For a multipart upload the same headers are pinned earlier and elsewhere: they are sent with `CreateMultipartUpload`, signed by your server with an `Authorization` header, and the object inherits them at completion. Each part URL then signs only `content-length`. Part URLs carry no headers at all in the wire response, which is why the browser sets none of ours on a part PUT.
 
-<Warning>
-Because a single PUT sends `Content-Type`, `Cache-Control` and `x-amz-meta-*` as real headers on a cross-origin request, the bucket's CORS configuration has to allow those request headers from your origin, allow `PUT`, and expose `ETag` on the response so the client can read it. A PUT that fails with no status and no bytes on the wire is almost always this: the preflight failed, and the reason is never visible to script.
-</Warning>
+Because those headers ride on a cross-origin request, the bucket's CORS policy has to allow them. The exact shape is in [CORS](/blob/overall/quickstart#cors).
 
 ---
 
@@ -267,21 +265,13 @@ So `end` requires a marker match on the single-PUT path. No match is `not_found`
 
 The marker is deleted from the record handed to `onUploadComplete` and `onError`, but not from the stored object. Nothing on the completion path rewrites metadata.
 
-<Warning>
-A marker match proves "same upload". It never proves "no callback accepted it". An object carrying the marker may be an abandoned upload or a perfectly finished one, the SDK cannot tell them apart, and both are [billed](/blob/overall/pricing) the same. Track that in your own rows: pending in `onBeforeUpload`, ready last in `onUploadComplete`, sweep the rest. See [abandoned uploads](/blob/browser/abandoned-uploads) for what that costs and the cron that fixes it.
-</Warning>
+A marker match proves "same upload", and never "no callback accepted it". What that costs, and the pending row that closes it, is on [Abandoned uploads](/blob/browser/abandoned-uploads).
 
 ---
 
 ## Retries and 403
 
-A 403 from storage is ambiguous by design. An expired presigned URL and a tampered request produce the same status, and the browser cannot tell which it is looking at. So the client's `classify` treats 401 and 403 as `represign` rather than `fail`:
-
-| Status | Verdict |
-| --- | --- |
-| 0 (network), 408, 429, 500, 502, 503, 504 | `retry` with jittered backoff |
-| 401, 403 | `represign`: throw the batch of URLs away and ask the route for fresh ones |
-| anything else | `fail` |
+A 403 from storage is ambiguous by design. An expired presigned URL and a tampered request produce the same status, and the browser cannot tell which it is looking at. So the client's `classify` treats 401 and 403 as `represign` rather than `fail`, throwing the batch of URLs away and asking the route for fresh ones. The rest of the classification, and the retry budgets, are in [Large files](/blob/browser/large-files#retries).
 
 Re-presigning forever would hide a real signature problem, so there is a clock on it. `PRESIGN_STALE_MS` is 60 seconds. A 403 on a URL minted more than a minute ago is read as the clock however often it happens, because a 5 MiB part on a slow link genuinely outruns a presign more than once. A 403 on a freshly minted URL, for a part that has already been re-presigned once, is a real `signature_mismatch` and ends the upload. So does exhausting the 8-attempt budget.
 
@@ -293,14 +283,7 @@ Your server has the same ambiguity and resolves it by reading the body. `R2.fetc
 
 ## What the browser stores
 
-One thing, in `localStorage`, under a key built from the route, the file name, the file size and its `lastModified`:
-
-```text localStorage
-key    upstash-blob:v1:/api/upload|holiday.png|4211|1756732800000
-value  {"completionToken":"eyJ2IjoxLCJiIjoiYWM2M...<mac>"}
-```
-
-That is the entire record. It is a bearer capability for one upload and nothing else is worth the exposure. Notably it does not record what landed: picking the same file again sends phase `parts`, and the server asks R2 `ListParts` for the truth. A single PUT has nothing to resume, so the same file goes up again under the same token and the same path. Writing the record is best effort, since quota limits and private browsing modes both make `localStorage` throw, and a failed write just means no resume.
+One thing: the completion token, in `localStorage`, under a key built from the route, the file name, the file size and its `lastModified`. Nothing else is worth the exposure, and in particular nothing about what landed is stored, since the server can ask R2 for that. [Large files](/blob/browser/large-files#resuming-after-a-reload) covers the key, the resume gesture and what happens when `localStorage` is unavailable.
 
 ---
 
@@ -308,7 +291,7 @@ That is the entire record. It is a bearer capability for one upload and nothing 
 
 The same machinery is available directly, for a CLI, a server-to-server job, or a link in an email.
 
-```ts signed links
+```ts
 const { url, expiresAt } = await bucket.signedReadUrl('private/report.pdf', {
   downloadAs: 'Q3 Report.pdf',
   expiresIn: '15m',
@@ -325,9 +308,9 @@ await fetch(upload.url, { method: 'PUT', headers: upload.headers, body: bytes })
 
 `signedUploadUrl` pins every header it returns into the signature: `content-type`, `cache-control`, your `x-amz-meta-*`, `content-length` when you pass `size`, and `if-none-match: *` when you pass `overwrite: false`. Send the `headers` object verbatim. Anything changed, dropped or added is a 403, not a header the client got to choose.
 
-For an existing S3 client, `bucket.s3()` hands back the endpoint and the credentials as async providers, so the aws-sdk re-reads the short-lived credential when it expires rather than holding a snapshot that dies mid-session.
+For an existing S3 client, `bucket.s3()` hands back the endpoint and the credentials as async providers rather than values. See [Writing](/blob/bucket/writing#the-s3-escape-hatch).
 
-Full options are on [reading](/blob/bucket/reading) and [writing](/blob/bucket/writing).
+Full options are on [Reading](/blob/bucket/reading) and [Writing](/blob/bucket/writing).
 
 ---
 

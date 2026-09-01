@@ -38,7 +38,7 @@ Create a bucket in the [Upstash Console](https://console.upstash.com) and copy i
 UPSTASH_BLOB_TOKEN=...
 ```
 
-Everything below reads this variable: `Bucket.fromEnv()` reads it, and an `uploadHandler` with no `bucket` of its own builds one from it, once.
+Everything below reads this variable, and `Bucket.fromEnv()` is the call that reads it.
 
 ---
 
@@ -48,7 +48,90 @@ Everything below reads this variable: `Bucket.fromEnv()` reads it, and an `uploa
 
 <Step title="Write the upload handler">
 
-The handler decides who may upload, where the object goes, and what happens once it lands. It runs on your server and signs the upload. It never sees the bytes.
+The handler decides who may upload, where the object goes, and what happens once it lands. It runs on your server and signs the upload. It never sees the bytes. With no `bucket` of its own it builds one from `UPSTASH_BLOB_TOKEN`, once.
+
+The smallest one that works states what it accepts and where the object goes:
+
+```ts lib/uploads.ts
+import "server-only"
+import { uniquePath, uploadHandler } from "@upstash/blob"
+
+export const uploads = uploadHandler({
+  constraints: { maxBytes: "20mb", contentTypes: ["image/*", "application/pdf"] },
+
+  onBeforeUpload: ({ file }) => ({ path: uniquePath`uploads/${file.name}` }),
+})
+```
+
+`uniquePath` sanitizes what you interpolate and adds a random suffix, so two people picking `photo.png` do not land on the same object. Sizes are decimal, so `'20mb'` is 20,000,000 bytes. The grammar behind `constraints` is covered in [Constraints](/blob/browser/constraints).
+
+</Step>
+
+<Step title="Mount it as a route">
+
+The handler is already a pair of route handlers. `POST` runs the upload, `GET` serves the route's constraints.
+
+```ts app/api/upload/route.ts
+import { uploads } from "@/lib/uploads"
+
+export const { GET, POST } = uploads
+```
+
+`/api/upload` is where the hooks look by default, so nothing else has to name a URL.
+
+</Step>
+
+<Step title="Bind the hooks to the handler">
+
+`uploadHooks<typeof uploads>()` reads the handler's type. That is how `upload.blob.data` on the client is typed from what `onUploadComplete` returned, and how a route name that does not exist fails to compile.
+
+```ts lib/upload-hooks.ts
+"use client"
+
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+The import is `import type`, so the `server-only` module is erased and never reaches the browser bundle.
+
+</Step>
+
+<Step title="Upload a file">
+
+```tsx app/page.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
+
+export default function Page() {
+  const { start, upload, accept } = useUpload()
+
+  return (
+    <div>
+      <input
+        type="file"
+        accept={accept}
+        onChange={(e) => start({ file: e.target.files?.[0] })}
+      />
+
+      {upload && <p>{upload.status}</p>}
+      {upload?.pending && <progress value={upload.percent} max={100} />}
+      {upload?.status === "done" && <a href={upload.blob.url}>{upload.blob.path}</a>}
+      {upload?.status === "error" && <p>{upload.error.message}</p>}
+    </div>
+  )
+}
+```
+
+`accept` comes from the route's own `GET`, so the file picker is filled from the same list that does the refusing. `status` is one of `queued`, `uploading`, `finishing`, `paused`, `done`, `canceled` or `error`, and `pending` is true for the first four. `upload.error` is a `BlobError` with the `code` your server raised.
+
+</Step>
+
+<Step title="Then authorize it and record what landed">
+
+Uploads work at this point. What the handler above does not do is check who is asking or write anything down, and both go in the same two callbacks. `onBeforeUpload` runs before a byte is signed, so a throw there costs nothing; `onUploadComplete` runs once the object exists.
 
 ```ts lib/uploads.ts
 import "server-only"
@@ -72,73 +155,7 @@ export const uploads = uploadHandler({
 })
 ```
 
-`uniquePath` sanitizes what you interpolate and adds a random suffix, so two people picking `photo.png` do not land on the same object. Sizes are decimal, so `'20mb'` is 20,000,000 bytes. The grammar behind `constraints` is covered in [Constraints](/blob/browser/constraints).
-
-<Warning>
-A throw out of `onUploadComplete` deletes the object that just landed. Catch your own database errors rather than letting them escape. See [Abandoned uploads](/blob/browser/abandoned-uploads).
-</Warning>
-
-</Step>
-
-<Step title="Mount it as a route">
-
-The handler is already a pair of route handlers. `POST` runs the upload, `GET` serves the route's constraints.
-
-```ts app/api/upload/route.ts
-import { uploads } from "@/lib/uploads"
-
-export const { GET, POST } = uploads
-```
-
-`/api/upload` is where the hooks look by default, so nothing else has to name a URL.
-
-</Step>
-
-<Step title="Bind the hooks to the handler">
-
-`uploadHooks<typeof uploads>()` reads the handler's type. That is how `upload.blob.data` on the client is typed from what `onUploadComplete` returned, and how a route name that does not exist fails to compile.
-
-```ts lib/upload-client.ts
-"use client"
-
-import { uploadHooks } from "@upstash/blob/react"
-import type { uploads } from "./uploads"
-
-export const { useUpload } = uploadHooks<typeof uploads>()
-```
-
-The import is `import type`, so the `server-only` module is erased and never reaches the browser bundle.
-
-</Step>
-
-<Step title="Upload a file">
-
-```tsx app/page.tsx
-"use client"
-
-import { useUpload } from "@/lib/upload-client"
-
-export default function Page() {
-  const { start, upload, accept } = useUpload()
-
-  return (
-    <div>
-      <input
-        type="file"
-        accept={accept}
-        onChange={(e) => start({ file: e.target.files?.[0] })}
-      />
-
-      {upload && <p>{upload.status}</p>}
-      {upload?.pending && <progress value={upload.percent} max={100} />}
-      {upload?.status === "done" && <a href={upload.blob.url}>{upload.blob.path}</a>}
-      {upload?.status === "error" && <p>{upload.error.message}</p>}
-    </div>
-  )
-}
-```
-
-`accept` comes from the route's own `GET`, so the file picker is filled from the same list that does the refusing. `status` is one of `queued`, `uploading`, `finishing`, `paused`, `done`, `canceled` or `error`, and `pending` is true for the first four. `upload.error` is a `BlobError` with the `code` your server raised.
+A throw out of `onUploadComplete` deletes the object that just landed, so catch your own database errors rather than letting them escape. [Upload handler](/blob/browser/upload-handler#onuploadcomplete) has the whole callback.
 
 </Step>
 
@@ -169,11 +186,18 @@ export async function saveReport(pdf: Blob) {
 
 ## CORS
 
-The browser PUTs to storage, not to your app, so the bucket has to allow it. The presigned PUT sends `Content-Type`, `Cache-Control` and the object's `x-amz-meta-*` as real headers, and they are pinned into the signature: allow `PUT` and those headers from your origin in the bucket's CORS configuration. Add `ETag` to the exposed headers too, since a multipart upload reads each part's ETag back from the response.
+A direct upload PUTs to storage, not to your app, so the bucket's CORS configuration is what decides whether the browser is allowed to send it at all. Four things have to be true, and they come straight from what the SDK signs:
 
-<Note>
+| The policy must allow | Because |
+| --- | --- |
+| the origin your page is served from | that is who sends the PUT |
+| the `PUT` method | a presigned upload is one `PUT` per object or per part |
+| the request headers `content-type`, `cache-control`, and every `x-amz-meta-*` the route writes | a single PUT carries them as real headers, pinned into the signature, so the browser must send them verbatim |
+| `ETag` in the exposed response headers | the browser reads each part's etag off a cross-origin response to complete the upload |
+
+The metadata header names are yours: a route returning `metadata: { owner }` sends `x-amz-meta-owner`. A multipart part PUT pins only `content-length`, so it is the single-PUT path that needs the header list. Exposing `Retry-After` too is worth doing but not required; without it the client backs off on its own schedule rather than the one storage asked for.
+
 A browser blocks a request that fails CORS before a single byte goes out, and script never sees why. The SDK gives up after three such attempts and says so, rather than backing off for minutes over an answer that will not change.
-</Note>
 
 ---
 
@@ -196,8 +220,12 @@ A browser blocks a request that fails CORS before a single byte goes out, and sc
     `put`, metadata, conditional writes and multipart from the server.
   </Card>
 
-  <Card title="Signed URLs" href="/blob/overall/signing">
+  <Card title="How signing works" href="/blob/overall/signing">
     Read and upload links for anything outside the browser flow.
+  </Card>
+
+  <Card title="Formulas" href="/blob/formulas/overview">
+    Whole features wired end to end: avatars, chat attachments, and the files they take.
   </Card>
 
   <Card title="Pricing" href="/blob/overall/pricing">

@@ -13,12 +13,12 @@ Almost every decision in an upload feature is the same five: where the object go
 | Feature | Path | Cache | Constraints | Multipart | Notes |
 | ------- | ---- | ----- | ----------- | --------- | ----- |
 | Avatar | `avatars/${user.id}.png`, stable | [`'immutable'`](/blob/bucket/caching) and serve `versionedUrl`, or `'revalidate'` if you link the bare `url` | [`image/*`](/blob/browser/constraints), `maxBytes: '5mb'` | default, a 5 MB file is always one PUT | Overwriting is the intent, so there is no orphan and nothing to sweep |
-| Chat or issue attachment | [`uniquePath`](/blob/browser/upload-handler) under `threads/${threadId}/` | default, `public, max-age=3600` | `maxBytes: '25mb'`, no type list | default, or `true` to skip the sweep | [Pending row plus a cron](/blob/browser/abandoned-uploads); `uploadId` is the idempotency key |
+| Chat or issue attachment | [`uniquePath`](/blob/bucket/writing#uniquepath) under `threads/${threadId}/` | default, `public, max-age=3600` | `maxBytes: '25mb'`, no type list | default, or `true` to skip the sweep | [Pending row plus a cron](/blob/browser/abandoned-uploads); `uploadId` is the idempotency key |
 | User document library | `uniquePath` under `docs/${user.id}/` | `'immutable'`, the path is already unique | `['application/pdf']`, `maxBytes: '100mb'` | default | [`bucket.list({ prefix })`](/blob/bucket/reading) is the listing, your rows are the metadata |
 | Large video upload | `uniquePath` under `videos/${user.id}/` | `'immutable'` | [`video/*`](/blob/browser/constraints), `maxBytes: '5gb'` | [`multipart: true`](/blob/browser/large-files) | Only parts can pause, resume and retry; a closed tab leaves parts for `abortStaleMultipartUploads` |
-| Private report or invoice | `invoices/${invoice.id}.pdf`, stable | `'no-store'` | written by your server, so [`bucket.put`](/blob/bucket/writing) rather than a route | default | `visibility: 'private'` drops `url`, and reads go through [`signedReadUrl`](/blob/overall/signing) |
+| Private report or invoice | `invoices/${invoice.id}.pdf`, stable | `'no-store'` | written by your server, so [`bucket.put`](/blob/bucket/writing) rather than a route | default | `visibility: 'private'` drops `url`, and reads go through [`signedReadUrl`](/blob/bucket/reading) |
 
-Two rules run underneath the whole table. Use `uniquePath` unless overwriting is the intent, because two uploads racing to one path lose an update and make the loser's completion fail with `not_found`. And write the row that says an upload is in flight before the bytes are, because under the multipart threshold the presigned PUT stores the object the moment the last byte lands, whether or not any callback ever accepted it.
+Two rules run underneath the whole table. Use `uniquePath` unless overwriting is the intent. And write the row that says an upload is in flight before the bytes are: under the multipart threshold the object exists the moment the last byte lands, whether or not any callback ever accepted it. Both are argued out in [Abandoned uploads](/blob/browser/abandoned-uploads).
 
 ---
 
@@ -67,13 +67,19 @@ import { uploads } from "@/lib/uploads"
 export const { GET, POST } = uploads
 ```
 
-```tsx components/avatar-picker.tsx
+```ts lib/upload-hooks.ts
 "use client"
 
 import { uploadHooks } from "@upstash/blob/react"
-import type { uploads } from "@/lib/uploads"
+import type { uploads } from "./uploads"
 
-const { useUpload } = uploadHooks<typeof uploads>()
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+```tsx components/avatar-picker.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
 
 export function AvatarPicker({ src }: { src: string }) {
   const { start, upload, accept } = useUpload()
@@ -102,7 +108,7 @@ A stable path is the one case where overwriting is the intent. There is exactly 
 
 `cache: 'immutable'` on a path that gets overwritten would normally be the wrong answer, and it is safe here only because nothing links the bare `url`. `versionedUrl` is `url` with `?v=<etag>` appended, so new bytes are a new URL and the old one is never asked for again. The alternative is `'revalidate'`, which keeps one URL and pays a 304 per read.
 
-The `try`/`catch` is not decoration. Any throw out of `onUploadComplete` deletes the object that just landed, the browser retries the completion, and the user is shown a 404 for an upload whose bytes were fine. Swallowing the database error costs a stale `avatarUrl` instead, and that is recoverable: the path is `avatars/${user.id}.png`, so `bucket.info(path)` gives the etag the URL is built from. See [Errors](/blob/bucket/errors).
+The `try`/`catch` is not decoration: any throw out of `onUploadComplete` [deletes the object that just landed](/blob/browser/upload-handler#onuploadcomplete). Swallowing the database error costs a stale `avatarUrl` instead, and that is recoverable, because the path is `avatars/${user.id}.png` and `bucket.info(path)` gives the etag the URL is built from.
 
 ---
 
@@ -192,8 +198,7 @@ export async function GET() {
     await sql`delete from pending_uploads where id = ${row.id}`
   }
 
-  // Parts from a tab that closed mid-upload: invisible to list(), billed, and they block a
-  // bucket delete until something aborts them.
+  // Parts a tab left behind over the multipart threshold, which list() cannot see.
   const aborted = await bucket.abortStaleMultipartUploads({ olderThan: "1d", prefix: "threads/" })
 
   return Response.json({ swept: stale.length, aborted: aborted.length })
@@ -203,10 +208,7 @@ export async function GET() {
 ```tsx components/attachment-input.tsx
 "use client"
 
-import { uploadHooks } from "@upstash/blob/react"
-import type { uploads } from "@/lib/uploads"
-
-const { useUpload } = uploadHooks<typeof uploads>()
+import { useUpload } from "@/lib/upload-hooks"
 
 export function AttachmentInput({ threadId }: { threadId: string }) {
   const { start, uploads: files } = useUpload("attachment")
@@ -238,9 +240,9 @@ export function AttachmentInput({ threadId }: { threadId: string }) {
 
 ### Why this shape
 
-`uniquePath` sanitizes what you interpolate and appends a random suffix, so two people sending `photo.png` to one thread get two objects. Without it the second upload silently replaces the first, and the first upload's completion then fails with `not_found` even though its bytes landed.
+`uniquePath` sanitizes what you interpolate and appends a random suffix, so two people sending `photo.png` to one thread get two objects rather than a lost update.
 
-The pending row is what makes a closed tab recoverable. Under the multipart threshold a direct upload is one presigned PUT, so the object exists the moment the last byte lands, and the completion request that would have recorded it is a separate call the browser may never make. Nothing on the object distinguishes that from a finished upload, so only your own rows can: write the row in `onBeforeUpload`, clear it last in `onUploadComplete`, and sweep what is still pending past the grace window. The sweep is an indexed query over your rows, not a scan of the bucket, and the row names the exact path. See [Abandoned uploads](/blob/browser/abandoned-uploads).
+The pending row is what makes a closed tab recoverable: write it in `onBeforeUpload`, clear it last in `onUploadComplete`, and sweep what is still pending past a grace window. Why the row is the only thing that can tell an abandoned upload from a finished one is in [Abandoned uploads](/blob/browser/abandoned-uploads).
 
 Because the sweep exists, a database error is allowed to escape `onUploadComplete` here, unlike in the avatar formula. The throw deletes the object, the pending row survives, the cron's `not_found` branch clears it, and the user gets an error for an upload that genuinely did not land.
 
@@ -248,4 +250,4 @@ Because the sweep exists, a database error is allowed to escape `onUploadComplet
 
 ## More formulas coming
 
-Planned next: user document library, large video upload with pause and resume, private invoices behind signed URLs, and image processing on completion. Each will land here as a full set of files, in the same shape as the two above.
+The other rows of the table above land here next, each as a full set of files.

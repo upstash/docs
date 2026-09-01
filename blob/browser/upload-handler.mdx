@@ -4,7 +4,7 @@ title: "Upload Handler"
 
 `uploadHandler` is one upload endpoint. The bytes go straight from the browser to storage: your server only authorizes the upload, signs it, and records what landed. The file never passes through your app, so nothing is bound by your platform's request body limit and nothing streams through your function's memory.
 
-Three requests reach your route per upload. `begin` runs your authorization and hands the browser presigned URLs, the browser PUTs the bytes to storage, and `end` records the object and runs your completion callback.
+Two requests reach your route for an ordinary upload. `begin` runs your authorization and hands the browser presigned URLs, and `end` records the object and runs your completion callback. The PUTs in between go to storage, not to you. A third phase, `parts`, is only asked for when an upload needs more than the first 16 part URLs, or when it resumes after a reload.
 
 ---
 
@@ -15,6 +15,8 @@ Four files. The handler, the route it is mounted at, the bound hooks, and the co
 ```ts lib/uploads.ts
 import "server-only"
 import { BlobError, uniquePath, uploadHandler } from "@upstash/blob"
+import { getUser } from "./auth"
+import { sql } from "./db"
 
 export const uploads = uploadHandler({
   constraints: { maxBytes: "20mb", contentTypes: ["image/*", "application/pdf"] },
@@ -71,8 +73,8 @@ export function Uploader() {
 The client assumes the handler is mounted at `/api/upload`. That is the only default; `endpoint` on `uploadHooks` or on `useUpload` moves it.
 
 <Note>
-  New to Upstash Blob? Start at the [quickstart](/blob/overall/quickstart). If the bytes have to pass
-  through your app instead, write an ordinary route that calls `bucket.put` ([writing](/blob/bucket/writing))
+  New to Upstash Blob? Start at the [Quickstart](/blob/overall/quickstart). If the bytes have to pass
+  through your app instead, write an ordinary route that calls `bucket.put` ([Writing](/blob/bucket/writing))
   and drive it with [`useServerUpload`](#useserverupload).
 </Note>
 
@@ -108,7 +110,7 @@ export const uploads = uploadHandler({
 | `onError` | `(args) => BlobError \| Response \| void` | Sees every refusal. The one place to log. |
 | `routes` | `Record<string, route>` | Mounts several routes at this one endpoint. |
 
-Everything except `routes`, `endpoint` and `context` is a **default**. A route replaces the ones it names and inherits the rest, key by key, so a handler with five routes states the shared policy once. `constraints` merges one level deeper: a route's `constraints` replaces `maxBytes` and `contentTypes` individually, and `null` clears a key the handler set. See [constraints](/blob/browser/constraints) for the grammar and what a wildcard expands to.
+Everything except `routes`, `endpoint` and `context` is a **default**. A route replaces the ones it names and inherits the rest, key by key, so a handler with five routes states the shared policy once. `constraints` merges one level deeper: a route's `constraints` replaces `maxBytes` and `contentTypes` individually, and `null` clears a key the handler set. See [Constraints](/blob/browser/constraints) for the grammar and what a wildcard expands to.
 
 `onBeforeUpload` is the one callback that has to exist. A route with none of its own, mounted in a handler with none either, is a build error naming the route.
 
@@ -155,12 +157,12 @@ What it returns:
 | Field | Type | |
 | --- | --- | --- |
 | `path` | `string` | Required. Where the object is stored. |
-| `cache` | `CacheOption` | The `Cache-Control` this object is stored with, over the bucket default. See [caching](/blob/bucket/caching). |
+| `cache` | `CacheOption` | The `Cache-Control` this object is stored with, over the bucket default. See [Caching](/blob/bucket/caching). |
 | `metadata` | `Record<string, string>` | Signed into the upload and handed back to `onUploadComplete`. |
 | `constraints` | `{ contentTypes?, maxBytes? }` | Narrows this one upload's limits. |
-| `state` | `TState` | Carried to `onUploadComplete` and `onError`. Typed only under `uploadRoute()`. |
+| `state` | `TState` | Carried to `onUploadComplete` and `onError`. Only `uploadRoute()` can carry one: on a plain-object route the return type is pinned to `state: undefined`, so returning anything else does not compile. |
 
-`file` is the browser's own claim, so `file.type` is the type the object is stored and served as. The type the bytes really are is checked at `begin` too, against the file's first bytes; that check is described in [constraints](/blob/browser/constraints).
+`file` is the browser's own claim, so `file.type` is the type the object is stored and served as. The type the bytes really are is checked at `begin` too, against the file's first bytes; that check is described in [Constraints](/blob/browser/constraints).
 
 ### Paths
 
@@ -175,21 +177,15 @@ uniquePath`chat/${threadId}/${file.name}`
 // chat/42/holiday-pic-7Kd2mQ9x.png
 ```
 
-Slashes in the literal chunks are structure. Everything inside `${...}` is a value, and a value cannot contribute structure:
+Slashes in the literal chunks are structure. Everything inside `${...}` is a value, sanitized down to a slugged basename with a random suffix, so it can never contribute a directory of its own. The full rules are in [Writing](/blob/bucket/writing#uniquepath).
 
-- directory components are dropped, so `../admin/x.png` contributes `x.png`
-- control and format characters are stripped
-- the stem is slugged (letters and digits survive, including non-Latin ones; everything else becomes `-`), lowercased, and capped at 64 characters
-- the final extension is preserved and lowercased; a stem that slugs to nothing becomes `file`
-- a `-` and 8 base58 characters are appended, so two uploads of the same filename never collide
-
-Without the suffix, a stable path is an overwrite: the second upload replaces the first, and the first upload's `end` then answers 404 even though its bytes landed. Use a stable path only when overwriting is the intent.
+Without the suffix, a stable path is an overwrite: the second upload replaces the first, and a single-PUT upload that lost the race then gets 404 from its own `end` even though its bytes landed. Use a stable path only when overwriting is the intent.
 
 ### Metadata
 
 `metadata` is signed into the presigned PUT, so the browser can neither add to it nor change it, and it comes back on `onUploadComplete` as `metadata`. It is stored on the object and readable later with `bucket.info(path)`.
 
-Values are printable ASCII; anything else is refused with `invalid_input` rather than silently re-encoded by storage. Keys must be valid header names and are lowercased on the way in, so read them back lowercased. Percent-encode anything else with `encodeURIComponent`.
+Values are printable ASCII and keys come back lowercased, under the same rules as a server-side write: see [Writing](/blob/bucket/writing#metadata).
 
 `metadata["upstash-upload"]` is reserved: the SDK writes its own marker under that key to prove which upload wrote the object at a path, and setting it throws `invalid_input`.
 
@@ -219,7 +215,7 @@ onBeforeUpload: async ({ request, file }) => {
 }
 ```
 
-Every `BlobError` reaches the browser with its `code` intact, so a hook can switch on `error.code` instead of reading status numbers. The codes are listed in [errors](/blob/bucket/errors).
+Every `BlobError` reaches the browser with its `code` intact, so a hook can switch on `error.code` instead of reading status numbers. The codes are listed in [Errors](/blob/bucket/errors).
 
 The browser never retries `begin`: it runs your callback, and a callback that writes a row must not be run twice for one file.
 
@@ -241,8 +237,8 @@ onUploadComplete: async ({ uploadId, path, url, size, contentType, metadata, sta
 | Argument | Type | |
 | --- | --- | --- |
 | `path` | `string` | Where the object is stored. |
-| `url` | `string \| undefined` | The public URL. Undefined on a private bucket; use [signed URLs](/blob/overall/signing). |
-| `versionedUrl` | `string \| undefined` | `${url}?v=${etag}`, for a stable path that gets overwritten. |
+| `url` | `string \| undefined` | The public URL. Undefined on a private bucket; see [How signing works](/blob/overall/signing). |
+| `versionedUrl` | `string \| undefined` | `${url}?v=${etag}` with the etag percent-encoded, since storage returns it quoted, so it reads `?v=%22...%22`. For a stable path that gets overwritten. |
 | `size` | `number` | Bytes actually stored, verified against what the browser declared. |
 | `etag` | `string` | The stored object's etag. |
 | `uploadedAt` | `Date` | When storage wrote it. |
@@ -264,14 +260,17 @@ if (upload?.status === "done") upload.blob.data.path // string, inferred from on
 ```
 
 <Warning>
-  **It is at-least-once.** The browser retries `end` up to three times, on a network failure and on
-  408, 429 and any 5xx. `uploadId` is stable across those retries and is the key to write against:
-  `on conflict (upload_id) do nothing`, or the equivalent upsert for your database.
+  **It is at-least-once.** `end` gets three attempts, so two retries, on a network failure and on
+  408, 429, 500, 502, 503 or 504. Any other status fails outright. `uploadId` is stable across those
+  retries and is the key to write against: `on conflict (upload_id) do nothing`, or the equivalent
+  upsert for your database.
 
   **Any throw out of it deletes the completed object.** That is the intent for a refusal, and it is a
   trap for a database error: a ten-second outage destroys bytes that uploaded fine, the browser
-  retries `end`, and the user is shown a 404 reading "the upload never landed". Catch your own
-  storage errors and decide deliberately instead of letting a driver error escape the callback.
+  retries `end`, and a single-PUT upload then answers 404 reading "the upload never landed". A
+  retryable `BlobError` is not an escape either: the delete happens first, so the retry it asks for
+  arrives at an empty path. Catch your own storage errors and decide deliberately instead of letting
+  a driver error escape the callback.
 </Warning>
 
 ```ts lib/uploads.ts
@@ -343,9 +342,7 @@ With a single route, authorizing inside `onBeforeUpload` and carrying an id in `
 
 ### The ordering rule
 
-Write `context` **above** `routes` and the callbacks that read `ctx`, or annotate its parameter. Straight from the SDK's own source:
-
-> One rule about `context`: write it above the callbacks that read `ctx`. `(request) =>` with no annotation is fine there. Written below `routes`, TypeScript has already typed the routes with `ctx: undefined` by the time it reads what `context` returns, and the error lands on `context` itself: `Promise<Session> is not assignable to undefined`. Annotating the parameter, `(request: Request) =>`, lifts the order rule, because TypeScript reads an annotated function's return before it types anything else in the literal.
+Write `context` **above** `routes` and the callbacks that read `ctx`, or annotate its parameter. An unannotated `(request) =>` is fine in the first position. Written below `routes`, TypeScript has already typed the routes with `ctx: undefined` by the time it reads what `context` returns, and the error lands on `context` itself: `Promise<Session> is not assignable to undefined`. Annotating the parameter as `(request: Request) =>` lifts the ordering rule, because TypeScript reads an annotated function's return type before it types anything else in the object literal.
 
 ```ts lib/uploads.ts
 // Fine: context first.
@@ -470,7 +467,9 @@ export const { useUpload } = uploadHooks<typeof uploads>({
 })
 ```
 
-`headers`, `concurrency`, `endpoint` and `onError` are the defaults `uploadHooks` takes. A call-site option wins over the default; the configured `onError` runs first, then the one passed at the call site, and a throw from either stops neither the other nor the queue.
+`headers`, `concurrency`, `endpoint` and `onError` are the defaults `uploadHooks` takes. A call-site option wins over the default, except `onError`, where the configured handler runs first and the call-site one after it.
+
+Only the configured handler is wrapped: a throw from it is caught and logged as `[upstash-blob] uploadHooks onError threw`, and the call-site handler still runs. The call-site handler is not wrapped. A throw there escapes the store's settle loop before it reaches the step that starts the next queued upload, so the rest of the queue never starts. That handler must not throw.
 
 Called with no type parameter, `uploadHooks()` returns the unbound `useUpload`, which takes a URL.
 
@@ -523,7 +522,7 @@ const { start, uploads, upload, clear, accept, constraints } = useUpload("attach
 
 `pending` is the field to drive UI off. Hand-rolling it from `status` is where the off-by-one-state bugs live: an input re-enabled during `finishing`, a progress bar still drawn under an error line.
 
-`percent` sits at 99 through `finishing`, which is the stretch after the last byte is sent while `end` records the object and runs `onUploadComplete`. Naming that state is the difference between a bar that is working and one that looks stuck.
+`percent` sits at 99 through `finishing`, because 100 has to mean stored rather than sent. [Large files](/blob/browser/large-files#progress-and-status) has the rest of the progress fields.
 
 `blob.data` is typed from that route's `onUploadComplete`. The payload a state does not carry is declared as `undefined` rather than left out, so `upload?.blob?.url` and `upload?.error?.message` read straight off the record with no narrowing.
 
@@ -550,15 +549,7 @@ A throw from it ends the upload carrying that error, with no retry and no reword
 
 ## The GET endpoint
 
-`GET` on the route serves its constraints as JSON, with an ETag and `Cache-Control: public, max-age=60`:
-
-```json
-{ "constraints": { "contentTypes": ["image/png", "image/jpeg"], "maxBytes": 20000000 } }
-```
-
-That is what fills `accept` and `constraints` on the hook, and it lets the hook refuse an oversized file locally, as an error record, before any request leaves the browser. It is short-lived and revalidated rather than immutable, because the constraints are your route's own code and change with a deploy.
-
-The check in the browser is a courtesy: the server is authoritative and enforces the same limits at `begin`. See [constraints](/blob/browser/constraints).
+`GET` on the route serves its constraints as JSON. That is what fills `accept` and `constraints` on the hook, and it lets the hook refuse an oversized file locally, as an error record, before any request leaves the browser. The check in the browser is a courtesy: the server is authoritative and enforces the same limits at `begin`. The document, its caching and what the hook does with it are in [Constraints](/blob/browser/constraints#in-the-browser).
 
 ---
 
@@ -621,22 +612,10 @@ upload?.status === "done" && upload.response.url // typed from the generic
 
 Its options are `headers`, `concurrency` and `field`, the multipart field name `start({ file })` sends the file under, `'file'` by default and it has to match what your route reads. `start({ body })` sends a `File`, `Blob` or `FormData` as the raw body instead. The record has `cancel()` only, and statuses `queued`, `uploading`, `finishing`, `done`, `canceled` and `error`: there is no `begin` or `end` to pause between.
 
-<Warning>
-  A proxied upload is capped by your platform's request body limit, not by `maxBytes`: Vercel caps a
-  serverless request body at 4.5 MB, AWS Lambda at 6 MB, and Cloudflare at 100 MB on the free plan.
-  The body is rejected before your route runs, so the 413 carries no code of its own; the SDK
-  surfaces it as `too_large` with those numbers as the hint. Anything larger belongs on the direct
-  path above.
-</Warning>
+A proxied upload is capped by your platform's request body limit rather than by `maxBytes`, and the refusal happens before your route runs. The SDK surfaces it as `too_large` with the platform numbers as the hint; they are listed in [Errors](/blob/bucket/errors#platform-body-limits). Anything larger belongs on the direct path above.
 
 ---
 
 ## CORS
 
-The signed PUT is a cross-origin request from your page to storage, and it sends `Content-Type`, `Cache-Control` and the object's `x-amz-meta-*` as real headers, because they are pinned into the signature and storage refuses the PUT if they are changed. The bucket's CORS configuration therefore has to
-
-- allow `PUT` from your origin,
-- allow those request headers, and
-- expose `ETag` in `Access-Control-Expose-Headers`, which is how the browser reads back what it stored.
-
-A request that fails with no status and no bytes sent is almost always CORS: the preflight is what failed, and the reason is never visible to script. The SDK says so after three attempts rather than backing off for minutes, with a hint naming CORS as the likely cause. A failure after bytes were sent is treated as a dropped link instead, and retried far longer.
+The signed PUT is a cross-origin request from your page to storage, so the bucket's CORS policy has to allow it: the required shape is in [CORS](/blob/overall/quickstart#cors). A PUT that fails with no status and no bytes sent is almost always this, and the SDK says so after three attempts rather than backing off for minutes.

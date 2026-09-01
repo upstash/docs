@@ -26,10 +26,10 @@ That is the whole shape of the feature. Everything below is about choosing the r
 A bare number is **seconds**, the unit every TTL option on the web already uses. A string takes a unit: `ms`, `s`, `m`, `h`, `d`, and their long forms (`sec`, `second`, `seconds`, `min`, `minute`, `minutes`, `hr`, `hour`, `hours`, `day`, `days`). A string with no unit at all is read as seconds too.
 
 ```ts
-cache: '1h'      // public, max-age=3600
+cache: "1h"      // public, max-age=3600
 cache: 3600      // public, max-age=3600
-cache: '15 min'  // public, max-age=900
-cache: '7d'      // public, max-age=604800
+cache: "15 min"  // public, max-age=900
+cache: "7d"      // public, max-age=604800
 ```
 
 Durations are converted to whole seconds, so `'1500ms'` stores `max-age=1`. An unparseable duration throws a `TypeError` naming the option.
@@ -39,8 +39,8 @@ Durations are converted to whole seconds, so `'1500ms'` stores `max-age=1`. An u
 Anything containing `=` or `,` is a header, stored exactly as written, trimmed. A directive separator is what tells the two apart: a header always has one, a duration never does.
 
 ```ts
-cache: 'public, max-age=60, s-maxage=31536000'
-cache: 'max-age=0, stale-while-revalidate=86400'
+cache: "public, max-age=60, s-maxage=31536000"
+cache: "max-age=0, stale-while-revalidate=86400"
 ```
 
 That is the escape hatch, and it is why `cache` is three words and a duration rather than an object of flags. `s-maxage`, `stale-while-revalidate`, `no-transform` and whatever the spec adds next are all sayable without the option growing a camelCase word for each of them.
@@ -71,21 +71,21 @@ Four places, innermost wins. A per-call `cache` overrides the bucket default.
 The default for every object this bucket stores.
 
 ```ts lib/blob.ts
-import { Bucket } from '@upstash/blob';
+import { Bucket } from "@upstash/blob"
 
 export const bucket = new Bucket({
   token: process.env.UPSTASH_BLOB_TOKEN!,
-  cache: 'immutable',
-});
+  cache: "immutable",
+})
 ```
 
 ### On a put
 
 ```ts
-await bucket.put('avatars/7.png', file, {
-  contentType: 'image/png',
-  cache: 'revalidate',
-});
+await bucket.put("avatars/7.png", file, {
+  contentType: "image/png",
+  cache: "revalidate",
+})
 ```
 
 `updateJson` takes it too, for the object it rewrites. See [Writing](/blob/bucket/writing) for the rest of `put`.
@@ -95,12 +95,12 @@ await bucket.put('avatars/7.png', file, {
 The `Cache-Control` is pinned into the signature and handed back in `headers`, so the uploader has to send it verbatim.
 
 ```ts
-const upload = await bucket.signedUploadUrl('u/7/report.pdf', {
-  contentType: 'application/pdf',
-  cache: 'immutable',
-});
+const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
+  contentType: "application/pdf",
+  cache: "immutable",
+})
 
-await fetch(upload.url, { method: 'PUT', headers: upload.headers, body });
+await fetch(upload.url, { method: "PUT", headers: upload.headers, body })
 ```
 
 ### On a direct browser upload
@@ -108,14 +108,14 @@ await fetch(upload.url, { method: 'PUT', headers: upload.headers, body });
 `onBeforeUpload` returns the path, and may return the `cache` alongside it. It is decided per upload, on your server, and signed into the presigned PUT.
 
 ```ts lib/uploads.ts
-import { uniquePath, uploadHandler } from '@upstash/blob';
+import { uniquePath, uploadHandler } from "@upstash/blob"
 
 export const uploads = uploadHandler({
   onBeforeUpload: ({ file }) => ({
     path: uniquePath`uploads/${file.name}`,
-    cache: 'immutable',
+    cache: "immutable",
   }),
-});
+})
 ```
 
 See [Upload handler](/blob/browser/upload-handler) for the rest of the callback.
@@ -146,15 +146,15 @@ Reads on a private bucket go through `signedReadUrl()`. See [Reading](/blob/buck
 
 This is the pattern worth learning, because it is the one that gets a year of caching out of a path that changes.
 
-Every record carries `versionedUrl`, which is `${url}?v=${etag}`. The etag changes whenever the content does, so the URL changes whenever the content does. A stable path stored with `cache: 'immutable'` and served through `versionedUrl` is cached for a year by URL, and an overwrite mints a new URL that no cache has ever seen.
+Every record carries `versionedUrl`, which is `${url}?v=${etag}` with the etag percent-encoded, since storage returns it quoted: the query reads `?v=%22...%22`. The etag changes whenever the content does, so the URL changes whenever the content does. A stable path stored with `cache: 'immutable'` and served through `versionedUrl` is cached for a year by URL, and an overwrite mints a new URL that no cache has ever seen.
 
 ```ts app/api/avatar/route.ts
 const blob = await bucket.put(`avatars/${user.id}.png`, file, {
-  contentType: 'image/png',
-  cache: 'immutable',
-});
+  contentType: "image/png",
+  cache: "immutable",
+})
 
-await db.users.update(user.id, { avatar: blob.versionedUrl });
+await db.users.update(user.id, { avatar: blob.versionedUrl })
 ```
 
 ```tsx
@@ -197,35 +197,24 @@ For anything served through `signedReadUrl()`, two separate mechanisms are in pl
 The link expires. `signedReadUrl()` defaults to 5 minutes and is capped by the credential that signed it, so `expiresAt` on the result is the answer per link rather than a number you assume.
 
 ```ts
-const { url, expiresAt } = await bucket.signedReadUrl('private/report.pdf');
+const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf")
 ```
 
 The stored `Cache-Control` is a different thing entirely, and it outlives the link. A long max-age on a private object still lets the requester's own browser keep the bytes after the link stops working, because the browser is caching a response it was allowed to fetch. If a reader must not keep the bytes, say so on the object:
 
 ```ts
-await bucket.put('private/report.pdf', body, {
-  contentType: 'application/pdf',
-  cache: 'no-store',
-});
+await bucket.put("private/report.pdf", body, {
+  contentType: "application/pdf",
+  cache: "no-store",
+})
 ```
 
 `no-store` is the one value that drops the visibility scope entirely: it stores `no-store` on a public and a private bucket alike, because nothing is to be kept either way.
 
-See [Signed URLs](/blob/overall/signing) for how link lifetimes are capped.
+See [How signing works](/blob/overall/signing) for how link lifetimes are capped.
 
 ---
 
 ## What the upload route itself caches
 
-An upload route's `GET` serves its constraints, and it has its own caching, unrelated to the objects the route stores.
-
-```http
-cache-control: public, max-age=60
-etag: "1qk8ru"
-```
-
-A request carrying a matching `If-None-Match` gets a 304 with no body. On the client, the React hooks keep the answer in memory for 60 seconds, so a page with several pickers on it asks once.
-
-Short and revalidated, not immutable: the constraints are the route's own code and change with a deploy, and a client that cached them forever would refuse files the route now accepts. The server stays authoritative either way, since every upload is checked again at `begin`.
-
-See [Upload handler](/blob/browser/upload-handler).
+An upload route's `GET` serves its constraints with a short, revalidated `Cache-Control` of its own, unrelated to the objects the route stores. That document and its caching are covered in [Constraints](/blob/browser/constraints#in-the-browser).
