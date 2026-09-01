@@ -39,7 +39,7 @@ await bucket.del("drafts/9f3c.txt")
 await bucket.del("drafts/9f3c.txt")  // fine, still no throw
 ```
 
-That is what makes a delete safe to run from a retried job or a queue consumer with at-least-once delivery. Any other failure is a real error: a 403 surfaces as `signature_mismatch`, a 429 as `rate_limited`, a 503 as `not_ready`, and any other 5xx as `request_failed` carrying status 502. See [Errors](/blob/bucket/errors#what-storage-errors-map-to).
+That makes a delete safe to run from a retried job or a queue consumer with at-least-once delivery. Any other failure is a real error; see [Errors](/blob/bucket/errors#what-storage-errors-map-to).
 
 <Note>
 `del` never tells you whether anything was there. If you need to know, ask first with `bucket.exists(path)`, which answers `false` instead of throwing. See [Reading](/blob/bucket/reading).
@@ -49,15 +49,9 @@ That is what makes a delete safe to run from a retried job or a queue consumer w
 
 ## Deleting an array
 
-An array is sent as S3 batch deletes, in chunks of 1000 paths. A 5000-path array is five `POST` requests, run one after another, not 5000 round trips.
+An array is sent as batch deletes, in chunks of 1000 paths. A 5000-path array is five requests, not 5000 round trips. A bad path fails the chunk it is in; chunks before it have already run.
 
-Two details are worth knowing before you read the error handling.
-
-First, every path in a chunk is validated before that chunk's request goes out, so a bad path fails the chunk it is in rather than being silently skipped. Chunks before it have already run.
-
-Second, and this is the one that shapes the API: S3 answers a batch delete with **200 and per-key errors inside the body**. A key that failed is reported in an `<Error>` block in an otherwise successful response. The SDK does not take that list at face value: for each key S3 named it makes one more `exists()` call and keeps only the paths that are still there.
-
-A survivor is the truth and the list is not. An error block for an object that is in fact gone would otherwise be reported to you as a failure you cannot act on, and the whole point of `failed` is that you can act on it.
+Storage can report a key as failed inside an otherwise successful batch response. The SDK re-checks each of those keys and keeps only the paths that are genuinely still there, so `failed` is a list you can act on rather than one you have to verify.
 
 If anything survives, `del` throws `partial_delete`, status 500, whose `failed` array names exactly which paths are still there:
 
@@ -83,7 +77,7 @@ Everything not in `failed` was deleted. `partial_delete` is a report, not a roll
 Use `BlobError.is(e)`, never `instanceof`. An ESM copy and a CJS copy of the class are two different classes. See [Errors](/blob/bucket/errors).
 </Note>
 
-A batch delete is a `POST`, and the SDK only retries idempotent verbs, so a failure on a batch surfaces on the first try rather than being sent twice: a 503 as `not_ready`, any other 5xx as `request_failed` at status 502.
+A batch delete is not retried internally, so a failure surfaces on the first try rather than being sent twice.
 
 ---
 
@@ -117,14 +111,12 @@ await bucket.del({ prefix: "", all: true })
 
 ## Paths are validated, never normalized
 
-Every path reaching storage goes through `encodeKey`, which percent-encodes each segment and refuses outright any path containing a `.` or `..` segment:
+A path containing a `.` or `..` segment is refused outright rather than resolved:
 
 ```ts
 await bucket.del("users/7/../8/private.pdf")
 // TypeError: path may not contain "." or ".." segments: users/7/../8/private.pdf
 ```
-
-The reason is the trust model rather than tidiness. Your server holds a temporary credential that authorizes the whole bucket, and the URL parser resolves `..` before the request is signed. A traversing key would sign a delete against a different object than the one your code named, and the credential would happily allow it. Normalizing the path would hide that; rejecting it does not.
 
 This applies to `del` in all three shapes, and to `put`, `copy`, `move`, `signedUploadUrl` and `abortMultipartUpload` alike. If you build paths from user input, build them with `uniquePath`, which strips directory components out of every interpolated value. See [Writing](/blob/bucket/writing).
 
@@ -189,9 +181,7 @@ const uploads = await bucket.listMultipartUploads({ prefix: "uploads/" })
 await bucket.abortMultipartUpload({ path: "uploads/big.mp4", uploadId: "ABC..." })
 ```
 
-This throws the upload away along with every part that landed for it. Missing is success, exactly like `del` on a path that is not there.
-
-That is also why it takes the record `listMultipartUploads()` returned rather than two positional strings. If the wire treats "not there" as success, then `abortMultipartUpload(uploadId, path)` with the arguments swapped would abort nothing, answer 204, and report that it worked. A named `{ path, uploadId }` pair cannot be swapped by accident, and an empty `uploadId` is refused with `invalid_input` before anything is sent.
+This throws the upload away along with every part that landed for it. Missing is success, exactly like `del` on a path that is not there. Since a wrong pair would silently succeed, the arguments are named rather than positional, and an empty `uploadId` is refused with `invalid_input`.
 
 <Note>
 `onUploadComplete` receives `multipartUploadId` for exactly this pair. Store it alongside your row and you can abort a specific upload later without listing the bucket. It is `undefined` when the file went up as a single PUT. See [Upload handler](/blob/browser/upload-handler).
@@ -235,9 +225,11 @@ An abandoned upload **under** the multipart threshold is not a multipart upload 
 
 ## When the SDK deletes for you
 
-Two paths in the upload handler delete objects without you asking: a throw out of `onUploadComplete`, and a `cancel()` from the browser. A cancel on a multipart upload aborts it, parts and all. Everything else deletes a stored object, and that goes through one guard, because R2 has no conditional delete. The object's etag is re-read first and the delete only happens when it still matches the one this upload produced, so a later upload to the same path is left alone with a warning; an upload the handler cannot identify at all is left stored with an error logged, because an orphan costs storage and a log line while a blind delete costs somebody else's accepted file. On a single PUT, the `upstash-upload` marker signed into the presigned URL is what says the object is this upload's at all.
+Two paths in the upload handler delete objects without you asking: a throw out of `onUploadComplete`, and a `cancel()` from the browser.
 
-Any throw out of `onUploadComplete` runs that discard, including a retryable `BlobError`: the object is deleted first, so the retry the error asks for arrives at an empty path. Catch your own storage errors rather than letting them escape the callback. See [Upload handler](/blob/browser/upload-handler#onuploadcomplete) for the callback and [Abandoned uploads](/blob/browser/abandoned-uploads) for what happens when nothing is ever posted at all.
+Both confirm the object is the one this upload wrote before deleting it. A later upload that took the same path is left alone with a warning, and an object the handler cannot identify is left stored with an error logged: an orphan costs storage, while a blind delete costs somebody else's accepted file.
+
+Any throw out of `onUploadComplete` runs that delete, including a retryable `BlobError`, so the retry the error asks for arrives at an empty path. Catch your own storage errors rather than letting them escape the callback. See [Upload handler](/blob/browser/upload-handler#onuploadcomplete) and [Abandoned uploads](/blob/browser/abandoned-uploads).
 
 ---
 

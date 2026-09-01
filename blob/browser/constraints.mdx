@@ -21,7 +21,7 @@ export const uploads = uploadHandler({
 })
 ```
 
-Both are enforced at phase `begin`, from the name, type and size the browser declared, before anything is signed and before `onBeforeUpload` runs. Nothing has been written down when a file is refused: no presigned URL exists, no row was inserted, no multipart upload was created.
+Both are enforced from the name, type and size the browser declared, before anything is signed and before `onBeforeUpload` runs. Nothing has been written down when a file is refused: no presigned URL exists, no row was inserted, no multipart upload was created.
 
 Omitting `constraints` entirely accepts any type at any size.
 
@@ -31,14 +31,14 @@ Omitting `constraints` entirely accepts any type at any size.
 
 `maxBytes` takes a `Size`: a number of bytes, or a string like `'20mb'`, `'500kb'`, `'5gb'`.
 
-Sizes are **decimal**, matching how storage is billed. `'2mb'` is 2,000,000 bytes, not 2,097,152. The units are `b`, `kb`, `mb`, `gb` and `tb`, and binary spellings are not part of the vocabulary: `'5mib'` throws. The only binary math in the SDK is multipart part sizing, because R2's part floor is 5 MiB.
+Sizes are **decimal**, matching how storage is billed. `'2mb'` is 2,000,000 bytes, not 2,097,152. The units are `b`, `kb`, `mb`, `gb` and `tb`. Binary spellings are not accepted: `'5mib'` throws.
 
 ```ts
 constraints: { maxBytes: "2mb" }   // 2,000,000
 constraints: { maxBytes: 4096 }    // a bare number is bytes
 ```
 
-`formatBytes` is exported from `@upstash/blob`, `@upstash/blob/browser` and `@upstash/blob/react`, and it formats sizes the same decimal way they are parsed, so a refusal reads back in the units the limit was written in:
+`formatBytes` is exported from all three entrypoints and formats sizes the same decimal way they are parsed, so a refusal reads back in the units the limit was written in:
 
 ```
 cat.png is 2.4 MB, over the 2 MB limit
@@ -57,8 +57,6 @@ Anything else throws `invalid_content_type_pattern`. That includes `*/*`, `text/
 Entries are lowercased, deduplicated, and keep the order you wrote them in.
 
 ### What the wildcards expand to
-
-A wildcard is the media family, not the subset the byte sniffer happens to recognise, so `audio/*` includes `audio/mp4` rather than refusing every voice memo.
 
 | Wildcard  | Expands to |
 | --------- | ---------- |
@@ -100,35 +98,19 @@ Parameters are stripped before the comparison, so `image/png; charset=binary` is
 
 ## Byte sniffing
 
-A route with `contentTypes` gets more than the declared type. The browser slices the file's first 4100 bytes (`SNIFF_BYTES`), base64-encodes them, and sends them as `head` with phase `begin`. A mislabelled file is then refused before the upload rather than after it.
+A route with `contentTypes` checks more than the declared type. The browser sends the file's leading bytes with the first request, so a mislabelled file is refused before the upload rather than after it.
 
 The check runs in two steps:
 
-1. **The declared type against the allow list.** `report.exe` renamed to `report.png` but declared `application/x-msdownload` is refused here, with the allowed list as the hint. This step runs whether or not the bytes arrived.
-2. **The bytes against the declaration, on a proven conflict only.** The leading bytes are sniffed. If they prove nothing, the file passes. If they prove something, it is only a refusal when the declared type is in a small closed set and the bytes name a different type in that set.
+1. **The declared type against the allow list.** `report.exe` renamed to `report.png` but declared `application/x-msdownload` is refused here, with the allowed list as the hint.
+2. **The bytes against the declaration, on a proven conflict only.** If the leading bytes prove nothing, the file passes.
 
-That second condition is what keeps real files from being refused. Bytes that prove a container the declaration sits on top of pass: a `.docx` really is a zip, an `.epub` and a `.jar` and an `.apk` are too, and a `.svgz` really is a gzip. `application/octet-stream` is a shrug, not a claim, so bytes never contradict it.
-
-The closed set, the types a signature proves outright with no sibling format sharing it:
-
-`image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/bmp`, `audio/wav`, `video/x-msvideo`, `application/pdf`, `application/zip`, `application/gzip`, `application/x-7z-compressed`, `application/x-rar-compressed`, `application/x-bzip2`
-
-Some formats are deliberately left unnamed by the sniffer, because their signature proves a container and not the type above it:
-
-| Format | Why |
-| ------ | --- |
-| ISO-BMFF | `ftyp` is mp4, m4a, heic, avif and quicktime alike |
-| EBML | webm and mkv share it |
-| Ogg | vorbis, opus and theora share it |
-| TIFF | also every raw camera format |
-| sfnt fonts | ttf, otf and ttc share it |
-| MPEG audio | frame sync varies by version and layer |
-| tar | its marker sits at offset 257, behind an attacker-controlled filename |
+That second condition is what keeps real files from being refused. Bytes that prove a container the declaration sits on top of pass: a `.docx` really is a zip, and so are `.epub`, `.jar` and `.apk`. Formats whose signature is shared by several types, like mp4 and heic, or webm and mkv, are never used to contradict a declaration. Neither is `application/octet-stream`, which claims nothing.
 
 <Note>
-  This is ergonomics, not a control. The part bodies never reach your server, so a client is free to
-  send an honest head and then upload something else entirely. It is not malware scanning, and it is
-  not a substitute for treating stored objects as untrusted.
+  This is ergonomics, not a control. The bytes never reach your server, so a client is free to send
+  an honest sample and then upload something else entirely. It is not malware scanning, and it is not
+  a substitute for treating stored objects as untrusted.
 </Note>
 
 ---
@@ -182,9 +164,9 @@ export const uploads = uploadHandler({
 })
 ```
 
-The narrowed constraints are checked against the same file, with the same head bytes, right after `onBeforeUpload` returns.
+The narrowed constraints are checked against the same file right after `onBeforeUpload` returns.
 
-Widening throws a `TypeError`: `onBeforeUpload widened maxBytes` for a larger cap, `onBeforeUpload widened contentTypes` for a type the route does not already allow, naming the types that were added. The route's own limits are always the ceiling, so reading the code of a route tells you the most it can ever accept.
+Widening throws a `TypeError` naming what was widened. The route's own limits are always the ceiling, so reading the code of a route tells you the most it can ever accept.
 
 ---
 
@@ -196,7 +178,7 @@ Widening throws a `TypeError`: `onBeforeUpload widened maxBytes` for a larger ca
 { "constraints": { "contentTypes": ["image/png"], "maxBytes": 2000000 } }
 ```
 
-It carries an ETag and `Cache-Control: public, max-age=60`, and the hook caches it for the same 60 seconds (`CONSTRAINTS_TTL_MS`). Short and revalidated, not immutable: the constraints are your route's code and change with a deploy, and a client that cached them forever would refuse files the route now accepts.
+It is cached for 60 seconds, browser and CDN alike, so a deploy that changes a route's limits reaches clients within a minute.
 
 `useUpload` exposes two things from it. `accept` is `contentTypes` joined with commas, ready for an `<input accept>`, and empty until the GET lands or when the route serves no type list. `constraints` is the served document itself, so a page can state the cap it enforces.
 
@@ -220,9 +202,7 @@ export function UploadButton() {
 
 A file over `maxBytes` is refused in the browser before any request is made. It still becomes a record, with `status: 'error'` and a real `BlobError` whose code is `too_large`, so one error path renders both the client-side refusal and the server's.
 
-The size check is the only one that runs in the browser. Type validation stays on the server, which canonicalizes aliases and sniffs the leading bytes, neither of which the served `accept` list can express. **The server is authoritative.** Constraints that have not arrived yet are not an answer either: the file is sent and the route decides.
-
-A route that serves no `contentTypes` has nothing to check leading bytes against, so the hook does not read them off the file and does not send them.
+The size check is the only one that runs in the browser. **The server is authoritative** for everything else, and if the constraints have not arrived yet the file is simply sent and the route decides.
 
 ---
 

@@ -2,9 +2,9 @@
 title: "Upload Handler"
 ---
 
-`uploadHandler` is one upload endpoint. The bytes go straight from the browser to storage: your server only authorizes the upload, signs it, and records what landed. The file never passes through your app, so nothing is bound by your platform's request body limit and nothing streams through your function's memory.
+`uploadHandler` is one upload endpoint. The bytes go straight from the browser to storage: your server only authorizes the upload, signs it, and records what landed. The file never passes through your app, so nothing is bound by your platform's request body limit.
 
-Two requests reach your route for an ordinary upload. `begin` runs your authorization and hands the browser presigned URLs, and `end` records the object and runs your completion callback. The PUTs in between go to storage, not to you. A third phase, `parts`, is only asked for when an upload needs more than the first 16 part URLs, or when it resumes after a reload.
+Two requests reach your route for an ordinary upload: `begin` runs your authorization and hands the browser presigned URLs, and `end` records the object and runs your completion callback. The PUTs in between go to storage, not to you.
 
 ---
 
@@ -130,7 +130,7 @@ const bucket = new Bucket({ token: process.env.MEDIA_BLOB_TOKEN!, cache: "immuta
 export const uploads = uploadHandler({ bucket, onBeforeUpload })
 ```
 
-Options that cannot be parsed are build errors, not 500s at request time: an unparseable `multipart` size, a route name a URL query cannot carry, an empty `routes` map, and a missing token all throw where they were written.
+Bad options throw where they are written rather than at request time: an unparseable `multipart` size, an invalid route name, an empty `routes` map, a missing token.
 
 ---
 
@@ -160,9 +160,9 @@ What it returns:
 | `cache` | `CacheOption` | The `Cache-Control` this object is stored with, over the bucket default. See [Caching](/blob/bucket/caching). |
 | `metadata` | `Record<string, string>` | Signed into the upload and handed back to `onUploadComplete`. |
 | `constraints` | `{ contentTypes?, maxBytes? }` | Narrows this one upload's limits. |
-| `state` | `TState` | Carried to `onUploadComplete` and `onError`. Only `uploadRoute()` can carry one: on a plain-object route the return type is pinned to `state: undefined`, so returning anything else does not compile. |
+| `state` | `TState` | Carried to `onUploadComplete` and `onError`. Only [`uploadRoute()`](#uploadroute) can carry one. |
 
-`file` is the browser's own claim, so `file.type` is the type the object is stored and served as. The type the bytes really are is checked at `begin` too, against the file's first bytes; that check is described in [Constraints](/blob/browser/constraints).
+`file` is the browser's own claim, so `file.type` is the type the object is stored and served as. What the bytes really are is checked separately; see [Constraints](/blob/browser/constraints).
 
 ### Paths
 
@@ -179,15 +179,15 @@ uniquePath`chat/${threadId}/${file.name}`
 
 Slashes in the literal chunks are structure. Everything inside `${...}` is a value, sanitized down to a slugged basename with a random suffix, so it can never contribute a directory of its own. The full rules are in [Writing](/blob/bucket/writing#uniquepath).
 
-Without the suffix, a stable path is an overwrite: the second upload replaces the first, and a single-PUT upload that lost the race then gets 404 from its own `end` even though its bytes landed. Use a stable path only when overwriting is the intent.
+Without the suffix, a stable path is an overwrite: the second upload replaces the first, and the first upload can then fail with a spurious 404. Use a stable path only when overwriting is the intent.
 
 ### Metadata
 
-`metadata` is signed into the presigned PUT, so the browser can neither add to it nor change it, and it comes back on `onUploadComplete` as `metadata`. It is stored on the object and readable later with `bucket.info(path)`.
+`metadata` is signed into the presigned PUT, so the browser can neither add to it nor change it. It comes back on `onUploadComplete`, is stored on the object, and is readable later with `bucket.info(path)`.
 
 Values are printable ASCII and keys come back lowercased, under the same rules as a server-side write: see [Writing](/blob/bucket/writing#metadata).
 
-`metadata["upstash-upload"]` is reserved: the SDK writes its own marker under that key to prove which upload wrote the object at a path, and setting it throws `invalid_input`.
+`metadata["upstash-upload"]` is reserved for the SDK and setting it throws `invalid_input`.
 
 ### Narrowing per user
 
@@ -200,7 +200,7 @@ onBeforeUpload: async ({ ctx, file }) => ({
 })
 ```
 
-Widening throws a `TypeError` naming what was widened, for `maxBytes` and for a content type that is not on the route's list. That is a bug in the handler, not a refusal of the file, so it surfaces as a server error rather than a `BlobError`.
+Widening throws a `TypeError` naming what was widened. The route's own limits are always the ceiling.
 
 ### Refusing
 
@@ -217,7 +217,7 @@ onBeforeUpload: async ({ request, file }) => {
 
 Every `BlobError` reaches the browser with its `code` intact, so a hook can switch on `error.code` instead of reading status numbers. The codes are listed in [Errors](/blob/bucket/errors).
 
-The browser never retries `begin`: it runs your callback, and a callback that writes a row must not be run twice for one file.
+The browser never retries `begin`, so a callback that writes a row is never run twice for one file.
 
 ---
 
@@ -238,7 +238,7 @@ onUploadComplete: async ({ uploadId, path, url, size, contentType, metadata, sta
 | --- | --- | --- |
 | `path` | `string` | Where the object is stored. |
 | `url` | `string \| undefined` | The public URL. Undefined on a private bucket; see [How signing works](/blob/overall/signing). |
-| `versionedUrl` | `string \| undefined` | `${url}?v=${etag}` with the etag percent-encoded, since storage returns it quoted, so it reads `?v=%22...%22`. For a stable path that gets overwritten. |
+| `versionedUrl` | `string \| undefined` | `url` with the etag on the query. For a stable path that gets overwritten. |
 | `size` | `number` | Bytes actually stored, verified against what the browser declared. |
 | `etag` | `string` | The stored object's etag. |
 | `uploadedAt` | `Date` | When storage wrote it. |
@@ -248,7 +248,7 @@ onUploadComplete: async ({ uploadId, path, url, size, contentType, metadata, sta
 | `request` | `Request` | The `end` request. |
 | `file` | `{ name, type, size }` | What the browser declared at `begin`. The original filename survives only here. |
 | `uploadId` | `string` | Identifies this upload. Stable across retries: the idempotency key. |
-| `multipartUploadId` | `string \| undefined` | R2's own multipart id, for `bucket.abortMultipartUpload()`. Undefined for a single PUT. |
+| `multipartUploadId` | `string \| undefined` | For `bucket.abortMultipartUpload()`. Undefined for a single PUT. |
 | `metadata` | `Record<string, string>` | What `onBeforeUpload` returned, minus the SDK's marker. |
 | `state` | `TState` | What `onBeforeUpload` returned as `state`. |
 
@@ -260,17 +260,14 @@ if (upload?.status === "done") upload.blob.data.path // string, inferred from on
 ```
 
 <Warning>
-  **It is at-least-once.** `end` gets three attempts, so two retries, on a network failure and on
-  408, 429, 500, 502, 503 or 504. Any other status fails outright. `uploadId` is stable across those
-  retries and is the key to write against: `on conflict (upload_id) do nothing`, or the equivalent
-  upsert for your database.
+  **It is at-least-once.** The browser retries `end` on a network failure or a retryable status, so
+  write against `uploadId`, which is stable across those retries: `on conflict (upload_id) do
+  nothing`, or the equivalent upsert for your database.
 
-  **Any throw out of it deletes the completed object.** That is the intent for a refusal, and it is a
-  trap for a database error: a ten-second outage destroys bytes that uploaded fine, the browser
-  retries `end`, and a single-PUT upload then answers 404 reading "the upload never landed". A
-  retryable `BlobError` is not an escape either: the delete happens first, so the retry it asks for
-  arrives at an empty path. Catch your own storage errors and decide deliberately instead of letting
-  a driver error escape the callback.
+  **Any throw out of it deletes the completed object.** That is the intent for a refusal, and a trap
+  for a database error: a ten-second outage destroys bytes that uploaded fine, and the retried `end`
+  then answers 404 reading "the upload never landed". Catch your own storage errors rather than
+  letting a driver error escape the callback.
 </Warning>
 
 ```ts lib/uploads.ts
@@ -342,7 +339,7 @@ With a single route, authorizing inside `onBeforeUpload` and carrying an id in `
 
 ### The ordering rule
 
-Write `context` **above** `routes` and the callbacks that read `ctx`, or annotate its parameter. An unannotated `(request) =>` is fine in the first position. Written below `routes`, TypeScript has already typed the routes with `ctx: undefined` by the time it reads what `context` returns, and the error lands on `context` itself: `Promise<Session> is not assignable to undefined`. Annotating the parameter as `(request: Request) =>` lifts the ordering rule, because TypeScript reads an annotated function's return type before it types anything else in the object literal.
+Write `context` **above** `routes`, or annotate its parameter as `(request: Request) =>`. Written below `routes` with an unannotated parameter, TypeScript types the routes with `ctx: undefined` first and the error lands on `context`: `Promise<Session> is not assignable to undefined`.
 
 ```ts lib/uploads.ts
 // Fine: context first.
@@ -401,13 +398,13 @@ const avatar = useUpload("avatar")
 const attachment = useUpload("attachment")
 ```
 
-- Route names must match `/^[A-Za-z_][\w-]*$/`, checked when the handler is built rather than per request.
-- An unknown name is an ordinary 404 that never names the routes the handler does mount. It still reaches `onError`.
-- A name is part of the completion token's identity, so a token minted by one route is not spendable at another.
+- Route names must match `/^[A-Za-z_][\w-]*$/`, checked when the handler is built.
+- An unknown name is a 404 that never names the routes the handler does mount. It still reaches `onError`.
+- An upload authorized by one route cannot be completed at another.
 
-A handler with **no** `routes` is itself the route. It is reached with no `?route=` at all, and the bound `useUpload()` takes no argument. A name on the query is then a client bound to some other handler, and it gets a 404 rather than this route by accident.
+A handler with **no** `routes` is itself the route. It is reached with no `?route=` at all, and the bound `useUpload()` takes no argument.
 
-Two handlers on the same bucket that mount the same route names derive the same token identity. `endpoint: "/api/one"` tells them apart.
+Two handlers on the same bucket that mount the same route names need an `endpoint` to tell them apart.
 
 ---
 
@@ -444,7 +441,7 @@ start({ file, input: { threadId } }) // input is required here, and its shape is
 
 `input` is validated before `onBeforeUpload` runs, and only the parsed value reaches it. A route with **no** schema refuses any `input` the browser sends, with `invalid_input` rather than dropping it silently. Validation failures come back as `invalid_input` too, with the issues joined into one message as `path: message`, so a bad `threadId` reads `threadId: Invalid uuid`.
 
-`state` is for what the callback already computed and does not want to look up again. It rides in the completion token, which is signed but readable in devtools, so put a row id there, never a secret.
+`state` is for what the callback already computed and does not want to look up again. It travels through the browser and is readable in devtools, so put a row id there, never a secret.
 
 Everything else on the route works as it does on a plain object: `bucket`, `constraints`, `multipart`, `onError`, and the same inheritance from the handler.
 
@@ -469,7 +466,10 @@ export const { useUpload } = uploadHooks<typeof uploads>({
 
 `headers`, `concurrency`, `endpoint` and `onError` are the defaults `uploadHooks` takes. A call-site option wins over the default, except `onError`, where the configured handler runs first and the call-site one after it.
 
-Only the configured handler is wrapped: a throw from it is caught and logged as `[upstash-blob] uploadHooks onError threw`, and the call-site handler still runs. The call-site handler is not wrapped. A throw there escapes the store's settle loop before it reaches the step that starts the next queued upload, so the rest of the queue never starts. That handler must not throw.
+<Warning>
+  A call-site `onError` must not throw. A throw there stops the rest of the upload queue from
+  starting. A throw from the configured `onError` is caught and logged.
+</Warning>
 
 Called with no type parameter, `uploadHooks()` returns the unbound `useUpload`, which takes a URL.
 
@@ -520,19 +520,17 @@ const { start, uploads, upload, clear, accept, constraints } = useUpload("attach
 | `error` | `BlobError` | On `error` only. |
 | `pause()` `resume()` `cancel()` `retry()` | `() => boolean` | Each answers whether it did anything. |
 
-`pending` is the field to drive UI off. Hand-rolling it from `status` is where the off-by-one-state bugs live: an input re-enabled during `finishing`, a progress bar still drawn under an error line.
+`pending` is the field to drive UI off rather than hand-rolling it from `status`. `percent` sits at 99 through `finishing`, because 100 has to mean stored rather than sent. [Large files](/blob/browser/large-files#progress-and-status) has the rest of the progress fields.
 
-`percent` sits at 99 through `finishing`, because 100 has to mean stored rather than sent. [Large files](/blob/browser/large-files#progress-and-status) has the rest of the progress fields.
+`blob.data` is typed from that route's `onUploadComplete`. Fields a status does not carry are `undefined` rather than absent, so `upload?.blob?.url` and `upload?.error?.message` read straight off the record with no narrowing.
 
-`blob.data` is typed from that route's `onUploadComplete`. The payload a state does not carry is declared as `undefined` rather than left out, so `upload?.blob?.url` and `upload?.error?.message` read straight off the record with no narrowing.
+`canPause` is false for a single PUT, which is every file under the route's `multipart` threshold. `retry()` works only from `error`, and resumes from the parts that already landed. [Large files](/blob/browser/large-files) has the whole of pause, resume and multipart.
 
-`canPause` is false for a single PUT, which is every file under the route's `multipart` threshold: one request is either on the wire or not, and stopping it throws its bytes away rather than parking them. `retry()` works only from `error`, and resumes from the parts that already landed. [Large files](/blob/browser/large-files) has the whole of pause, resume and multipart.
-
-Three files are in flight by default and the rest queue. `clear(id?)` removes records from the list; a cleared upload that is still running keeps its place in the queue and finishes, it is just no longer rendered. Unmounting the component does not cancel anything either.
+Three files are in flight by default and the rest queue. `clear(id?)` removes records from the list; a cleared upload that is still running finishes anyway, it is just no longer rendered. Unmounting the component does not cancel anything either.
 
 ### headers
 
-`headers` is a function, not an object, and it is re-read for every request the SDK makes to your route: the constraints `GET`, `begin`, `parts` and `end`. A JWT that rotated between the first byte and the last still ends the upload.
+`headers` is a function, not an object, and it is re-read for every request the SDK makes to your route. A token that rotated mid-upload still ends the upload.
 
 ```tsx app/page.tsx
 const { start } = useUpload("attachment", {
@@ -575,7 +573,7 @@ const blob = await task.done // CompletedBlob & { data }
 stop()
 ```
 
-`upload()` starts immediately and returns an `UploadTask`: `snapshot()` for the current state, `subscribe()` for changes, `done` as a promise, and `pause()`, `resume()`, `cancel()` and `retry()`. The snapshot carries the same fields the React record does, since the record is that snapshot plus `id`, `file` and the four methods.
+`upload()` starts immediately and returns an `UploadTask`: `snapshot()` for the current state, `subscribe()` for changes, `done` as a promise, and `pause()`, `resume()`, `cancel()` and `retry()`. The snapshot carries the same fields the React record does.
 
 ---
 
@@ -618,4 +616,4 @@ A proxied upload is capped by your platform's request body limit rather than by 
 
 ## CORS
 
-The signed PUT is a cross-origin request from your page to storage, so the bucket's CORS policy has to allow it: the required shape is in [CORS](/blob/overall/quickstart#cors). A PUT that fails with no status and no bytes sent is almost always this, and the SDK says so after three attempts rather than backing off for minutes.
+The signed PUT is a cross-origin request from your page to storage, so the bucket's CORS policy has to allow it: the required shape is in [CORS](/blob/overall/quickstart#cors). A PUT that fails with no status and no bytes sent is almost always this.

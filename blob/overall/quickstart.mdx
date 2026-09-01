@@ -38,7 +38,7 @@ Create a bucket in the [Upstash Console](https://console.upstash.com) and copy i
 UPSTASH_BLOB_TOKEN=...
 ```
 
-Everything below reads this variable, and `Bucket.fromEnv()` is the call that reads it.
+`Bucket.fromEnv()` and the upload handler both read this variable.
 
 ---
 
@@ -48,7 +48,7 @@ Everything below reads this variable, and `Bucket.fromEnv()` is the call that re
 
 <Step title="Write the upload handler">
 
-The handler decides who may upload, where the object goes, and what happens once it lands. It runs on your server and signs the upload. It never sees the bytes. With no `bucket` of its own it builds one from `UPSTASH_BLOB_TOKEN`, once.
+The handler runs on your server and decides who may upload, where the object goes, and what happens once it lands. It never sees the bytes.
 
 The smallest one that works states what it accepts and where the object goes:
 
@@ -83,7 +83,7 @@ export const { GET, POST } = uploads
 
 <Step title="Bind the hooks to the handler">
 
-`uploadHooks<typeof uploads>()` reads the handler's type. That is how `upload.blob.data` on the client is typed from what `onUploadComplete` returned, and how a route name that does not exist fails to compile.
+`uploadHooks<typeof uploads>()` reads the handler's type, so `upload.blob.data` on the client is typed from what `onUploadComplete` returned and a route name that does not exist fails to compile.
 
 ```ts lib/upload-hooks.ts
 "use client"
@@ -131,7 +131,7 @@ export default function Page() {
 
 <Step title="Then authorize it and record what landed">
 
-Uploads work at this point. What the handler above does not do is check who is asking or write anything down, and both go in the same two callbacks. `onBeforeUpload` runs before a byte is signed, so a throw there costs nothing; `onUploadComplete` runs once the object exists.
+Uploads work at this point, but the handler above does not check who is asking or write anything down. Both go in the same two callbacks: `onBeforeUpload` runs before anything is signed, `onUploadComplete` once the object exists.
 
 ```ts lib/uploads.ts
 import "server-only"
@@ -195,9 +195,9 @@ A direct upload PUTs to storage, not to your app, so the bucket's CORS configura
 | the request headers `content-type`, `cache-control`, and every `x-amz-meta-*` the route writes | a single PUT carries them as real headers, pinned into the signature, so the browser must send them verbatim |
 | `ETag` in the exposed response headers | the browser reads each part's etag off a cross-origin response to complete the upload |
 
-The metadata header names are yours: a route returning `metadata: { owner }` sends `x-amz-meta-owner`. A multipart part PUT pins only `content-length`, so it is the single-PUT path that needs the header list. Exposing `Retry-After` too is worth doing but not required; without it the client backs off on its own schedule rather than the one storage asked for.
+The metadata header names are yours: a route returning `metadata: { owner }` sends `x-amz-meta-owner`. Exposing `Retry-After` too is worth doing but not required.
 
-A browser blocks a request that fails CORS before a single byte goes out, and script never sees why. The SDK gives up after three such attempts and says so, rather than backing off for minutes over an answer that will not change.
+A browser blocks a request that fails CORS before a single byte goes out, and script never sees why, so a PUT that fails with no status and no bytes sent is almost always this.
 
 ---
 

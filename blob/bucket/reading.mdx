@@ -38,9 +38,7 @@ Four record shapes come back from the SDK. They nest, so the rest of this page n
 | `etag` | `string` | Storage's etag, quoted as it arrives: `"9f3c..."`. |
 | `uploadedAt` | `Date` | Last modified. |
 
-### `blob` is a record, never bytes
-
-In this SDK `blob` always names a record, and never the bytes of one. The DOM already has a `Blob` and it is bytes, so the two must never swap places: nothing in the API takes a parameter named `blob`, and bytes go in as `body`. That is why `put(path, body)` reads the way it does, and why the bytes on a download sit under `body` on a record rather than being the return value.
+Throughout the SDK, `blob` names a record and never the bytes of one. Bytes always go in and come out as `body`.
 
 ---
 
@@ -87,9 +85,9 @@ info.uploadedAt   // Date
 
 Like `get`, a missing object throws `not_found` rather than answering `undefined`.
 
-Metadata keys come back lowercased, since they cross the wire as `x-amz-meta-*` headers: `{ uploadedBy: 'u1' }` written at upload reads back as `metadata.uploadedby`. The rules that govern what can be written are in [Writing](/blob/bucket/writing#metadata).
+Metadata keys come back lowercased: `{ uploadedBy: 'u1' }` written at upload reads back as `metadata.uploadedby`. The rules for what can be written are in [Writing](/blob/bucket/writing#metadata).
 
-`metadata` is the reason this call exists next to `exists()`. It comes back from `get` and from `info`, and from nothing else: a listing does not carry it. So `info` is the call a cleanup cron makes before it deletes anything, to confirm the object at that path is the one its row reserved rather than a later upload that reused the path. That sweep, and why a row is the only thing that can tell an abandoned upload from a finished one, is in [Abandoned uploads](/blob/browser/abandoned-uploads).
+`metadata` comes back from `get` and `info` and from nothing else, so `info` is the call a cleanup cron makes to confirm the object at a path is the one it expects. See [Abandoned uploads](/blob/browser/abandoned-uploads).
 
 ---
 
@@ -137,9 +135,9 @@ do {
 } while (cursor)
 ```
 
-A listing carries `BlobObject`, which means it has the path, size, etag, timestamp and URLs, and it does not have `contentType` or `metadata`. Storage does not return those in a listing, and fetching them would be one HEAD per key.
+A listing carries `BlobObject`: path, size, etag, timestamp and URLs, but no `contentType` or `metadata`. Reading those is one `info()` per object.
 
-`prefix` is also the only filter there is. There is no query by owner, by type, by date or by anything else, and the only way to find "this user's files" is a prefix you chose at upload time. An app that has to ask real questions about its files should keep its own table, write the row when the upload is authorized, and treat the bucket as the bytes rather than the index. That table is also what makes deleting and re-rendering cheap, since it holds the metadata a listing cannot.
+`prefix` is also the only filter there is. There is no query by owner, by type or by date, so the only way to find "this user's files" is a prefix you chose at upload time. An app that has to ask real questions about its files should keep its own table and treat the bucket as the bytes rather than the index.
 
 ---
 
@@ -152,7 +150,7 @@ bucket.publicUrl("avatars/u7.png")
 // 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
 ```
 
-There is no network call. The bucket's public DNS label is carried in the token itself, so `publicUrl` is string work against `<hashForDomain>.blob.upstash.io` and the path, percent-encoded. It returns `undefined` on a private bucket. It throws a `TypeError` for a path that is empty or contains a `.` or `..` segment, the same check every other path takes.
+There is no network call. It returns `undefined` on a private bucket, and throws a `TypeError` for a path that is empty or contains a `.` or `..` segment.
 
 ### `versionedUrl`
 
@@ -182,7 +180,7 @@ blob.versionedUrl // undefined
 bucket.publicUrl("reports/2026-01.pdf")  // undefined
 ```
 
-A `visibility` in the credentials response wins over what you declared, so a bucket that is private in the console stays private here even if the code says otherwise. Reads on a private bucket go through `signedReadUrl()`.
+A bucket that is private in the console stays private here even if the code does not say so. Reads on a private bucket go through `signedReadUrl()`.
 
 ---
 
@@ -205,9 +203,9 @@ const { url, expiresAt } = await bucket.signedReadUrl("reports/2026-01.pdf", {
 
 The return is `{ url, expiresAt }`.
 
-### The lifetime is answered, not chosen
+### Use `expiresAt`, not `expiresIn`
 
-Links are signed with the bucket's short-lived credential, and a signature cannot outlive the credential that made it. So `expiresIn` is what you ask for, and `expiresAt` is what you got: it is never later than the signing credential's own expiry, and it is the value to cache the link against rather than a duration you compute yourself.
+`expiresIn` is what you ask for. `expiresAt` is what you got, and it can be sooner. Cache the link against `expiresAt` rather than a duration you compute yourself.
 
 ```ts
 const cached = await cache.get(key)
@@ -217,20 +215,17 @@ if (!cached || cached.expiresAt < new Date()) {
 }
 ```
 
-The default with no `expiresIn` is 5 minutes, shortened if the credential has less than that left. Asking for more than the credential can cover re-mints where that helps, and is capped where it does not. [How signing works](/blob/overall/signing) covers the mechanism, and `signedUploadUrl` for the write direction.
+The default with no `expiresIn` is 5 minutes. See [How signing works](/blob/overall/signing) for what caps a link's lifetime.
 
 ### `downloadAs`
 
-`downloadAs` sets a `Content-Disposition: attachment` on the response, so the browser saves the file under that name rather than rendering it.
-
-The name is carried as an RFC 6266 `filename*` ext-value, percent-encoded, with an ASCII `filename` fallback cut back to characters that cannot end the quoted string. A name with a quote, a semicolon or a CRLF in it cannot add a parameter or a second header, and a Unicode name arrives intact:
+`downloadAs` sets `Content-Disposition: attachment`, so the browser saves the file under that name rather than rendering it. Unicode names arrive intact:
 
 ```ts
 await bucket.signedReadUrl(path, { downloadAs: "café ☕.pdf" })
-// content-disposition: attachment; filename="caf_ _.pdf"; filename*=UTF-8''caf%C3%A9%20%E2%98%95.pdf
 ```
 
-The disposition is signed into the URL along with everything else, so it cannot be edited off the query string by whoever holds the link.
+The filename is signed into the URL, so it cannot be edited off the query string by whoever holds the link.
 
 ### `contentType`
 
@@ -240,7 +235,7 @@ The disposition is signed into the URL along with everything else, so it cannot 
 await bucket.signedReadUrl("exports/rows.bin", { contentType: "text/csv" })
 ```
 
-It is validated as a media type and throws `invalid_input` if it is not one, for the same reason `downloadAs` is encoded: this value becomes a response header.
+It throws `invalid_input` if it is not a valid media type.
 
 ---
 
@@ -253,7 +248,7 @@ const uploads = await bucket.listMultipartUploads({ prefix: "uploads/" })
 // [{ path: 'uploads/big.bin', uploadId: 'mp-1', initiatedAt: Date }]
 ```
 
-A multipart upload that was started and never completed or aborted is billed storage that `list()` cannot see, which makes this the only call that can find them. Finding them is not the job though: sweeping them is, and `abortStaleMultipartUploads()` is in [Deleting](/blob/bucket/deleting#incomplete-multipart-uploads).
+A multipart upload that was started and never completed or aborted is billed storage that `list()` cannot see, so this is the only call that can find them. To sweep them, use `abortStaleMultipartUploads()`, in [Deleting](/blob/bucket/deleting#incomplete-multipart-uploads).
 
 ---
 
@@ -273,7 +268,7 @@ const res = await s3.send(
 )
 ```
 
-`endpoint` and `credentials` are async providers rather than values, for the reason given in [Writing](/blob/bucket/writing#the-s3-escape-hatch).
+`endpoint` and `credentials` are async providers rather than values. Pass them through as they come.
 
 ---
 

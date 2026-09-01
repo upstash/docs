@@ -39,7 +39,7 @@ if (BlobError.is(e)) {
 }
 ```
 
-`is()` is a type guard, so the fields are typed after it. It is the only supported check, and it is what the SDK itself uses internally at every boundary.
+`is()` is a type guard, so the fields are typed after it.
 
 ---
 
@@ -113,9 +113,7 @@ try {
 
 ## Messages are written to be shown
 
-Messages are lowercase in the source and sentence-cased when the error is built, so an app can print `e.message` straight into its error line without writing its own `capitalize()`.
-
-A message that opens with an identifier keeps its case. A MIME type, a file name or a metadata key is not a word to raise: "Image/png is not allowed" names a type that does not exist, and "Cat.png" is not the file the user picked.
+Messages arrive sentence-cased, so an app can print `e.message` straight into its error line. A message that opens with an identifier, like a MIME type or a file name, keeps that identifier's own case.
 
 ```ts
 new BlobError("not_found").message                         // 'Not found'
@@ -146,7 +144,7 @@ A message that already contains its hint is not doubled.
 
 ## Errors across the wire
 
-This is what makes the browser half usable. An upload route answers every refusal with `BlobError.toJSON()` at the error's own status, and the browser rebuilds it with `BlobError.fromJSON()`. So `error.code` inside a hook is the code your server raised, not a status number you have to decode back into a meaning.
+An upload route answers every refusal with the error's own code and status, and the browser rebuilds it, so `error.code` inside a hook is the code your server raised rather than a status number you have to decode.
 
 ```tsx app/picker.tsx
 "use client"
@@ -187,9 +185,9 @@ function describe(error: BlobError): string {
 
 A route runs `onError` first. If it returns a `Response`, that is the answer; if it returns a `BlobError`, the answer is that error's JSON at its own status. Otherwise the throw falls through three cases:
 
-1. **A `BlobError` is answered as itself.** `toJSON()` at `e.status`, with `hint`, `failed`, `etag`, `size` and `retryAfter` when they are set.
-2. **An app error carrying an integer `status` between 400 and 599 is mapped through the status table below.** This is how an auth check that throws its own 401 reaches the browser as `unauthorized`, so a caller can tell a dead session from a rejected file without reading status numbers.
-3. **Anything else is treated as your bug and rethrown**, so the framework logs it with its stack rather than masking it as a generic 500.
+1. **A `BlobError` is answered as itself**, at its own status, with `hint`, `failed`, `etag`, `size` and `retryAfter` when they are set.
+2. **An app error carrying a `status` between 400 and 599 is mapped through the table below.** This is how an auth check that throws its own 401 reaches the browser as `unauthorized`.
+3. **Anything else is treated as your bug and rethrown**, so your framework logs it with its stack rather than masking it as a generic 500.
 
 | Status | Code |
 | ------ | ---- |
@@ -267,7 +265,7 @@ Errors from R2 are normalised before they leave the SDK, first matching wins.
 | 413, or `EntityTooLarge` | `too_large` |
 | anything else | `request_failed`, message `R2 responded <status> <Code>: <Message>` |
 
-For that last row the status is passed through, except that a 5xx is normalised to 502: the failure is upstream of your app, not in it.
+For that last row the status is passed through, except that a 5xx becomes 502, since the failure is upstream of your app rather than in it.
 
 ---
 
@@ -275,7 +273,7 @@ For that last row the status is passed through, except that a 5xx is normalised 
 
 Some failures never reach your route, so the browser names them itself.
 
-**A PUT that fails with no status and no bytes sent** is not a dropped link. The browser refused it before it went out, and the reason is never visible to script because it is the preflight that failed. That gets three attempts rather than the twenty a real network failure gets, and the hint says so:
+**A PUT that fails with no status and no bytes sent** is not a dropped link. The browser refused it before it went out, and the reason is never visible to script because it is the preflight that failed:
 
 ```
 the browser blocked the request before sending any bytes, which is almost always CORS:
@@ -337,7 +335,7 @@ Three codes come from the credential service rather than from storage or from yo
 | `not_ready` | 503 | The bucket is not ready yet. | Retry the request. |
 | `mint_backoff` | 429 | The service asked for a backoff longer than a request can wait, over 10 seconds. `retryAfter` says how long. | Retry the request later rather than blocking on it. |
 
-The SDK already waits out short backoffs itself, up to three times. `mint_backoff` is what is left over: a pause no single request can sit through, so it is handed back to the caller instead of holding a serverless invocation open for it.
+The SDK waits out short backoffs itself. `mint_backoff` is what is left over: a pause no single request can sit through, handed back to you instead of holding a serverless invocation open for it.
 
 ```ts
 try {
@@ -350,4 +348,4 @@ try {
 }
 ```
 
-Credentials are short-lived, cached per token, and re-minted just before they expire. A credential that expires mid-request is caught inside the SDK: it re-mints once and asks again, and only a second refusal surfaces. See [How signing works](/blob/overall/signing) for how that lifetime caps a signed link, and [Quickstart](/blob/overall/quickstart) for where the token comes from.
+Credentials are short-lived and re-minted before they expire. One that expires mid-request is handled inside the SDK, so only a second refusal surfaces. See [How signing works](/blob/overall/signing) for how that lifetime caps a signed link.

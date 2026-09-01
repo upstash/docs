@@ -24,27 +24,13 @@ The default threshold is 16 MB. [Large files](/blob/browser/large-files#what-cha
 
 **Under the threshold**, the presigned PUT is the object write. Storage has the whole object the moment the last byte lands, before your route has been told anything. The completion request that runs `onUploadComplete` is a separate call, made by the browser, after the PUT. A browser that dies between the two leaves an ordinary object: `list()`-visible, billed, already served by the public host if the bucket is public, and accepted by no callback of yours.
 
-That is what one round trip instead of three costs for the files most apps upload most often.
-
 ---
 
 ## Why the SDK cannot tell the difference
 
-Every single-PUT upload carries a marker. The SDK mints a random id at phase `begin` and writes it into the presigned URL as `x-amz-meta-upstash-upload`, as a signed header. Signed matters: the browser has to send the header verbatim or storage answers 403, so it cannot be forged, dropped or aimed somewhere else. `metadata.upstash-upload` is reserved, and returning it from `onBeforeUpload` is refused with `invalid_input`.
+The SDK marks every single-PUT upload with a signed id, so it can always tell whether the object at a path came from **this** upload. That is what lets a refusal in `onUploadComplete` delete only what this upload wrote rather than whatever happens to be standing at the path.
 
-At phase `end` the route reads the object back and compares:
-
-```ts
-if (head.metadata[UPLOAD_MARKER] !== t.id) throw new BlobError("not_found", { message: "the upload never landed" })
-```
-
-That answers the one question a multipart upload answers by construction: are the bytes at this path the ones **this** upload put there? It is what lets a refusal in `onUploadComplete` delete only what this upload wrote, instead of deleting whatever happens to be standing at the path.
-
-What it does not answer is whether anything ever accepted the object. The marker stays on the stored object after completion. Phase `end` deletes it from the record it hands your callbacks, so `metadata` in `onUploadComplete` never contains it, but nothing rewrites the object, so `bucket.info(path).metadata['upstash-upload']` is still set on a finished upload. A marker match proves "same upload". It never proves "never accepted".
-
-So the SDK, looking at a bucket, cannot separate an abandoned object from a finished one. Only your own rows can.
-
-See [How signing works](/blob/overall/signing) for how a header gets pinned into a signature.
+What it cannot tell is whether anything ever accepted the object, because the mark stays on a finished upload too. Looking at a bucket alone, an abandoned object and a completed one are identical. Only your own rows can separate them.
 
 ---
 
@@ -64,7 +50,7 @@ Write the row before the bytes, flip it after them, and sweep what never flipped
   </Step>
 </Steps>
 
-The order in step 2 is the whole pattern. Because the marker survives on accepted objects, the sweep's only safe premise is **row still pending implies the callback never finished**. Work done after the flip breaks that premise: the row says ready, the work never happened, and nothing will ever come back for it. Do the work first, flip last.
+The order in step 2 is the whole pattern. The sweep's only premise is **row still pending implies the callback never finished**. Work done after the flip breaks it: the row says ready, the work never happened, and nothing will ever come back for it. Do the work first, flip last.
 
 ### The route
 
@@ -149,13 +135,12 @@ Two constraints come with this example.
 
 **Verify before deleting.** `bucket.info(path)` is the check, and it is not optional. A row's path can be occupied by a different upload's object by the time the cron runs, and deleting on the row alone would destroy a file somebody's callback accepted. `info()` throws `not_found` rather than returning `undefined`, which is why the example catches `BlobError.is(e) && e.code === 'not_found'` instead of testing for a missing value.
 
-**Pick a grace window longer than your longest upload.** A row is only evidence once the upload has had time to finish. Completion tokens live seven days and a paused multipart upload can be resumed long after it started, so a window measured in minutes will delete objects out from under uploads that are still running.
+**Pick a grace window longer than your longest upload.** A paused upload can be resumed long after it started, so a window measured in minutes will delete objects out from under uploads that are still running.
 
 <Note>
-  `uploadId` is not handed to `onBeforeUpload` today. It is minted after the callback returns and
-  first reaches your code in `onUploadComplete`, which is why the example mints its own row id and
-  carries it through `metadata` and `state`. `state` reaches `onUploadComplete` typed, and `metadata`
-  is what `info()` reads back in the cron, so the same id covers both ends.
+  `uploadId` is not handed to `onBeforeUpload`; it first reaches your code in `onUploadComplete`.
+  That is why the example mints its own row id and carries it through both `metadata`, which the
+  cron reads back with `info()`, and `state`, which reaches `onUploadComplete` typed.
 </Note>
 
 ---
@@ -214,11 +199,9 @@ export const uploads = uploadHandler({
 })
 ```
 
-Now nothing is stored until your handler completes the upload at phase `end`. A closed tab leaves an incomplete multipart upload, which `abortStaleMultipartUploads()` reaps, and the single-PUT orphan class disappears. Parts also buy pause, resume and per-chunk retry for files that would not have had them.
+Now nothing is stored until your handler completes the upload. A closed tab leaves an incomplete multipart upload, which `abortStaleMultipartUploads()` reaps, and the single-PUT orphan class disappears. Parts also buy pause, resume and per-chunk retry for files that would not have had them.
 
-One case survives it. If phase `end` is retried after the object already completed, `completeMultipart` throws `NoSuchUpload`, the route confirms the object landed and carries on, but `completedEtag` stays undefined. A refusal from `onUploadComplete` at that point deliberately leaves the object stored rather than delete one it cannot identify, and logs that it did. That leftover is a completed object, so `abortStaleMultipartUploads()` cannot reap it either.
-
-The cost is two extra server-to-storage round trips rather than extra browser requests. For an app that will not run a cron, this is one option value that removes the common case.
+The cost is two extra round trips between your server and storage, not extra browser requests. For an app that will not run the pending-row cron, this is one option value that removes the common case.
 
 ---
 
@@ -232,9 +215,9 @@ The cost is two extra server-to-storage round trips rather than extra browser re
   `the upload never landed`. A database blip costs the upload and then reports it as a phantom.
 </Warning>
 
-A retryable `BlobError` is not an escape either: any throw deletes the object first, so the retry it asks for arrives at an empty path. Retry the write in place, hand it to a queue, or simply leave the row pending and let the sweep decide later. Throw out of `onUploadComplete` only when you mean to refuse the file, because that throw is what deletes it. [Upload handler](/blob/browser/upload-handler#onuploadcomplete) has the callback in full.
+A retryable `BlobError` is not an escape either: any throw deletes the object first, so the retry it asks for arrives at an empty path. Retry the write in place, hand it to a queue, or leave the row pending and let the sweep decide later. Throw out of `onUploadComplete` only when you mean to refuse the file. [Upload handler](/blob/browser/upload-handler#onuploadcomplete) has the callback in full.
 
-On a public bucket the delete is also less than it looks. The object has been readable since it was stored, through the whole of your callback, so deleting bounds the exposure to those few round trips rather than undoing it, and an edge that cached the object inside the window keeps serving it for its `Cache-Control`.
+On a public bucket the delete is also less than it looks: the object has been readable since it was stored, so deleting bounds the exposure rather than undoing it, and a CDN that cached it inside that window keeps serving it for its `Cache-Control`.
 
 ---
 
@@ -246,8 +229,6 @@ On a public bucket the delete is also less than it looks. The object has been re
   though its bytes did land. The user who uploaded first sees a phantom failure, and the file they
   uploaded is gone.
 </Warning>
-
-The marker is what stops a refusal from deleting somebody else's file. It does not stop a lost update, and it does not stop the spurious 404 the losing upload gets.
 
 `uniquePath` is the fix: a tagged template that sanitizes every interpolated value and appends a random suffix to the basename, so two uploads of the same filename never collide. Its rules are in [Writing](/blob/bucket/writing#uniquepath).
 
@@ -262,13 +243,10 @@ Stable paths are a legitimate choice when overwriting is exactly what you want, 
 
 ## What cancel() already handles
 
-An explicit cancel is covered. `upload.cancel()` in the browser posts phase `cancel` with the completion token, and the route acts on which kind of upload it is:
+An explicit cancel is covered. `upload.cancel()` tells your route, which aborts a multipart upload along with every part that landed, or deletes a single-PUT object once it has confirmed the object is this upload's.
 
-- **Multipart**: the upload is aborted, along with every part that landed.
-- **Single PUT**: the route reads the object at the path and deletes it only if the marker matches this upload's id. The request body names no object, so the marker is the whole check, and a cancel cannot be pointed at an object this upload did not write.
+A cancel from `finishing` does not reach the route at all, because your `onUploadComplete` may already have accepted the object and written a row. The local task is canceled either way.
 
-One case is deliberately not covered. A cancel from `finishing`, once phase `end` is already running, does not post at all. The route has been asked to record the object and the answer is its to give, so racing it would ask the route to delete an object `onUploadComplete` may have just accepted and written a row for. The local task is canceled either way.
-
-The gap is everything that is not an explicit cancel. There is no `beforeunload` handler and no `sendBeacon` anywhere in the SDK, so a crash, a closed tab or a lost network posts nothing at all. Nothing tells your server, and nothing can.
+The gap is everything that is not an explicit cancel. A crash, a closed tab or a lost network tells your server nothing, and nothing can.
 
 That is exactly the gap the pending row closes.

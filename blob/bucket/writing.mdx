@@ -51,7 +51,7 @@ export default {
 ```
 
 <Note>
-The credential cache is keyed by token, not held per instance. Constructing a `Bucket` per request on a serverless platform is the intended shape and does not mint a credential each time: two clients built from the same token share one.
+Constructing a `Bucket` per request on a serverless platform is fine and costs nothing. Credentials are cached per token, so two clients built from the same token share one.
 </Note>
 
 ---
@@ -104,7 +104,7 @@ On a private bucket `url` and `versionedUrl` are `undefined` and reads go throug
 
 ### Bodies
 
-`put` takes a `PutBody`. Some of these already know how long they are and what they contain, which is what decides whether `put` has to buffer anything and what the object is stored as.
+`put` takes a `PutBody`. Whether a body carries its own length and type decides whether you have to declare `size` or `contentType`.
 
 | Body | Carries its length | Carries a content type |
 | --- | --- | --- |
@@ -146,7 +146,7 @@ await bucket.put("export.csv", stream)
 
 There are two ways through.
 
-**Pass `maxBytes`.** The stream is read into memory up to that many bytes, which is what makes the length knowable, and a stream that runs past the cap is cancelled with `too_large`. Keep the cap somewhere your process can hold.
+**Pass `maxBytes`.** The stream is buffered up to that many bytes, and one that runs past the cap is cancelled with `too_large`. Keep the cap somewhere your process can hold in memory.
 
 ```ts
 const blob = await bucket.put("export.csv", stream, { maxBytes: "10mb" })
@@ -158,9 +158,9 @@ const blob = await bucket.put("export.csv", stream, { maxBytes: "10mb" })
 const blob = await bucket.put("export.csv", stream, { size: 5000 })
 ```
 
-A declared `size` is what the request is sent with: it becomes the `Content-Length`, and it is signed, so a body that does not match it fails the request rather than being stored at the wrong length. A body large enough to take the multipart path is counted as it streams, and the mismatch is named there instead: see [Large bodies](#large-bodies).
+A declared `size` has to be right. A body that does not match it fails the request rather than being stored at the wrong length.
 
-The same applies to a `Request` that arrived chunked: delete or ignore its `content-length` and it is an unknown length like any other stream.
+A `Request` that arrived chunked has no `content-length` either, so it is an unknown length like any other stream.
 
 When bytes are being proxied through a route, keep `maxBytes` under the platform's own request body cap, since that refusal happens before your route runs. The numbers are in [Errors](/blob/bucket/errors#platform-body-limits).
 
@@ -177,7 +177,7 @@ await bucket.put("uploads/../secrets/key.pem", body)
 // TypeError: path may not contain "." or ".." segments
 ```
 
-Normalising would be the wrong answer here. The temporary credential the SDK signs with authorizes the whole bucket, and a URL parser resolves `..` on its own, so a traversing key would quietly touch a different object than the one it names. Refusing is the only outcome that cannot surprise you.
+Build paths out of user input with `uniquePath` rather than string concatenation.
 
 ### uniquePath
 
@@ -190,16 +190,14 @@ const path = uniquePath`${user.id}/${file.name}`
 // 'u7/holiday-pic-3xK9mBqR.png'
 ```
 
-The trust boundary is the interpolation. Slashes in the literal chunks are structure; slashes inside `${}` are stripped along with the rest of the directory component, so an interpolated value can never contribute a directory of its own.
+Slashes in the literal chunks are structure. Slashes inside `${}` are stripped along with the rest of the directory component, so an interpolated value can never contribute a directory of its own.
 
 ```ts
 uniquePath`chat/${"../admin/x.png"}`   // 'chat/x-9fQ2mAe7.png'
 uniquePath`a/${"b/c"}`                 // 'a/c-Kd3xR8wP'
 ```
 
-Each interpolated value is reduced to its basename, stripped of control and format characters, NFC-normalized, lowercased, and slugged: runs of anything that is not a letter or a number become `-`. Letters and digits from any script survive, so `café.pdf` stays `café`. The stem is capped at 64 characters. The extension, up to 8 characters, is kept and lowercased.
-
-An 8 character base58 suffix is then appended to the final basename, before the extension. The alphabet leaves out `0`, `O`, `I` and `l`, so a path read aloud or retyped stays the same path.
+Each interpolated value is lowercased and slugged: runs of anything that is not a letter or a number become `-`. Letters and digits from any script survive, so `café.pdf` stays `café`. The stem is capped at 64 characters, the extension at 8. A random 8 character suffix is appended before the extension.
 
 ```ts
 uniquePath`${"Q3 Report (final).pdf"}`   // 'q3-report-final-7hTbN2xY.pdf'
@@ -235,7 +233,7 @@ await bucket.put("a.txt", "x", { metadata: { note: "café" } })
 // -- code 'invalid_input', status 400
 ```
 
-This is stricter than it looks, and the reason is measurable. R2 does not store a non-ASCII value verbatim: `{ note: 'café' }` comes back as `=?utf-8?Q?caf=C3=A9?=`. Accepting it would mean handing you back a different string than the one you wrote, and finding out about it on the read. Percent-encode instead, and it round trips exactly:
+Storage does not carry a non-ASCII value back verbatim: `{ note: 'café' }` would read back as `=?utf-8?Q?caf=C3=A9?=`. Percent-encode instead and it round trips exactly:
 
 ```ts
 await bucket.put("a.txt", "x", { metadata: { note: encodeURIComponent("café") } })
@@ -250,9 +248,9 @@ Metadata comes back from `info()` and `get()`, but not from `list()`. A listing 
 
 ## Conditional writes
 
-Two options turn `put` into a conditional write. Both are enforced by storage, not by a read-then-write in the SDK, so neither has a race window.
+Two options turn `put` into a conditional write. Both are enforced by storage, so neither has a race window.
 
-**`overwrite: false`** sends `If-None-Match: *`. If something is already at the path the write is a real 412, and the SDK raises `already_exists` carrying what is there:
+**`overwrite: false`** refuses the write if something is already at the path, raising `already_exists` carrying what is there:
 
 ```ts
 try {
@@ -265,7 +263,7 @@ try {
 }
 ```
 
-**`ifUnchanged: etag`** sends `If-Match`. If the object changed since you read that etag, the write throws `conflict`:
+**`ifUnchanged: etag`** throws `conflict` if the object changed since you read that etag:
 
 ```ts
 const current = await bucket.info("u/7/profile.json")
@@ -273,7 +271,7 @@ await bucket.put("u/7/profile.json", next, { ifUnchanged: current.etag })
 // throws BlobError 'conflict' if somebody else wrote first
 ```
 
-Both are single-PUT only, because a multipart upload has no conditional complete. They turn multipart off, which is why a conditional write of a large body still goes up as one request. Asking for both at once is a build-time mistake rather than a silent downgrade:
+Both are single-PUT only, so they turn multipart off: a conditional write of a large body still goes up as one request. Asking for both at once throws rather than silently downgrading:
 
 ```ts
 await bucket.put("big.bin", data, { multipart: true, overwrite: false })
@@ -285,7 +283,7 @@ await bucket.put("big.bin", data, { multipart: true, overwrite: false })
 
 ## updateJson
 
-`updateJson` is the compare-and-set loop those two options are for, written once. It reads the document, calls your function with the parsed value, and writes the result back with `If-Match`, or with `If-None-Match: *` when there was nothing there. A conflict means somebody wrote in between, so it reads again and re-runs your function against what actually landed.
+`updateJson` is the compare-and-set loop those two options are for, written once. It reads the document, calls your function with the parsed value, and writes the result back conditionally. If somebody wrote in between, it reads again and re-runs your function against what actually landed.
 
 ```ts
 interface Settings {
@@ -349,18 +347,13 @@ A body over 16 MB, decimal, goes up as a multipart upload instead of one PUT. `m
 await bucket.put("video.mp4", data, { multipart: "100mb" })
 ```
 
-R2 refuses a single PUT larger than about 5 GiB, so past that there is no choice. `multipart: false` on a body that big is refused rather than attempted:
+A single PUT cannot carry more than about 5 GiB, so past that there is no choice. `multipart: false` on a body that big throws `too_large` rather than attempting it.
 
-```ts
-// BlobError: 6 GB is over the 5.4 GB a single PUT can carry
-// (multipart: false forbids the parts this body needs)  -- code 'too_large'
-```
+Parts are sent one at a time. If anything fails, the SDK aborts the whole upload before throwing, so nothing is left behind.
 
-Server-side, parts are sent one at a time. A part is buffered whole so it can be retried, and holding several would multiply that memory by the concurrency. If anything fails, the SDK aborts the whole upload before throwing, because an incomplete multipart upload is billed storage that `list()` cannot see.
+A body that does not match a declared `size` throws `invalid_input` naming the mismatch.
 
-This is also the path that counts the body against the `size` you declared, since it is already reading the stream part by part. Too many bytes throws `invalid_input` with `Body is longer than the declared 5000 bytes`, and too few throws `invalid_input` with `Body was 4000 bytes, 5000 were declared`.
-
-Parts, pause, resume and per-part retry are covered in full in [Large files](/blob/browser/large-files), including the cron for upload parts a closed browser tab left behind.
+Parts, pause, resume and per-part retry are covered in full in [Large files](/blob/browser/large-files).
 
 ---
 
@@ -390,12 +383,12 @@ await fetch(upload.url, { method: "PUT", headers: upload.headers, body: pdf })
 It returns `{ url, headers, expiresAt }`.
 
 <Note>
-`headers` are pinned into the signature and must be sent verbatim. Drop one, change one, or add one, and storage answers **403** rather than letting the caller choose what the object is stored as. That is also what makes `metadata` yours and not the uploader's.
+`headers` are signed into the URL and must be sent verbatim. Drop one, change one, or add one, and storage answers **403**. That is what makes `metadata` yours and not the uploader's.
 </Note>
 
-A link can never outlive the credential that signed it, so `expiresAt` is the answer rather than what you asked for. The SDK re-mints to cover a longer ask where it can, and `expiresAt` reports what actually came out.
+`expiresAt` is the real answer for the link, which may be sooner than what you asked for. Use it rather than computing a deadline yourself.
 
-For a browser upload, use the upload handler instead. It also handles multipart, resume, and the completion callback this cannot: a signed URL is one PUT, and nothing tells your server it happened. See [Upload handler](/blob/browser/upload-handler) and [How signing works](/blob/overall/signing).
+For a browser upload, use the upload handler instead. A signed URL is one PUT with no multipart, no resume, and nothing to tell your server it happened. See [Upload handler](/blob/browser/upload-handler).
 
 ---
 
@@ -413,13 +406,13 @@ const s3 = new S3Client({ endpoint, region, credentials })
 await s3.send(new ListObjectsV2Command({ Bucket: name, Prefix: "reports/" }))
 ```
 
-`endpoint` and `credentials` are async providers rather than values. The endpoint is only known from a credentials response, and the credential itself is short-lived, so handing the aws-sdk providers is what lets it re-read a fresh one on expiry instead of failing an hour in.
+`endpoint` and `credentials` are async providers rather than values. Pass them through as they come, so the aws-sdk can pick up a fresh credential when the old one expires.
 
 ---
 
 ## Telemetry
 
-The SDK sends its version, the runtime it is on, and the platform as headers on credential requests to Upstash. Those are one request per credential lifetime, not per object, so nothing on the hot path carries them. Turn it off with `UPSTASH_DISABLE_TELEMETRY` in the environment, or with `enableTelemetry: false` on the `Bucket`. Setting the variable to `false`, `0`, `no` or `off` does not opt out: an environment variable that says false and means true is a trap.
+The SDK sends its version, runtime and platform as headers on credential requests to Upstash. Turn it off by setting `UPSTASH_DISABLE_TELEMETRY` in the environment (any value), or with `enableTelemetry: false` on the `Bucket`.
 
 ---
 
