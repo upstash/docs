@@ -6,7 +6,9 @@ Upstash Blob is S3-compatible object storage with an SDK for three jobs: writing
 
 ---
 
-## Install
+## Setup
+
+Install the package:
 
 <CodeGroup>
 ```bash npm
@@ -26,19 +28,34 @@ bun add @upstash/blob
 ```
 </CodeGroup>
 
-The package has three entrypoints: `@upstash/blob` for the server, `@upstash/blob/browser` for a plain browser client, and `@upstash/blob/react` for the hooks.
+Then create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment.
 
----
-
-## Get a bucket token
-
-Create a bucket in the [Upstash Console](https://console.upstash.com) and copy its token.
-
-```bash .env.local
+```bash .env
 UPSTASH_BLOB_TOKEN=...
 ```
 
-`Bucket.fromEnv()` and the upload handler both read this variable.
+A public bucket serves every object over a public URL, which is what you want for avatars, product images, and anything a page links to directly. A private bucket has no public host: every object is read through a time-limited [signed URL](/blob/reference/signing), which is the right choice for user documents, invoices, and anything else that should not be guessable. Pick private if you are unsure, since a public bucket cannot take back what it has already served.
+
+---
+
+## Upload from your server
+
+Bytes already on your server go straight to the bucket.
+
+```ts lib/reports.ts
+import { Bucket } from "@upstash/blob"
+
+const bucket = Bucket.fromEnv()
+
+export async function saveReport(file: Blob) {
+  const blob = await bucket.put("reports/2026-01.pdf", file, {
+    contentType: "application/pdf",
+  })
+  return blob.url
+}
+```
+
+`blob.url` is the public object URL, and `undefined` on a private bucket. Metadata, caching and conditional writes are in [Writing](/blob/bucket/writing).
 
 ---
 
@@ -54,16 +71,19 @@ The smallest one that works states what it accepts and where the object goes:
 
 ```ts lib/uploads.ts
 import "server-only"
-import { uniquePath, uploadHandler } from "@upstash/blob"
+import { uploadHandler } from "@upstash/blob"
 
 export const uploads = uploadHandler({
-  constraints: { maxBytes: "20mb", contentTypes: ["image/*", "application/pdf"] },
+  constraints: {
+    maxBytes: "20mb",
+    contentTypes: ["image/*", "application/pdf"],
+  },
 
-  onBeforeUpload: ({ file }) => ({ path: uniquePath`uploads/${file.name}` }),
+  onBeforeUpload: ({ file }) => ({ path: `images/${file.name}` }),
 })
 ```
 
-`uniquePath` sanitizes what you interpolate and adds a random suffix, so two people picking `photo.png` do not land on the same object. Sizes are decimal, so `'20mb'` is 20,000,000 bytes. The grammar behind `constraints` is covered in [Constraints](/blob/browser/constraints).
+See [Upload handler](/blob/uploads/upload-handler) for everything these callbacks can do.
 
 </Step>
 
@@ -83,7 +103,7 @@ export const { GET, POST } = uploads
 
 <Step title="Bind the hooks to the handler">
 
-`uploadHooks<typeof uploads>()` reads the handler's type, so `upload.blob.data` on the client is typed from what `onUploadComplete` returned and a route name that does not exist fails to compile.
+`uploadHooks<typeof uploads>()` reads the handler's type, so `upload.blob.data` on the client is typed from what `onUploadComplete` returned.
 
 ```ts lib/upload-hooks.ts
 "use client"
@@ -118,105 +138,43 @@ export default function Page() {
 
       {upload && <p>{upload.status}</p>}
       {upload?.pending && <progress value={upload.percent} max={100} />}
-      {upload?.status === "done" && <a href={upload.blob.url}>{upload.blob.path}</a>}
+      {upload?.status === "done" && (
+        <a href={upload.blob.url}>{upload.blob.path}</a>
+      )}
       {upload?.status === "error" && <p>{upload.error.message}</p>}
     </div>
   )
 }
 ```
 
-`accept` comes from the route's own `GET`, so the file picker is filled from the same list that does the refusing. `status` is one of `queued`, `uploading`, `finishing`, `paused`, `done`, `canceled` or `error`, and `pending` is true for the first four. `upload.error` is a `BlobError` with the `code` your server raised.
-
-</Step>
-
-<Step title="Then authorize it and record what landed">
-
-Uploads work at this point, but the handler above does not check who is asking or write anything down. Both go in the same two callbacks: `onBeforeUpload` runs before anything is signed, `onUploadComplete` once the object exists.
-
-```ts lib/uploads.ts
-import "server-only"
-import { BlobError, uniquePath, uploadHandler } from "@upstash/blob"
-import { getUser } from "./auth"
-import { db } from "./db"
-
-export const uploads = uploadHandler({
-  constraints: { maxBytes: "20mb", contentTypes: ["image/*", "application/pdf"] },
-
-  onBeforeUpload: async ({ request, file }) => {
-    const user = await getUser(request)
-    if (!user) throw new BlobError("unauthorized") // the 401, and nothing is signed
-    return { path: uniquePath`${user.id}/${file.name}`, metadata: { owner: user.id } }
-  },
-
-  onUploadComplete: async ({ url, metadata, uploadId }) => {
-    // uploadId is stable across retries, so the same completion twice writes one row
-    await db.files.upsert({ uploadId, owner: metadata.owner, url })
-  },
-})
-```
-
-A throw out of `onUploadComplete` deletes the object that just landed, so catch your own database errors rather than letting them escape. [Upload handler](/blob/browser/upload-handler#onuploadcomplete) has the whole callback.
+`accept` comes from the route's own `GET`, so the file picker offers exactly what the server accepts.
 
 </Step>
 
 </Steps>
 
-A file under 16 MB goes up as one presigned PUT. Anything larger is cut into parts, which is what buys pause, resume and per-part retry. See [Large files](/blob/browser/large-files).
+Uploads work at this point, but the handler does not yet check who is asking or write anything down. Both go in the same two callbacks: see [Upload handler](/blob/uploads/upload-handler).
 
----
-
-## Server uploads
-
-For bytes that are already on your server, skip the handler and write the object directly.
-
-```ts lib/reports.ts
-import { Bucket } from "@upstash/blob"
-
-const bucket = Bucket.fromEnv()
-
-export async function saveReport(pdf: Blob) {
-  const blob = await bucket.put("reports/2026-01.pdf", pdf, { contentType: "application/pdf" })
-  return blob.url
-}
-```
-
-`blob.url` is the public object URL, and `undefined` on a private bucket. The rest of the write API, including metadata, caching and conditional writes, is in [Writing](/blob/bucket/writing).
-
----
-
-## CORS
-
-A direct upload PUTs to storage, not to your app, so the bucket's CORS configuration is what decides whether the browser is allowed to send it at all. Four things have to be true, and they come straight from what the SDK signs:
-
-| The policy must allow | Because |
-| --- | --- |
-| the origin your page is served from | that is who sends the PUT |
-| the `PUT` method | a presigned upload is one `PUT` per object or per part |
-| the request headers `content-type`, `cache-control`, and every `x-amz-meta-*` the route writes | a single PUT carries them as real headers, pinned into the signature, so the browser must send them verbatim |
-| `ETag` in the exposed response headers | the browser reads each part's etag off a cross-origin response to complete the upload |
-
-The metadata header names are yours: a route returning `metadata: { owner }` sends `x-amz-meta-owner`. Exposing `Retry-After` too is worth doing but not required.
-
-A browser blocks a request that fails CORS before a single byte goes out, and script never sees why, so a PUT that fails with no status and no bytes sent is almost always this.
+A file under 16 MB goes up as one presigned PUT. Anything larger is cut into parts, which is what buys pause, resume and per-part retry. See [Large files](/blob/uploads/large-files).
 
 ---
 
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Upload handler" href="/blob/browser/upload-handler">
+  <Card title="Upload handler" href="/blob/uploads/upload-handler">
     Routes, context, input schemas and the completion callback in full.
   </Card>
 
-  <Card title="The client" href="/blob/browser/client">
+  <Card title="Upload client" href="/blob/uploads/upload-client">
     `uploadHooks`, `useUpload`, the record it renders, and the non-React client.
   </Card>
 
-  <Card title="Constraints" href="/blob/browser/constraints">
+  <Card title="Constraints" href="/blob/uploads/constraints">
     Size limits, content types and what the byte check does and does not prove.
   </Card>
 
-  <Card title="Large files" href="/blob/browser/large-files">
+  <Card title="Large files" href="/blob/uploads/large-files">
     Parts, pause, resume and retry, and where the threshold sits.
   </Card>
 
@@ -224,11 +182,11 @@ A browser blocks a request that fails CORS before a single byte goes out, and sc
     `put`, metadata, conditional writes and multipart from the server.
   </Card>
 
-  <Card title="How signing works" href="/blob/overall/signing">
+  <Card title="How signing works" href="/blob/reference/signing">
     Read and upload links for anything outside the browser flow.
   </Card>
 
-  <Card title="Formulas" href="/blob/formulas/overview">
+  <Card title="Recipes" href="/blob/recipes/overview">
     Whole features wired end to end: avatars, chat attachments, and the files they take.
   </Card>
 
