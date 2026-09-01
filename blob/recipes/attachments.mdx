@@ -10,7 +10,7 @@ Three choices make that work:
 - **A row per attachment.** Your table is the index. It answers "what is attached to this thread", and the bucket only holds the bytes.
 - **A validated `input`.** The browser sends the thread id, and your route checks it, and the user's membership, before anything is signed.
 
-If you have not set up a bucket yet, start with the [Quickstart](/blob/overall/quickstart).
+This recipe uses a public bucket. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart).
 
 ---
 
@@ -60,6 +60,8 @@ export const uploads = uploadHandler({ routes: { attachment } })
 `uploadRoute()` is the route form that takes an `input` schema and a typed `state`. Put ids in `state`, never secrets: it travels through the browser. `file.name` is the original filename, and this callback is the only place it exists, so store it if you want to show it later.
 
 `multipart: true` sends every file up in parts, which is what big files need, and nothing is stored at the path until the upload completes. See [Large files](/blob/uploads/large-files).
+
+A throw out of `onUploadComplete` deletes the file that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
@@ -140,7 +142,7 @@ export async function AttachmentList({ threadId }: { threadId: string }) {
 
 ## Deleting
 
-Delete the object first, then the row. A failure then leaves a harmless orphan rather than a link that 404s, and `del` is safe to run again.
+Delete the row first, then the object. The thread stops listing the file immediately, and if the second step fails the leftover is an object nobody links to rather than a link that 404s. `del` treats an already missing object as success, so it is safe to retry.
 
 ```ts app/actions.ts
 "use server"
@@ -156,12 +158,12 @@ export async function deleteAttachment(id: string) {
   const attachment = await db.attachments.find({ id, userId: user?.id })
   if (!attachment) throw new Error("not found")
 
-  await bucket.del(attachment.path)
   await db.attachments.delete(id)
+  await bucket.del(attachment.path)
 }
 ```
 
-Deleting a whole thread is the same two steps in bulk. The rows name every path, so there is still nothing to list:
+Deleting a whole thread is the same thing in bulk. The rows are the only thing that knows the paths, so read them first, delete the objects, then drop the rows. If it fails partway, run it again:
 
 ```ts
 const attachments = await db.attachments.findMany({ threadId })

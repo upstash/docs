@@ -10,7 +10,9 @@ Three choices make that work:
 - **A versioned URL.** `versionedUrl` carries the object's etag on the query, so new bytes are a new URL and `cache: "immutable"` is safe.
 - **A URL on the user's row.** The bucket holds the bytes, your database is the index. Every page renders `user.avatarUrl`.
 
-The bytes go straight from the browser to storage, and your server only authorizes the upload. If you have not created a bucket yet, start with the [Quickstart](/blob/overall/quickstart).
+The bytes go straight from the browser to storage, and your server only authorizes the upload.
+
+This recipe uses a public bucket. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart).
 
 ---
 
@@ -37,12 +39,7 @@ export const uploads = uploadHandler({
   },
 
   onUploadComplete: async ({ metadata, versionedUrl }) => {
-    try {
-      await db.users.update({ id: metadata.owner, avatarUrl: versionedUrl })
-    } catch (e) {
-      // A throw here deletes the picture that just landed. Log instead.
-      console.error("[avatar] could not save url", e)
-    }
+    await db.users.update({ id: metadata.owner, avatarUrl: versionedUrl })
     return { avatarUrl: versionedUrl }
   },
 })
@@ -51,6 +48,8 @@ export const uploads = uploadHandler({
 The route takes images only, up to 5 MB, and refuses anything else before a byte is uploaded. The path has no extension on purpose: the object is stored and served as the type the browser declared.
 
 That is the whole update story. The path is the user id, so every upload overwrites the same object, and `versionedUrl` ends in the new etag, so the row now points at a URL no browser or CDN has ever seen. The old cached picture is never requested again. [Caching](/blob/bucket/caching) has the alternative, `cache: "revalidate"`, for a URL that has to stay fixed.
+
+A throw out of `onUploadComplete` deletes the picture that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
@@ -111,7 +110,7 @@ Everywhere else, render the URL from your own row:
 
 ## Removing a picture
 
-Delete the object and clear the row. `del` treats an already missing object as success, so this is safe to retry.
+Clear the row first, then delete the object. The page stops showing the picture immediately, and if the second step fails the leftover is an object nobody links to rather than a broken image. `del` treats an already missing object as success, so this is safe to retry.
 
 ```ts app/actions.ts
 "use server"
@@ -126,8 +125,8 @@ export async function removeAvatar() {
   const user = await getUser()
   if (!user) throw new Error("unauthorized")
 
-  await bucket.del(`avatars/${user.id}`)
   await db.users.update({ id: user.id, avatarUrl: null })
+  await bucket.del(`avatars/${user.id}`)
 }
 ```
 

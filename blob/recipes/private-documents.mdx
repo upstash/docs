@@ -10,7 +10,7 @@ Three choices make that work:
 - **A signed read URL per download.** Your route checks who is asking, then hands out a link that expires in minutes.
 - **A row per document.** Your table holds the path, the display name and the owner, and it is the only index. The bucket is never asked what a user owns.
 
-Create the bucket as **private** in the Upstash Console. Everything below uses `Bucket.fromEnv()`, which reads `UPSTASH_BLOB_TOKEN`.
+This recipe uses a private bucket. Create it as **private** in the Upstash Console, then follow the [Quickstart](/blob/overall/quickstart) for the token and the SDK.
 
 ---
 
@@ -82,13 +82,43 @@ export const uploads = uploadHandler({
 })
 ```
 
+`cache: "no-store"` keeps a downloaded document out of the reader's browser cache once the link it came from is dead. A throw out of `onUploadComplete` deletes the file that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
+
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
 
 export const { GET, POST } = uploads
 ```
 
-`lib/upload-hooks.ts` and the file picker are the two client files from the [Quickstart](/blob/overall/quickstart#upload-from-the-browser), unchanged: the browser side of an upload is the same on a private bucket. `cache: "no-store"` keeps a downloaded document out of the reader's browser cache once the link it came from is dead.
+```ts lib/upload-hooks.ts
+"use client"
+
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+The browser side of an upload is the same on a private bucket, with one difference: there is no public URL to render when it finishes, so the picker shows what your route returned instead.
+
+```tsx components/document-picker.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
+
+export function DocumentPicker() {
+  const { start, upload, accept } = useUpload()
+
+  return (
+    <>
+      <input type="file" accept={accept} onChange={(e) => start({ file: e.target.files?.[0] })} />
+      {upload?.pending && <progress value={upload.percent} max={100} />}
+      {upload?.status === "error" && <p>{upload.error.message}</p>}
+      {upload?.status === "done" && <p>Uploaded {upload.file.name}</p>}
+    </>
+  )
+}
+```
 
 ---
 
@@ -131,7 +161,7 @@ To hand the URL to a client component instead of redirecting, return `Response.j
 
 ## Deleting
 
-Delete the object first, then the row, so a failure leaves an orphan rather than a broken link. `del` is safe to retry.
+Delete the row first, then the object. The list stops showing the document immediately, and if the second step fails the leftover is an object nobody links to rather than a link that 404s. `del` treats an already missing object as success, so it is safe to retry.
 
 ```ts app/actions.ts
 "use server"
@@ -147,12 +177,12 @@ export async function deleteDocument(id: string) {
   const doc = await db.documents.find({ id, ownerId: user?.id })
   if (!doc) throw new Error("not found")
 
-  await bucket.del(doc.path)
   await db.documents.delete(id)
+  await bucket.del(doc.path)
 }
 ```
 
-When a user closes their account, read their paths out of your table rather than listing the bucket. Their documents sit under more than one prefix, and the table is the index:
+When a user closes their account, the rows are the only thing that knows the paths, since their documents sit under more than one prefix. Read them first, delete the objects, then drop the rows. If it fails partway, run it again:
 
 ```ts
 const docs = await db.documents.findMany({ ownerId: userId })

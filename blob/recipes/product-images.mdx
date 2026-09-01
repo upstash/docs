@@ -10,7 +10,9 @@ Three choices make that work:
 - **`cache: 'immutable'`.** Nothing is ever rewritten at a path, so every image can be cached for a year and a cached page can never show an image that has since changed.
 - **A row per image.** `productId`, `path`, `url` and `sortOrder` live in your database. The bucket cannot answer "which images belong to this product", and it does not have to.
 
-The upload is the same shape as [File Attachments](/blob/recipes/attachments): a direct browser upload that your route authorizes, with the product id carried in `input`. The bucket is public, since product pages link to the images directly. If you have not set up one yet, start with the [Quickstart](/blob/overall/quickstart).
+The upload is the same shape as [File Attachments](/blob/recipes/attachments): a direct browser upload that your route authorizes, with the product id carried in `input`.
+
+This recipe uses a public bucket, since product pages link to the images directly. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart).
 
 ---
 
@@ -44,15 +46,13 @@ const productImage = uploadRoute()({
   },
 
   onUploadComplete: async ({ uploadId, state, path, url }) => {
-    const count = await db.productImages.count({ productId: state.productId })
-
     // The browser retries this request on a flaky network, so upsert on uploadId.
     await db.productImages.upsert({
       id: uploadId,
       productId: state.productId,
       path,
       url,
-      sortOrder: count,
+      sortOrder: Date.now(), // new images go last; a retry keeps its place
     })
 
     return { imageId: uploadId, url }
@@ -63,6 +63,8 @@ export const uploads = uploadHandler({ routes: { productImage } })
 ```
 
 `cache: 'immutable'` is safe here only because the path is unique. Swapping an image out means uploading a new one and deleting the old row, never writing over the object a page is already linking to. The other two cache shapes are in [Caching](/blob/bucket/caching).
+
+`sortOrder` is a timestamp rather than a count, so three files uploading at once, or one completion request retried, cannot land on the same number. A throw out of `onUploadComplete` deletes the image that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
 
 ---
 
@@ -153,6 +155,9 @@ Reordering is a database update and nothing else. The path and the URL of an ima
 ```ts app/actions.ts
 "use server"
 
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
 export async function reorderImages(productId: string, imageIds: string[]) {
   const user = await getUser()
   if (!(await db.products.canEdit({ productId, userId: user?.id }))) throw new Error("forbidden")
@@ -165,7 +170,7 @@ export async function reorderImages(productId: string, imageIds: string[]) {
 
 ## Deleting
 
-Delete the row first, then the object. The page stops showing the image immediately, and an object left behind by a failed second step costs storage rather than a broken link. `del` treats an already missing object as success, so it is safe to retry.
+Delete the row first, then the object. The page stops showing the image immediately, and if the second step fails the leftover is an object nobody links to rather than a broken image. `del` treats an already missing object as success, so it is safe to retry.
 
 ```ts app/actions.ts
 "use server"
@@ -189,10 +194,13 @@ export async function deleteProductImage(imageId: string) {
 }
 ```
 
-Deleting a product is the same thing in bulk. The rows are what know the paths, so read them before you drop them.
+Deleting a product is the same thing in bulk. The rows are the only thing that knows the paths, so read them first, delete the objects, then drop the rows. If it fails partway, run it again: `del` treats a missing object as success.
 
 ```ts app/actions.ts
 export async function deleteProduct(productId: string) {
+  const user = await getUser()
+  if (!(await db.products.canEdit({ productId, userId: user?.id }))) throw new Error("forbidden")
+
   const images = await db.productImages.findMany({ productId })
 
   await bucket.del(images.map((image) => image.path))
@@ -202,3 +210,25 @@ export async function deleteProduct(productId: string) {
 ```
 
 An array is sent as batch deletes, and if any object survives, `del` throws `partial_delete` with the remaining paths in `failed`. See [Deleting](/blob/bucket/deleting).
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Caching" href="/blob/bucket/caching">
+    `immutable`, `revalidate`, and the versioned URL pattern in full.
+  </Card>
+
+  <Card title="Upload handler" href="/blob/uploads/upload-handler">
+    `uploadRoute`, `input`, `state`, and multiple routes on one endpoint.
+  </Card>
+
+  <Card title="Deleting" href="/blob/bucket/deleting">
+    One path, an array, a prefix, and what a partial delete reports.
+  </Card>
+
+  <Card title="Profile pictures" href="/blob/recipes/avatars">
+    One image per row, overwritten in place.
+  </Card>
+</CardGroup>

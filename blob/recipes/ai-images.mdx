@@ -2,21 +2,21 @@
 title: "AI-Generated Images"
 ---
 
-An image or an audio clip that a model just produced, kept so the user can see it again tomorrow. Providers hand back a temporary URL or a response you can only read once, so the bytes have to land somewhere of your own before they expire.
+An image that a model just produced, kept so the user can see it again tomorrow. Providers hand back a temporary URL or a response you can only read once, so the bytes have to land somewhere of your own before they expire.
 
 Three choices make that work:
 
 - **A server-side write.** The bytes are already on your server when the model answers, so they go up with `put`. There is no browser upload here.
-- **A new path per generation.** `generations/${user.id}/${generationId}.png` is written once and never overwritten, so `cache: 'immutable'` is unconditionally safe.
+- **A new path per generation.** `generations/${user.id}/${generationId}` is written once and never overwritten, so `cache: 'immutable'` is unconditionally safe.
 - **A row per generation.** It holds the prompt, the path and the URL, and it is what the gallery reads.
 
-Create a public bucket in the [Upstash Console](https://console.upstash.com) if the gallery is public. Everything below uses `Bucket.fromEnv()`, which reads `UPSTASH_BLOB_TOKEN`.
+This recipe uses a public bucket. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart). A private gallery is covered at the end.
 
 ---
 
 ## Storing a generation
 
-The model's response body is a stream, and `put` can take it directly. A stream carries no length, so pass `maxBytes`: the body is buffered up to that cap and anything larger is refused rather than stored. See [Writing](/blob/bucket/writing#streams-and-unknown-lengths) for the `size` variant, which buffers nothing.
+Read the model's response as a `Blob` and hand it to `put`. A `Blob` carries its own length and its own type, so nothing has to be declared.
 
 ```ts lib/generations.ts
 import "server-only"
@@ -36,16 +36,12 @@ async function generateImage(prompt: string) {
 
 export async function createGeneration(userId: string, prompt: string) {
   const res = await generateImage(prompt)
-  if (!res.ok || !res.body) throw new Error("the model did not return an image")
+  if (!res.ok) throw new Error("the model did not return an image")
 
   const generationId = crypto.randomUUID()
-  const path = `generations/${userId}/${generationId}.png`
+  const path = `generations/${userId}/${generationId}`
 
-  const blob = await bucket.put(path, res.body, {
-    contentType: "image/png",
-    maxBytes: "20mb",
-    cache: "immutable",
-  })
+  const blob = await bucket.put(path, await res.blob(), { cache: "immutable" })
 
   return db.generations.create({
     id: generationId,
@@ -58,9 +54,9 @@ export async function createGeneration(userId: string, prompt: string) {
 }
 ```
 
-`contentType` is declared because a stream does not carry one. Without it the object is stored as `application/octet-stream`, and a browser downloads it instead of rendering it.
+The path has no extension on purpose: the object is stored and served as whatever type the provider answered with, `image/png` or `image/webp` alike. If the response carries no `Content-Type`, pass `contentType` yourself, or the object is stored as `application/octet-stream` and a browser downloads it instead of rendering it.
 
-Plenty of providers answer with JSON pointing at a temporary URL instead. Fetch that URL and store what comes back. A `Blob` carries both its length and its type, so nothing has to be declared:
+Plenty of providers answer with JSON pointing at a temporary URL instead. Fetch that URL and store what comes back the same way:
 
 ```ts
 const { imageUrl } = await res.json()
@@ -68,6 +64,8 @@ const image = await fetch(imageUrl)
 
 const blob = await bucket.put(path, await image.blob(), { cache: "immutable" })
 ```
+
+Both forms hold the image in memory for the length of the call, which is fine for an image. For a body too big for that, `put` takes the response stream with a `size`; see [Writing](/blob/bucket/writing#streams-and-unknown-lengths).
 
 ---
 
@@ -129,7 +127,7 @@ const { url } = await bucket.signedReadUrl(generation.path, { expiresIn: "5m" })
 
 ## Deleting
 
-Delete the object first, then the row, so a failure leaves an orphan rather than a broken image. `del` treats an already missing object as success, so it is safe to retry.
+Delete the row first, then the object. The gallery stops showing the image immediately, and if the second step fails the leftover is an object nobody links to rather than a broken image. `del` treats an already missing object as success, so it is safe to retry.
 
 ```ts app/actions.ts
 "use server"
@@ -145,12 +143,12 @@ export async function deleteGeneration(id: string) {
   const generation = await db.generations.find({ id, userId: user?.id })
   if (!generation) throw new Error("not found")
 
-  await bucket.del(generation.path)
   await db.generations.delete(id)
+  await bucket.del(generation.path)
 }
 ```
 
-When a user deletes their account, their rows already name every object. Hand `del` the array:
+When a user deletes their account, the rows are the only thing that knows the paths, so read them first, delete the objects, then drop the rows. If it fails partway, run it again:
 
 ```ts
 const generations = await db.generations.findMany({ userId })

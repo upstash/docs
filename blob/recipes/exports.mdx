@@ -10,20 +10,22 @@ Three choices make that work:
 - **A row per export job.** It holds the owner, the status, the path and the deadline. The page polls it, the download route checks it, and the cron sweeps it.
 - **A short-lived signed URL.** The link in the page points at a route of yours, and the signed URL is minted at click time.
 
-Create the bucket as **private** in the Upstash Console. Everything below uses `Bucket.fromEnv()`, which reads `UPSTASH_BLOB_TOKEN`.
+This recipe uses a private bucket. Create it as **private** in the Upstash Console, then follow the [Quickstart](/blob/overall/quickstart) for the token and the SDK.
 
 ---
 
 ## Starting an export
 
-The button hits a route that writes a pending row and starts the job. Nothing is stored yet: the row is what the browser gets back.
+The button hits a route that writes a pending row and hands the job to a queue. Nothing is stored yet: the row is what the browser gets back.
 
 ```ts lib/exports.ts
 import "server-only"
 import { Bucket } from "@upstash/blob"
+import { Client } from "@upstash/qstash"
 import { db } from "./db"
 
 const bucket = Bucket.fromEnv()
+const qstash = new Client({ token: process.env.QSTASH_TOKEN! })
 
 const ONE_DAY = 24 * 60 * 60 * 1000
 
@@ -38,8 +40,10 @@ export async function startExport(userId: string) {
     expiresAt: new Date(Date.now() + ONE_DAY),
   })
 
-  // Run this in your queue or workflow, so the request returns immediately.
-  void runExport(id)
+  await qstash.publishJSON({
+    url: `${process.env.APP_URL}/api/exports/run`,
+    body: { id },
+  })
 
   return id
 }
@@ -57,7 +61,7 @@ export async function POST(request: Request) {
 }
 ```
 
-Any job runner works here. [QStash](/qstash) is one way to run `runExport` outside the request, so a long report does not sit inside a function timeout.
+The job has to run outside the request. A promise left running after the response is killed on a serverless platform, so the work goes through [QStash](/qstash), which calls the run route below and retries it if it fails. Any queue or workflow runner works the same way.
 
 ---
 
@@ -68,7 +72,7 @@ Build the file, `put` it, then flip the row to ready. Flipping last is what make
 ```ts lib/exports.ts
 export async function runExport(id: string) {
   const row = await db.exports.find({ id })
-  if (!row) return
+  if (!row || row.status === "ready") return
 
   const csv = await buildCsv(row.userId)
   const path = `exports/${row.userId}/${row.id}.csv`
@@ -77,6 +81,19 @@ export async function runExport(id: string) {
   await db.exports.update(row.id, { status: "ready", path })
 }
 ```
+
+```ts app/api/exports/run/route.ts
+import { verifySignatureAppRouter } from "@upstash/qstash/nextjs"
+import { runExport } from "@/lib/exports"
+
+export const POST = verifySignatureAppRouter(async (request: Request) => {
+  const { id } = await request.json()
+  await runExport(id)
+  return new Response("ok")
+})
+```
+
+`verifySignatureAppRouter` refuses anything that did not come from QStash, so the route cannot be used to start jobs by hand. The `ready` check at the top makes a redelivered message a no-op. Setting up the QStash keys is in the [QStash quickstart](/qstash/quickstarts/vercel-nextjs).
 
 `put` takes a string or a `Buffer` directly, which covers both a CSV you assembled and a PDF a renderer handed you. Neither carries a type of its own, so declare `contentType` or the object is stored as `application/octet-stream`. `cache: 'no-store'` is there because a link expiring does not take the bytes back out of the reader's browser cache.
 
@@ -126,11 +143,15 @@ import { db } from "@/lib/db"
 
 const bucket = Bucket.fromEnv()
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (request.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
+    return new Response("Unauthorized", { status: 401 })
+  }
+
   const rows = await db.exports.findExpired({ before: new Date(), limit: 500 })
   const paths = rows.map((row) => row.path).filter((path) => path !== null)
 
-  if (paths.length) await bucket.del(paths)
+  await bucket.del(paths)
   await db.exports.deleteMany(rows.map((row) => row.id))
 
   return Response.json({ expired: rows.length })
@@ -141,7 +162,7 @@ export async function GET() {
 { "crons": [{ "path": "/api/cron/expire-exports", "schedule": "0 * * * *" }] }
 ```
 
-Objects first, rows second, so a failure leaves an orphan rather than a row pointing at nothing. `del` sends an array in batches of 1000 and counts an already missing object as success, which makes the whole route safe to retry. See [Deleting](/blob/bucket/deleting).
+Objects first, rows second. The rows are the only thing that knows the paths, and if the second step fails the next run finds the same rows and tries again: `del` counts an already missing object as success, and an array is sent in batches of 1000. See [Deleting](/blob/bucket/deleting). Vercel sends `CRON_SECRET` on the requests it schedules, which is what keeps the route from being run by anyone else.
 
 ---
 

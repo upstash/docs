@@ -12,6 +12,8 @@ Three choices make that work:
 
 The bytes go from the browser straight to storage. Your server authorizes the upload and records what landed, and never carries a gigabyte through a function.
 
+This recipe uses a public bucket. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart).
+
 ---
 
 ## The handler
@@ -59,6 +61,8 @@ export const uploads = uploadHandler({ routes: { video } })
 `onBeforeUpload` runs once, before a byte exists, so the row it inserts is the placeholder the rest of the app renders while the upload runs. `state` carries the row id to the completion callback, and it travels through the browser, so put ids there and never secrets.
 
 `multipart: true` also means nothing is stored at the path until the upload completes. A tab that dies halfway leaves parts and a row still marked `uploading`, both of which one cron sweeps: see [Abandoned uploads](/blob/uploads/abandoned-uploads).
+
+A throw out of `onUploadComplete` deletes the video that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
 
 ---
 
@@ -146,7 +150,7 @@ For videos that must not be watchable by anyone holding the link, use a private 
 
 ## Deleting
 
-Delete the object first, then the row. A failure in between leaves an orphan object rather than a player pointing at a 404, and `del` treats an already missing object as success.
+Delete the row first, then the object. The page stops linking the video immediately, and if the second step fails the leftover is an object nobody links to rather than a player pointing at a 404. `del` treats an already missing object as success, so it is safe to retry.
 
 ```ts app/actions.ts
 "use server"
@@ -162,12 +166,12 @@ export async function deleteVideo(id: string) {
   const video = await db.videos.find({ id, ownerId: user?.id })
   if (!video) throw new Error("not found")
 
-  await bucket.del(video.path)
   await db.videos.delete(id)
+  await bucket.del(video.path)
 }
 ```
 
-Closing an account reads the paths from your table, deletes them as one array, then deletes the rows:
+Closing an account is the same thing in bulk. The rows are the only thing that knows the paths, so read them first, delete the objects, then drop the rows. If it fails partway, run it again:
 
 ```ts
 const videos = await db.videos.findMany({ ownerId: user.id })
