@@ -1,0 +1,219 @@
+---
+title: "Generated Exports"
+---
+
+A user clicks **Export**, a background job builds a CSV or a PDF, and a download link appears when it is ready. The file is private, and it stops working after a day.
+
+Three choices make that work:
+
+- **A private bucket.** There is no public host, so the only way to read an export is a signed link your route hands out.
+- **A row per export job.** It holds the owner, the status, the path and the deadline. The page polls it, the download route checks it, and the cron sweeps it.
+- **A short-lived signed URL.** The link in the page points at a route of yours, and the signed URL is minted at click time.
+
+Create the bucket as **private** in the Upstash Console. Everything below uses `Bucket.fromEnv()`, which reads `UPSTASH_BLOB_TOKEN`.
+
+---
+
+## Starting an export
+
+The button hits a route that writes a pending row and starts the job. Nothing is stored yet: the row is what the browser gets back.
+
+```ts lib/exports.ts
+import "server-only"
+import { Bucket } from "@upstash/blob"
+import { db } from "./db"
+
+const bucket = Bucket.fromEnv()
+
+const ONE_DAY = 24 * 60 * 60 * 1000
+
+export async function startExport(userId: string) {
+  const id = crypto.randomUUID()
+
+  await db.exports.insert({
+    id,
+    userId,
+    status: "pending",
+    path: null,
+    expiresAt: new Date(Date.now() + ONE_DAY),
+  })
+
+  // Run this in your queue or workflow, so the request returns immediately.
+  void runExport(id)
+
+  return id
+}
+```
+
+```ts app/api/exports/route.ts
+import { getUser } from "@/lib/auth"
+import { startExport } from "@/lib/exports"
+
+export async function POST(request: Request) {
+  const user = await getUser(request)
+  if (!user) return new Response("Unauthorized", { status: 401 })
+
+  return Response.json({ id: await startExport(user.id) })
+}
+```
+
+Any job runner works here. [QStash](/qstash) is one way to run `runExport` outside the request, so a long report does not sit inside a function timeout.
+
+---
+
+## The job
+
+Build the file, `put` it, then flip the row to ready. Flipping last is what makes a still-pending row mean "the job did not finish".
+
+```ts lib/exports.ts
+export async function runExport(id: string) {
+  const row = await db.exports.find({ id })
+  if (!row) return
+
+  const csv = await buildCsv(row.userId)
+  const path = `exports/${row.userId}/${row.id}.csv`
+
+  await bucket.put(path, csv, { contentType: "text/csv", cache: "no-store" })
+  await db.exports.update(row.id, { status: "ready", path })
+}
+```
+
+`put` takes a string or a `Buffer` directly, which covers both a CSV you assembled and a PDF a renderer handed you. Neither carries a type of its own, so declare `contentType` or the object is stored as `application/octet-stream`. `cache: 'no-store'` is there because a link expiring does not take the bytes back out of the reader's browser cache.
+
+---
+
+## The download route
+
+Check the owner, check the deadline, then sign. The link in the page points here, so it never expires and never leaks anything on its own.
+
+```ts app/api/exports/[id]/download/route.ts
+import { Bucket } from "@upstash/blob"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getUser(request)
+  if (!user) return new Response("Unauthorized", { status: 401 })
+
+  const { id } = await params
+  const row = await db.exports.find({ id, userId: user.id })
+  if (!row?.path || row.status !== "ready") return new Response("Not found", { status: 404 })
+  if (row.expiresAt < new Date()) return new Response("Export expired", { status: 410 })
+
+  const { url } = await bucket.signedReadUrl(row.path, {
+    expiresIn: "5m",
+    downloadAs: `export-${row.id}.csv`,
+  })
+  return Response.redirect(url, 302)
+}
+```
+
+Five minutes is the life of the link, not the life of the export: the row's `expiresAt` is what says whether the export still exists, and it is checked one line above. Sign for the time remaining until `row.expiresAt` instead only when the URL itself has to survive being mailed somewhere, since a day-long link then works for anyone holding it with no second ownership check.
+
+`downloadAs` sets the filename the browser saves. The rest of the options are in [Reading](/blob/bucket/reading).
+
+---
+
+## The cleanup cron
+
+Your table is the index, so the sweep is one indexed query and one batch delete. Never `list()` the bucket for this.
+
+```ts app/api/cron/expire-exports/route.ts
+import { Bucket } from "@upstash/blob"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function GET() {
+  const rows = await db.exports.findExpired({ before: new Date(), limit: 500 })
+  const paths = rows.map((row) => row.path).filter((path) => path !== null)
+
+  if (paths.length) await bucket.del(paths)
+  await db.exports.deleteMany(rows.map((row) => row.id))
+
+  return Response.json({ expired: rows.length })
+}
+```
+
+```json vercel.json
+{ "crons": [{ "path": "/api/cron/expire-exports", "schedule": "0 * * * *" }] }
+```
+
+Objects first, rows second, so a failure leaves an orphan rather than a row pointing at nothing. `del` sends an array in batches of 1000 and counts an already missing object as success, which makes the whole route safe to retry. See [Deleting](/blob/bucket/deleting).
+
+---
+
+## The page
+
+The button posts, then polls the row until it says ready.
+
+```ts app/api/exports/[id]/route.ts
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getUser(request)
+  if (!user) return new Response("Unauthorized", { status: 401 })
+
+  const { id } = await params
+  const row = await db.exports.find({ id, userId: user.id })
+  return row ? Response.json({ status: row.status }) : new Response("Not found", { status: 404 })
+}
+```
+
+```tsx components/export-button.tsx
+"use client"
+
+import { useState } from "react"
+
+export function ExportButton() {
+  const [row, setRow] = useState<{ id: string; status: string }>()
+
+  async function start() {
+    const { id } = await fetch("/api/exports", { method: "POST" }).then((r) => r.json())
+    setRow({ id, status: "pending" })
+
+    const timer = setInterval(async () => {
+      const { status } = await fetch(`/api/exports/${id}`).then((r) => r.json())
+      if (status === "ready") {
+        setRow({ id, status })
+        clearInterval(timer)
+      }
+    }, 2000)
+  }
+
+  return (
+    <>
+      <button onClick={start} disabled={row?.status === "pending"}>Export</button>
+      {row?.status === "pending" && <p>Building your export...</p>}
+      {row?.status === "ready" && <a href={`/api/exports/${row.id}/download`}>Download CSV</a>}
+    </>
+  )
+}
+```
+
+The anchor is an ordinary link to your own route, so it can sit in the page, in a list of past exports, or in an email, and the route still decides who gets a signed URL.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Reading" href="/blob/bucket/reading">
+    `signedReadUrl` options, `expiresAt`, and private buckets.
+  </Card>
+
+  <Card title="How signing works" href="/blob/reference/signing">
+    What a signed URL can and cannot do, and how long it lives.
+  </Card>
+
+  <Card title="Deleting" href="/blob/bucket/deleting">
+    One path, an array, a prefix, and what a partial delete reports.
+  </Card>
+
+  <Card title="Private documents" href="/blob/recipes/private-documents">
+    Invoices and contracts, kept rather than expired.
+  </Card>
+</CardGroup>

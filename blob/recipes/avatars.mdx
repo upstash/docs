@@ -2,15 +2,15 @@
 title: "Profile Pictures"
 ---
 
-One picture per user. A new upload replaces the old one, and every page shows the new picture right away, even with a year-long cache on the image.
+One picture per user. A new upload replaces the old one, and every page shows the new picture right away, even though the image is cached for a year.
 
 Three choices make that work:
 
-- **A stable path.** `avatars/${user.id}` is overwritten on every upload, so there is never an old picture to delete.
-- **A versioned URL.** `versionedUrl` is the public URL with the object's etag on the query, so new bytes are a new URL and `cache: 'immutable'` is safe.
-- **Image-only limits.** `image/*` and a small `maxBytes`, enforced on your server before anything is signed.
+- **A stable path.** `avatars/${user.id}` is overwritten on every upload, so there is never an old picture to clean up.
+- **A versioned URL.** `versionedUrl` carries the object's etag on the query, so new bytes are a new URL and `cache: "immutable"` is safe.
+- **A URL on the user's row.** The bucket holds the bytes, your database is the index. Every page renders `user.avatarUrl`.
 
-This is a direct browser upload: the bytes go from the browser to storage, and your server only authorizes it. If you have not set up a bucket yet, start with the [Quickstart](/blob/overall/quickstart).
+The bytes go straight from the browser to storage, and your server only authorizes the upload. If you have not created a bucket yet, start with the [Quickstart](/blob/overall/quickstart).
 
 ---
 
@@ -40,7 +40,7 @@ export const uploads = uploadHandler({
     try {
       await db.users.update({ id: metadata.owner, avatarUrl: versionedUrl })
     } catch (e) {
-      // A throw here deletes the picture that just landed. Keep it and log instead.
+      // A throw here deletes the picture that just landed. Log instead.
       console.error("[avatar] could not save url", e)
     }
     return { avatarUrl: versionedUrl }
@@ -48,7 +48,9 @@ export const uploads = uploadHandler({
 })
 ```
 
-The path has no extension on purpose. The object is stored and served as the type the browser declared, and `contentTypes: ['image/*']` is what checks it.
+The route takes images only, up to 5 MB, and refuses anything else before a byte is uploaded. The path has no extension on purpose: the object is stored and served as the type the browser declared.
+
+That is the whole update story. The path is the user id, so every upload overwrites the same object, and `versionedUrl` ends in the new etag, so the row now points at a URL no browser or CDN has ever seen. The old cached picture is never requested again. [Caching](/blob/bucket/caching) has the alternative, `cache: "revalidate"`, for a URL that has to stay fixed.
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
@@ -93,23 +95,17 @@ export function AvatarPicker({ src }: { src?: string }) {
 }
 ```
 
-`accept` comes from the route's constraints, so the file dialog only offers images. `upload.blob.data.avatarUrl` is typed from what `onUploadComplete` returned.
+`accept` comes from the route's constraints, so the file dialog only offers images. `upload.blob.data.avatarUrl` is typed from what `onUploadComplete` returned, so the new picture is on screen the moment the upload finishes.
+
+---
+
+## Showing the picture
 
 Everywhere else, render the URL from your own row:
 
 ```tsx
 <img src={user.avatarUrl} alt={user.name} />
 ```
-
----
-
-## Why a versioned URL
-
-The path never changes, so the plain `url` never changes either. With `cache: 'immutable'` a browser or CDN that has seen it once would keep the old picture for a year.
-
-`versionedUrl` is `url` plus `?v=<etag>`. The etag changes with the bytes, so every new picture is a URL no cache has seen, and the old one is simply never requested again. You get a full-length cache and instant updates at the same time.
-
-If you must serve the bare `url`, for example because it is already printed somewhere, use `cache: 'revalidate'` instead. It costs a 304 check per read but is never stale. See [Caching](/blob/bucket/caching).
 
 ---
 
@@ -134,6 +130,10 @@ export async function removeAvatar() {
   await db.users.update({ id: user.id, avatarUrl: null })
 }
 ```
+
+---
+
+The same pattern fits any single image per row: a workspace logo, a product's hero image, a cover photo. Name the path after the row's id, and store `versionedUrl` on the row. When one row owns many images, give each upload its own path instead, as in [Product images](/blob/recipes/product-images).
 
 ---
 

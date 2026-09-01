@@ -1,0 +1,182 @@
+---
+title: "AI-Generated Images"
+---
+
+An image or an audio clip that a model just produced, kept so the user can see it again tomorrow. Providers hand back a temporary URL or a response you can only read once, so the bytes have to land somewhere of your own before they expire.
+
+Three choices make that work:
+
+- **A server-side write.** The bytes are already on your server when the model answers, so they go up with `put`. There is no browser upload here.
+- **A new path per generation.** `generations/${user.id}/${generationId}.png` is written once and never overwritten, so `cache: 'immutable'` is unconditionally safe.
+- **A row per generation.** It holds the prompt, the path and the URL, and it is what the gallery reads.
+
+Create a public bucket in the [Upstash Console](https://console.upstash.com) if the gallery is public. Everything below uses `Bucket.fromEnv()`, which reads `UPSTASH_BLOB_TOKEN`.
+
+---
+
+## Storing a generation
+
+The model's response body is a stream, and `put` can take it directly. A stream carries no length, so pass `maxBytes`: the body is buffered up to that cap and anything larger is refused rather than stored. See [Writing](/blob/bucket/writing#streams-and-unknown-lengths) for the `size` variant, which buffers nothing.
+
+```ts lib/generations.ts
+import "server-only"
+import { Bucket } from "@upstash/blob"
+import { db } from "./db"
+
+const bucket = Bucket.fromEnv()
+
+// Any provider works. Whatever returns a Response with image bytes fits here.
+async function generateImage(prompt: string) {
+  return fetch("https://api.your-model-provider.com/v1/images", {
+    method: "POST",
+    headers: { authorization: `Bearer ${process.env.MODEL_API_KEY}` },
+    body: JSON.stringify({ prompt }),
+  })
+}
+
+export async function createGeneration(userId: string, prompt: string) {
+  const res = await generateImage(prompt)
+  if (!res.ok || !res.body) throw new Error("the model did not return an image")
+
+  const generationId = crypto.randomUUID()
+  const path = `generations/${userId}/${generationId}.png`
+
+  const blob = await bucket.put(path, res.body, {
+    contentType: "image/png",
+    maxBytes: "20mb",
+    cache: "immutable",
+  })
+
+  return db.generations.create({
+    id: generationId,
+    userId,
+    prompt,
+    path,
+    url: blob.url,
+    createdAt: new Date(),
+  })
+}
+```
+
+`contentType` is declared because a stream does not carry one. Without it the object is stored as `application/octet-stream`, and a browser downloads it instead of rendering it.
+
+Plenty of providers answer with JSON pointing at a temporary URL instead. Fetch that URL and store what comes back. A `Blob` carries both its length and its type, so nothing has to be declared:
+
+```ts
+const { imageUrl } = await res.json()
+const image = await fetch(imageUrl)
+
+const blob = await bucket.put(path, await image.blob(), { cache: "immutable" })
+```
+
+---
+
+## The route
+
+```ts app/api/generate/route.ts
+import { getUser } from "@/lib/auth"
+import { createGeneration } from "@/lib/generations"
+
+export async function POST(request: Request) {
+  const user = await getUser(request)
+  if (!user) return new Response("Unauthorized", { status: 401 })
+
+  const { prompt } = await request.json()
+  const generation = await createGeneration(user.id, prompt)
+
+  return Response.json({ id: generation.id, url: generation.url })
+}
+```
+
+Return your own URL, never the provider's. The provider's link is the one that stops working in an hour.
+
+---
+
+## The gallery
+
+The bucket cannot answer "what has this user generated". Your table can, so read rows and render the URL stored on each one:
+
+```tsx app/gallery/page.tsx
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+export default async function GalleryPage() {
+  const user = await getUser()
+  const generations = await db.generations.findMany({ userId: user.id })
+
+  return (
+    <ul>
+      {generations.map((g) => (
+        <li key={g.id}>
+          <img src={g.url} alt={g.prompt} />
+          <p>{g.prompt}</p>
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+Each object is stored `immutable` under a path that is never reused, so a browser or CDN that has seen one keeps it for a year and there is nothing to invalidate.
+
+If the gallery is not public, create the bucket as private instead. `blob.url` is `undefined` there, so the row keeps only the path and each read is signed at click time, after an ownership check. That shape is in [Private documents](/blob/recipes/private-documents).
+
+```ts
+const { url } = await bucket.signedReadUrl(generation.path, { expiresIn: "5m" })
+```
+
+---
+
+## Deleting
+
+Delete the object first, then the row, so a failure leaves an orphan rather than a broken image. `del` treats an already missing object as success, so it is safe to retry.
+
+```ts app/actions.ts
+"use server"
+
+import { Bucket } from "@upstash/blob"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function deleteGeneration(id: string) {
+  const user = await getUser()
+  const generation = await db.generations.find({ id, userId: user?.id })
+  if (!generation) throw new Error("not found")
+
+  await bucket.del(generation.path)
+  await db.generations.delete(id)
+}
+```
+
+When a user deletes their account, their rows already name every object. Hand `del` the array:
+
+```ts
+const generations = await db.generations.findMany({ userId })
+
+await bucket.del(generations.map((g) => g.path))
+await db.generations.deleteMany({ userId })
+```
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Writing" href="/blob/bucket/writing">
+    Which bodies `put` accepts, and what a stream needs.
+  </Card>
+
+  <Card title="Caching" href="/blob/bucket/caching">
+    `immutable`, `revalidate`, and what each one stores.
+  </Card>
+
+  <Card title="Deleting" href="/blob/bucket/deleting">
+    One path, an array, and what a partial delete reports.
+  </Card>
+
+  <Card title="Private documents" href="/blob/recipes/private-documents">
+    The same shape on a private bucket, with signed reads.
+  </Card>
+</CardGroup>

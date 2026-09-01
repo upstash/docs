@@ -1,0 +1,204 @@
+---
+title: "Product Images"
+---
+
+Many images per product, uploaded by staff or sellers from an admin UI, shown in order on a public product page, and removed when the product is.
+
+Three choices make that work:
+
+- **A unique path per image.** `uniquePath` gives every upload its own object, so replacing an image is a new object at a new path and never an overwrite.
+- **`cache: 'immutable'`.** Nothing is ever rewritten at a path, so every image can be cached for a year and a cached page can never show an image that has since changed.
+- **A row per image.** `productId`, `path`, `url` and `sortOrder` live in your database. The bucket cannot answer "which images belong to this product", and it does not have to.
+
+The upload is the same shape as [File Attachments](/blob/recipes/attachments): a direct browser upload that your route authorizes, with the product id carried in `input`. The bucket is public, since product pages link to the images directly. If you have not set up one yet, start with the [Quickstart](/blob/overall/quickstart).
+
+---
+
+## The handler
+
+The route checks that this user may edit this product, then names a fresh path for the image.
+
+```ts lib/uploads.ts
+import "server-only"
+import * as z from "zod"
+import { BlobError, uniquePath, uploadHandler, uploadRoute } from "@upstash/blob"
+import { getUser } from "./auth"
+import { db } from "./db"
+
+const productImage = uploadRoute()({
+  constraints: { contentTypes: ["image/*"], maxBytes: "10mb" },
+  input: z.object({ productId: z.string() }),
+
+  onBeforeUpload: async ({ request, input, file }) => {
+    const user = await getUser(request)
+    if (!user) throw new BlobError("unauthorized")
+
+    const canEdit = await db.products.canEdit({ productId: input.productId, userId: user.id })
+    if (!canEdit) throw new BlobError("forbidden")
+
+    return {
+      path: uniquePath`products/${input.productId}/${file.name}`,
+      cache: "immutable",
+      state: { productId: input.productId },
+    }
+  },
+
+  onUploadComplete: async ({ uploadId, state, path, url }) => {
+    const count = await db.productImages.count({ productId: state.productId })
+
+    // The browser retries this request on a flaky network, so upsert on uploadId.
+    await db.productImages.upsert({
+      id: uploadId,
+      productId: state.productId,
+      path,
+      url,
+      sortOrder: count,
+    })
+
+    return { imageId: uploadId, url }
+  },
+})
+
+export const uploads = uploadHandler({ routes: { productImage } })
+```
+
+`cache: 'immutable'` is safe here only because the path is unique. Swapping an image out means uploading a new one and deleting the old row, never writing over the object a page is already linking to. The other two cache shapes are in [Caching](/blob/bucket/caching).
+
+---
+
+## The route
+
+Mount the handler, then bind the hooks to it.
+
+```ts app/api/upload/route.ts
+import { uploads } from "@/lib/uploads"
+
+export const { GET, POST } = uploads
+```
+
+```ts lib/upload-hooks.ts
+"use client"
+
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+---
+
+## The admin uploader
+
+One picker, many files. `input` is required by the hook because the route declares a schema, so a missing `productId` fails to compile.
+
+```tsx components/product-image-uploader.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
+
+export function ProductImageUploader({ productId }: { productId: string }) {
+  const { start, uploads, accept } = useUpload("productImage")
+
+  return (
+    <>
+      <input
+        type="file"
+        multiple
+        accept={accept}
+        onChange={(e) => start({ files: e.target.files, input: { productId } })}
+      />
+
+      <ul>
+        {uploads.map((u) => (
+          <li key={u.id}>
+            {u.file.name}
+            {u.pending && <progress value={u.percent} max={100} />}
+            {u.status === "done" && <img src={u.blob.data.url} alt="" width={64} height={64} />}
+            {u.status === "error" && <span>{u.error.message}</span>}
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+```
+
+`accept` comes from the route's constraints, so the file dialog only offers images.
+
+---
+
+## The product page
+
+Read the rows, sorted by `sortOrder`, and render `url` straight from them.
+
+```tsx app/products/[id]/page.tsx
+import { db } from "@/lib/db"
+
+export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  const images = await db.productImages.findMany({ productId: id, orderBy: "sortOrder" })
+
+  return (
+    <div>
+      {images.map((image) => (
+        <img key={image.id} src={image.url} alt="" />
+      ))}
+    </div>
+  )
+}
+```
+
+Reordering is a database update and nothing else. The path and the URL of an image never change, so dragging a thumbnail rewrites `sortOrder` on a few rows and uploads nothing.
+
+```ts app/actions.ts
+"use server"
+
+export async function reorderImages(productId: string, imageIds: string[]) {
+  const user = await getUser()
+  if (!(await db.products.canEdit({ productId, userId: user?.id }))) throw new Error("forbidden")
+
+  await db.productImages.setOrder({ productId, imageIds })
+}
+```
+
+---
+
+## Deleting
+
+Delete the row first, then the object. The page stops showing the image immediately, and an object left behind by a failed second step costs storage rather than a broken link. `del` treats an already missing object as success, so it is safe to retry.
+
+```ts app/actions.ts
+"use server"
+
+import { Bucket } from "@upstash/blob"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function deleteProductImage(imageId: string) {
+  const user = await getUser()
+  const image = await db.productImages.find({ id: imageId })
+  if (!image) throw new Error("not found")
+
+  const canEdit = await db.products.canEdit({ productId: image.productId, userId: user?.id })
+  if (!canEdit) throw new Error("forbidden")
+
+  await db.productImages.delete(imageId)
+  await bucket.del(image.path)
+}
+```
+
+Deleting a product is the same thing in bulk. The rows are what know the paths, so read them before you drop them.
+
+```ts app/actions.ts
+export async function deleteProduct(productId: string) {
+  const images = await db.productImages.findMany({ productId })
+
+  await bucket.del(images.map((image) => image.path))
+  await db.productImages.deleteMany({ productId })
+  await db.products.delete(productId)
+}
+```
+
+An array is sent as batch deletes, and if any object survives, `del` throws `partial_delete` with the remaining paths in `failed`. See [Deleting](/blob/bucket/deleting).

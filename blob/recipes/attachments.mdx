@@ -2,12 +2,12 @@
 title: "File Attachments"
 ---
 
-Files attached to a chat message, a comment, or a support ticket. Many files per thread, uploaded by many users, kept for as long as the thread is.
+Files attached to a chat message, a comment, or a support ticket: many files per thread, uploaded by many people, kept for as long as the thread is.
 
 Three choices make that work:
 
 - **A unique path per file.** `uniquePath` adds a random suffix, so two people attaching `photo.png` get two objects.
-- **A row per attachment.** The bucket cannot answer "what is attached to this thread". Your database can, and the bucket holds the bytes.
+- **A row per attachment.** Your table is the index. It answers "what is attached to this thread", and the bucket only holds the bytes.
 - **A validated `input`.** The browser sends the thread id, and your route checks it, and the user's membership, before anything is signed.
 
 If you have not set up a bucket yet, start with the [Quickstart](/blob/overall/quickstart).
@@ -25,7 +25,7 @@ import { db } from "./db"
 
 const attachment = uploadRoute()({
   constraints: { maxBytes: "25mb" },
-  multipart: true, // nothing is stored until the upload completes, see Cleanup below
+  multipart: true,
   input: z.object({ threadId: z.string() }),
 
   onBeforeUpload: async ({ request, input, file }) => {
@@ -48,10 +48,7 @@ const attachment = uploadRoute()({
       threadId: state.threadId,
       userId: state.userId,
       name: file.name,
-      path,
-      url,
-      size,
-      contentType,
+      path, url, size, contentType,
     })
     return { attachmentId: uploadId }
   },
@@ -60,7 +57,9 @@ const attachment = uploadRoute()({
 export const uploads = uploadHandler({ routes: { attachment } })
 ```
 
-`uploadRoute()` is what allows a schema for `input` and a typed `state`. `state` travels through the browser in a signed token, so put ids in it, never secrets. `file.name` is the original filename, and this callback is the only place it exists, so store it if you want to show it later.
+`uploadRoute()` is the route form that takes an `input` schema and a typed `state`. Put ids in `state`, never secrets: it travels through the browser. `file.name` is the original filename, and this callback is the only place it exists, so store it if you want to show it later.
+
+`multipart: true` sends every file up in parts, which is what big files need, and nothing is stored at the path until the upload completes. See [Large files](/blob/uploads/large-files).
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
@@ -79,7 +78,7 @@ export const { useUpload } = uploadHooks<typeof uploads>()
 
 ---
 
-## The input
+## The picker
 
 ```tsx components/attachment-input.tsx
 "use client"
@@ -91,11 +90,7 @@ export function AttachmentInput({ threadId }: { threadId: string }) {
 
   return (
     <>
-      <input
-        type="file"
-        multiple
-        onChange={(e) => start({ files: e.target.files, input: { threadId } })}
-      />
+      <input type="file" multiple onChange={(e) => start({ files: e.target.files, input: { threadId } })} />
 
       <ul>
         {uploads.map((u) => (
@@ -113,13 +108,13 @@ export function AttachmentInput({ threadId }: { threadId: string }) {
 }
 ```
 
-`input` is required by the hook because the route declared a schema, and a missing `threadId` fails to compile. Three files upload at a time by default and the rest queue.
+The route declares a schema, so `input` is required here and a missing `threadId` does not compile. Three files upload at a time and the rest queue.
 
 ---
 
 ## Showing attachments
 
-Query your table, not the bucket:
+Read your rows, never `list()`. The bucket cannot answer "what is attached to this thread", and your table already can.
 
 ```tsx components/attachment-list.tsx
 import { db } from "@/lib/db"
@@ -139,13 +134,13 @@ export async function AttachmentList({ threadId }: { threadId: string }) {
 }
 ```
 
-`url` is the public URL, which is right for a public bucket. If attachments must not be linkable by anyone who has the URL, use a private bucket and sign each read. See [Private documents](/blob/recipes/private-documents).
+`url` is the public URL, which is right for a public bucket. If an attachment must not be readable by anyone holding its URL, put it on a private bucket and sign each read instead.
 
 ---
 
 ## Deleting
 
-Delete the object first, then the row. If the second step fails you are left with a harmless orphan rather than a link that 404s, and `del` is safe to run again.
+Delete the object first, then the row. A failure then leaves a harmless orphan rather than a link that 404s, and `del` is safe to run again.
 
 ```ts app/actions.ts
 "use server"
@@ -166,34 +161,20 @@ export async function deleteAttachment(id: string) {
 }
 ```
 
-Deleting a whole thread is one call:
+Deleting a whole thread is the same two steps in bulk. The rows name every path, so there is still nothing to list:
 
 ```ts
-await bucket.del({ prefix: `threads/${threadId}/` })
+const attachments = await db.attachments.findMany({ threadId })
+
+await bucket.del(attachments.map((a) => a.path))
+await db.attachments.deleteMany({ threadId })
 ```
 
 ---
 
 ## Cleanup
 
-A user can close the tab halfway through an upload. With `multipart: true` on the route, nothing is stored until the upload completes, so a dead tab leaves only unfinished parts behind. One daily cron removes them:
-
-```ts app/api/cron/abort-stale-uploads/route.ts
-import { Bucket } from "@upstash/blob"
-
-const bucket = Bucket.fromEnv()
-
-export async function GET() {
-  const aborted = await bucket.abortStaleMultipartUploads({ olderThan: "1d", prefix: "threads/" })
-  return Response.json({ aborted: aborted.length })
-}
-```
-
-```json vercel.json
-{ "crons": [{ "path": "/api/cron/abort-stale-uploads", "schedule": "0 4 * * *" }] }
-```
-
-`olderThan` must be longer than your slowest upload, so a paused upload is not aborted underneath the user. Without `multipart: true`, a file under 16 MB is stored the moment the last byte lands and your server cannot tell an abandoned one from a finished one. That case, and the pending-row pattern that handles it, is in [Abandoned uploads](/blob/uploads/abandoned-uploads).
+A user can close the tab halfway through an upload, and nothing tells your server. Because this route is `multipart: true`, that leaves unfinished parts rather than a stored file, and `bucket.abortStaleMultipartUploads()` on a daily cron clears them. Set its `olderThan` longer than your slowest upload, so a paused upload is not aborted underneath the user. [Abandoned uploads](/blob/uploads/abandoned-uploads) has the cron, and what to do instead on a route that is not multipart.
 
 ---
 

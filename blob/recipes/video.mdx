@@ -1,0 +1,198 @@
+---
+title: "Video Uploads"
+---
+
+Course lessons, screen recordings, a creator upload form: files of a few hundred megabytes to a few gigabytes, picked in the browser and played back on a page.
+
+Three choices make that work:
+
+- **`multipart: true`.** Every video goes up in parts, whatever it weighs, which is what buys pause, resume and per-part retry on a two hour upload.
+- **A unique path, cached forever.** `uniquePath` plus `cache: 'immutable'` is one object per video, never overwritten, so its URL can be cached for a year.
+- **A row per video.** Written as `uploading` before the bytes and flipped to `ready` after them, so a page never links a file that is only half there.
+
+The bytes go from the browser straight to storage. Your server authorizes the upload and records what landed, and never carries a gigabyte through a function.
+
+---
+
+## The handler
+
+```ts lib/uploads.ts
+import "server-only"
+import * as z from "zod"
+import { BlobError, uniquePath, uploadHandler, uploadRoute } from "@upstash/blob"
+import { getUser } from "./auth"
+import { db } from "./db"
+
+const video = uploadRoute()({
+  constraints: { contentTypes: ["video/*"], maxBytes: "5gb" },
+  multipart: true,
+  input: z.object({ title: z.string().min(1) }),
+
+  onBeforeUpload: async ({ request, input, file }) => {
+    const user = await getUser(request)
+    if (!user) throw new BlobError("unauthorized")
+
+    const videoId = crypto.randomUUID()
+    const path = uniquePath`videos/${user.id}/${file.name}`
+
+    await db.videos.insert({
+      id: videoId,
+      ownerId: user.id,
+      title: input.title,
+      path,
+      status: "uploading",
+    })
+
+    return { path, cache: "immutable", state: { videoId } }
+  },
+
+  onUploadComplete: async ({ state, url, size }) => {
+    // Last. The row stops looking abandoned only once everything else is written.
+    await db.videos.update(state.videoId, { url, size, status: "ready" })
+    return { videoId: state.videoId }
+  },
+})
+
+export const uploads = uploadHandler({ routes: { video } })
+```
+
+`onBeforeUpload` runs once, before a byte exists, so the row it inserts is the placeholder the rest of the app renders while the upload runs. `state` carries the row id to the completion callback, and it travels through the browser, so put ids there and never secrets.
+
+`multipart: true` also means nothing is stored at the path until the upload completes. A tab that dies halfway leaves parts and a row still marked `uploading`, both of which one cron sweeps: see [Abandoned uploads](/blob/uploads/abandoned-uploads).
+
+---
+
+## The route
+
+```ts app/api/upload/route.ts
+import { uploads } from "@/lib/uploads"
+
+export const { GET, POST } = uploads
+```
+
+```ts lib/upload-hooks.ts
+"use client"
+
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+---
+
+## The upload component
+
+A gigabyte takes minutes, so the controls matter more than they do for a picture.
+
+```tsx components/video-upload.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
+
+export function VideoUpload({ title }: { title: string }) {
+  const { start, upload, accept } = useUpload("video")
+
+  return (
+    <>
+      <input
+        type="file"
+        accept={accept}
+        onChange={(e) => start({ file: e.target.files?.[0], input: { title } })}
+      />
+
+      {upload?.pending && <progress value={upload.percent} max={100} />}
+      {upload?.status === "finishing" && <p>Finishing up...</p>}
+      {upload?.stalled && <p>Connection is struggling, retrying...</p>}
+
+      {upload?.canPause && upload.status === "uploading" && (
+        <button onClick={() => upload.pause()}>Pause</button>
+      )}
+      {upload?.status === "paused" && <button onClick={() => upload.resume()}>Resume</button>}
+      {upload?.pending && <button onClick={() => upload.cancel()}>Cancel</button>}
+
+      {upload?.status === "error" && (
+        <button onClick={() => upload.retry()}>{upload.error.message}</button>
+      )}
+    </>
+  )
+}
+```
+
+`canPause` is true throughout because the route pins parts on. `percent` sits at 99 while `onUploadComplete` runs, which is why `finishing` gets its own line rather than a bar that looks stuck. If the tab is closed and the user picks the same file again later, the upload resumes from the parts that landed, with no API to call. [Large files](/blob/uploads/large-files) covers all of that.
+
+---
+
+## Playing it back
+
+Render the URL from your own row, and let `status` keep half-uploaded videos off the page.
+
+```tsx components/video-player.tsx
+import { db } from "@/lib/db"
+
+export async function VideoPlayer({ id }: { id: string }) {
+  const video = await db.videos.find({ id, status: "ready" })
+  if (!video) return <p>Still processing...</p>
+
+  return <video controls src={video.url} width={720} />
+}
+```
+
+`url` is the public object URL, so the browser fetches the file directly and nothing streams through your app. The object is stored once and never overwritten, which is what makes `cache: 'immutable'` correct here: there is no stale version to worry about, and every play after the first can be served from cache.
+
+For videos that must not be watchable by anyone holding the link, use a private bucket and sign each play with `signedReadUrl`, asking for an `expiresIn` comfortably longer than the video runs. See [Private documents](/blob/recipes/private-documents) for that shape.
+
+---
+
+## Deleting
+
+Delete the object first, then the row. A failure in between leaves an orphan object rather than a player pointing at a 404, and `del` treats an already missing object as success.
+
+```ts app/actions.ts
+"use server"
+
+import { Bucket } from "@upstash/blob"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function deleteVideo(id: string) {
+  const user = await getUser()
+  const video = await db.videos.find({ id, ownerId: user?.id })
+  if (!video) throw new Error("not found")
+
+  await bucket.del(video.path)
+  await db.videos.delete(id)
+}
+```
+
+Closing an account reads the paths from your table, deletes them as one array, then deletes the rows:
+
+```ts
+const videos = await db.videos.findMany({ ownerId: user.id })
+await bucket.del(videos.map((v) => v.path))
+await db.videos.deleteMany({ ownerId: user.id })
+```
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Large files" href="/blob/uploads/large-files">
+    Parts, pause, resume, retries, and where the threshold sits.
+  </Card>
+
+  <Card title="Abandoned uploads" href="/blob/uploads/abandoned-uploads">
+    The pending row, and the cron that sweeps what never finished.
+  </Card>
+
+  <Card title="Constraints" href="/blob/uploads/constraints">
+    What `video/*` expands to, and how `maxBytes` is read.
+  </Card>
+
+  <Card title="Caching" href="/blob/bucket/caching">
+    `immutable`, `revalidate`, and what a private bucket stores instead.
+  </Card>
+</CardGroup>
