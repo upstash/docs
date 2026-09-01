@@ -1,0 +1,158 @@
+---
+title: "Profile Pictures"
+---
+
+One picture per user. A new upload replaces the old one, and every page shows the new picture right away, even with a year-long cache on the image.
+
+Three choices make that work:
+
+- **A stable path.** `avatars/${user.id}` is overwritten on every upload, so there is never an old picture to delete.
+- **A versioned URL.** `versionedUrl` is the public URL with the object's etag on the query, so new bytes are a new URL and `cache: 'immutable'` is safe.
+- **Image-only limits.** `image/*` and a small `maxBytes`, enforced on your server before anything is signed.
+
+This is a direct browser upload: the bytes go from the browser to storage, and your server only authorizes it. If you have not set up a bucket yet, start with the [Quickstart](/blob/overall/quickstart).
+
+---
+
+## The handler
+
+```ts lib/uploads.ts
+import "server-only"
+import { BlobError, uploadHandler } from "@upstash/blob"
+import { getUser } from "./auth"
+import { db } from "./db"
+
+export const uploads = uploadHandler({
+  constraints: { contentTypes: ["image/*"], maxBytes: "5mb" },
+
+  onBeforeUpload: async ({ request }) => {
+    const user = await getUser(request)
+    if (!user) throw new BlobError("unauthorized")
+
+    return {
+      path: `avatars/${user.id}`,
+      cache: "immutable",
+      metadata: { owner: user.id },
+    }
+  },
+
+  onUploadComplete: async ({ metadata, versionedUrl }) => {
+    try {
+      await db.users.update({ id: metadata.owner, avatarUrl: versionedUrl })
+    } catch (e) {
+      // A throw here deletes the picture that just landed. Keep it and log instead.
+      console.error("[avatar] could not save url", e)
+    }
+    return { avatarUrl: versionedUrl }
+  },
+})
+```
+
+The path has no extension on purpose. The object is stored and served as the type the browser declared, and `contentTypes: ['image/*']` is what checks it.
+
+```ts app/api/upload/route.ts
+import { uploads } from "@/lib/uploads"
+
+export const { GET, POST } = uploads
+```
+
+```ts lib/upload-hooks.ts
+"use client"
+
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+---
+
+## The picker
+
+```tsx components/avatar-picker.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
+
+export function AvatarPicker({ src }: { src?: string }) {
+  const { start, upload, accept } = useUpload()
+  const current = upload?.status === "done" ? upload.blob.data.avatarUrl : src
+
+  return (
+    <label>
+      <img src={current ?? "/default-avatar.png"} alt="" width={96} height={96} />
+      <input
+        type="file"
+        accept={accept}
+        onChange={(e) => start({ file: e.target.files?.[0] })}
+      />
+      {upload?.pending && <progress value={upload.percent} max={100} />}
+      {upload?.status === "error" && <p>{upload.error.message}</p>}
+    </label>
+  )
+}
+```
+
+`accept` comes from the route's constraints, so the file dialog only offers images. `upload.blob.data.avatarUrl` is typed from what `onUploadComplete` returned.
+
+Everywhere else, render the URL from your own row:
+
+```tsx
+<img src={user.avatarUrl} alt={user.name} />
+```
+
+---
+
+## Why a versioned URL
+
+The path never changes, so the plain `url` never changes either. With `cache: 'immutable'` a browser or CDN that has seen it once would keep the old picture for a year.
+
+`versionedUrl` is `url` plus `?v=<etag>`. The etag changes with the bytes, so every new picture is a URL no cache has seen, and the old one is simply never requested again. You get a full-length cache and instant updates at the same time.
+
+If you must serve the bare `url`, for example because it is already printed somewhere, use `cache: 'revalidate'` instead. It costs a 304 check per read but is never stale. See [Caching](/blob/bucket/caching).
+
+---
+
+## Removing a picture
+
+Delete the object and clear the row. `del` treats an already missing object as success, so this is safe to retry.
+
+```ts app/actions.ts
+"use server"
+
+import { Bucket } from "@upstash/blob"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function removeAvatar() {
+  const user = await getUser()
+  if (!user) throw new Error("unauthorized")
+
+  await bucket.del(`avatars/${user.id}`)
+  await db.users.update({ id: user.id, avatarUrl: null })
+}
+```
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Caching" href="/blob/bucket/caching">
+    `immutable`, `revalidate`, and the versioned URL pattern in full.
+  </Card>
+
+  <Card title="Constraints" href="/blob/uploads/constraints">
+    What `image/*` expands to, and why SVG is not in it.
+  </Card>
+
+  <Card title="Upload handler" href="/blob/uploads/upload-handler">
+    Everything the callbacks receive and return.
+  </Card>
+
+  <Card title="File attachments" href="/blob/recipes/attachments">
+    Many files per thread, each with its own row.
+  </Card>
+</CardGroup>
