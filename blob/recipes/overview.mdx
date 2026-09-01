@@ -1,8 +1,8 @@
 ---
-title: "Formulas"
+title: "Recipes"
 ---
 
-The reference pages describe one option at a time: what `cache` accepts, what `constraints` refuse, what `onUploadComplete` is handed. A formula is the other direction. It is one real feature wired end to end, with every file it takes, and with the choices already made and explained. Copy one, rename the paths, and it works.
+The other pages describe one option at a time: what `cache` accepts, what `constraints` refuse, what `onUploadComplete` is handed. A recipe is the other direction. It is one real feature wired end to end, with every file it takes, and with the choices already made and explained. Copy one, rename the paths, and it works.
 
 ---
 
@@ -12,13 +12,13 @@ Almost every decision in an upload feature is the same five: where the object go
 
 | Feature | Path | Cache | Constraints | Multipart | Notes |
 | ------- | ---- | ----- | ----------- | --------- | ----- |
-| Avatar | `avatars/${user.id}.png`, stable | [`'immutable'`](/blob/bucket/caching) and serve `versionedUrl`, or `'revalidate'` if you link the bare `url` | [`image/*`](/blob/browser/constraints), `maxBytes: '5mb'` | default, a 5 MB file is always one PUT | Overwriting is the intent, so there is no orphan and nothing to sweep |
-| Chat or issue attachment | [`uniquePath`](/blob/bucket/writing#uniquepath) under `threads/${threadId}/` | default, `public, max-age=3600` | `maxBytes: '25mb'`, no type list | default, or `true` to skip the sweep | [Pending row plus a cron](/blob/browser/abandoned-uploads); `uploadId` is the idempotency key |
+| Avatar | `avatars/${user.id}.png`, stable | [`'immutable'`](/blob/bucket/caching) and serve `versionedUrl`, or `'revalidate'` if you link the bare `url` | [`image/*`](/blob/uploads/constraints), `maxBytes: '5mb'` | default, a 5 MB file is always one PUT | Overwriting is the intent, so there is no orphan and nothing to sweep |
+| Chat or issue attachment | [`uniquePath`](/blob/bucket/writing#uniquepath) under `threads/${threadId}/` | default, `public, max-age=3600` | `maxBytes: '25mb'`, no type list | default, or `true` to skip the sweep | [Pending row plus a cron](/blob/uploads/abandoned-uploads); `uploadId` is the idempotency key |
 | User document library | `uniquePath` under `docs/${user.id}/` | `'immutable'`, the path is already unique | `['application/pdf']`, `maxBytes: '100mb'` | default | [`bucket.list({ prefix })`](/blob/bucket/reading) is the listing, your rows are the metadata |
-| Large video upload | `uniquePath` under `videos/${user.id}/` | `'immutable'` | [`video/*`](/blob/browser/constraints), `maxBytes: '5gb'` | [`multipart: true`](/blob/browser/large-files) | Only parts can pause, resume and retry; a closed tab leaves parts for `abortStaleMultipartUploads` |
+| Large video upload | `uniquePath` under `videos/${user.id}/` | `'immutable'` | [`video/*`](/blob/uploads/constraints), `maxBytes: '5gb'` | [`multipart: true`](/blob/uploads/large-files) | Only parts can pause, resume and retry; a closed tab leaves parts for `abortStaleMultipartUploads` |
 | Private report or invoice | `invoices/${invoice.id}.pdf`, stable | `'no-store'` | written by your server, so [`bucket.put`](/blob/bucket/writing) rather than a route | default | `visibility: 'private'` drops `url`, and reads go through [`signedReadUrl`](/blob/bucket/reading) |
 
-Two rules run underneath the whole table. Use `uniquePath` unless overwriting is the intent. And write the row that says an upload is in flight before the bytes are: under the multipart threshold the object exists the moment the last byte lands, whether or not any callback ever accepted it. Both are argued out in [Abandoned uploads](/blob/browser/abandoned-uploads).
+Two rules run underneath the whole table. Use `uniquePath` unless overwriting is the intent. And write the row that says an upload is in flight before the bytes are: under the multipart threshold the object exists the moment the last byte lands, whether or not any callback ever accepted it. Both are argued out in [Abandoned uploads](/blob/uploads/abandoned-uploads).
 
 ---
 
@@ -108,7 +108,7 @@ A stable path is the one case where overwriting is the intent. There is exactly 
 
 `cache: 'immutable'` on a path that gets overwritten would normally be the wrong answer, and it is safe here only because nothing links the bare `url`. `versionedUrl` is `url` with `?v=<etag>` appended, so new bytes are a new URL and the old one is never asked for again. The alternative is `'revalidate'`, which keeps one URL and pays a 304 per read.
 
-The `try`/`catch` is not decoration: any throw out of `onUploadComplete` [deletes the object that just landed](/blob/browser/upload-handler#onuploadcomplete). Swallowing the database error costs a stale `avatarUrl` instead, and that is recoverable, because the path is `avatars/${user.id}.png` and `bucket.info(path)` gives the etag the URL is built from.
+The `try`/`catch` is not decoration: any throw out of `onUploadComplete` [deletes the object that just landed](/blob/uploads/upload-handler#onuploadcomplete). Swallowing the database error costs a stale `avatarUrl` instead, and that is recoverable, because the path is `avatars/${user.id}.png` and `bucket.info(path)` gives the etag the URL is built from.
 
 ---
 
@@ -246,12 +246,12 @@ export function AttachmentInput({ threadId }: { threadId: string }) {
 
 `uniquePath` sanitizes what you interpolate and appends a random suffix, so two people sending `photo.png` to one thread get two objects rather than a lost update.
 
-The pending row is what makes a closed tab recoverable: write it in `onBeforeUpload`, clear it last in `onUploadComplete`, and sweep what is still pending past a grace window. Why the row is the only thing that can tell an abandoned upload from a finished one is in [Abandoned uploads](/blob/browser/abandoned-uploads).
+The pending row is what makes a closed tab recoverable: write it in `onBeforeUpload`, clear it last in `onUploadComplete`, and sweep what is still pending past a grace window. Why the row is the only thing that can tell an abandoned upload from a finished one is in [Abandoned uploads](/blob/uploads/abandoned-uploads).
 
-Because the sweep exists, a database error is allowed to escape `onUploadComplete` here, unlike in the avatar formula. The throw deletes the object, the pending row survives, the cron's `not_found` branch clears it, and the user gets an error for an upload that genuinely did not land.
+Because the sweep exists, a database error is allowed to escape `onUploadComplete` here, unlike in the avatar recipe. The throw deletes the object, the pending row survives, the cron's `not_found` branch clears it, and the user gets an error for an upload that genuinely did not land.
 
 ---
 
-## More formulas coming
+## More recipes coming
 
 The other rows of the table above land here next, each as a full set of files.

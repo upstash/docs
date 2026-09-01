@@ -30,7 +30,7 @@ The token is not an S3 credential. To touch storage, the SDK exchanges it with U
 
 Credentials are cached per token rather than per `Bucket` instance, so constructing a bucket inside a request handler is free and does not mint a credential each time. Concurrent callers share one in-flight mint rather than racing, and a credential is refreshed shortly before it expires.
 
-A failed mint surfaces as `unauthorized` (the token was rejected), `rate_limited`, `not_ready` or `mint_backoff`. See [Credential errors](/blob/bucket/errors#credential-errors).
+A failed mint surfaces as `unauthorized` (the token was rejected), `rate_limited`, `not_ready` or `mint_backoff`. See [Credential errors](/blob/reference/errors#credential-errors).
 
 ---
 
@@ -103,14 +103,14 @@ browser          your route             Upstash               storage
 
 | Phase | What your route does | What it signs |
 | --- | --- | --- |
-| `begin` | Enforces [Constraints](/blob/browser/constraints), runs `onBeforeUpload`, and for a large file creates the multipart upload | The first PUT URL, or the first batch of part URLs |
+| `begin` | Enforces [Constraints](/blob/uploads/constraints), runs `onBeforeUpload`, and for a large file creates the multipart upload | The first PUT URL, or the first batch of part URLs |
 | `parts` | Verifies the completion token and asks storage what already landed | The next batch of part URLs |
 | `end` | Verifies the token, completes the upload, reads the object back, runs `onUploadComplete` | Nothing new |
 | `cancel` | Verifies the token, aborts the multipart or deletes a matching single-PUT object | Nothing |
 
 The browser never sees the bucket token and never sees an S3 credential. It sees per-object presigned URLs, the headers those URLs pin, and a completion token. Nothing it holds can list the bucket, read another object, or write to a path your `onBeforeUpload` did not choose.
 
-`GET` on the same route serves the constraints document, with an ETag and `max-age=60`, so a file picker can be filled from the same list that does the refusing. See [Upload handler](/blob/browser/upload-handler) for the callbacks and [Large files](/blob/browser/large-files) for the multipart path.
+`GET` on the same route serves the constraints document, with an ETag and `max-age=60`, so a file picker can be filled from the same list that does the refusing. See [Upload handler](/blob/uploads/upload-handler) for the callbacks and [Large files](/blob/uploads/large-files) for the multipart path.
 
 ---
 
@@ -144,8 +144,6 @@ Signed, not merely sent. An unsigned header would be the browser's to choose, an
 
 For a multipart upload the same headers are set by your server when it creates the upload, and the object inherits them at completion. Part URLs pin only the part's length.
 
-Because those headers ride on a cross-origin request, the bucket's CORS policy has to allow them. The exact shape is in [CORS](/blob/overall/quickstart#cors).
-
 ---
 
 ## The `upstash-upload` marker
@@ -156,13 +154,13 @@ It answers exactly one question: did the bytes at this path come from THIS uploa
 
 So completing a single-PUT upload requires a marker match. No match is `not_found`, "the upload never landed". A cancel uses the same check, which is what stops it from deleting someone else's file at the same path.
 
-The marker is stripped from the record handed to `onUploadComplete` and `onError`, but stays on the stored object. So a match proves "same upload" and never "no callback accepted it". What that costs, and the pending row that closes it, is on [Abandoned uploads](/blob/browser/abandoned-uploads).
+The marker is stripped from the record handed to `onUploadComplete` and `onError`, but stays on the stored object. So a match proves "same upload" and never "no callback accepted it". What that costs, and the pending row that closes it, is on [Abandoned uploads](/blob/uploads/abandoned-uploads).
 
 ---
 
 ## Retries and 403
 
-A 403 from storage is ambiguous by design: an expired presigned URL and a tampered request produce the same status. So the browser treats a 403 as an expired signature first, throws the batch of URLs away, and asks your route for fresh ones. A 403 on a URL that was just signed is a real `signature_mismatch` and ends the upload. The rest of the classification, and the retry budgets, are in [Large files](/blob/browser/large-files#retries).
+A 403 from storage is ambiguous by design: an expired presigned URL and a tampered request produce the same status. So the browser treats a 403 as an expired signature first, throws the batch of URLs away, and asks your route for fresh ones. A 403 on a URL that was just signed is a real `signature_mismatch` and ends the upload. The rest of the classification, and the retry budgets, are in [Large files](/blob/uploads/large-files#retries).
 
 Your server has the same ambiguity and resolves it by reading the response body. It re-mints once per request when the body says the credential expired. Any other 403 surfaces as `signature_mismatch`, usually meaning the body length or type differs from what was signed.
 
@@ -170,7 +168,7 @@ Your server has the same ambiguity and resolves it by reading the response body.
 
 ## What the browser stores
 
-One thing: the completion token, in `localStorage`, keyed by the route and the file. Nothing about what landed is stored, since your server can ask storage for that. [Large files](/blob/browser/large-files#resuming-after-a-reload) covers the resume gesture and what happens when `localStorage` is unavailable.
+One thing: the completion token, in `localStorage`, keyed by the route and the file. Nothing about what landed is stored, since your server can ask storage for that. [Large files](/blob/uploads/large-files#resuming-after-a-reload) covers the resume gesture and what happens when `localStorage` is unavailable.
 
 ---
 
