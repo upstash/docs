@@ -1,0 +1,326 @@
+---
+title: "Reading"
+---
+
+Reading covers everything that gets bytes or facts back out of a bucket: `get` for the bytes, `info` for the facts, `exists` for the question, `list` for a page of keys, and a URL, public or signed, for everything that reads the object without going through your server at all.
+
+Every example below starts from a bucket:
+
+```ts lib/bucket.ts
+import { Bucket } from '@upstash/blob';
+
+export const bucket = Bucket.fromEnv(); // reads UPSTASH_BLOB_TOKEN
+```
+
+See [Quickstart](/blob/overall/quickstart) for the token, and [Writing](/blob/bucket/writing) for the other half of the API.
+
+---
+
+## The record types
+
+Four record shapes come back from the SDK. They nest, so the rest of this page names them rather than repeating their fields.
+
+| Type | Is | Comes back from |
+| --- | --- | --- |
+| `BlobObject` | `path`, `url?`, `versionedUrl?`, `size`, `etag`, `uploadedAt` | `list()`, `copy()`, `move()`, `updateJson()` |
+| `CompletedBlob` | `BlobObject` plus `contentType` | `put()`, and `onUploadComplete` |
+| `BlobInfo` | `BlobObject` plus `contentType` and `metadata` | `info()` |
+| `BlobDownload` | `BlobInfo` plus `body: ReadableStream<Uint8Array>` | `get()` |
+
+`BlobObject` is the base, and it is what a bucket listing can carry:
+
+| Field | Type | |
+| --- | --- | --- |
+| `path` | `string` | The object's key. |
+| `url` | `string \| undefined` | The public object URL. Undefined on a private bucket. |
+| `versionedUrl` | `string \| undefined` | `url` with the etag on the query. Undefined when `url` is. |
+| `size` | `number` | Bytes. |
+| `etag` | `string` | Storage's etag, quoted as it arrives: `"9f3c..."`. |
+| `uploadedAt` | `Date` | Last modified. |
+
+### `blob` is a record, never bytes
+
+In this SDK `blob` always names a record, and never the bytes of one. The DOM already has a `Blob` and it is bytes, so the two must never swap places: nothing in the API takes a parameter named `blob`, and bytes go in as `body`. That is why `put(path, body)` reads the way it does, and why the bytes on a download sit under `body` on a record rather than being the return value.
+
+---
+
+## `get(path)`
+
+`get` returns the whole record plus the response body as a stream. Nothing is buffered for you, so a large object costs whatever you do with the stream and no more.
+
+```ts
+const res = await bucket.get('reports/2026-01.pdf');
+
+res.contentType;  // 'application/pdf'
+res.size;         // 184_302
+res.etag;         // '"9f3c..."'
+res.metadata;     // { owner: 'u7' }
+res.body;         // ReadableStream<Uint8Array>
+```
+
+Wrap the body in a `Response` to get the usual conversions:
+
+```ts
+const text = await new Response((await bucket.get('notes/1.md')).body).text();
+const buffer = await new Response((await bucket.get('img/1.png')).body).arrayBuffer();
+```
+
+A missing object is a throw, not an `undefined` return: `get` raises a `BlobError` with code `not_found` and status 404. See [Errors](/blob/bucket/errors) for the code list and for `BlobError.is`.
+
+There is no range option. Reading part of an object is what [the S3 escape hatch](#the-s3-escape-hatch) is for.
+
+---
+
+## `info(path)`
+
+`info` is the same record with no bytes: one HEAD request, so it costs nothing to read a 2 GB object's facts.
+
+```ts
+const info = await bucket.info('reports/2026-01.pdf');
+
+info.size;         // 184_302
+info.etag;         // '"9f3c..."'
+info.contentType;  // 'application/pdf'
+info.metadata;     // { owner: 'u7' }
+info.uploadedAt;   // Date
+```
+
+Like `get`, a missing object throws `not_found` rather than answering `undefined`.
+
+<Note>
+  Metadata keys come back lowercased. They cross the wire as `x-amz-meta-*` headers, and header names are case-insensitive, so `{ uploadedBy: 'u1' }` written at upload reads back as `metadata.uploadedby`. Values are printable ASCII, because storage does not carry anything else back unchanged.
+</Note>
+
+`metadata` is the reason this call exists next to `exists()`. It comes back from `get` and from `info`, and from nothing else: a listing does not carry it. So `info` is the call a cleanup cron makes before it deletes anything, to confirm the object at that path is the one its row reserved rather than a later upload that reused the path.
+
+```ts scripts/sweep.ts
+import { BlobError } from '@upstash/blob';
+import { bucket } from '@/lib/bucket';
+
+for (const row of await db.uploads.pendingOlderThan('1d')) {
+  try {
+    const info = await bucket.info(row.path);
+    if (info.metadata.rowid !== row.id) continue; // somebody else's object
+    await bucket.del(row.path);
+  } catch (e) {
+    if (!BlobError.is(e) || e.code !== 'not_found') throw e;
+  }
+  await db.uploads.markSwept(row.id);
+}
+```
+
+The pattern that sweep belongs to, and why the row is the only thing that can tell an abandoned upload from a finished one, is in [Abandoned uploads](/blob/browser/abandoned-uploads).
+
+---
+
+## `exists(path)`
+
+`exists` answers `false` instead of throwing. It is the same HEAD request as `info`, with the record thrown away.
+
+```ts
+if (await bucket.exists('avatars/u7.png')) {
+  // ...
+}
+```
+
+Prefer `info()` whenever you are going to want the etag, the size or the metadata anyway: `exists()` then `info()` is two round trips for one answer, and the `not_found` catch you would write around `info` is the same branch as the `false`.
+
+---
+
+## `list(options)`
+
+`list` returns one page of objects.
+
+| Option | Type | |
+| --- | --- | --- |
+| `prefix` | `string` | Only keys starting with this. |
+| `limit` | `number` | Page size, clamped to 1 to 1000. Omit it and storage picks. |
+| `cursor` | `string` | The `cursor` from the previous page. |
+
+```ts
+const page = await bucket.list({ prefix: 'avatars/', limit: 100 });
+
+page.blobs;  // BlobObject[]
+page.cursor; // string | undefined
+```
+
+`cursor` is set only while more remains, so a full walk is a `do ... while` and never needs a separate "is there more" check:
+
+```ts
+let cursor: string | undefined;
+const paths: string[] = [];
+
+do {
+  const page = await bucket.list({ prefix: 'avatars/', limit: 1000, cursor });
+  for (const blob of page.blobs) paths.push(blob.path);
+  cursor = page.cursor;
+} while (cursor);
+```
+
+A listing carries `BlobObject`, which means it has the path, size, etag, timestamp and URLs, and it does not have `contentType` or `metadata`. Storage does not return those in a listing, and fetching them would be one HEAD per key.
+
+`prefix` is also the only filter there is. There is no query by owner, by type, by date or by anything else, and the only way to find "this user's files" is a prefix you chose at upload time. An app that has to ask real questions about its files should keep its own table, write the row when the upload is authorized, and treat the bucket as the bytes rather than the index. That table is also what makes deleting and re-rendering cheap, since it holds the metadata a listing cannot.
+
+---
+
+## Public URLs
+
+On a public bucket every record already carries `url`, and you can compute one for any path without a record:
+
+```ts
+bucket.publicUrl('avatars/u7.png');
+// 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
+```
+
+There is no network call. The bucket's public DNS label is carried in the token itself, so `publicUrl` is string work against `<hashForDomain>.blob.upstash.io` and the path, percent-encoded. It returns `undefined` on a private bucket. It throws a `TypeError` for a path that is empty or contains a `.` or `..` segment, the same check every other path takes.
+
+### `versionedUrl`
+
+`versionedUrl` is `${url}?v=${etag}`, with the etag percent-encoded because storage returns it quoted.
+
+It exists for the stable path. If `avatars/u7.png` is overwritten every time the user picks a new picture, the URL never changes, so every cache between your object and the reader is free to keep serving the old bytes. `versionedUrl` changes whenever the content changes, because the etag does, which turns "the URL is stale" into "the URL is different".
+
+```tsx
+const avatar = await bucket.info(`avatars/${user.id}.png`);
+<img src={avatar.versionedUrl} />;
+```
+
+Pair it with `cache: 'immutable'` at upload: the bytes at any one versioned URL genuinely never change, so a year-long `max-age` is honest and the new picture is a new URL rather than a revalidation. See [Caching](/blob/bucket/caching) for the other cache options and when `'revalidate'` is the better trade.
+
+---
+
+## Private buckets
+
+A private bucket has no public host, so a URL on one of its records would be a link that 404s. Declare it and `url` and `versionedUrl` are dropped from every record the SDK builds:
+
+```ts
+const bucket = new Bucket({ token, visibility: 'private' });
+
+const blob = await bucket.put('reports/2026-01.pdf', pdf);
+blob.url;          // undefined
+blob.versionedUrl; // undefined
+bucket.publicUrl('reports/2026-01.pdf'); // undefined
+```
+
+A `visibility` in the credentials response wins over what you declared, so a bucket that is private in the console stays private here even if the code says otherwise. Reads on a private bucket go through `signedReadUrl()`.
+
+---
+
+## `signedReadUrl(path, options)`
+
+A time-limited URL anyone can GET, for a private bucket or for an object you do not want linked from a public page.
+
+```ts
+const { url, expiresAt } = await bucket.signedReadUrl('reports/2026-01.pdf', {
+  expiresIn: '2m',
+  downloadAs: 'Report Q3.pdf',
+});
+```
+
+| Option | Type | |
+| --- | --- | --- |
+| `expiresIn` | `Duration` | How long to ask for. `'15m'`, `'2h'`, or a bare number of seconds. Default 5 minutes. |
+| `downloadAs` | `string` | Save as this filename instead of displaying inline. |
+| `contentType` | `string` | What storage answers with as `Content-Type`, overriding what was stored. |
+
+The return is `{ url, expiresAt }`.
+
+### The lifetime is answered, not chosen
+
+Links are signed with the bucket's short-lived credential, and a signature cannot outlive the credential that made it. So `expiresIn` is what you ask for, and `expiresAt` is what you got: it is never later than the signing credential's own expiry, and it is the value to cache the link against rather than a duration you compute yourself.
+
+```ts
+const cached = await cache.get(key);
+if (!cached || cached.expiresAt < new Date()) {
+  const link = await bucket.signedReadUrl(path, { expiresIn: '5m' });
+  await cache.set(key, link);
+}
+```
+
+The default with no `expiresIn` is 5 minutes, shortened if the credential has less than that left. Asking for more than the credential can cover re-mints where that helps, and is capped where it does not. [Signed URLs](/blob/overall/signing) covers the mechanism, and `signedUploadUrl` for the write direction.
+
+### `downloadAs`
+
+`downloadAs` sets a `Content-Disposition: attachment` on the response, so the browser saves the file under that name rather than rendering it.
+
+The name is carried as an RFC 6266 `filename*` ext-value, percent-encoded, with an ASCII `filename` fallback cut back to characters that cannot end the quoted string. A name with a quote, a semicolon or a CRLF in it cannot add a parameter or a second header, and a Unicode name arrives intact:
+
+```ts
+await bucket.signedReadUrl(path, { downloadAs: 'café ☕.pdf' });
+// content-disposition: attachment; filename="caf_ _.pdf"; filename*=UTF-8''caf%C3%A9%20%E2%98%95.pdf
+```
+
+The disposition is signed into the URL along with everything else, so it cannot be edited off the query string by whoever holds the link.
+
+### `contentType`
+
+`contentType` overrides what storage answers with, without rewriting the object:
+
+```ts
+await bucket.signedReadUrl('exports/rows.bin', { contentType: 'text/csv' });
+```
+
+It is validated as a media type and throws `invalid_input` if it is not one, for the same reason `downloadAs` is encoded: this value becomes a response header.
+
+---
+
+## Incomplete uploads
+
+`listMultipartUploads()` is the one read that does not answer with objects.
+
+```ts
+const uploads = await bucket.listMultipartUploads({ prefix: 'uploads/' });
+// [{ path: 'uploads/big.bin', uploadId: 'mp-1', initiatedAt: Date }]
+```
+
+A multipart upload that was started and never completed or aborted is billed storage that `list()` cannot see, and a bucket cannot be deleted while one exists. That makes this the only call that can find them. Finding them is not the job though: sweeping them is, and `abortStaleMultipartUploads()` is in [Deleting](/blob/bucket/deleting), with the reason a browser leaves one behind in [Abandoned uploads](/blob/browser/abandoned-uploads).
+
+---
+
+## The S3 escape hatch
+
+The bucket is S3-compatible, and `bucket.s3()` hands the aws-sdk what it needs for anything the SDK does not model: byte ranges, conditional GETs, delimiters and common prefixes, object tagging.
+
+```ts
+import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { bucket } from '@/lib/bucket';
+
+const { endpoint, region, bucket: name, credentials } = bucket.s3();
+const s3 = new S3Client({ endpoint, region, credentials });
+
+const res = await s3.send(
+  new GetObjectCommand({ Bucket: name, Key: 'reports/2026-01.pdf', Range: 'bytes=0-1023' }),
+);
+```
+
+`endpoint` and `credentials` are async providers rather than values. The bucket's credential is short-lived and the endpoint is only known from a credentials response, so handing over providers is what lets the aws-sdk re-read both when the current one expires, instead of holding a credential that dies a few minutes in.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Writing" href="/blob/bucket/writing">
+    `put`, metadata, conditional writes and multipart from the server.
+  </Card>
+
+  <Card title="Caching" href="/blob/bucket/caching">
+    What `Cache-Control` an object is stored with, and pairing it with `versionedUrl`.
+  </Card>
+
+  <Card title="Deleting" href="/blob/bucket/deleting">
+    One path, a list, a prefix, and sweeping incomplete uploads.
+  </Card>
+
+  <Card title="Signed URLs" href="/blob/overall/signing">
+    How links are signed, and the upload direction.
+  </Card>
+
+  <Card title="Errors" href="/blob/bucket/errors">
+    `BlobError`, the code list, and `BlobError.is`.
+  </Card>
+
+  <Card title="Upload handler" href="/blob/browser/upload-handler">
+    Direct browser uploads, and what `onUploadComplete` is handed.
+  </Card>
+</CardGroup>
