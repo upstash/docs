@@ -57,7 +57,7 @@ The order in step 2 is the whole pattern. The sweep's only premise is **row stil
 ```ts lib/uploads.ts
 import "server-only"
 import { BlobError, uniquePath, uploadHandler, uploadRoute } from "@upstash/blob"
-import { sql } from "@/lib/db"
+import { db } from "@/lib/db"
 
 const attachment = uploadRoute()({
   constraints: { maxBytes: "20mb", contentTypes: ["image/*", "application/pdf"] },
@@ -68,8 +68,7 @@ const attachment = uploadRoute()({
 
     const rowId = crypto.randomUUID()
     const path = uniquePath`uploads/${user.id}/${file.name}`
-    await sql`insert into uploads (id, owner, path, status, created_at)
-              values (${rowId}, ${user.id}, ${path}, 'pending', now())`
+    await db.uploads.insert({ id: rowId, owner: user.id, path, status: "pending" })
 
     // metadata is written onto the object and signed into the PUT, so the cron can read it back.
     // state only crosses in the completion token, so the callback can read it without a lookup.
@@ -81,9 +80,7 @@ const attachment = uploadRoute()({
     await notifyOwner(state.rowId)
 
     // Last. Everything above has to be done before the row stops looking abandoned.
-    await sql`update uploads
-              set status = 'ready', size = ${size}, url = ${url ?? null}
-              where id = ${state.rowId}`
+    await db.uploads.update(state.rowId, { status: "ready", size, url })
 
     return { rowId: state.rowId }
   },
@@ -98,14 +95,12 @@ Metadata keys come back from storage lowercased, so `{ rowid: ... }` is written 
 
 ```ts app/api/cron/sweep-uploads/route.ts
 import { BlobError, Bucket } from "@upstash/blob"
-import { sql } from "@/lib/db"
+import { db } from "@/lib/db"
 
 const bucket = Bucket.fromEnv()
 
 export const GET = async () => {
-  const rows = await sql`select id, path from uploads
-                         where status = 'pending' and created_at < now() - interval '2 hours'
-                         limit 500`
+  const rows = await db.uploads.findPending({ olderThan: "2h", limit: 500 })
 
   let deleted = 0
   for (const row of rows) {
@@ -120,7 +115,7 @@ export const GET = async () => {
       // Nothing was ever stored: the browser died before the PUT finished. The row is the leftover.
       if (!(BlobError.is(e) && e.code === "not_found")) throw e
     }
-    await sql`delete from uploads where id = ${row.id}`
+    await db.uploads.delete(row.id)
   }
 
   return Response.json({ swept: rows.length, deleted })

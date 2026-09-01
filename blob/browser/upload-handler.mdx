@@ -16,7 +16,7 @@ Four files. The handler, the route it is mounted at, the bound hooks, and the co
 import "server-only"
 import { BlobError, uniquePath, uploadHandler } from "@upstash/blob"
 import { getUser } from "./auth"
-import { sql } from "./db"
+import { db } from "./db"
 
 export const uploads = uploadHandler({
   constraints: { maxBytes: "20mb", contentTypes: ["image/*", "application/pdf"] },
@@ -28,9 +28,7 @@ export const uploads = uploadHandler({
   },
 
   onUploadComplete: async ({ uploadId, metadata, path, url }) => {
-    await sql`insert into files (upload_id, owner, path, url)
-              values (${uploadId}, ${metadata.owner}, ${path}, ${url})
-              on conflict (upload_id) do nothing`
+    await db.files.upsert({ uploadId, owner: metadata.owner, path, url })
     return { path }
   },
 })
@@ -227,9 +225,7 @@ Runs on the last request of an upload, once the object exists. It gets the compl
 
 ```ts lib/uploads.ts
 onUploadComplete: async ({ uploadId, path, url, size, contentType, metadata, state, ctx }) => {
-  await sql`insert into files (upload_id, owner, path, url, size, content_type)
-            values (${uploadId}, ${ctx.userId}, ${path}, ${url}, ${size}, ${contentType})
-            on conflict (upload_id) do nothing`
+  await db.files.upsert({ uploadId, owner: ctx.userId, path, url, size, contentType })
   return { path }
 }
 ```
@@ -261,8 +257,8 @@ if (upload?.status === "done") upload.blob.data.path // string, inferred from on
 
 <Warning>
   **It is at-least-once.** The browser retries `end` on a network failure or a retryable status, so
-  write against `uploadId`, which is stable across those retries: `on conflict (upload_id) do
-  nothing`, or the equivalent upsert for your database.
+  write against `uploadId`, which is stable across those retries, and upsert on it rather than
+  inserting a new row.
 
   **Any throw out of it deletes the completed object.** That is the intent for a refusal, and a trap
   for a database error: a ten-second outage destroys bytes that uploaded fine, and the retried `end`
@@ -273,9 +269,7 @@ if (upload?.status === "done") upload.blob.data.path // string, inferred from on
 ```ts lib/uploads.ts
 onUploadComplete: async ({ uploadId, path, url, metadata }) => {
   try {
-    await sql`insert into files (upload_id, owner, path, url)
-              values (${uploadId}, ${metadata.owner}, ${path}, ${url})
-              on conflict (upload_id) do nothing`
+    await db.files.upsert({ uploadId, owner: metadata.owner, path, url })
   } catch (e) {
     console.error("[uploads] could not record", path, e)
     // A throw is a refusal: this deletes the object and the retried end answers 404. Throw when

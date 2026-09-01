@@ -121,7 +121,7 @@ import "server-only"
 import * as z from "zod"
 import { BlobError, uniquePath, uploadHandler, uploadRoute } from "@upstash/blob"
 import { requireUser, type Session } from "./auth"
-import { sql } from "./db"
+import { db } from "./db"
 
 export const uploads = uploadHandler({
   // Written above `routes`: it runs once per POST, before any body is read, and its value is `ctx`.
@@ -133,14 +133,15 @@ export const uploads = uploadHandler({
       input: z.object({ threadId: z.string().uuid() }),
 
       onBeforeUpload: async ({ ctx, input, file }) => {
-        const thread = await sql`select id from threads
-                                 where id = ${input.threadId} and member_id = ${ctx.id}`
-        if (thread.length === 0) throw new BlobError("forbidden")
+        const thread = await db.threads.find({ id: input.threadId, memberId: ctx.id })
+        if (!thread) throw new BlobError("forbidden")
 
         const path = uniquePath`threads/${input.threadId}/${file.name}`
-        const [row] = await sql`insert into pending_uploads (thread_id, user_id, path)
-                                values (${input.threadId}, ${ctx.id}, ${path})
-                                returning id`
+        const row = await db.pendingUploads.insert({
+          threadId: input.threadId,
+          userId: ctx.id,
+          path,
+        })
 
         return {
           path,
@@ -152,13 +153,18 @@ export const uploads = uploadHandler({
       onUploadComplete: async ({ state, uploadId, path, url, size, contentType, file }) => {
         // uploadId is stable across the browser's retries of the completion request, so
         // at-least-once delivery writes one row.
-        await sql`insert into attachments (upload_id, thread_id, path, url, size, content_type, name)
-                  values (${uploadId}, ${state.threadId}, ${path}, ${url ?? null},
-                          ${size}, ${contentType}, ${file.name})
-                  on conflict (upload_id) do nothing`
+        await db.attachments.upsert({
+          uploadId,
+          threadId: state.threadId,
+          path,
+          url,
+          size,
+          contentType,
+          name: file.name,
+        })
 
         // Last, always. "Row still pending" is what the sweep below reads as "never accepted".
-        await sql`delete from pending_uploads where id = ${state.rowId}`
+        await db.pendingUploads.delete(state.rowId)
 
         return { attachmentId: uploadId }
       },
@@ -177,14 +183,12 @@ export const { GET, POST } = uploads
 
 ```ts app/api/cron/sweep-uploads/route.ts
 import { BlobError, Bucket } from "@upstash/blob"
-import { sql } from "@/lib/db"
+import { db } from "@/lib/db"
 
 const bucket = Bucket.fromEnv()
 
 export async function GET() {
-  const stale = await sql`select id, path from pending_uploads
-                          where created_at < now() - interval '1 hour'
-                          limit 500`
+  const stale = await db.pendingUploads.findOlderThan({ age: "1h", limit: 500 })
 
   for (const row of stale) {
     try {
@@ -195,7 +199,7 @@ export async function GET() {
       // info() throws rather than returning undefined. Already gone is the good case.
       if (!BlobError.is(e) || e.code !== "not_found") throw e
     }
-    await sql`delete from pending_uploads where id = ${row.id}`
+    await db.pendingUploads.delete(row.id)
   }
 
   // Parts a tab left behind over the multipart threshold, which list() cannot see.
