@@ -33,11 +33,11 @@ Every option is optional.
 | --- | --- | --- | --- |
 | `contentType` | `string` | the body's type, else `application/octet-stream` | What the object is stored as. |
 | `contentTypes` | `string[]` | none, any type | An allow list such as `["image/*", "application/pdf"]`. The declared type must be in it, and the body's leading bytes must not contradict the declared type. A refusal is `content_type_not_allowed` and nothing is written. |
-| `maxBytes` | `Size` | none | Refuses a body over this size with `too_large`. Also caps how much of an unknown-length stream is buffered. |
+| `maxSize` | `Size` | none | Refuses a body over this size with `too_large`. Also caps how much of an unknown-length stream is buffered. |
 | `cache` | `CacheOption` | the bucket default | The `Cache-Control` this object is stored with. |
 | `metadata` | `Record<string, string>` | none | Custom key-value pairs stored with the object. Keys come back lowercased, values must be printable ASCII. |
 | `size` | `number` | what the body carries | The exact length in bytes, for a stream whose size is not otherwise known. |
-| `overwrite` | `boolean` | `true` | `false` refuses the write if something is already at the path. |
+| `allowOverwrite` | `boolean` | `true` | `false` refuses the write if something is already at the path. The refusal is `already_exists`. Unlike Vercel Blob, the default overwrites, so `put` stays safe to retry. |
 | `ifUnchanged` | `string` | none | An etag. The write fails with `conflict` if the object changed since you read it. |
 | `multipart` | `boolean \| Size` | `'16mb'` | Bodies over this size go up in parts. `true` always, `false` never. |
 
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
   // A Request carries its own length and type, so nothing has to be declared.
   const blob = await bucket.put("avatars/me.png", request, {
     contentTypes: ["image/*"],
-    maxBytes: "5mb",
+    maxSize: "5mb",
   })
   return Response.json({ url: blob.url })
 }
@@ -95,7 +95,7 @@ A `Request` with no body, or one that has already been read, throws `empty_body`
 
 ```ts
 await bucket.put("export.csv", stream)
-// BlobError: Length required (pass { size } or { maxBytes } so the length is known
+// BlobError: Length required (pass { size } or { maxSize } so the length is known
 // before the first byte)  -- code 'length_required', status 411
 ```
 
@@ -103,7 +103,7 @@ Storage needs a content length before the first byte goes out, and a `ReadableSt
 
 ```ts
 // Buffer up to the cap. A stream that runs past it is cancelled with too_large.
-await bucket.put("export.csv", stream, { maxBytes: "10mb" })
+await bucket.put("export.csv", stream, { maxSize: "10mb" })
 
 // Stream straight through, nothing buffered. The declared size must be exact.
 await bucket.put("export.csv", stream, { size: 5000 })
@@ -111,7 +111,7 @@ await bucket.put("export.csv", stream, { size: 5000 })
 
 A body that does not match `size` fails the request rather than being stored at the wrong length. A `Request` that arrived chunked has no `content-length` and counts as an unknown length too.
 
-When proxying bytes through a route, keep `maxBytes` under the platform's own request body cap, since that refusal happens before your route runs. See [Platform body limits](/blob/reference/errors#platform-body-limits).
+When proxying bytes through a route, keep `maxSize` under the platform's own request body cap, since that refusal happens before your route runs. See [Platform body limits](/blob/reference/errors#platform-body-limits).
 
 ---
 
@@ -187,7 +187,7 @@ decodeURIComponent((await bucket.info("a.txt")).metadata.note!)  // 'café'
 
 ```ts
 // Refuse if anything is already at the path.
-await bucket.put("u/7/profile.json", body, { overwrite: false })
+await bucket.put("u/7/profile.json", body, { allowOverwrite: false })
 // throws already_exists, with e.etag and e.size of what is there
 
 // Refuse if the object changed since you read it.
@@ -201,8 +201,8 @@ Both are enforced by storage, so there is no race window.
 Both turn multipart off, so a conditional write of a large body goes up as one request. Combining either with `multipart: true` throws:
 
 ```ts
-await bucket.put("big.bin", data, { multipart: true, overwrite: false })
-// BlobError: Multipart: overwrite:false and ifUnchanged are single-PUT only -- code 'invalid_input'
+await bucket.put("big.bin", data, { multipart: true, allowOverwrite: false })
+// BlobError: Multipart: allowOverwrite:false and ifUnchanged are single-PUT only -- code 'invalid_input'
 ```
 
 ---
@@ -285,8 +285,8 @@ Every option is optional.
 | `contentType` | `string` | `application/octet-stream` | The `Content-Type` the upload must send, and what the object is stored as. |
 | `cache` | `CacheOption` | the bucket default | The `Cache-Control` the object is stored with. |
 | `metadata` | `Record<string, string>` | none | Written as `x-amz-meta-*`, under the same rules as `put`. |
-| `size` | `Size` | none, any length | Pins the body's exact length, so a URL handed out for one file cannot upload another size. |
-| `overwrite` | `boolean` | `true` | `false` refuses the upload if something is already at the path. |
+| `size` | `number` | none, any length | Pins the body's exact length, so a URL handed out for one file cannot upload another size. |
+| `allowOverwrite` | `boolean` | `true` | `false` refuses the upload if something is already at the path. |
 
 `headers` are signed into the URL and must be sent verbatim. Drop one, change one, or add one, and storage answers 403. That is what stops the uploader from changing `metadata`.
 
