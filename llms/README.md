@@ -96,9 +96,9 @@ Two files are then written:
   ```
   # <title>
   Source: <url-without-.md>
-  <blank lines>          # 3 for MDX pages, 1 for OpenAPI ops
+  <blank lines>          # 1 (both MDX pages and OpenAPI ops)
   <body>
-  <blank lines>          # 2 before the next page
+  <blank lines>          # 1 before the next page
   ```
 
   For OpenAPI ops the body is a synthesized
@@ -109,7 +109,7 @@ Two files are then written:
 
   - bullet `- ` → `* `
   - horizontal rule `---` → `***`
-  - opening code fences with a language → ``` ```lang theme={"system"} ```
+  - opening code fences with a language → ``` ```lang ```
   - internal link URLs `/foo` → `/docs/foo`
   - `\&` → `&` inside link URLs
   - trailing whitespace stripped from every line
