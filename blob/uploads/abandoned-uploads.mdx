@@ -75,9 +75,8 @@ const attachment = uploadRoute()({
     const path = uniquePath`uploads/${user.id}/${file.name}`
     await db.uploads.insert({ id: rowId, owner: user.id, path, status: "pending" })
 
-    // metadata is written onto the object and signed into the PUT, so the cron can read it back.
-    // state only crosses in the completion token, so the callback can read it without a lookup.
-    return { path, metadata: { rowid: rowId }, state: { rowId } }
+    // state crosses in the completion token, so the callback can read it without a lookup.
+    return { path, state: { rowId } }
   },
 
   onUploadComplete: async ({ path, size, contentType, url, state }) => {
@@ -107,7 +106,7 @@ export const uploads = uploadHandler({ routes: { attachment } })
 </Steps>
 
 <Note>
-  `uploadId` first reaches your code in `onUploadComplete`, so the example mints its own row id in `onBeforeUpload`. It travels as `metadata`, which the cron reads back with `info()`, and as `state`, which reaches `onUploadComplete` typed. Metadata keys come back lowercased, so the example writes `rowid`. See [Metadata](/blob/bucket/writing#metadata).
+  `uploadId` first reaches your code in `onUploadComplete`, so the example mints its own row id in `onBeforeUpload` and passes it as `state`, which reaches `onUploadComplete` typed.
 </Note>
 
 ### The cron
@@ -115,7 +114,7 @@ export const uploads = uploadHandler({ routes: { attachment } })
 Add the row sweep to the route above. The abort runs first, and both halves share one window.
 
 ```ts app/api/cron/sweep-uploads/route.ts
-import { BlobError, Bucket } from "@upstash/blob"
+import { Bucket } from "@upstash/blob"
 import { db } from "@/lib/db"
 
 const bucket = Bucket.fromEnv()
@@ -125,32 +124,21 @@ export const GET = async () => {
   const aborted = await bucket.abortStaleMultipartUploads({ olderThan, prefix: "uploads/" })
 
   const rows = await db.uploads.findPending({ olderThan, limit: 500 })
-  let deleted = 0
-  for (const row of rows) {
-    try {
-      const info = await bucket.info(row.path)
-      // info() returns metadata, so this says the object standing at the path is the
-      // one this row reserved, and not a later upload's that happens to share it.
-      if (info.metadata.rowid === row.id) {
-        await bucket.del(row.path)
-        deleted++
-      }
-    } catch (e) {
-      // Nothing stands at the path: the PUT never finished, or the abort above just
-      // cleared the parts. Either way the row is the leftover.
-      if (!(BlobError.is(e) && e.code === "not_found")) throw e
-    }
-    await db.uploads.delete(row.id)
+  if (rows.length) {
+    // del does not throw for a path with nothing at it, so a PUT that never finished
+    // and parts the abort above just cleared are both covered by the same call.
+    await bucket.del(rows.map((r) => r.path))
+    await db.uploads.delete(rows.map((r) => r.id))
   }
 
-  return Response.json({ aborted: aborted.length, swept: rows.length, deleted })
+  return Response.json({ aborted: aborted.length, swept: rows.length })
 }
 ```
 
 Two things this example depends on:
 
-- **Verify before deleting.** A row's path may hold a different upload's object by the time the cron runs. `bucket.info(path)` returns the metadata, which says whether the object is the one this row reserved. `info()` throws `not_found` when nothing was stored, which is why the example catches it.
-- **Abort first, one window.** A route without `multipart: true` still uses parts for a file over the threshold, so a pending row can belong to a paused multipart upload. To `info()` that looks exactly like a PUT that never finished: both throw `not_found`. Running the abort first with the same window means that by the time the row sweep sees `not_found`, either nothing was ever stored or the parts are already gone. A row sweep on a shorter window would delete rows out from under uploads that can still resume, and the resumed upload would then complete against a row that no longer exists.
+- **One path, one upload.** The sweep deletes whatever stands at a pending row's path, so a path must never be shared. `uniquePath` gives you that. With a reused path, a retry that succeeded leaves a ready row and an older pending row pointing at the same object, and the sweep would delete the good file. If you must reuse paths, skip rows whose path also has a ready row.
+- **Abort first, one window.** A route without `multipart: true` still uses parts for a file over the threshold, so a pending row can belong to a paused multipart upload with nothing at its path yet. Running the abort first with the same window means the parts are gone before the row is, so a late resume fails instead of completing against a row that no longer exists. A row sweep on a shorter window would delete rows out from under uploads that can still resume.
 
 ### Without a pending row
 
