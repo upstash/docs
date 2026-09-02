@@ -8,7 +8,7 @@ Three choices make that work:
 
 - **`multipart: true`.** Every video goes up in parts, whatever it weighs, which is what buys pause, resume and per-part retry on a two hour upload.
 - **A unique path, cached forever.** `uniquePath` plus `cache: 'immutable'` is one object per video, never overwritten, so its URL can be cached for a year.
-- **A row per video.** Written as `uploading` before the bytes and flipped to `ready` after them, so a page never links a file that is only half there.
+- **A row per video.** Written as `pending` before the bytes and flipped to `ready` after them, so a page never links a file that is only half there.
 
 The bytes go from the browser straight to storage. Your server authorizes the upload and records what landed, and never carries a gigabyte through a function.
 
@@ -18,7 +18,7 @@ This recipe uses a public bucket. If you have not created one yet, start with th
 
 ## The handler
 
-Unlike the other recipes, the row is written in `onBeforeUpload`, before a byte exists, and marked `uploading`. A tab that dies halfway leaves a row still saying `uploading`, which is what a cron can find and sweep. `onUploadComplete` only flips it to `ready`.
+Unlike the other recipes, the row is written in `onBeforeUpload`, before a byte exists, and marked `pending`. A tab that dies halfway leaves a row still saying `pending`, which is what a cron can find and sweep. `onUploadComplete` only flips it to `ready`.
 
 ```ts lib/uploads.ts
 import "server-only"
@@ -44,7 +44,7 @@ const video = uploadRoute()({
       ownerId: user.id,
       title: input.title,
       path,
-      status: "uploading",
+      status: "pending",
     })
 
     return { path, cache: "immutable", state: { videoId } }
@@ -68,7 +68,7 @@ export const uploads = uploadHandler({ routes: { video } })
 
 `onBeforeUpload` runs once per upload, so one upload is one row, and the row is the placeholder the rest of the app renders while the upload runs. A resume does not run it again: if the tab closes and the user picks the same file later, the SDK sends only the missing parts, and `onUploadComplete` flips the row that already exists.
 
-`multipart: true` also means nothing is stored at the path until the upload completes. A tab that dies halfway leaves parts and a row still marked `uploading`, both of which one cron sweeps: see [Abandoned uploads](/blob/uploads/abandoned-uploads).
+`multipart: true` also means nothing is stored at the path until the upload completes. A tab that dies halfway leaves parts, which `abortStaleMultipartUploads()` on a cron clears, and a row still `pending`, which the same cron deletes once the parts are gone. See [Abandoned uploads](/blob/uploads/abandoned-uploads#the-cron).
 
 A throw out of `onUploadComplete` deletes the object, so the `catch` turns a database failure into a refusal the user can retry from. `not_ready` is the 503 code, the one that means try again. See [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) and [Errors](/blob/reference/errors#the-codes).
 
