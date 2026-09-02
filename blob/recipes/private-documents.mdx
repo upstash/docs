@@ -89,9 +89,15 @@ export const uploads = uploadHandler({
 })
 ```
 
-`cache: "no-store"` keeps a downloaded document out of the reader's browser cache once the link it came from is dead. A throw out of `onUploadComplete` deletes the file that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning.
+`cache: "no-store"` keeps a downloaded document out of the reader's browser cache once the link it came from is dead.
 
-`metadata` is written onto the object, so `owner` can be read back later with `bucket.info()`. An id that only the completion callback needs can travel in `state` instead, as in [File attachments](/blob/recipes/attachments).
+A throw out of `onUploadComplete` deletes the object, so the `catch` turns a database failure into a refusal the user can retry from. `not_ready` is the 503 code, the one that means try again. See [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) and [Errors](/blob/reference/errors#the-codes).
+
+---
+
+## The route
+
+Mount the handler, then bind the hooks to it.
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
@@ -107,6 +113,10 @@ import type { uploads } from "./uploads"
 
 export const { useUpload } = uploadHooks<typeof uploads>()
 ```
+
+---
+
+## The picker
 
 The browser side of an upload is the same on a private bucket, with one difference: there is no public URL to render when it finishes, so the picker shows what your route returned instead.
 
@@ -158,8 +168,24 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 }
 ```
 
-```tsx
-<a href={`/api/documents/${doc.id}`}>{doc.name}</a>
+The page reads rows, never the bucket, and links every document to that route:
+
+```tsx components/document-list.tsx
+import { db } from "@/lib/db"
+
+export async function DocumentList({ userId }: { userId: string }) {
+  const docs = await db.documents.findMany({ ownerId: userId })
+
+  return (
+    <ul>
+      {docs.map((doc) => (
+        <li key={doc.id}>
+          <a href={`/api/documents/${doc.id}`}>{doc.name}</a>
+        </li>
+      ))}
+    </ul>
+  )
+}
 ```
 
 The link in the page never expires, because it points at your route. Keep `expiresIn` short, because the signed URL it hands out works for anyone who ends up holding it. `downloadAs` makes the browser save the file under its real name rather than the one in the path; leave it out to open the PDF inline. Link this route from emails too, never a signed URL.

@@ -60,9 +60,15 @@ export const uploads = uploadHandler({
 })
 ```
 
-`uniquePath` gives every upload its own object, so re-uploading a file called `hero.png` never replaces last month's `hero.png`. Because the path never repeats, `cache: 'immutable'` needs no invalidation at all. A throw out of `onUploadComplete` deletes the file that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning.
+`uniquePath` gives every upload its own object, so re-uploading a file called `hero.png` never replaces last month's `hero.png`. Because the path never repeats, `cache: 'immutable'` needs no invalidation at all.
 
-`metadata` is written onto the object, so `uploader` can be read back later with `bucket.info()`. An id that only the completion callback needs can travel in `state` instead, as in [Product images](/blob/recipes/product-images).
+A throw out of `onUploadComplete` deletes the object, so the `catch` turns a database failure into a refusal the user can retry from. `not_ready` is the 503 code, the one that means try again. See [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) and [Errors](/blob/reference/errors#the-codes).
+
+---
+
+## The route
+
+Mount the handler, then bind the hooks to it.
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
@@ -167,12 +173,12 @@ A file read from disk is a buffer, which carries its length but not its type, so
 
 `cache: 'immutable'` asks browsers and CDNs to keep the bytes for a year, so a changed file needs a path nothing has seen before: put the version in the filename, as `app.v3.css`, or use a content hash. The old object stays until you delete it, which is what makes a rollback free.
 
-When a path genuinely has to stay stable, overwrite it and link `versionedUrl`, which is the same URL with the object's etag on the query:
+When a path genuinely has to stay stable, overwrite it and link `versionedUrl` instead of `url`. It is the same URL with the object's etag on the query, so it changes whenever the bytes do. Wherever your templates get asset URLs from, a generated manifest or an env var, write `versionedUrl` there:
 
 ```ts
 const blob = await bucket.put("assets/logo.svg", buffer, { contentType: "image/svg+xml", cache: "immutable" })
 
-blob.versionedUrl // write this into your generated asset manifest
+blob.versionedUrl // link this, not blob.url
 ```
 
 The trade-off between the two, and the `revalidate` option for a URL you cannot version at all, is in [Caching](/blob/bucket/caching).
@@ -183,12 +189,10 @@ The trade-off between the two, and the `revalidate` option for a URL you cannot 
 
 For CMS media, delete the row first, then the object. The page stops linking the file immediately, and if the second step fails the leftover is an object nobody links to rather than a broken image.
 
-```ts app/actions.ts
-"use server"
+Add this to `app/actions.ts`:
 
+```ts
 import { Bucket } from "@upstash/blob"
-import { getUser } from "@/lib/auth"
-import { db } from "@/lib/db"
 
 const bucket = Bucket.fromEnv()
 

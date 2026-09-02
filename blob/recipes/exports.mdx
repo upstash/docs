@@ -96,6 +96,8 @@ export const POST = verifySignatureAppRouter(async (request: Request) => {
 
 `verifySignatureAppRouter` refuses anything that did not come from QStash, so the route cannot be used to start jobs by hand. The `ready` check at the top makes a redelivered message a no-op. Setting up the QStash keys is in the [QStash quickstart](/qstash/quickstarts/vercel-nextjs).
 
+If `buildCsv` keeps throwing, QStash retries and then gives up, and the row stays `pending` for good. Give it a `failed` status so the button below can stop polling: set it from a QStash [failure callback](/qstash/features/callbacks#what-is-a-failure-callback), or have the cleanup cron mark any row still pending after an hour.
+
 `put` takes a string or a `Buffer` directly, which covers both a CSV you assembled and a PDF a renderer handed you. Neither carries a type of its own, so declare `contentType` or the object is stored as `application/octet-stream`. `cache: 'no-store'` is there because a link expiring does not take the bytes back out of the reader's browser cache.
 
 ---
@@ -128,7 +130,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 }
 ```
 
-Five minutes is the life of the link, not the life of the export: the row's `expiresAt` is what says whether the export still exists, and it is checked one line above. Sign for the time remaining until `row.expiresAt` instead only when the URL itself has to survive being mailed somewhere, since a day-long link then works for anyone holding it with no second ownership check.
+Five minutes is the life of the link, not the life of the export. The row's `expiresAt` says whether the export still exists, and the route checks it before signing. Sign for the whole remaining day only when the URL itself has to be mailed somewhere. A link that long works for anyone holding it, with no ownership check.
 
 `downloadAs` sets the filename the browser saves. The rest of the options are in [Reading](/blob/bucket/reading).
 
@@ -179,6 +181,7 @@ export function ExportButton() {
       <button onClick={start} disabled={row?.status === "pending"}>Export</button>
       {row?.status === "pending" && <p>Building your export...</p>}
       {row?.status === "ready" && <a href={`/api/exports/${row.id}/download`}>Download CSV</a>}
+      {row?.status === "failed" && <p>Export failed. Try again.</p>}
     </>
   )
 }

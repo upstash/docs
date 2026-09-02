@@ -70,9 +70,9 @@ export const uploads = uploadHandler({ routes: { productImage } })
 
 `cache: 'immutable'` is safe here only because the path is unique. Swapping an image out means uploading a new one and deleting the old row, never writing over the object a page is already linking to. The other two cache shapes are in [Caching](/blob/bucket/caching).
 
-`sortOrder` is a timestamp rather than a count, so three files uploading at once, or one completion request retried, cannot land on the same number. A throw out of `onUploadComplete` deletes the image that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning.
+`sortOrder` is a timestamp rather than a count, so three files uploading at once, or one completion request retried, cannot land on the same number.
 
-`state` reaches only `onUploadComplete`, which is all the product id needs. `metadata` would also write it onto the object, for a cron or a later `bucket.info()` to read back; [Profile pictures](/blob/recipes/avatars) uses that form.
+A throw out of `onUploadComplete` deletes the object, so the `catch` turns a database failure into a refusal the user can retry from. `not_ready` is the 503 code, the one that means try again. See [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) and [Errors](/blob/reference/errors#the-codes).
 
 ---
 
@@ -180,12 +180,10 @@ export async function reorderImages(productId: string, imageIds: string[]) {
 
 Delete the row first, then the object. The page stops showing the image immediately, and if the second step fails the leftover is an object nobody links to rather than a broken image. `del` treats an already missing object as success, so it is safe to retry.
 
-```ts app/actions.ts
-"use server"
+Add these to `app/actions.ts`:
 
+```ts
 import { Bucket } from "@upstash/blob"
-import { getUser } from "@/lib/auth"
-import { db } from "@/lib/db"
 
 const bucket = Bucket.fromEnv()
 
@@ -202,9 +200,9 @@ export async function deleteProductImage(imageId: string) {
 }
 ```
 
-Deleting a product is the same thing in bulk. The rows are the only thing that knows the paths, so read them first, delete the objects, then drop the rows. If it fails partway, run it again: `del` treats a missing object as success.
+Deleting a product is the same thing in bulk, but the order flips: objects first, rows second. The rows are the only record of the paths, so they have to survive a failed object delete for a retry to find them again, and nothing links a product that is being deleted, so there is no window where a page shows a broken image. If it fails partway, run it again: `del` treats a missing object as success.
 
-```ts app/actions.ts
+```ts
 export async function deleteProduct(productId: string) {
   const user = await getUser()
   if (!(await db.products.canEdit({ productId, userId: user?.id }))) throw new Error("forbidden")
