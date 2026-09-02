@@ -18,6 +18,8 @@ This recipe uses a public bucket. If you have not created one yet, start with th
 
 ## The handler
 
+Unlike the other recipes, the row is written in `onBeforeUpload`, before a byte exists, and marked `uploading`. A tab that dies halfway leaves a row still saying `uploading`, which is what a cron can find and sweep. `onUploadComplete` only flips it to `ready`.
+
 ```ts lib/uploads.ts
 import "server-only"
 import * as z from "zod"
@@ -48,9 +50,15 @@ const video = uploadRoute()({
     return { path, cache: "immutable", state: { videoId } }
   },
 
-  onUploadComplete: async ({ state, url, size }) => {
-    // Last. The row stops looking abandoned only once everything else is written.
-    await db.videos.update(state.videoId, { url, size, status: "ready" })
+  onUploadComplete: async ({ state, path, url, size }) => {
+    try {
+      // Last. The row stops looking abandoned only once everything else is written.
+      await db.videos.update(state.videoId, { url, size, status: "ready" })
+    } catch (e) {
+      // A throw here deletes the object, so make it a deliberate refusal the user can retry from.
+      console.error("[uploads] could not record", path, e)
+      throw new BlobError("not_ready", { message: "could not save the video, try again" })
+    }
     return { videoId: state.videoId }
   },
 })
@@ -58,11 +66,11 @@ const video = uploadRoute()({
 export const uploads = uploadHandler({ routes: { video } })
 ```
 
-`onBeforeUpload` runs once, before a byte exists, so the row it inserts is the placeholder the rest of the app renders while the upload runs. `state` carries the row id to the completion callback, and it travels through the browser, so put ids there and never secrets.
+`onBeforeUpload` runs once per upload, so one upload is one row, and the row is the placeholder the rest of the app renders while the upload runs. `state` carries the row id to the completion callback and nowhere else; `metadata` would also write it onto the object. It travels through the browser, so put ids there and never secrets.
 
 `multipart: true` also means nothing is stored at the path until the upload completes. A tab that dies halfway leaves parts and a row still marked `uploading`, both of which one cron sweeps: see [Abandoned uploads](/blob/uploads/abandoned-uploads).
 
-A throw out of `onUploadComplete` deletes the video that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
+A throw out of `onUploadComplete` deletes the video that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning.
 
 ---
 

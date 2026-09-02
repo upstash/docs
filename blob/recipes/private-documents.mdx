@@ -70,19 +70,28 @@ export const uploads = uploadHandler({
   },
 
   onUploadComplete: async ({ uploadId, metadata, path, size, file }) => {
-    await db.documents.upsert({
-      id: uploadId,
-      ownerId: metadata.owner,
-      name: file.name,
-      path,
-      size,
-    })
+    try {
+      // The browser retries this request on a flaky network, so upsert on uploadId.
+      await db.documents.upsert({
+        id: uploadId,
+        ownerId: metadata.owner,
+        name: file.name,
+        path,
+        size,
+      })
+    } catch (e) {
+      // A throw here deletes the object, so make it a deliberate refusal the user can retry from.
+      console.error("[uploads] could not record", path, e)
+      throw new BlobError("not_ready", { message: "could not save the document, try again" })
+    }
     return { documentId: uploadId }
   },
 })
 ```
 
-`cache: "no-store"` keeps a downloaded document out of the reader's browser cache once the link it came from is dead. A throw out of `onUploadComplete` deletes the file that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
+`cache: "no-store"` keeps a downloaded document out of the reader's browser cache once the link it came from is dead. A throw out of `onUploadComplete` deletes the file that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning.
+
+`metadata` is written onto the object, so `owner` can be read back later with `bucket.info()`. An id that only the completion callback needs can travel in `state` instead, as in [File attachments](/blob/recipes/attachments).
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"

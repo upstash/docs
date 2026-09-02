@@ -22,6 +22,7 @@ The button hits a route that writes a pending row and hands the job to a queue. 
 import "server-only"
 import { Bucket } from "@upstash/blob"
 import { Client } from "@upstash/qstash"
+import { buildCsv } from "./csv"
 import { db } from "./db"
 
 const bucket = Bucket.fromEnv()
@@ -133,9 +134,63 @@ Five minutes is the life of the link, not the life of the export: the row's `exp
 
 ---
 
+## The page
+
+The button posts, then polls the row until it says ready.
+
+```ts app/api/exports/[id]/route.ts
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const user = await getUser(request)
+  if (!user) return new Response("Unauthorized", { status: 401 })
+
+  const { id } = await params
+  const row = await db.exports.find({ id, userId: user.id })
+  return row ? Response.json({ status: row.status }) : new Response("Not found", { status: 404 })
+}
+```
+
+```tsx components/export-button.tsx
+"use client"
+
+import { useEffect, useState } from "react"
+
+export function ExportButton() {
+  const [row, setRow] = useState<{ id: string; status: string }>()
+
+  async function start() {
+    const { id } = await fetch("/api/exports", { method: "POST" }).then((r) => r.json())
+    setRow({ id, status: "pending" })
+  }
+
+  useEffect(() => {
+    if (row?.status !== "pending") return
+    const timer = setInterval(async () => {
+      const { status } = await fetch(`/api/exports/${row.id}`).then((r) => r.json())
+      if (status !== "pending") setRow({ id: row.id, status })
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [row])
+
+  return (
+    <>
+      <button onClick={start} disabled={row?.status === "pending"}>Export</button>
+      {row?.status === "pending" && <p>Building your export...</p>}
+      {row?.status === "ready" && <a href={`/api/exports/${row.id}/download`}>Download CSV</a>}
+    </>
+  )
+}
+```
+
+The anchor is an ordinary link to your own route, so it can sit in the page, in a list of past exports, or in an email, and the route still decides who gets a signed URL.
+
+---
+
 ## The cleanup cron
 
-Your table is the index, so the sweep is one indexed query and one batch delete. Never `list()` the bucket for this.
+Your table is the index, so the sweep is one indexed query and one batch delete. Never `list()` the bucket for this. The order is the opposite of a user delete, objects first and rows second, because nothing links these rows and a failed run has to find them again.
 
 ```ts app/api/cron/expire-exports/route.ts
 import { Bucket } from "@upstash/blob"
@@ -162,60 +217,7 @@ export async function GET(request: Request) {
 { "crons": [{ "path": "/api/cron/expire-exports", "schedule": "0 * * * *" }] }
 ```
 
-Objects first, rows second. The rows are the only thing that knows the paths, and if the second step fails the next run finds the same rows and tries again: `del` counts an already missing object as success, and an array is sent in batches of 1000. See [Deleting](/blob/bucket/deleting). Vercel sends `CRON_SECRET` on the requests it schedules, which is what keeps the route from being run by anyone else.
-
----
-
-## The page
-
-The button posts, then polls the row until it says ready.
-
-```ts app/api/exports/[id]/route.ts
-import { getUser } from "@/lib/auth"
-import { db } from "@/lib/db"
-
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getUser(request)
-  if (!user) return new Response("Unauthorized", { status: 401 })
-
-  const { id } = await params
-  const row = await db.exports.find({ id, userId: user.id })
-  return row ? Response.json({ status: row.status }) : new Response("Not found", { status: 404 })
-}
-```
-
-```tsx components/export-button.tsx
-"use client"
-
-import { useState } from "react"
-
-export function ExportButton() {
-  const [row, setRow] = useState<{ id: string; status: string }>()
-
-  async function start() {
-    const { id } = await fetch("/api/exports", { method: "POST" }).then((r) => r.json())
-    setRow({ id, status: "pending" })
-
-    const timer = setInterval(async () => {
-      const { status } = await fetch(`/api/exports/${id}`).then((r) => r.json())
-      if (status === "ready") {
-        setRow({ id, status })
-        clearInterval(timer)
-      }
-    }, 2000)
-  }
-
-  return (
-    <>
-      <button onClick={start} disabled={row?.status === "pending"}>Export</button>
-      {row?.status === "pending" && <p>Building your export...</p>}
-      {row?.status === "ready" && <a href={`/api/exports/${row.id}/download`}>Download CSV</a>}
-    </>
-  )
-}
-```
-
-The anchor is an ordinary link to your own route, so it can sit in the page, in a list of past exports, or in an email, and the route still decides who gets a signed URL.
+The rows are the only thing that knows the paths, and if the second step fails the next run finds the same rows and tries again: `del` counts an already missing object as success, and an array is sent in batches of 1000. See [Deleting](/blob/bucket/deleting). Vercel sends `CRON_SECRET` on the requests it schedules, which is what keeps the route from being run by anyone else.
 
 ---
 

@@ -38,8 +38,14 @@ export const uploads = uploadHandler({
     }
   },
 
-  onUploadComplete: async ({ metadata, versionedUrl }) => {
-    await db.users.update({ id: metadata.owner, avatarUrl: versionedUrl })
+  onUploadComplete: async ({ metadata, path, versionedUrl }) => {
+    try {
+      await db.users.update({ id: metadata.owner, avatarUrl: versionedUrl })
+    } catch (e) {
+      // A throw here deletes the object, so make it a deliberate refusal the user can retry from.
+      console.error("[uploads] could not record", path, e)
+      throw new BlobError("not_ready", { message: "could not save your picture, try again" })
+    }
     return { avatarUrl: versionedUrl }
   },
 })
@@ -49,7 +55,9 @@ The route takes images only, up to 5 MB, and refuses anything else before a byte
 
 That is the whole update story. The path is the user id, so every upload overwrites the same object, and `versionedUrl` ends in the new etag, so the row now points at a URL no browser or CDN has ever seen. The old cached picture is never requested again. [Caching](/blob/bucket/caching) has the alternative, `cache: "revalidate"`, for a URL that has to stay fixed.
 
-A throw out of `onUploadComplete` deletes the picture that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
+A throw out of `onUploadComplete` deletes the picture that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning. A refusal costs more here than on a unique path: the old picture was already overwritten, so the user is left with no picture rather than the previous one.
+
+`metadata` is written onto the object itself, so `owner` can be read back later with `bucket.info()`. An id that only the completion callback needs can travel in `state` instead, as in [Product images](/blob/recipes/product-images).
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"

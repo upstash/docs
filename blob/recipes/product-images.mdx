@@ -46,14 +46,20 @@ const productImage = uploadRoute()({
   },
 
   onUploadComplete: async ({ uploadId, state, path, url }) => {
-    // The browser retries this request on a flaky network, so upsert on uploadId.
-    await db.productImages.upsert({
-      id: uploadId,
-      productId: state.productId,
-      path,
-      url,
-      sortOrder: Date.now(), // new images go last; a retry keeps its place
-    })
+    try {
+      // The browser retries this request on a flaky network, so upsert on uploadId.
+      await db.productImages.upsert({
+        id: uploadId,
+        productId: state.productId,
+        path,
+        url,
+        sortOrder: Date.now(), // new images go last; a retry keeps its place
+      })
+    } catch (e) {
+      // A throw here deletes the object, so make it a deliberate refusal the user can retry from.
+      console.error("[uploads] could not record", path, e)
+      throw new BlobError("not_ready", { message: "could not save the image, try again" })
+    }
 
     return { imageId: uploadId, url }
   },
@@ -64,7 +70,9 @@ export const uploads = uploadHandler({ routes: { productImage } })
 
 `cache: 'immutable'` is safe here only because the path is unique. Swapping an image out means uploading a new one and deleting the old row, never writing over the object a page is already linking to. The other two cache shapes are in [Caching](/blob/bucket/caching).
 
-`sortOrder` is a timestamp rather than a count, so three files uploading at once, or one completion request retried, cannot land on the same number. A throw out of `onUploadComplete` deletes the image that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
+`sortOrder` is a timestamp rather than a count, so three files uploading at once, or one completion request retried, cannot land on the same number. A throw out of `onUploadComplete` deletes the image that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning.
+
+`state` reaches only `onUploadComplete`, which is all the product id needs. `metadata` would also write it onto the object, for a cron or a later `bucket.info()` to read back; [Profile pictures](/blob/recipes/avatars) uses that form.
 
 ---
 

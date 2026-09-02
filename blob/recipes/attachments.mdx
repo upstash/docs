@@ -42,14 +42,20 @@ const attachment = uploadRoute()({
   },
 
   onUploadComplete: async ({ uploadId, state, path, url, size, contentType, file }) => {
-    // The browser retries this request on a flaky network, so upsert on uploadId.
-    await db.attachments.upsert({
-      id: uploadId,
-      threadId: state.threadId,
-      userId: state.userId,
-      name: file.name,
-      path, url, size, contentType,
-    })
+    try {
+      // The browser retries this request on a flaky network, so upsert on uploadId.
+      await db.attachments.upsert({
+        id: uploadId,
+        threadId: state.threadId,
+        userId: state.userId,
+        name: file.name,
+        path, url, size, contentType,
+      })
+    } catch (e) {
+      // A throw here deletes the object, so make it a deliberate refusal the user can retry from.
+      console.error("[uploads] could not record", path, e)
+      throw new BlobError("not_ready", { message: "could not save the attachment, try again" })
+    }
     return { attachmentId: uploadId }
   },
 })
@@ -57,11 +63,11 @@ const attachment = uploadRoute()({
 export const uploads = uploadHandler({ routes: { attachment } })
 ```
 
-`uploadRoute()` is the route form that takes an `input` schema and a typed `state`. Put ids in `state`, never secrets: it travels through the browser. `file.name` is the original filename, and this callback is the only place it exists, so store it if you want to show it later.
+`uploadRoute()` is the route form that takes an `input` schema and a typed `state`. `state` reaches only `onUploadComplete`; `metadata` would also write it onto the object, which nothing here needs to read back. Put ids in `state`, never secrets: it travels through the browser. `file.name` is the original filename, and this callback is the only place it exists, so store it if you want to show it later.
 
 `multipart: true` sends every file up in parts, which is what big files need, and nothing is stored at the path until the upload completes. See [Large files](/blob/uploads/large-files).
 
-A throw out of `onUploadComplete` deletes the file that just landed, so catch database errors inside it rather than letting them escape. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the pattern.
+A throw out of `onUploadComplete` deletes the file that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning.
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
@@ -110,7 +116,7 @@ export function AttachmentInput({ threadId }: { threadId: string }) {
 }
 ```
 
-The route declares a schema, so `input` is required here and a missing `threadId` does not compile. Three files upload at a time and the rest queue.
+The route declares a schema, so `input` is required here and a missing `threadId` does not compile. There is no `accept` on the input because the route takes any type. Three files upload at a time and the rest queue.
 
 ---
 

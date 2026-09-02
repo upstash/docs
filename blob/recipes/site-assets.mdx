@@ -10,7 +10,7 @@ Three choices make that work:
 - **A row per media file.** Path, URL, alt text and uploader live in your table. The bucket holds bytes, your database is the index.
 - **A path that changes when the bytes do.** `uniquePath` for uploads, a versioned filename for build assets, so `cache: 'immutable'` is always honest.
 
-This recipe uses a public bucket, since every one of these files is meant to be linked from a page. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart).
+This recipe uses a public bucket, since every one of these files is meant to be linked from a page. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart). If you only need the deploy script, skip to [Build-time assets](#build-time-assets).
 
 ---
 
@@ -40,21 +40,29 @@ export const uploads = uploadHandler({
   },
 
   onUploadComplete: async ({ uploadId, path, url, file, metadata }) => {
-    // The browser retries this request on a flaky network, so upsert on uploadId.
-    await db.media.upsert({
-      id: uploadId,
-      name: file.name,
-      alt: "",
-      path,
-      url,
-      uploaderId: metadata.uploader,
-    })
+    try {
+      // The browser retries this request on a flaky network, so upsert on uploadId.
+      await db.media.upsert({
+        id: uploadId,
+        name: file.name,
+        alt: "",
+        path,
+        url,
+        uploaderId: metadata.uploader,
+      })
+    } catch (e) {
+      // A throw here deletes the object, so make it a deliberate refusal the user can retry from.
+      console.error("[uploads] could not record", path, e)
+      throw new BlobError("not_ready", { message: "could not save the file, try again" })
+    }
     return { mediaId: uploadId, url }
   },
 })
 ```
 
-`uniquePath` gives every upload its own object, so re-uploading a file called `hero.png` never replaces last month's `hero.png`. Because the path never repeats, `cache: 'immutable'` needs no invalidation at all. A throw out of `onUploadComplete` deletes the file that just landed, so catch database errors inside it rather than letting them escape. The callbacks are covered in full in [Upload handler](/blob/uploads/upload-handler).
+`uniquePath` gives every upload its own object, so re-uploading a file called `hero.png` never replaces last month's `hero.png`. Because the path never repeats, `cache: 'immutable'` needs no invalidation at all. A throw out of `onUploadComplete` deletes the file that just landed, so the `catch` turns a database failure into a message the user can retry from, rather than a raw driver error. [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) has the reasoning.
+
+`metadata` is written onto the object, so `uploader` can be read back later with `bucket.info()`. An id that only the completion callback needs can travel in `state` instead, as in [Product images](/blob/recipes/product-images).
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
