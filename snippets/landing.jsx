@@ -57,7 +57,7 @@ export const ProductGrid = () => {
         <a key={product.href} href={product.href} className="u-card u-product">
           <img
             className="u-card__icon"
-            src={`/docs-assets/img/icons/${product.icon}.svg`}
+            src={`img/icons/${product.icon}.svg`}
             alt=""
           />
           <div className="u-card__body">
