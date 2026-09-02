@@ -2,15 +2,28 @@
 title: "Caching"
 ---
 
-The `Cache-Control` an object is served with is written once, at upload. It is stored with the object and handed back by the CDN and the browser on every read, so changing it later means writing the object again. There is no per-request override: a read cannot ask for a different `Cache-Control` than the one the object carries.
+This page covers the `cache` option: what `Cache-Control` an object is served with, where to set it, and which value to pick.
 
-That is the whole shape of the feature. Everything below is about choosing the right value at write time, and about the one pattern that makes a stable path and a long cache life work together.
+```ts
+await bucket.put("avatars/7.png", file, { contentType: "image/png", cache: "immutable" })
+```
+
+`Cache-Control` is written once, at upload, and stored with the object. The CDN and the browser honor it on every read. There is no per-request override; changing it means writing the object again.
+
+---
+
+## Which value to pick
+
+| Object | Path | `cache` | How readers see a change |
+| --- | --- | --- | --- |
+| Unique path per upload (`uniquePath`) | new each time | `'immutable'` | the path is new, nothing to invalidate |
+| Stable path that changes rarely | stable | `'immutable'` plus `versionedUrl` | the URL changes with the etag |
+| Fixed URL you do not control, or a client that drops query strings | stable | `'revalidate'` | a 304 check on every read |
+| Private or sensitive | any | `'no-store'`, or a short duration | the link expires; see [below](#no-store-and-signed-reads) |
 
 ---
 
 ## The `cache` option
-
-`cache` takes a `CacheOption`: one of three words, a duration, or a `Cache-Control` header written out.
 
 | Value | Stored header |
 | ----- | ------------- |
@@ -21,10 +34,6 @@ That is the whole shape of the feature. Everything below is about choosing the r
 | unset | `public, max-age=3600` |
 | anything containing `=` or `,` | stored exactly as written |
 
-### The duration grammar
-
-A bare number is **seconds**, the unit every TTL option on the web already uses. A string takes a unit: `ms`, `s`, `m`, `h`, `d`, and their long forms (`sec`, `second`, `seconds`, `min`, `minute`, `minutes`, `hr`, `hour`, `hours`, `day`, `days`). A string with no unit at all is read as seconds too.
-
 ```ts
 cache: "1h"      // public, max-age=3600
 cache: 3600      // public, max-age=3600
@@ -32,49 +41,45 @@ cache: "15 min"  // public, max-age=900
 cache: "7d"      // public, max-age=604800
 ```
 
-Durations are converted to whole seconds, so `'1500ms'` stores `max-age=1`. An unparseable duration throws a `TypeError` naming the option.
+A duration is converted to whole seconds, so `'1500ms'` stores `max-age=1`. The grammar is on [Types](/blob/reference/types#duration).
 
 ### The raw header
-
-Anything containing `=` or `,` is a header, stored exactly as written, trimmed. A directive separator is what tells the two apart: a header always has one, a duration never does.
 
 ```ts
 cache: "public, max-age=60, s-maxage=31536000"
 cache: "max-age=0, stale-while-revalidate=86400"
 ```
 
-That is the escape hatch for `s-maxage`, `stale-while-revalidate`, `no-transform` and anything else the three words do not cover.
+Anything containing `=` or `,` is treated as a raw header and stored as written. Use this for `s-maxage`, `stale-while-revalidate`, `no-transform` and anything else the three keywords do not cover.
 
 ---
 
 ## `revalidate` versus a short max-age
-
-`'revalidate'` stores `public, max-age=0, must-revalidate`, and it is the answer for a stable path that gets overwritten. The copy is kept and checked with `If-None-Match`, so an unchanged object costs a 304 with no body instead of the whole object once every max-age.
-
-A short max-age is the wrong tool there. It is stale until it expires, and then it re-downloads:
 
 | | `cache: 'revalidate'` | `cache: '60s'` |
 | --- | --- | --- |
 | Unchanged object | 304, no body | full object, once a minute |
 | Object just overwritten | next read sees it | up to 60 s of the old bytes |
 
-`'revalidate'` costs a round trip per read. It never costs the bytes twice, and it is never stale.
+`'revalidate'` stores `public, max-age=0, must-revalidate`. The cached copy is checked with `If-None-Match` on every read, so an unchanged object costs a 304 with no body. A short max-age serves stale bytes until it expires, then re-downloads the whole object.
+
+`'revalidate'` costs a round trip per read, but is never stale and never downloads the bytes twice.
 
 ---
 
 ## Where you can set it
 
-Four places, innermost wins. A per-call `cache` overrides the bucket default.
+Four places. The most specific one wins.
 
 ### On the bucket
-
-The default for every object this bucket stores.
 
 ```ts lib/blob.ts
 import { Bucket } from "@upstash/blob"
 
 export const bucket = Bucket.fromEnv({ cache: "immutable" })
 ```
+
+The default for every object this bucket stores.
 
 ### On a put
 
@@ -85,11 +90,9 @@ await bucket.put("avatars/7.png", file, {
 })
 ```
 
-`updateJson` takes it too, for the object it rewrites. See [Writing](/blob/bucket/writing) for the rest of `put`.
+`updateJson` takes it too, for the object it rewrites.
 
 ### On a signed upload URL
-
-The `Cache-Control` is pinned into the signature and handed back in `headers`, so the uploader has to send it verbatim.
 
 ```ts
 const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
@@ -100,9 +103,9 @@ const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
 await fetch(upload.url, { method: "PUT", headers: upload.headers, body })
 ```
 
-### On a direct browser upload
+Signed into the URL and handed back in `headers`, so the uploader has to send it verbatim.
 
-`onBeforeUpload` returns the path, and may return the `cache` alongside it. It is decided per upload, on your server, and signed into the presigned PUT.
+### On a direct browser upload
 
 ```ts lib/uploads.ts
 import { uniquePath, uploadHandler } from "@upstash/blob"
@@ -115,13 +118,11 @@ export const uploads = uploadHandler({
 })
 ```
 
-See [Upload handler](/blob/uploads/upload-handler) for the rest of the callback.
+Decided per upload on your server and signed into the presigned PUT. See [Upload handler](/blob/uploads/upload-handler#onbeforeupload).
 
 ---
 
 ## Private buckets
-
-On a private bucket, `private` replaces `public` in the stored directive, so no shared cache between storage and the reader keeps a copy of an object only a signed request may read.
 
 | `cache` | Public bucket | Private bucket |
 | ------- | ------------- | -------------- |
@@ -131,19 +132,13 @@ On a private bucket, `private` replaces `public` in the stored directive, so no 
 | `'revalidate'` | `public, max-age=0, must-revalidate` | `private, max-age=0, must-revalidate` |
 | `'no-store'` | `no-store` | `no-store` |
 
-This follows the bucket's real visibility, not just what you declared in `new Bucket({ visibility })`, so a bucket that never declared anything still stores the right directive.
+On a private bucket, `private` replaces `public`, so no shared cache keeps a copy of an object only a signed request may read. This follows the bucket's real visibility in the console, not just what `new Bucket({ visibility })` declared.
 
-A raw header string is passed through as written, so `cache: 'public, max-age=60'` on a private bucket stores `public, max-age=60`. Once you write the header out, the visibility is yours to state too.
-
-Reads on a private bucket go through `signedReadUrl()`. See [Reading](/blob/bucket/reading).
+A raw header string is passed through as written, visibility included: `cache: 'public, max-age=60'` on a private bucket stores `public, max-age=60`.
 
 ---
 
 ## Immutable plus a versioned URL
-
-This is the pattern worth learning, because it is the one that gets a year of caching out of a path that changes.
-
-Every record carries `versionedUrl`, which is `url` with the etag on the query. The etag changes whenever the content does, so a stable path stored with `cache: 'immutable'` and served through `versionedUrl` is cached for a year, and an overwrite mints a new URL that no cache has ever seen.
 
 ```ts app/api/avatar/route.ts
 const blob = await bucket.put(`avatars/${user.id}.png`, file, {
@@ -158,60 +153,31 @@ await db.users.update(user.id, { avatar: blob.versionedUrl })
 <img src={user.avatar} />
 ```
 
-The path never moves, so nothing has to be deleted and the old object is not left behind. The URL in your row moves on every write, so the next render points at bytes no cache holds.
+`versionedUrl` is `url` with the etag on the query, so it changes whenever the content does. A stable path stored `immutable` and served through `versionedUrl` is cached for a year, and every overwrite produces a URL no cache has seen. The path never moves, so nothing has to be deleted.
 
-<Note>
-  `url` and `versionedUrl` are both undefined on a private bucket, since no public host serves it.
-</Note>
-
-### The three shapes
-
-| | Path | `cache` | Invalidation |
-| --- | --- | --- | --- |
-| Content-addressed or unique path | new path per upload (`uniquePath`) | `'immutable'` | none needed, the path never repeats |
-| Stable path, versioned URL | stable | `'immutable'` | `versionedUrl` changes with the etag |
-| Stable path, plain URL | stable | `'revalidate'` | a 304 per read |
-
-A unique path per upload is the simplest of the three: nothing ever overwrites anything, so `immutable` is unconditionally correct and there is no URL to update. The cost is that old objects accumulate and are yours to delete.
-
-`'revalidate'` is the fallback for a stable URL you do not control, such as one already printed somewhere or served to a client that will not carry a query string.
-
-### Choosing
-
-| Object | Use |
-| ------ | --- |
-| Content-addressed, or a `uniquePath` per upload | `cache: 'immutable'` |
-| Stable path that changes rarely | `cache: 'immutable'` plus `versionedUrl` |
-| User-editable, read through a fixed URL | `cache: 'revalidate'` |
-| Private or sensitive | `cache: 'no-store'`, or a short duration on a private bucket |
+`url` and `versionedUrl` are both `undefined` on a private bucket.
 
 ---
 
 ## `no-store` and signed reads
-
-For anything served through `signedReadUrl()`, two separate mechanisms are in play and both matter.
-
-The link expires. `signedReadUrl()` defaults to 5 minutes, and `expiresAt` on the result is the real answer per link rather than a number you assume.
-
-```ts
-const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf")
-```
-
-The stored `Cache-Control` is a different thing entirely, and it outlives the link. A long max-age on a private object still lets the requester's own browser keep the bytes after the link stops working, because the browser is caching a response it was allowed to fetch. If a reader must not keep the bytes, say so on the object:
 
 ```ts
 await bucket.put("private/report.pdf", body, {
   contentType: "application/pdf",
   cache: "no-store",
 })
+
+const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf")
 ```
 
-`no-store` is the one value that drops the visibility scope entirely: it stores `no-store` on a public and a private bucket alike, because nothing is to be kept either way.
+These are two separate mechanisms. The link expires at `expiresAt`, but the stored `Cache-Control` outlives it: with a long max-age the reader's browser keeps the bytes after the link stops working. If a reader must not keep the bytes, store the object with `no-store`.
 
-See [How signing works](/blob/reference/signing) for how link lifetimes are capped.
+`no-store` drops the visibility scope entirely and stores `no-store` on public and private buckets alike.
+
+See [signedReadUrl](/blob/bucket/reading#signedreadurl) for link lifetimes.
 
 ---
 
 ## What the upload route itself caches
 
-An upload route's `GET` serves its constraints with a short, revalidated `Cache-Control` of its own, unrelated to the objects the route stores. That document and its caching are covered in [Constraints](/blob/uploads/constraints#in-the-browser).
+An upload route's `GET` serves its constraints document with a 60 second `Cache-Control` of its own, unrelated to the objects the route stores. See [Constraints](/blob/uploads/constraints#in-the-browser).

@@ -2,64 +2,20 @@
 title: "Writing"
 ---
 
-Everything on this page runs on your server, with the bucket token. `put` writes bytes, `copy` and `move` rearrange them, `updateJson` reads and writes a document under a compare-and-set loop, and `signedUploadUrl` hands the write to somebody else.
+This page covers every way to write an object from your server: `put` for bytes you have, `copy` and `move` to rearrange them, `updateJson` for a read-modify-write, and `signedUploadUrl` to hand one write to somebody else.
 
-If you have not installed the SDK or created a bucket yet, start at the [Quickstart](/blob/overall/quickstart). For bytes that live in a browser, do not proxy them through your app: see [Upload handler](/blob/uploads/upload-handler).
+```ts lib/reports.ts
+import { bucket } from "@/lib/blob"
 
----
-
-## The bucket client
-
-`Bucket.fromEnv()` reads `UPSTASH_BLOB_TOKEN`.
-
-```ts lib/blob.ts
-import { Bucket } from "@upstash/blob"
-
-export const bucket = Bucket.fromEnv()
-```
-
-It takes the same options as the constructor, minus the token, and a variable name when the token lives somewhere else:
-
-```ts
-Bucket.fromEnv({ visibility: "private" })
-Bucket.fromEnv("REPORTS_BUCKET_TOKEN", { visibility: "private" })
-```
-
-The constructor takes the token directly, plus three options that apply to every write this client makes.
-
-```ts
-const bucket = new Bucket({
-  token: process.env.UPSTASH_BLOB_TOKEN!,
-  visibility: "private",   // drops url and versionedUrl everywhere
-  cache: "immutable",      // the default Cache-Control for objects this client stores
-  enableTelemetry: false,
-})
-```
-
-| Option | Type | What it does |
-| --- | --- | --- |
-| `token` | `string` | Required. The bucket token. |
-| `visibility` | `'public' \| 'private'` | `'private'` drops `url` and `versionedUrl` from every record, since nothing serves a private bucket over the public host. A visibility in the credentials response wins over this. |
-| `cache` | `CacheOption` | The `Cache-Control` written on every object this bucket stores. A per-call `cache` overrides it. See [Caching](/blob/bucket/caching). |
-| `enableTelemetry` | `boolean` | Default `true`. See [Telemetry](#telemetry). |
-
-On Cloudflare Workers there is no `process`, so the token only exists on the request's `env`. `Bucket.fromEnv()` throws there and says so; pass the token instead.
-
-```ts src/index.ts
-import { Bucket } from "@upstash/blob"
-
-export default {
-  async fetch(request: Request, env: { UPSTASH_BLOB_TOKEN: string }) {
-    const bucket = new Bucket({ token: env.UPSTASH_BLOB_TOKEN })
-    await bucket.put("hits.txt", "1")
-    return new Response("ok")
-  },
+export async function saveReport(pdf: Blob) {
+  const blob = await bucket.put("reports/q3.pdf", pdf, { contentType: "application/pdf" })
+  return blob.url
 }
 ```
 
-<Note>
-Constructing a `Bucket` per request on a serverless platform is fine and costs nothing. Credentials are cached per token, so two clients built from the same token share one.
-</Note>
+`bucket` is the client from [Configuration](/blob/bucket/configuration). Everything here runs on your server with the bucket token.
+
+For files a user picks in the browser, do not proxy the bytes through your app. Use an [upload handler](/blob/uploads/upload-handler) instead.
 
 ---
 
@@ -74,44 +30,49 @@ const blob = await bucket.put("reports/q3.pdf", pdf, { contentType: "application
 | Option | Type | What it does |
 | --- | --- | --- |
 | `contentType` | `string` | What the object is stored as. Falls back to what the body carries, then to `application/octet-stream`. |
-| `contentTypes` | `readonly string[]` | An allow list. The declared type is checked against it, and the body's first 4100 bytes are checked against the declared type. A refusal is `content_type_not_allowed`, before anything is written. |
-| `maxBytes` | `Size` | Refuses a body over this with `too_large`. Also the buffer cap for a body whose length is not known. |
-| `cache` | `CacheOption` | The `Cache-Control` this object is stored with, overriding the bucket default. See [Caching](/blob/bucket/caching). |
-| `metadata` | `Record<string, string>` | Stored as `x-amz-meta-*`. See [Metadata](#metadata). |
-| `size` | `number` | The declared length of a body whose size is not otherwise known. |
+| `contentTypes` | `string[]` | An allow list such as `["image/*", "application/pdf"]`. The declared type must be in it, and the body's leading bytes must not contradict the declared type. A refusal is `content_type_not_allowed` and nothing is written. |
+| `maxBytes` | `Size` | Refuses a body over this size with `too_large`. Also caps how much of an unknown-length stream is buffered. |
+| `cache` | `CacheOption` | The `Cache-Control` this object is stored with. Overrides the bucket default. |
+| `metadata` | `Record<string, string>` | Custom key-value pairs stored with the object. Keys come back lowercased, values must be printable ASCII. |
+| `size` | `number` | The exact length in bytes, for a stream whose size is not otherwise known. |
 | `overwrite` | `boolean` | `false` refuses the write if something is already at the path. |
-| `ifUnchanged` | `string` | An etag. The write fails if the object changed. |
-| `multipart` | `boolean \| Size` | Where the multipart path starts. Default 16 MB. |
+| `ifUnchanged` | `string` | An etag. The write fails with `conflict` if the object changed since you read it. |
+| `multipart` | `boolean \| Size` | Bodies over this size go up in parts. Default 16 MB. `true` always, `false` never. |
 
-Sizes are decimal, so `'2mb'` is 2,000,000 bytes. `maxBytes` accepts a number of bytes or a string like `'20mb'`; `size` is a number of bytes.
+`Size` is a decimal byte count like `4096` or `'20mb'` ([Types](/blob/reference/types#size)). The content type grammar and wildcards are on [Constraints](/blob/uploads/constraints).
 
-### What it returns
-
-A `CompletedBlob`, which is the record a listing carries plus the type the object was stored as.
-
-| Field | Type | |
-| --- | --- | --- |
-| `path` | `string` | The path you wrote to. |
-| `url` | `string \| undefined` | The public object URL. `undefined` on a private bucket. |
-| `versionedUrl` | `string \| undefined` | `${url}?v=${etag}`, for a stable path that gets overwritten. `undefined` whenever `url` is. |
-| `size` | `number` | Bytes stored. |
-| `etag` | `string` | Quoted, and what `ifUnchanged` takes. |
-| `uploadedAt` | `Date` | |
-| `contentType` | `string` | What the object was stored as. |
+### Return value
 
 ```ts
 const blob = await bucket.put("avatars/7.png", file, { contentType: "image/png" })
 
+blob.path          // 'avatars/7.png'
 blob.url           // https://b3f9a2c7d1e4.blob.upstash.io/avatars/7.png
 blob.versionedUrl  // ...?v=%22d41d8...%22
-blob.etag
+blob.size          // bytes stored
+blob.etag          // '"d41d8..."', what ifUnchanged takes
+blob.uploadedAt    // Date
+blob.contentType   // 'image/png'
 ```
 
-On a private bucket `url` and `versionedUrl` are `undefined` and reads go through a signed link instead. See [How signing works](/blob/reference/signing).
+This is a `CompletedBlob` ([Types](/blob/reference/types#records)). On a private bucket `url` and `versionedUrl` are `undefined`.
 
 ### Bodies
 
-`put` takes a `PutBody`. Whether a body carries its own length and type decides whether you have to declare `size` or `contentType`.
+```ts app/api/avatar/route.ts
+import { bucket } from "@/lib/blob"
+
+export async function POST(request: Request) {
+  // A Request carries its own length and type, so nothing has to be declared.
+  const blob = await bucket.put("avatars/me.png", request, {
+    contentTypes: ["image/*"],
+    maxBytes: "5mb",
+  })
+  return Response.json({ url: blob.url })
+}
+```
+
+`put` accepts these body types. If the body does not carry its own length or type, declare `size` or `contentType` yourself.
 
 | Body | Carries its length | Carries a content type |
 | --- | --- | --- |
@@ -122,28 +83,13 @@ On a private bucket `url` and `versionedUrl` are `undefined` and reads go throug
 | `string` | Yes, once UTF-8 encoded | No |
 | `ReadableStream<Uint8Array>` | No | No |
 
-The default content type is `application/octet-stream`, so a string or a buffer with no `contentType` is stored as that. An explicit `contentType` always wins over what the body carries.
+The default content type is `application/octet-stream`. An explicit `contentType` wins over what the body carries.
 
-```ts app/api/avatar/route.ts
-import { bucket } from "@/lib/blob"
-
-export async function POST(request: Request) {
-  // A Request carries both, so nothing has to be declared.
-  const blob = await bucket.put("avatars/me.png", request, {
-    contentTypes: ["image/*"],
-    maxBytes: "5mb",
-  })
-  return Response.json({ url: blob.url })
-}
-```
-
-A `Request` with no body, or one that has already been read, throws `empty_body`. Anything that is not one of the types above is a `TypeError`.
+A `Request` with no body, or one that has already been read, throws `empty_body`. Anything else is a `TypeError`.
 
 ---
 
 ## Streams and unknown lengths
-
-Storage needs a content length before the first byte goes out, and a `ReadableStream` has no length. Without `size` or `maxBytes` there is nothing `put` can do with one, so it refuses up front:
 
 ```ts
 await bucket.put("export.csv", stream)
@@ -151,44 +97,32 @@ await bucket.put("export.csv", stream)
 // before the first byte)  -- code 'length_required', status 411
 ```
 
-There are two ways through.
-
-**Pass `maxBytes`.** The stream is buffered up to that many bytes, and one that runs past the cap is cancelled with `too_large`. Keep the cap somewhere your process can hold in memory.
+Storage needs a content length before the first byte goes out, and a `ReadableStream` has none. Pass one of the two:
 
 ```ts
-const blob = await bucket.put("export.csv", stream, { maxBytes: "10mb" })
+// Buffer up to the cap. A stream that runs past it is cancelled with too_large.
+await bucket.put("export.csv", stream, { maxBytes: "10mb" })
+
+// Stream straight through, nothing buffered. The declared size must be exact.
+await bucket.put("export.csv", stream, { size: 5000 })
 ```
 
-**Pass `size`.** Nothing is buffered and the bytes go straight through.
+A body that does not match `size` fails the request rather than being stored at the wrong length. A `Request` that arrived chunked has no `content-length` and counts as an unknown length too.
 
-```ts
-const blob = await bucket.put("export.csv", stream, { size: 5000 })
-```
-
-A declared `size` has to be right. A body that does not match it fails the request rather than being stored at the wrong length.
-
-A `Request` that arrived chunked has no `content-length` either, so it is an unknown length like any other stream.
-
-When bytes are being proxied through a route, keep `maxBytes` under the platform's own request body cap, since that refusal happens before your route runs. The numbers are in [Errors](/blob/reference/errors#platform-body-limits).
+When proxying bytes through a route, keep `maxBytes` under the platform's own request body cap, since that refusal happens before your route runs. See [Platform body limits](/blob/reference/errors#platform-body-limits).
 
 ---
 
 ## Paths
-
-A path is any non-empty string, with `/` as structure. It is percent-encoded for you, so spaces and unicode are fine.
-
-`.` and `..` segments are rejected outright rather than normalised:
 
 ```ts
 await bucket.put("uploads/../secrets/key.pem", body)
 // TypeError: path may not contain "." or ".." segments
 ```
 
-Build paths out of user input with `uniquePath` rather than string concatenation.
+A path is any non-empty string, with `/` as structure. It is percent-encoded for you, so spaces and unicode are fine. `.` and `..` segments are rejected, not normalized, by every method that takes a path.
 
 ### uniquePath
-
-`uniquePath` is a template tag for building a path out of values you do not control, like a filename a browser handed you.
 
 ```ts
 import { uniquePath } from "@upstash/blob"
@@ -197,27 +131,27 @@ const path = uniquePath`${user.id}/${file.name}`
 // 'u7/holiday-pic-3xK9mBqR.png'
 ```
 
-Slashes in the literal chunks are structure. Slashes inside `${}` are stripped along with the rest of the directory component, so an interpolated value can never contribute a directory of its own.
+`uniquePath` builds a safe path out of values you do not control, like a filename from a browser. Slashes in the template literal are structure. Every `${}` value becomes a single slugged filename with a random suffix, so it can never add a directory:
 
 ```ts
-uniquePath`chat/${"../admin/x.png"}`   // 'chat/x-9fQ2mAe7.png'
-uniquePath`a/${"b/c"}`                 // 'a/c-Kd3xR8wP'
-```
-
-Each interpolated value is lowercased and slugged: runs of anything that is not a letter or a number become `-`. Letters and digits from any script survive, so `café.pdf` stays `café`. The stem is capped at 64 characters, the extension at 8. A random 8 character suffix is appended before the extension.
-
-```ts
+uniquePath`chat/${"../admin/x.png"}`     // 'chat/x-9fQ2mAe7.png'
+uniquePath`a/${"b/c"}`                   // 'a/c-Kd3xR8wP'
 uniquePath`${"Q3 Report (final).pdf"}`   // 'q3-report-final-7hTbN2xY.pdf'
 uniquePath`${"!!! ***"}`                 // 'file-Wm4pQ8dK'
 ```
 
-Use it whenever two people picking `photo.png` must not land on the same object. When overwriting is the intent, write the path yourself.
+The rules for each value:
+
+- Lowercased. Runs of anything that is not a letter or a number become `-`.
+- Letters and digits from any script survive, so `café.pdf` keeps `café`.
+- The stem is capped at 64 characters, the extension at 8.
+- A random 8-character suffix goes before the extension.
+
+Two uploads of `photo.png` never land on the same object. To overwrite on purpose, write the path yourself.
 
 ---
 
 ## Metadata
-
-`metadata` is a flat `Record<string, string>` stored alongside the object as `x-amz-meta-*` headers.
 
 ```ts
 await bucket.put("invoices/7.pdf", pdf, {
@@ -229,68 +163,49 @@ const info = await bucket.info("invoices/7.pdf")
 info.metadata // { owner: 'u7', invoiceid: '2026-0042' }
 ```
 
-Header names are case-insensitive, so keys come back lowercased. Write them lowercase and there is no surprise.
+`metadata` is a flat `Record<string, string>` stored as `x-amz-meta-*` headers. Three rules:
 
-Keys must be valid header names, and values must be printable ASCII. Anything else is refused before the request goes out:
+- **Keys come back lowercased.** Write them lowercase to begin with.
+- **Values must be printable ASCII.** Anything else is refused with `invalid_input`. Percent-encode other text and decode it on the way back.
+- **It comes back from `info()` and `get()`, not `list()`.** Reading metadata for many objects is one `info()` call each.
 
 ```ts
 await bucket.put("a.txt", "x", { metadata: { note: "café" } })
 // BlobError: metadata.note has characters storage does not carry back unchanged
 // (metadata is printable ASCII; percent-encode anything else with encodeURIComponent)
 // -- code 'invalid_input', status 400
-```
 
-Storage does not carry a non-ASCII value back verbatim: `{ note: 'café' }` would read back as `=?utf-8?Q?caf=C3=A9?=`. Percent-encode instead and it round trips exactly:
-
-```ts
 await bucket.put("a.txt", "x", { metadata: { note: encodeURIComponent("café") } })
 decodeURIComponent((await bucket.info("a.txt")).metadata.note!)  // 'café'
 ```
-
-<Note>
-Metadata comes back from `info()` and `get()`, but not from `list()`. A listing carries paths, sizes, etags and urls only, so a sweep that has to read metadata is one `info()` per object. See [Reading](/blob/bucket/reading).
-</Note>
 
 ---
 
 ## Conditional writes
 
-Two options turn `put` into a conditional write. Both are enforced by storage, so neither has a race window.
-
-**`overwrite: false`** refuses the write if something is already at the path, raising `already_exists` carrying what is there:
-
 ```ts
-try {
-  await bucket.put("u/7/profile.json", body, { overwrite: false })
-} catch (e) {
-  if (BlobError.is(e) && e.code === "already_exists") {
-    e.etag // the etag of the object that is already there
-    e.size // and its size
-  }
-}
-```
+// Refuse if anything is already at the path.
+await bucket.put("u/7/profile.json", body, { overwrite: false })
+// throws already_exists, with e.etag and e.size of what is there
 
-**`ifUnchanged: etag`** throws `conflict` if the object changed since you read that etag:
-
-```ts
+// Refuse if the object changed since you read it.
 const current = await bucket.info("u/7/profile.json")
 await bucket.put("u/7/profile.json", next, { ifUnchanged: current.etag })
-// throws BlobError 'conflict' if somebody else wrote first
+// throws conflict if somebody else wrote first
 ```
 
-Both are single-PUT only, so they turn multipart off: a conditional write of a large body still goes up as one request. Asking for both at once throws rather than silently downgrading:
+Both are enforced by storage, so there is no race window.
+
+Both turn multipart off, so a conditional write of a large body goes up as one request. Combining either with `multipart: true` throws:
 
 ```ts
 await bucket.put("big.bin", data, { multipart: true, overwrite: false })
-// BlobError: Multipart: overwrite:false and ifUnchanged are single-PUT only
-// -- code 'invalid_input'
+// BlobError: Multipart: overwrite:false and ifUnchanged are single-PUT only -- code 'invalid_input'
 ```
 
 ---
 
 ## updateJson
-
-`updateJson` is the compare-and-set loop those two options are for, written once. It reads the document, calls your function with the parsed value, and writes the result back conditionally. If somebody wrote in between, it reads again and re-runs your function against what actually landed.
 
 ```ts
 interface Settings {
@@ -303,9 +218,11 @@ await bucket.updateJson<Settings>("u/7.json", (prev) => ({
 }))
 ```
 
-Your function is handed `null` when there is nothing to read. An object that exists but is empty also reads as `null`: there is no JSON document either way, so the callback sees the same "nothing here yet" both times.
+`updateJson` reads the document, calls your function with the parsed value, and writes the result back with `ifUnchanged`. If somebody wrote in between, it reads again and re-runs your function. After six failed attempts it throws `conflict`.
 
-The object is written as `application/json`. Existing metadata is carried over unless you pass `metadata` of your own, and `cache` is available the same way:
+- Your function gets `null` when there is nothing to read. An empty object reads as `null` too.
+- It may be async. It runs on every attempt, so keep it a pure transform.
+- The object is written as `application/json`. Existing metadata is carried over unless you pass your own.
 
 ```ts
 await bucket.updateJson<Settings>(
@@ -315,58 +232,36 @@ await bucket.updateJson<Settings>(
 )
 ```
 
-Your function may be async, and it is re-run on every attempt, so keep it a pure transform rather than somewhere to do work with side effects.
-
-There are six attempts in total. A document that keeps changing under all six throws:
-
-```ts
-// BlobError: u/7.json kept changing across 6 attempts -- code 'conflict', status 409
-```
-
 ---
 
 ## copy and move
 
-`copy(from, to)` is a server-side copy: the bytes never travel through your app. It returns the destination's record.
-
 ```ts
 const archived = await bucket.copy("tmp/9f3c", "archive/2026/report.pdf")
-archived.size
-```
-
-`move(from, to)` is a copy followed by a delete of the source.
-
-```ts
 const moved = await bucket.move("tmp/9f3c", "reports/q3.pdf")
 ```
 
-A move is not atomic. If the copy lands and the delete fails, `move` throws `move_left_a_copy` and keeps the destination, so you are left with two objects rather than none. Do not read that throw as "nothing happened": the recovery is to retry the source delete, and it is written out in [Deleting](/blob/bucket/deleting#move-leaves-a-copy-on-failure).
+`copy` runs inside storage, so the bytes never travel through your app. `move` is a copy followed by a delete of the source. Both return the destination's record. A missing source throws `not_found`.
 
-Copying a path that does not exist throws `not_found`.
+A move is not atomic. If the copy lands and the delete fails, `move` throws `move_left_a_copy` and keeps both objects. Retry the source delete to recover; see [Deleting](/blob/bucket/deleting#move-leaves-a-copy-on-failure).
 
 ---
 
 ## Large bodies
 
-A body over 16 MB, decimal, goes up as a multipart upload instead of one PUT. `multipart` moves that line: a size is the threshold to use instead (`'100mb'`), `true` always uses parts, `false` never does.
-
 ```ts
 await bucket.put("video.mp4", data, { multipart: "100mb" })
 ```
 
-A single PUT cannot carry more than about 5 GiB, so past that there is no choice. `multipart: false` on a body that big throws `too_large` rather than attempting it.
+A body over the [multipart threshold](/blob/uploads/large-files#the-multipart-threshold) of 16 MB goes up in parts instead of one PUT. `multipart` changes the threshold: a size sets a new one, `true` always uses parts, `false` never does.
 
-Parts are sent one at a time. If anything fails, the SDK aborts the whole upload before throwing, so nothing is left behind.
-
-A body that does not match a declared `size` throws `invalid_input` naming the mismatch.
-
-Parts, pause, resume and per-part retry are covered in full in [Large files](/blob/uploads/large-files).
+- A single PUT cannot carry more than about 5 GiB. `multipart: false` on a body that big throws `too_large`.
+- Parts are sent one at a time. Any failure aborts the whole upload before throwing, so nothing is left behind.
+- A body that does not match a declared `size` throws `invalid_input`.
 
 ---
 
 ## Signed upload URLs
-
-`signedUploadUrl` produces a URL somebody else can PUT exactly one object to. It is the write-side counterpart of a signed read link, for a CLI, a build step, or a server-to-server job that has bytes you do not want to relay.
 
 ```ts
 const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
@@ -378,6 +273,8 @@ const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
 await fetch(upload.url, { method: "PUT", headers: upload.headers, body: pdf })
 ```
 
+`signedUploadUrl` returns `{ url, headers, expiresAt }`: a URL somebody else can PUT exactly one object to. Use it for a CLI, a build step, or a server-to-server job whose bytes you do not want to relay.
+
 | Option | Type | What it does |
 | --- | --- | --- |
 | `expiresIn` | `Duration` | How long the link should live. Default one hour. |
@@ -387,39 +284,11 @@ await fetch(upload.url, { method: "PUT", headers: upload.headers, body: pdf })
 | `size` | `Size` | Pins the body's exact length, so a URL handed out for one file cannot upload another size. |
 | `overwrite` | `boolean` | `false` refuses the upload if something is already at the path. |
 
-It returns `{ url, headers, expiresAt }`.
+`headers` are signed into the URL and must be sent verbatim. Drop one, change one, or add one, and storage answers 403. That is what stops the uploader from changing `metadata`.
 
-<Note>
-`headers` are signed into the URL and must be sent verbatim. Drop one, change one, or add one, and storage answers **403**. That is what makes `metadata` yours and not the uploader's.
-</Note>
+`expiresAt` may be sooner than what you asked for. Cache the link until then rather than computing your own deadline; see [Use expiresAt](/blob/bucket/reading#use-expiresat-not-expiresin).
 
-`expiresAt` is the real answer for the link, which may be sooner than what you asked for. Use it rather than computing a deadline yourself.
-
-For a browser upload, use the upload handler instead. A signed URL is one PUT with no multipart, no resume, and nothing to tell your server it happened. See [Upload handler](/blob/uploads/upload-handler).
-
----
-
-## The S3 escape hatch
-
-`bucket.s3()` hands back a config for `@aws-sdk/client-s3`, for the S3 operations this SDK does not wrap.
-
-```ts
-import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3"
-import { bucket } from "@/lib/blob"
-
-const { endpoint, region, bucket: name, credentials } = bucket.s3()
-const s3 = new S3Client({ endpoint, region, credentials })
-
-await s3.send(new ListObjectsV2Command({ Bucket: name, Prefix: "reports/" }))
-```
-
-`endpoint` and `credentials` are async providers rather than values. Pass them through as they come, so the aws-sdk can pick up a fresh credential when the old one expires.
-
----
-
-## Telemetry
-
-The SDK sends its version, runtime and platform as headers on credential requests to Upstash. Turn it off by setting `UPSTASH_DISABLE_TELEMETRY` in the environment (any value), or with `enableTelemetry: false` on the `Bucket`.
+For a browser upload, use the [upload handler](/blob/uploads/upload-handler) instead. A signed URL is one PUT: no multipart, no resume, and nothing tells your server it happened.
 
 ---
 
@@ -438,7 +307,7 @@ The SDK sends its version, runtime and platform as headers on credential request
     What `cache` accepts and why it is written once, at upload.
   </Card>
 
-  <Card title="Errors" href="/blob/reference/errors">
-    Every code, what raises it, and how to test for one.
+  <Card title="Configuration" href="/blob/bucket/configuration">
+    Client options, Cloudflare Workers, and using an S3 client directly.
   </Card>
 </CardGroup>

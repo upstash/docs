@@ -2,15 +2,7 @@
 title: "Constraints"
 ---
 
-Constraints are the two limits an upload route enforces before it signs anything: how big a file may be, and what type it may claim to be. They are the only place a direct upload can be refused for free, because past `begin` the bytes go straight to storage and never touch your server.
-
-See [Upload handler](/blob/uploads/upload-handler) for the handler shape and its callbacks, and [Upload client](/blob/uploads/upload-client) for the hooks.
-
----
-
-## The two constraints
-
-`constraints` takes `maxBytes`, `contentTypes`, or both. Write it on the handler, on a route, or on both.
+Constraints are the two limits an upload route enforces before it signs anything: how big a file may be, and what type it may be.
 
 ```ts lib/uploads.ts
 import { uploadHandler, uniquePath } from "@upstash/blob"
@@ -21,40 +13,38 @@ export const uploads = uploadHandler({
 })
 ```
 
-Both are enforced from the name, type and size the browser declared, before anything is signed and before `onBeforeUpload` runs. Nothing has been written down when a file is refused: no presigned URL exists, no row was inserted, no multipart upload was created.
+They are checked at `begin`, from the name, type and size the browser declared, before `onBeforeUpload` runs. A refused file leaves nothing behind: no presigned URL, no row, no multipart upload.
 
-Omitting `constraints` entirely accepts any type at any size.
+Omitting `constraints` accepts any type at any size.
 
 ---
 
 ## maxBytes
 
-`maxBytes` takes a `Size`: a number of bytes, or a string like `'20mb'`, `'500kb'`, `'5gb'`.
-
-Sizes are **decimal**, matching how storage is billed. `'2mb'` is 2,000,000 bytes, not 2,097,152. The units are `b`, `kb`, `mb`, `gb` and `tb`. Binary spellings are not accepted: `'5mib'` throws.
-
 ```ts
-constraints: { maxBytes: "2mb" }   // 2,000,000
+constraints: { maxBytes: "2mb" }   // 2,000,000 bytes
 constraints: { maxBytes: 4096 }    // a bare number is bytes
 ```
 
-`formatBytes` is exported from all three entrypoints and formats sizes the same decimal way they are parsed, so a refusal reads back in the units the limit was written in:
+`maxBytes` takes a [Size](/blob/reference/types#size). Sizes are decimal, so `'2mb'` is 2,000,000 and `'5mib'` throws. A refusal reads back in the same units:
 
 ```
 cat.png is 2.4 MB, over the 2 MB limit
 ```
 
-An unparseable size throws a `TypeError` naming the option, where the option is written, not once per request. A typo in `maxBytes` fails at startup like any other bad option.
+An unparseable size throws a `TypeError` where the option is written, at startup, not once per request.
 
 ---
 
 ## contentTypes
 
-`contentTypes` is a list. Each entry is either an exact `type/subtype`, or one of exactly three wildcards: `image/*`, `video/*` and `audio/*`.
+```ts
+constraints: { contentTypes: ["image/*", "application/pdf", "image/svg+xml"] }
+```
 
-Anything else throws `invalid_content_type_pattern`. That includes `*/*`, `text/*`, and strings that are not a media type at all (`png`, `image/`, `/png`). An empty list throws too: omit the option to accept anything, rather than write a list that reads enforced and is not.
+Each entry is either an exact `type/subtype`, or one of three wildcards: `image/*`, `video/*` and `audio/*`.
 
-Entries are lowercased, deduplicated, and keep the order you wrote them in.
+Anything else throws `invalid_content_type_pattern`: `*/*`, `text/*`, and strings that are not a media type (`png`, `image/`, `/png`). An empty list throws too; omit the option to accept anything.
 
 ### What the wildcards expand to
 
@@ -65,16 +55,14 @@ Entries are lowercased, deduplicated, and keep the order you wrote them in.
 | `audio/*` | `audio/mpeg`, `audio/wav`, `audio/ogg`, `audio/opus`, `audio/flac`, `audio/aac`, `audio/mp4`, `audio/webm` |
 
 <Note>
-  `image/*` deliberately does not include `image/svg+xml`. An SVG is script, so consenting to it has
-  to be explicit: list `'image/svg+xml'` yourself if you want it.
+  `image/*` deliberately does not include `image/svg+xml`. An SVG can contain script, so allow it explicitly by listing `'image/svg+xml'`.
 </Note>
 
----
+### Aliases
 
-## Aliases
+Browsers and operating systems send several spellings for some types. Both the declared type and your list are canonicalized before comparison, so `contentTypes: ['image/jpg']` accepts a file declared `image/jpeg`, and the reverse. Parameters are stripped, so `image/png; charset=binary` is `image/png`.
 
-Browsers and operating systems send several spellings for types that have one canonical name. Those spellings are canonicalized on both sides: on the type the browser declared, and on the list you wrote. `contentTypes: ['image/jpg']` and a file declared `image/jpeg` agree, and so do the reverse.
-
+<Accordion title="Alias table">
 | Written | Canonicalizes to |
 | ------- | ---------------- |
 | `image/jpg` | `image/jpeg` |
@@ -91,33 +79,26 @@ Browsers and operating systems send several spellings for types that have one ca
 | `application/x-gzip` | `application/gzip` |
 | `application/x-zip-compressed` | `application/zip` |
 | `application/vnd.rar` | `application/x-rar-compressed` |
-
-Parameters are stripped before the comparison, so `image/png; charset=binary` is `image/png`.
+</Accordion>
 
 ---
 
 ## Byte sniffing
 
-A route with `contentTypes` checks more than the declared type. The browser sends the file's leading bytes with the first request, so a mislabelled file is refused before the upload rather than after it.
+A route with `contentTypes` checks more than the declared type. The browser sends the file's leading bytes with the `begin` request, so a mislabelled file is refused before the upload rather than after it. Two checks run:
 
-The check runs in two steps:
+1. **The declared type must be in the allow list.** A `report.exe` declared as `application/x-msdownload` is refused here.
+2. **The leading bytes must not clearly contradict the declared type.** If the bytes prove nothing, the file passes.
 
-1. **The declared type against the allow list.** `report.exe` renamed to `report.png` but declared `application/x-msdownload` is refused here, with the allowed list as the hint.
-2. **The bytes against the declaration, on a proven conflict only.** If the leading bytes prove nothing, the file passes.
-
-That second condition is what keeps real files from being refused. Bytes that prove a container the declaration sits on top of pass: a `.docx` really is a zip, and so are `.epub`, `.jar` and `.apk`. Formats whose signature is shared by several types, like mp4 and heic, or webm and mkv, are never used to contradict a declaration. Neither is `application/octet-stream`, which claims nothing.
+The second check is lenient on purpose so real files are not refused. A `.docx` really is a zip, and so are `.epub`, `.jar` and `.apk`. Formats that share a signature, like mp4 and heic, or webm and mkv, never contradict a declaration. Neither does `application/octet-stream`.
 
 <Note>
-  This is ergonomics, not a control. The bytes never reach your server, so a client is free to send
-  an honest sample and then upload something else entirely. It is not malware scanning, and it is not
-  a substitute for treating stored objects as untrusted.
+  This is a convenience, not a security control. The bytes never reach your server, so a client can send an honest sample and then upload something else. It is not malware scanning, and stored objects should still be treated as untrusted.
 </Note>
 
 ---
 
 ## Per-route constraints
-
-A route's `constraints` **replace** the handler's key by key. A key the route does not mention is inherited. `null` clears a key the handler set.
 
 ```ts lib/uploads.ts
 export const uploads = uploadHandler({
@@ -144,43 +125,35 @@ export const uploads = uploadHandler({
 | `avatar` | 2,000,000, replaced | `['image/png']`, inherited |
 | `large` | 2,000,000,000, replaced | none, cleared by `null` |
 
+A route's `constraints` **override** the handler's key by key. A key the route does not mention is inherited. `null` clears a key the handler set.
+
 ---
 
 ## Narrowing per user
 
-`onBeforeUpload` may return `constraints` to narrow the route's further, once it knows who is uploading.
-
 ```ts lib/uploads.ts
-export const uploads = uploadHandler({
-  constraints: { maxBytes: "1gb", contentTypes: ["image/*", "video/*"] },
-
-  onBeforeUpload: async ({ request, file }) => {
-    const user = await getUser(request)
-    return {
-      path: uniquePath`${user.id}/${file.name}`,
-      constraints: user.plan === "free" ? { maxBytes: "25mb", contentTypes: ["image/*"] } : undefined,
-    }
-  },
-})
+onBeforeUpload: async ({ request, file }) => {
+  const user = await getUser(request)
+  return {
+    path: uniquePath`${user.id}/${file.name}`,
+    constraints: user.plan === "free" ? { maxBytes: "25mb", contentTypes: ["image/*"] } : undefined,
+  }
+},
 ```
 
-The narrowed constraints are checked against the same file right after `onBeforeUpload` returns.
-
-Widening throws a `TypeError` naming what was widened. The route's own limits are always the ceiling, so reading the code of a route tells you the most it can ever accept.
+`onBeforeUpload` may return `constraints` to tighten the route's limits for this one upload, once it knows who is uploading. They are checked against the same file right after it returns. Widening throws a `TypeError`, so a route's code always shows the most it can accept.
 
 ---
 
 ## In the browser
 
-`GET` on the upload route serves the constraints it enforces:
-
 ```json
 { "constraints": { "contentTypes": ["image/png"], "maxBytes": 2000000 } }
 ```
 
-It is cached for 60 seconds, browser and CDN alike, so a deploy that changes a route's limits reaches clients within a minute.
+`GET` on the upload route serves the constraints it enforces, cached for 60 seconds, so a deploy that changes a route's limits reaches clients within a minute.
 
-`useUpload` exposes two things from it. `accept` is `contentTypes` joined with commas, ready for an `<input accept>`, and empty until the GET lands or when the route serves no type list. `constraints` is the served document itself, so a page can state the cap it enforces.
+`useUpload` exposes two things from it. `accept` is `contentTypes` joined with commas, ready for an `<input accept>`. `constraints` is the served document itself, so a page can show the limit it enforces.
 
 ```tsx components/upload-button.tsx
 "use client"
@@ -200,18 +173,18 @@ export function UploadButton() {
 }
 ```
 
-A file over `maxBytes` is refused in the browser before any request is made. It still becomes a record, with `status: 'error'` and a real `BlobError` whose code is `too_large`, so one error path renders both the client-side refusal and the server's.
+A file over `maxBytes` is refused in the browser before any request is made. It still becomes a record with `status: 'error'` and a `BlobError` with code `too_large`, so one error path renders both the client-side refusal and the server's.
 
-The size check is the only one that runs in the browser. **The server is authoritative** for everything else, and if the constraints have not arrived yet the file is simply sent and the route decides.
+The size check is the only one that runs in the browser. **The server is authoritative** for everything else. If the constraints have not arrived yet, the file is simply sent and the route decides.
 
 ---
 
 ## Error codes
 
-A refusal here is `too_large`, `content_type_not_allowed`, `invalid_content_type_pattern` or `empty_body`, and it reaches the browser as a `BlobError` with that code intact, so switch on `error.code` rather than on status numbers. See [Errors](/blob/reference/errors) for what each one means.
+A refusal here is `too_large`, `content_type_not_allowed`, `invalid_content_type_pattern` or `empty_body`. It reaches the browser as a `BlobError` with that code intact, so switch on `error.code` rather than on status numbers. See [Errors](/blob/reference/errors#the-codes).
 
 ---
 
 ## Server-side writes
 
-`bucket.put()` takes the same `contentTypes` and `maxBytes` options, with the same grammar, the same aliases and the same byte check, for bytes that pass through your own route. See [Writing](/blob/bucket/writing).
+`bucket.put()` takes the same `contentTypes` and `maxBytes` options, with the same grammar, aliases and byte check, for bytes that pass through your own route. See [Writing](/blob/bucket/writing#put).

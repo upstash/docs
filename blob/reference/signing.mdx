@@ -2,15 +2,25 @@
 title: "How Signing Works"
 ---
 
-Your server holds a bucket token. It exchanges that token for short-lived S3 credentials from Upstash, signs individual URLs with those credentials, and hands only the URLs to the browser. The token and the credentials never leave your server. Every URL a browser holds is scoped to one object, one method, one set of headers, and a few minutes.
+Your server holds a bucket token. It exchanges that token for short-lived S3 credentials from Upstash, signs individual URLs with those credentials, and hands only the URLs to the browser. Every URL a browser holds is scoped to one object, one method, one set of headers, and a few minutes.
 
-This page is for reasoning about what a browser holding one of these URLs can and cannot do. If you only want to upload a file, start with the [Quickstart](/blob/overall/quickstart) instead.
+This page explains what a browser holding one of these URLs can and cannot do. To upload a file, start with the [Quickstart](/blob/overall/quickstart) instead.
+
+---
+
+## What never reaches the browser
+
+- `UPSTASH_BLOB_TOKEN`, in any form.
+- The key that signs completion tokens. It never leaves your process.
+- The temporary S3 credentials. They are only ever folded into a signature.
+- Any ability to list, read, overwrite or delete outside the one object a presigned URL names.
+- Anything `context` or `onBeforeUpload` computed, except what you explicitly return as `metadata` (visible on the object) or `state` (visible in the completion token).
 
 ---
 
 ## The bucket token
 
-`UPSTASH_BLOB_TOKEN` is not an opaque handle. It packs three things the SDK reads locally, with no network call:
+`UPSTASH_BLOB_TOKEN` packs three things the SDK reads locally, with no network call:
 
 - **The bucket id**, which names the bucket inside your account.
 - **The public DNS label**, which is why `bucket.publicUrl(path)` can build a URL without a request.
@@ -19,7 +29,7 @@ This page is for reasoning about what a browser holding one of these URLs can an
 A malformed or tampered token is refused when it is decoded rather than on the first request.
 
 <Note>
-The token is a bearer secret. Anything holding it can mint credentials for the whole bucket. Keep it server side, never in `NEXT_PUBLIC_`, `VITE_`, or any other variable your bundler inlines into client code.
+The token is a bearer secret. Anything holding it can mint credentials for the whole bucket. Keep it server side; see [Configuration](/blob/bucket/configuration).
 </Note>
 
 ---
@@ -28,7 +38,7 @@ The token is a bearer secret. Anything holding it can mint credentials for the w
 
 The token is not an S3 credential. To touch storage, the SDK exchanges it with Upstash for a short-lived one. That exchange also tells the SDK where the bucket lives, when the credential expires, and whether the bucket is public or private.
 
-Credentials are cached per token rather than per `Bucket` instance, so constructing a bucket inside a request handler is free and does not mint a credential each time. Concurrent callers share one in-flight mint rather than racing, and a credential is refreshed shortly before it expires.
+Credentials are cached per token rather than per `Bucket` instance, so constructing a bucket inside a request handler is free. Concurrent callers share one in-flight mint, and a credential is refreshed shortly before it expires.
 
 A failed mint surfaces as `unauthorized` (the token was rejected), `rate_limited`, `not_ready` or `mint_backoff`. See [Credential errors](/blob/reference/errors#credential-errors).
 
@@ -40,54 +50,48 @@ Signing is AWS Signature Version 4. Requests your server makes to storage carry 
 
 ### Signed headers
 
-A presigned URL can pin headers, and the client then has to send them back byte for byte. Change a value, or omit a header the URL declared, and storage answers 403. That is not a rule the SDK enforces on the client, it is arithmetic inside the signature. A header pinned into a URL is not the client's to choose.
+A presigned URL can pin headers, and the client then has to send them back exactly. Change a value, or omit a header the URL declared, and storage answers 403. This is enforced by the signature itself, not by the SDK.
 
-Query parameters work the same way. The download filename on a signed read URL rides inside the signature, so a link whose filename was edited afterwards is refused rather than honoured.
+Query parameters work the same way. The download filename on a signed read URL rides inside the signature, so a link whose filename was edited afterwards is refused.
 
 ### Path encoding
 
 Paths are percent-encoded per segment, so slashes stay structural and everything else survives.
 
-A path containing a `.` or `..` segment is refused outright rather than normalised. Your server's credential authorizes the whole bucket, and the URL parser resolves `..` before the request is signed, so a traversing key would sign a request against a different object than the one your code named. `uniquePath` guards the same boundary from the other side, by stripping directory components out of every interpolated value. Its rules are on [Writing](/blob/bucket/writing#uniquepath).
+A path containing a `.` or `..` segment is refused rather than normalized. Your server's credential authorizes the whole bucket, and the URL parser resolves `..` before signing, so a traversing key would sign a request against a different object than the one your code named. `uniquePath` guards the same boundary from the other side; see [Writing](/blob/bucket/writing#uniquepath).
 
 ---
 
 ## How long a presigned URL lives
 
-A presigned URL cannot outlive the credential that signed it, so the SDK never signs a link for longer than the credential can carry, and re-mints where a longer ask is worth a round trip.
-
-Read links default to 5 minutes, write links to an hour. Read links can outlive the credential your server writes with, since reads are signed with a separate, longer-lived one.
-
-That is why `signedReadUrl()` returns `expiresAt` rather than making you compute it:
-
 ```ts
-const { url, expiresAt } = await bucket.signedReadUrl('private/report.pdf');
+const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf")
 // expiresAt is the real answer for this link: min(what you asked for, what the signer had left)
 ```
 
-Cache the link until `expiresAt` and re-sign after. Do not assume five minutes.
+A presigned URL cannot outlive the credential that signed it, so the SDK never signs a link for longer than the credential has left. Read links default to 5 minutes, write links to an hour.
+
+Cache the link until `expiresAt` and re-sign after. See [Use expiresAt](/blob/bucket/reading#use-expiresat-not-expiresin).
 
 ---
 
 ## The direct upload handshake
-
-A direct browser upload is four phases against your own route. Your route is the only thing that ever sees the token or the credentials.
 
 <Frame>
   <img className="block dark:hidden" src="/img/blob/upload-phases-light.png" alt="The four upload phases" />
   <img className="hidden dark:block" src="/img/blob/upload-phases-dark.png" alt="The four upload phases" />
 </Frame>
 
-| Phase | What your route does | What it signs |
-| --- | --- | --- |
-| `begin` | Enforces [Constraints](/blob/uploads/constraints), runs `onBeforeUpload`, and for a large file creates the multipart upload | The first PUT URL, or the first batch of part URLs |
-| `parts` | Verifies the completion token and asks storage what already landed | The next batch of part URLs |
-| `end` | Verifies the token, completes the upload, reads the object back, runs `onUploadComplete` | Nothing new |
-| `cancel` | Verifies the token, aborts the multipart or deletes a matching single-PUT object | Nothing |
+A direct browser upload is four [phases](/blob/reference/types#upload-phases) against your own route. Each phase signs something different:
 
-The browser never sees the bucket token and never sees an S3 credential. It sees per-object presigned URLs, the headers those URLs pin, and a completion token. Nothing it holds can list the bucket, read another object, or write to a path your `onBeforeUpload` did not choose.
+| Phase | What it signs |
+| --- | --- |
+| `begin` | The first PUT URL, or the first batch of part URLs, and the completion token |
+| `parts` | The next batch of part URLs, after verifying the completion token |
+| `end` | Nothing new. Verifies the token, completes the upload, runs `onUploadComplete` |
+| `cancel` | Nothing. Verifies the token, aborts the multipart or deletes a matching single-PUT object |
 
-`GET` on the same route serves the constraints document, with an ETag and `max-age=60`, so a file picker can be filled from the same list that does the refusing. See [Upload handler](/blob/uploads/upload-handler) for the callbacks and [Large files](/blob/uploads/large-files) for the multipart path.
+The browser sees per-object presigned URLs, the headers those URLs pin, and a completion token. Nothing it holds can list the bucket, read another object, or write to a path your `onBeforeUpload` did not choose.
 
 ---
 
@@ -98,7 +102,7 @@ The completion token carries an upload's identity between phases, so your route 
 It pins everything the browser must not be able to change: the path `onBeforeUpload` chose, the declared size and type, the headers signed into the upload, the bucket, and the route. It also carries the upload id your `onUploadComplete` sees as `uploadId`, and whatever `onBeforeUpload` returned as `state`. It expires after seven days.
 
 <Note>
-The token is signed, not encrypted. Anyone can open devtools and read the payload, including `state`. Whatever `onBeforeUpload` returns there must be a row id or something equally boring. Never a secret, never a signed URL, never an internal flag you would not print on the page.
+The token is signed, not encrypted. Anyone can open devtools and read the payload, including `state`. Put a row id there, never a secret, a signed URL, or an internal flag.
 </Note>
 
 A token that fails any of those checks is `forbidden`, not a 500. A token minted at one route is not spendable at another, so a 2 MB avatar route's token cannot be spent at a 2 GB video route. Two handlers on one bucket that mount the same route names need an `endpoint` to tell them apart.
@@ -109,7 +113,7 @@ Changing a route's constraints invalidates completion tokens issued under the ol
 
 ## Pinned headers, and why the browser cannot forge metadata
 
-For a file under the multipart threshold, the browser writes the object itself with a single PUT. Everything the object should carry has to be decided on your server and pinned into that URL's signature:
+For a file under the multipart threshold, the browser writes the object itself with a single PUT. Everything the object should carry is decided on your server and pinned into that URL's signature:
 
 - `content-type`, from the file the browser declared
 - `cache-control`, resolved from the route's or bucket's [cache option](/blob/bucket/caching) and the bucket visibility
@@ -117,7 +121,7 @@ For a file under the multipart threshold, the browser writes the object itself w
 - `content-length`, the exact declared size
 - `x-amz-meta-upstash-upload`, the marker
 
-Signed, not merely sent. An unsigned header would be the browser's to choose, and then metadata your app reads back in `onUploadComplete` would be the client's to write. Because they are signed, the browser must echo them exactly and cannot substitute an `owner` that is not theirs.
+Because these headers are signed, the browser must send them exactly as given. An unsigned header would be the browser's to choose, and then the `owner` your app reads back in `onUploadComplete` would be the client's to write.
 
 For a multipart upload the same headers are set by your server when it creates the upload, and the object inherits them at completion. Part URLs pin only the part's length.
 
@@ -127,59 +131,47 @@ For a multipart upload the same headers are set by your server when it creates t
 
 On a single PUT, the SDK writes a random id as `x-amz-meta-upstash-upload` and signs it into the URL. The browser cannot set it or change it, and `metadata["upstash-upload"]` from your own `onBeforeUpload` is refused as reserved.
 
-It answers exactly one question: did the bytes at this path come from THIS upload? A multipart upload answers that by construction, since the object does not exist until it is completed. A single PUT stores the object the moment the last byte lands, so the object at that path could be a stale upload's, a concurrent upload's, or something that was there all along.
+It answers one question: did the bytes at this path come from **this** upload? A multipart upload knows by construction, since the object does not exist until it is completed. A single PUT stores the object the moment the last byte lands, so the object at that path could be from a stale upload, a concurrent upload, or something that was there all along.
 
-So completing a single-PUT upload requires a marker match. No match is `not_found`, "the upload never landed". A cancel uses the same check, which is what stops it from deleting someone else's file at the same path.
+Completing a single-PUT upload requires a marker match. No match is `not_found`. A cancel uses the same check, which stops it from deleting someone else's file at the same path.
 
-The marker is stripped from the record handed to `onUploadComplete` and `onError`, but stays on the stored object. So a match proves "same upload" and never "no callback accepted it". What that costs, and the pending row that closes it, is on [Abandoned uploads](/blob/uploads/abandoned-uploads).
+The marker is stripped from the record handed to `onUploadComplete` and `onError`, but stays on the stored object. A match proves "same upload", never "a callback accepted it". That is why the SDK cannot find an abandoned single-PUT object on its own; see [Abandoned uploads](/blob/uploads/abandoned-uploads).
 
 ---
 
 ## Retries and 403
 
-A 403 from storage is ambiguous by design: an expired presigned URL and a tampered request produce the same status. So the browser treats a 403 as an expired signature first, throws the batch of URLs away, and asks your route for fresh ones. A 403 on a URL that was just signed is a real `signature_mismatch` and ends the upload. The rest of the classification, and the retry budgets, are in [Large files](/blob/uploads/large-files#retries).
+A 403 from storage is ambiguous: an expired presigned URL and a tampered request produce the same status. The browser treats a 403 as an expired signature first and asks your route for fresh URLs. A 403 on a URL that was just signed is a real `signature_mismatch`. See [Retries](/blob/uploads/large-files#retries).
 
-Your server has the same ambiguity and resolves it by reading the response body. It re-mints once per request when the body says the credential expired. Any other 403 surfaces as `signature_mismatch`, usually meaning the body length or type differs from what was signed.
+Your server reads the response body instead. It re-mints once per request when the body says the credential expired. Any other 403 surfaces as `signature_mismatch`, usually meaning the body length or type differs from what was signed.
 
 ---
 
 ## What the browser stores
 
-One thing: the completion token, in `localStorage`, keyed by the route and the file. Nothing about what landed is stored, since your server can ask storage for that. [Large files](/blob/uploads/large-files#resuming-after-a-reload) covers the resume gesture and what happens when `localStorage` is unavailable.
+Only the completion token, in `localStorage`, keyed by the route and the file. Nothing about what landed is stored, since your server asks storage for that. See [Resuming after a reload](/blob/uploads/large-files#resuming-after-a-reload).
 
 ---
 
 ## Signed URLs you make yourself
 
-The same machinery is available directly, for a CLI, a server-to-server job, or a link in an email.
-
 ```ts
-const { url, expiresAt } = await bucket.signedReadUrl('private/report.pdf', {
-  downloadAs: 'Q3 Report.pdf',
-  expiresIn: '15m',
-});
+const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf", {
+  downloadAs: "Q3 Report.pdf",
+  expiresIn: "15m",
+})
 
-const upload = await bucket.signedUploadUrl('u/7/report.pdf', {
-  contentType: 'application/pdf',
+const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
+  contentType: "application/pdf",
   size: bytes.byteLength,
-});
-await fetch(upload.url, { method: 'PUT', headers: upload.headers, body: bytes });
+})
+await fetch(upload.url, { method: "PUT", headers: upload.headers, body: bytes })
 ```
 
-`signedReadUrl` turns `downloadAs` into a `Content-Disposition` header on the response, encoded so a Unicode name arrives intact and a name containing a quote or a newline cannot inject a second header. A `contentType` override is validated as a media type for the same reason.
+The same machinery is available directly, for a CLI, a server-to-server job, or a link in an email.
 
-`signedUploadUrl` pins every header it returns into the signature: the content type, cache control, your metadata, the length when you pass `size`, and the conditional when you pass `overwrite: false`. Send the `headers` object verbatim. Anything changed, dropped or added is a 403.
+`signedReadUrl` turns `downloadAs` into a `Content-Disposition` header, encoded so a Unicode name arrives intact and a name containing a quote or a newline cannot inject a second header. A `contentType` override is validated as a media type for the same reason.
 
-For an existing S3 client, `bucket.s3()` hands back the endpoint and the credentials as async providers rather than values. See [Writing](/blob/bucket/writing#the-s3-escape-hatch).
+`signedUploadUrl` signs every header it returns: the content type, cache control, your metadata, the length when you pass `size`, and the conditional when you pass `overwrite: false`. Send the `headers` object verbatim. Anything changed, dropped or added is a 403.
 
-Full options are on [Reading](/blob/bucket/reading) and [Writing](/blob/bucket/writing).
-
----
-
-## What never reaches the browser
-
-- `UPSTASH_BLOB_TOKEN`, in any form.
-- The key that signs completion tokens. It never leaves your process.
-- The temporary S3 credentials. They are only ever folded into a signature.
-- Any ability to list, read, overwrite or delete outside the one object a single presigned URL names.
-- Anything `context` or `onBeforeUpload` computed, except what you explicitly return as `metadata` (visible on the object) or `state` (visible in the completion token).
+Full options are on [Reading](/blob/bucket/reading#signedreadurl) and [Writing](/blob/bucket/writing#signed-upload-urls). For an existing S3 client, see [Configuration](/blob/bucket/configuration#using-an-s3-client).

@@ -2,103 +2,72 @@
 title: "Large Files"
 ---
 
-Every upload crosses one line. Under it a file goes up as a single presigned PUT. Over it the file is cut into real multipart parts, and parts are what buy pause, resume and per-part retry. This page is about where that line sits, what changes on each side of it, and how the browser runs a parted transfer.
+Files under the multipart threshold go up as a single presigned PUT. Files over it are cut into parts, which is what makes pause, resume and per-part retry possible. This page covers where the threshold sits, what changes on each side, and how the browser runs a multipart upload.
+
+```ts lib/uploads.ts
+import { uploadHandler, uniquePath } from "@upstash/blob"
+
+export const uploads = uploadHandler({
+  multipart: "100mb", // everything up to 100 MB goes up as one PUT
+  onBeforeUpload: ({ file }) => ({ path: uniquePath`uploads/${file.name}` }),
+})
+```
 
 ---
 
-## The threshold
+## The multipart threshold
 
-The default is **16 MB decimal**, 16,000,000 bytes. Sizes in the SDK are decimal everywhere, the way storage is billed, so `'16mb'` means 16,000,000 and not 16,777,216.
-
-A 16,000,000 byte body is a single PUT. 16,000,001 is multipart.
-
-`bucket.put()` on your server and a direct browser upload split at the same size, so a file does not behave differently depending on which door it came in through.
-
-Parts are not free. A single PUT is one round trip; a multipart upload is three plus one per chunk, and an upload that is begun and never finished lingers in storage until something aborts it. They are what a big file needs, not the right shape for every upload.
-
----
-
-## What changes at the line
+The default is **16 MB decimal**, 16,000,000 bytes. A 16,000,000 byte body is a single PUT; 16,000,001 is multipart. [Sizes](/blob/reference/types#size) are decimal everywhere. `bucket.put()` on your server and a direct browser upload use the same threshold.
 
 |                                        | Under the threshold                            | Over the threshold                                                                  |
 | -------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------- |
 | Transport                              | one presigned object PUT                       | one presigned PUT per part                                                            |
-| When the object exists                 | the moment the last byte lands                 | when the upload is completed at the end                                               |
+| When the object exists                 | the moment the last byte lands                 | when the upload is completed at `end`                                                 |
 | `canPause`                             | `false`                                        | `true` while uploading                                                                 |
 | A failed chunk                         | the whole PUT is sent again                    | only that part is sent again                                                           |
 | Ceiling                                | ~5 GiB                                         | no practical limit                                                                     |
 | A tab that dies mid-upload             | a whole stored object no callback accepted     | parts, invisible to `list()`, reaped by `abortStaleMultipartUploads()`                 |
 
-The row that matters most is when the object comes into existence. Under the threshold the object is stored the moment the last byte lands, before your route has been told anything, so a throw out of `onUploadComplete` has to delete it again. Over the threshold nothing exists at the path until the upload is completed, so an upload that never gets there leaves parts rather than a file.
+The row that matters most is when the object comes into existence. Under the threshold the object is stored the moment the last byte lands, before your route has been told anything. Over the threshold nothing exists at the path until the upload is completed. See [Abandoned uploads](/blob/uploads/abandoned-uploads) for what that means when a tab closes.
 
-That is what an abandoned upload costs on each side of the line. See [Abandoned uploads](/blob/uploads/abandoned-uploads) for the sweep.
-
-A single PUT cannot carry more than about 5 GiB, so past that size parts are used whatever `multipart` says.
+Parts are not free. A single PUT is one round trip; a multipart upload is three plus one per part.
 
 ---
 
-## Moving the line
-
-`multipart` takes a size, `true` or `false`. A size becomes the threshold for that handler, route or write; `true` always parts; `false` never does.
-
-On a handler it is the default for every route:
+## Changing the threshold
 
 ```ts lib/uploads.ts
-import { uploadHandler, uniquePath } from "@upstash/blob"
-
-export const uploads = uploadHandler({
-  // Everything up to 100 MB goes up as one PUT.
-  multipart: "100mb",
-  onBeforeUpload: ({ file }) => ({ path: uniquePath`uploads/${file.name}` }),
-})
-```
-
-A route replaces that value rather than merging with it:
-
-```ts lib/uploads.ts
-import { uploadHandler, uniquePath } from "@upstash/blob"
-
 export const uploads = uploadHandler({
   multipart: "100mb",
   routes: {
     avatar: {
-      multipart: false,
+      multipart: false, // never parts
       onBeforeUpload: ({ file }) => ({ path: uniquePath`avatars/${file.name}` }),
     },
     video: {
-      multipart: true,
+      multipart: true, // always parts
       onBeforeUpload: ({ file }) => ({ path: uniquePath`videos/${file.name}` }),
     },
   },
 })
 ```
 
-And `bucket.put()` takes the same option per write:
-
 ```ts lib/videos.ts
-import { Bucket } from "@upstash/blob"
-
-const bucket = Bucket.fromEnv()
-
 await bucket.put("videos/clip.mp4", file, { multipart: true })
 await bucket.put("logs/today.ndjson", stream, { size, multipart: "50mb" })
 ```
 
-A few edges:
+`multipart` takes a size, `true` or `false`. A size becomes the threshold for that handler, route or write; `true` always uses parts; `false` never does. On a handler it is the default for every route, and a route overrides it.
 
-- `multipart: false` on a body over the single-PUT ceiling throws `too_large` rather than silently overriding the option.
-- On `bucket.put()`, `overwrite: false` and `ifUnchanged` are single-PUT only. Passing either turns multipart off, and passing `multipart: true` together with either throws `invalid_input`.
-- An unparseable size (`'100 megs'`) throws where the option is written, not per request.
+- `multipart: false` on a body over the single-PUT ceiling of about 5 GiB throws `too_large`.
+- On `bucket.put()`, `overwrite: false` and `ifUnchanged` are single-PUT only; see [Conditional writes](/blob/bucket/writing#conditional-writes).
+- An unparseable size (`'100 megs'`) throws at startup, where the option is written.
 
-<Note>
-`multipart: true` costs no extra browser requests. It is two extra round trips between your server and storage, landing as latency inside the first and last calls.
-</Note>
+`multipart: true` costs no extra browser requests, only two extra round trips between your server and storage.
 
 ---
 
 ## Part sizing
-
-The part size is derived from the file size, never configured. The SDK aims at roughly 250 parts, with a floor of 5 MiB.
 
 | File size | Part size | Parts |
 | --------- | --------- | ----- |
@@ -107,15 +76,21 @@ The part size is derived from the file size, never configured. The SDK aims at r
 | 2 GB      | 8 MiB     | 239   |
 | 20 GB     | 77 MiB    | 248   |
 
-The part size is the blast radius of one crashed part: on a 5 GB file, 8 MiB parts mean a failure costs at most 8 MiB of re-sent bytes.
+The part size is derived from the file size, never configured. The SDK aims at roughly 250 parts, with a floor of 5 MiB. A failed part costs at most one part's worth of re-sent bytes.
 
-Four parts upload at once per file, and the whole page shares a cap of six requests in flight. Part URLs are presigned in batches as the upload needs them, so a 239 part upload does not sign 239 URLs before the first byte moves.
+Four parts upload at once per file, and the whole page shares a cap of six requests in flight. Part URLs are presigned in batches as the upload needs them.
 
 ---
 
 ## Progress and status
 
-Every record carries the same fields whichever side of the line it is on:
+```tsx app/upload.tsx
+{upload.pending && <progress value={upload.percent} max={100} />}
+{upload.status === "finishing" && <p>Finishing up...</p>}
+{upload.stalled && <p>Connection is struggling, retrying...</p>}
+```
+
+Every record carries the same fields on either side of the threshold:
 
 | Field     | Meaning                                                                       |
 | --------- | ----------------------------------------------------------------------------- |
@@ -125,36 +100,13 @@ Every record carries the same fields whichever side of the line it is on:
 | `pending` | not settled: `queued`, `uploading`, `finishing` or `paused`                     |
 | `stalled` | every in-flight part is waiting on a backoff                                    |
 
-`percent` is capped at 99 because 100 has to mean stored, not sent. The bar sits there through status `finishing`, where every byte has landed and your `onUploadComplete` is running. That can take as long as your callback does, so render the state rather than leaving a bar that looks stuck.
+`percent` is capped at 99 because 100 means stored, not sent. It stays there through status `finishing`, while your `onUploadComplete` runs. Render that state so the bar does not look stuck.
 
-A failed part's bytes retreat rather than lying: a part that got 3 MiB out and then failed drops back to zero, because those bytes were never stored.
-
-```tsx app/upload.tsx
-{upload.pending && <progress value={upload.percent} max={100} />}
-{upload.status === "finishing" && <p>Finishing up...</p>}
-{upload.stalled && <p>Connection is struggling, retrying...</p>}
-```
+A failed part's bytes are subtracted from `loaded` again, because they were never stored.
 
 ---
 
 ## Pause and resume
-
-`canPause` answers whether `pause()` would do anything:
-
-| Situation                  | `canPause` |
-| -------------------------- | ---------- |
-| single PUT                 | `false`    |
-| `queued`                   | `false`    |
-| `uploading`, multipart     | `true`     |
-| `paused`                   | `true`     |
-| `finishing`                | `false`    |
-| `done`, `error`, `canceled`| `false`    |
-
-A single PUT is one request that is either on the wire or not, so stopping it would throw its bytes away rather than parking them. While `queued` the answer is also `false`, since which of the two an upload is is not known yet. And from `finishing` there is nothing left to hold back.
-
-**Pause stops the queue, not the transfer.** A part that has already sent bytes finishes and keeps them. Only parts that have sent nothing are dropped back to the queue.
-
-`resume()` picks up where it left off. Nothing that landed is sent again.
 
 ```tsx app/upload.tsx
 {upload.canPause && upload.status === "uploading" && (
@@ -165,40 +117,36 @@ A single PUT is one request that is either on the wire or not, so stopping it wo
 )}
 ```
 
+| Situation                  | `canPause` |
+| -------------------------- | ---------- |
+| single PUT                 | `false`    |
+| `queued`                   | `false`    |
+| `uploading`, multipart     | `true`     |
+| `paused`                   | `true`     |
+| `finishing`                | `false`    |
+| `done`, `error`, `canceled`| `false`    |
+
+A single PUT cannot pause, since stopping it would throw its bytes away. While `queued` the SDK does not yet know which kind the upload is. From `finishing` there is nothing left to hold back.
+
+**Pause stops the queue, not the parts in flight.** A part that has already sent bytes finishes and keeps them. Only parts that have sent nothing go back to the queue. `resume()` picks up from there and nothing that landed is sent again.
+
 ---
 
 ## Resuming after a reload
 
 A closed tab is not a canceled upload. When an upload starts, the client remembers it in `localStorage`, keyed by the route, the file name, the size and its last-modified time.
 
-**The user picking the same file again is the resume gesture.** There is no API to call. On a match the SDK asks your server which parts actually landed and sends only the missing ones. `onBeforeUpload` never runs again, so the row it inserted is not written twice.
+**The user picking the same file again resumes it.** There is no API to call. On a match the SDK asks your server which parts landed and sends only the missing ones. `onBeforeUpload` does not run again, so a row it inserted is not written twice.
 
-Three properties worth stating:
+- **The browser is not trusted about what landed.** Your server reads it back from storage.
+- **A mismatch is a fresh upload, never an error.** A different file, a different size, or an expired upload starts over.
+- **A single PUT has nothing to resume.** The file is simply sent again.
 
-- **Nothing about what landed is trusted from the browser.** What landed is read back from storage by your server.
-- **A mismatch is a fresh upload, never an error.** A different file, a different size, an expired upload: any of these start over.
-- **A single PUT has nothing to resume.** The file is simply sent again to the same path.
-
-It is best effort. Quota, private mode or a browser with no `localStorage` just means no resume, never a failed upload.
+Resume is best effort. Private mode or a browser with no `localStorage` means no resume, never a failed upload.
 
 ---
 
 ## Retries
-
-Parts are retried on a network failure and on 408, 429, 500, 502, 503 and 504, with an exponential backoff that honours `Retry-After`. A 403 is read as an expired signature first, so the SDK asks your route for fresh URLs and sends the part again; only a freshly signed URL refused a second time is reported as `signature_mismatch`.
-
-Two budgets differ from the usual eight attempts:
-
-- **A dropped connection gets twenty.** A phone changing cell outlives a shorter budget.
-- **A request that failed without sending a byte gets three.** That is almost always CORS, which retrying does not fix, and the error says so.
-
-A part that goes 60 seconds with no progress and no response is treated as failed, which is silence rather than total time: a large part on a slow link takes minutes but is never quiet for a minute.
-
-Calls to your own route get three attempts, except the first one, which is never retried because it runs `onBeforeUpload`.
-
-When the budget runs out the record settles as `error`, carrying a `BlobError`. The codes are listed in [Errors](/blob/reference/errors).
-
-`retry()` on a failed record runs the same upload again from the parts that landed. Nothing already uploaded is re-sent, and `done` is replaced with a fresh promise since the old one already rejected.
 
 ```tsx app/upload.tsx
 {upload.status === "error" && (
@@ -206,19 +154,29 @@ When the budget runs out the record settles as `error`, carrying a `BlobError`. 
 )}
 ```
 
+Parts are retried on a network failure and on 408, 429, 500, 502, 503 and 504, with an exponential backoff that honors `Retry-After`. A 403 is treated as an expired signature first: the SDK asks your route for fresh URLs and sends the part again. Only a freshly signed URL refused a second time is reported as `signature_mismatch`.
+
+When the retry budget runs out the record settles as `error` with a `BlobError`. `retry()` runs the same upload again from the parts that landed, and replaces `done` with a fresh promise.
+
+<Accordion title="Retry budgets">
+- **Most failures get eight attempts.**
+- **A dropped connection gets twenty.** A phone changing cell towers outlives a shorter budget.
+- **A request that failed without sending a byte gets three.** That is almost always CORS, which retrying does not fix, and the error says so.
+- **A part that goes 60 seconds with no progress is treated as failed.** That is silence, not total time, so a slow large part is fine.
+- **Calls to your own route get three attempts**, except `begin`, which is never retried because it runs `onBeforeUpload`.
+</Accordion>
+
 ---
 
 ## Cancel
 
-`cancel()` aborts the parts in flight and tells your route to abort the multipart upload, so the parts stop costing storage. For a single PUT, it deletes the object if the bytes already landed and it can prove they are this upload's.
+`cancel()` aborts the parts in flight and tells your route to abort the multipart upload, so the parts stop costing storage. For a single PUT, it deletes the object if the bytes already landed and they belong to this upload.
 
-From status `finishing` only the local task is canceled. Your `onUploadComplete` may already have accepted the object and written a row, so racing it would risk deleting a file your app thinks it has.
+From status `finishing` only the local task is canceled. Your `onUploadComplete` may already have written a row, so deleting the object at that point could remove a file your app thinks it has.
 
 ---
 
 ## Large writes from the server
-
-`bucket.put()` crosses the same line, with the same options. Over the threshold it streams the body one part at a time, and any failure aborts the upload rather than leaving billed parts behind.
 
 ```ts lib/backup.ts
 import { Bucket } from "@upstash/blob"
@@ -232,7 +190,7 @@ export async function archive(stream: ReadableStream<Uint8Array>, size: number) 
 }
 ```
 
-Without `size` and without `maxBytes`, an unknown-length stream throws `length_required`. The rest of the write API is in [Writing](/blob/bucket/writing).
+`bucket.put()` uses the same threshold and the same `multipart` option. Over the threshold it streams the body one part at a time, and any failure aborts the upload rather than leaving billed parts behind. An unknown-length stream with neither `size` nor `maxBytes` throws `length_required`; see [Streams and unknown lengths](/blob/bucket/writing#streams-and-unknown-lengths).
 
 ---
 
@@ -240,22 +198,10 @@ Without `size` and without `maxBytes`, an unknown-length stream throws `length_r
 
 <CardGroup cols={2}>
   <Card title="Abandoned uploads" href="/blob/uploads/abandoned-uploads">
-    What a closed tab leaves behind on each side of the threshold, and how to sweep it.
-  </Card>
-
-  <Card title="Upload handler" href="/blob/uploads/upload-handler">
-    Routes, context, and the callbacks that run around a transfer.
+    What a closed tab leaves behind on each side of the threshold, and how to clean it up.
   </Card>
 
   <Card title="Upload client" href="/blob/uploads/upload-client">
     `uploadHooks`, `useUpload` and the record that carries progress.
-  </Card>
-
-  <Card title="Constraints" href="/blob/uploads/constraints">
-    Size limits and content types, refused before a byte is signed.
-  </Card>
-
-  <Card title="Writing" href="/blob/bucket/writing">
-    `put`, metadata, conditional writes and multipart from the server.
   </Card>
 </CardGroup>

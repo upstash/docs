@@ -2,8 +2,6 @@
 title: "Errors"
 ---
 
-Everything the SDK throws is a `BlobError`. It carries a `code` from a closed list of eighteen, a `status`, and a `message` written to be printed. That holds on the server, in the browser, and inside the React hooks: one class, one list of codes, one shape to handle.
-
 ```ts lib/avatar.ts
 import { BlobError, Bucket } from "@upstash/blob"
 
@@ -19,17 +17,13 @@ export async function avatar(path: string) {
 }
 ```
 
+Everything the SDK throws is a `BlobError`. It carries a `code` from a fixed list, a `status`, and a `message` you can show to a user. The same class and codes are used on the server, in the browser, and inside the React hooks.
+
 `BlobError` is exported from all three entrypoints: `@upstash/blob`, `@upstash/blob/browser` and `@upstash/blob/react`.
 
 ---
 
 ## Use `BlobError.is()`, not `instanceof`
-
-<Warning>
-  An ESM copy and a CJS copy of the class are two different classes, so `instanceof` can return
-  false for an error that genuinely is one. `BlobError.is()` checks a `Symbol.for` marker instead,
-  which is shared across every copy of the package in the process.
-</Warning>
 
 ```ts
 if (BlobError.is(e)) {
@@ -39,13 +33,19 @@ if (BlobError.is(e)) {
 }
 ```
 
+<Warning>
+  An ESM copy and a CJS copy of the class are two different classes, so `instanceof` can return
+  false for an error that genuinely is one. `BlobError.is()` checks a `Symbol.for` marker instead,
+  which is shared across every copy of the package in the process.
+</Warning>
+
 `is()` is a type guard, so the fields are typed after it.
 
 ---
 
 ## The codes
 
-`e.status` is what a route answers with, so the table is API surface rather than a detail.
+`e.status` is what an upload route answers with.
 
 | Code | Status | Default message | When you see it |
 | ---- | ------ | --------------- | --------------- |
@@ -56,7 +56,7 @@ if (BlobError.is(e)) {
 | `invalid_input` | 400 | `invalid input` | Arguments the SDK will not accept: metadata outside printable ASCII, a malformed upload request body, `input` that fails the route's schema, a `del` target that is none of the three shapes. |
 | `too_large` | 413 | `too large` | Over `maxBytes`, over the route's `constraints`, or over what a single PUT can carry when `multipart: false` forbids the parts the body needs. Also a 413 from storage or from your platform. |
 | `empty_body` | 400 | `empty body` | A zero-byte file at `begin`, or a `put` from a `Request` with no body left to read. |
-| `length_required` | 411 | `length required` | `put` of an unknown-length stream with neither `size` nor `maxBytes`, so nothing knows how long the body is. |
+| `length_required` | 411 | `length required` | `put` of an unknown-length stream with neither `size` nor `maxBytes`. |
 | `signature_mismatch` | 403 | `signature mismatch` | A 403 from storage that is not a credential problem: the body length or type does not match what was signed. Also a completion where the stored size is not the declared size. |
 | `unauthorized` | 401 | `unauthorized` | The bucket token was rejected, or your own auth check refused the upload. |
 | `forbidden` | 403 | `forbidden` | A completion token that is not valid for this route, or has expired. |
@@ -70,22 +70,9 @@ if (BlobError.is(e)) {
 
 Bad option values are not in this list. An unparseable `'5mib'`, a missing `token`, a route with no `onBeforeUpload`: those throw a `TypeError` where the option is written, not a `BlobError` per request.
 
-See [Writing](/blob/bucket/writing), [Reading](/blob/bucket/reading) and [Deleting](/blob/bucket/deleting) for which calls raise which.
-
 ---
 
 ## Extra fields
-
-Beyond `code`, `status` and `message`, an error carries whatever the code has to say.
-
-| Field | Type | Set by |
-| ----- | ---- | ------ |
-| `hint` | `string \| undefined` | Any code. `signature_mismatch` and `length_required` have a built-in one, and many call sites add their own. |
-| `failed` | `string[] \| undefined` | `partial_delete`: the paths that survived the delete. |
-| `etag` | `string \| undefined` | `already_exists`: the etag of what is already there. |
-| `size` | `number \| undefined` | `already_exists`: the size of what is already there. |
-| `retryAfter` | `number \| undefined` | `mint_backoff` and `rate_limited`: seconds the service asked the caller to wait. |
-| `cause` | `unknown` | The underlying error, when there was one. Standard `Error.cause`. |
 
 ```ts
 try {
@@ -97,23 +84,20 @@ try {
 }
 ```
 
-`already_exists` hands back what blocked the write, so a conditional put does not need a second round trip to find out:
+Some codes carry extra fields.
 
-```ts
-try {
-  await bucket.put("avatars/7.png", file, { overwrite: false })
-} catch (e) {
-  if (BlobError.is(e) && e.code === "already_exists") {
-    console.log("kept", e.etag, e.size)
-  }
-}
-```
+| Field | Type | Set by |
+| ----- | ---- | ------ |
+| `hint` | `string \| undefined` | Any code. `signature_mismatch` and `length_required` have a built-in one, and many call sites add their own. |
+| `failed` | `string[] \| undefined` | `partial_delete`: the paths that survived the delete. |
+| `etag` | `string \| undefined` | `already_exists`: the etag of what is already there. |
+| `size` | `number \| undefined` | `already_exists`: the size of what is already there. |
+| `retryAfter` | `number \| undefined` | `mint_backoff` and `rate_limited`: seconds the service asked the caller to wait. |
+| `cause` | `unknown` | The underlying error, when there was one. Standard `Error.cause`. |
 
 ---
 
-## Messages are written to be shown
-
-Messages arrive sentence-cased, so an app can print `e.message` straight into its error line. A message that opens with an identifier, like a MIME type or a file name, keeps that identifier's own case.
+## Messages
 
 ```ts
 new BlobError("not_found").message                         // 'Not found'
@@ -122,29 +106,27 @@ new BlobError("too_large", "cat.png is 3.1 MB, over the 2 MB limit").message
 // 'cat.png is 3.1 MB, over the 2 MB limit'
 ```
 
+Messages are sentence-cased, so an app can print `e.message` directly. A message that opens with an identifier, like a MIME type or a file name, keeps that identifier's case.
+
 `e.message` never carries a credential, a token, or an internal path. Every message is assembled from a code, a caller-supplied string, or an HTTP status.
 
 ### Hints fold into the message
-
-A hint is appended to the message in parentheses, so printing `message` alone is enough. `e.hint` is still there separately if you want to lay it out yourself.
-
-| Code | Built-in hint |
-| ---- | ------------- |
-| `signature_mismatch` | a 403 from R2 usually means the body length or type differs from the signature |
-| `length_required` | pass `{ size }` or `{ maxBytes }` so the length is known before the first byte |
 
 ```ts
 new BlobError("length_required").message
 // 'Length required (pass { size } or { maxBytes } so the length is known before the first byte)'
 ```
 
-A message that already contains its hint is not doubled.
+A hint is appended to the message in parentheses, so printing `message` alone is enough. `e.hint` is still there separately if you want to lay it out yourself. A message that already contains its hint is not doubled.
+
+| Code | Built-in hint |
+| ---- | ------------- |
+| `signature_mismatch` | a 403 from R2 usually means the body length or type differs from the signature |
+| `length_required` | pass `{ size }` or `{ maxBytes }` so the length is known before the first byte |
 
 ---
 
-## Errors across the wire
-
-An upload route answers every refusal with the error's own code and status, and the browser rebuilds it, so `error.code` inside a hook is the code your server raised rather than a status number you have to decode.
+## Errors in the browser
 
 ```tsx app/picker.tsx
 "use client"
@@ -181,9 +163,11 @@ function describe(error: BlobError): string {
 }
 ```
 
+An upload route answers every refusal with the error's own code and status, and the browser rebuilds it. `error.code` inside a hook is the code your server raised, not a status number you have to decode.
+
 ### What reaches the browser, in order
 
-A route runs `onError` first. If it returns a `Response`, that is the answer; if it returns a `BlobError`, the answer is that error's JSON at its own status. Otherwise the throw falls through three cases:
+A route runs [`onError`](/blob/uploads/upload-handler#onerror) first. If it returns a `Response`, that is the answer; if it returns a `BlobError`, the answer is that error's JSON at its own status. Otherwise the throw falls through three cases:
 
 1. **A `BlobError` is answered as itself**, at its own status, with `hint`, `failed`, `etag`, `size` and `retryAfter` when they are set.
 2. **An app error carrying a `status` between 400 and 599 is mapped through the table below.** This is how an auth check that throws its own 401 reaches the browser as `unauthorized`.
@@ -201,57 +185,13 @@ A route runs `onError` first. If it returns a `Response`, that is the answer; if
 
 Any other status becomes `request_failed`, keeping the status it arrived with.
 
----
-
-## `onError`
-
-`onError` is the one place to log. It sees every refusal, the SDK's own included, and it runs before the answer is written.
-
-```ts lib/uploads.ts
-import { BlobError, uniquePath, uploadHandler } from "@upstash/blob"
-
-export const uploads = uploadHandler({
-  constraints: { maxBytes: "20mb", contentTypes: ["image/*"] },
-
-  onBeforeUpload: ({ file }) => ({ path: uniquePath`uploads/${file.name}` }),
-
-  onError: ({ route, error, path, file, metadata }) => {
-    logger.error("upload refused", {
-      route,
-      path,
-      file: file?.name,
-      owner: metadata?.owner,
-      code: BlobError.is(error) ? error.code : "unknown",
-      message: error instanceof Error ? error.message : String(error),
-    })
-    // Returning nothing leaves the answer alone.
-  },
-})
-```
-
-It is handed `{ ctx, route, request, error, file?, path?, metadata?, state? }`, with as much as the request had reached before it failed. A file refused at `begin` has `file` and no `path`; one refused after `onBeforeUpload` has both.
-
-Return a `BlobError` or a `Response` to answer with it instead:
-
-```ts
-onError: ({ error }) => {
-  if (!BlobError.is(error)) return new BlobError("request_failed", "could not record the upload")
-},
-```
-
-Written on the handler it is the default for every route, and a route with its own `onError` replaces it. See [Upload handler](/blob/uploads/upload-handler).
-
----
-
-## The `onUploadComplete` footgun
-
-Any throw out of `onUploadComplete` deletes the completed object, which is right for a refusal and wrong for a database error that has nothing to do with the file. Catch your own storage errors instead of letting them escape, and see [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) for the callback and [Abandoned uploads](/blob/uploads/abandoned-uploads) for the pending-row pattern that reconciles the rest.
+A throw out of `onUploadComplete` also deletes the completed object before the error is answered. See [onUploadComplete](/blob/uploads/upload-handler#onuploadcomplete).
 
 ---
 
 ## What storage errors map to
 
-Errors from R2 are normalised before they leave the SDK, first matching wins.
+Storage is Cloudflare R2. Its errors are normalized before they leave the SDK, first matching wins.
 
 | Storage answered | Becomes |
 | ---------------- | ------- |
@@ -273,16 +213,16 @@ For that last row the status is passed through, except that a 5xx becomes 502, s
 
 Some failures never reach your route, so the browser names them itself.
 
-**A PUT that fails with no status and no bytes sent** is not a dropped link. The browser refused it before it went out, and the reason is never visible to script because it is the preflight that failed:
+**A PUT that fails with no status and no bytes sent** was refused by the browser before it went out, and the reason is never visible to script because it is the preflight that failed:
 
 ```
 the browser blocked the request before sending any bytes, which is almost always CORS:
 the bucket has to allow PUT and the signed headers from this origin
 ```
 
-Buckets allow every origin by default, so this only shows up on a bucket whose CORS policy was narrowed: it has to allow `PUT` and the signed headers from your origin.
+Buckets allow every origin by default, so this only shows up on a bucket whose CORS policy was narrowed.
 
-**A 403 on a freshly minted presign** becomes `signature_mismatch`. A 401 or 403 on an older URL is read as an expired signature and the browser asks the route for a new one instead. The whole classification is in [Large files](/blob/uploads/large-files#retries).
+**A 403 on a freshly minted presign** becomes `signature_mismatch`. A 401 or 403 on an older URL is read as an expired signature and the browser asks the route for a new one instead. See [Retries](/blob/uploads/large-files#retries).
 
 **Exhausted retries** become `request_failed`, carrying the attempt count and the last status, hinted with what to do next:
 
@@ -290,8 +230,6 @@ Buckets allow every origin by default, so this only shows up on a bucket whose C
 Upload failed after 8 attempts (last status 500) (the parts that landed are kept:
 task.retry(), or pick the same file again)
 ```
-
-`retry()` runs the same upload again from the parts that landed, so nothing already uploaded is re-sent. See [Large files](/blob/uploads/large-files).
 
 **A canceled upload rejects with an `AbortError`, not a `BlobError`.** The record's status is `canceled` and it carries no `error` at all, so a cancel never renders as a failure.
 
@@ -304,15 +242,6 @@ record?.cancel()          // status becomes 'canceled', error stays undefined
 
 ## Platform body limits
 
-This applies to `useServerUpload` and to any route of your own that the bytes pass through. It does not apply to direct browser uploads, where the bytes go straight to storage and never touch your server.
-
-A 413 from the platform never reached your route, so it carries no code of its own. The SDK turns it into `too_large` and attaches the limits as a hint:
-
-```
-Too large (Vercel caps a serverless request body at 4.5MB, AWS Lambda at 6MB,
-Cloudflare at 100MB on the free plan)
-```
-
 ```tsx
 const { start, upload } = useServerUpload("/api/avatar")
 
@@ -321,21 +250,20 @@ if (upload?.status === "error" && upload.error.code === "too_large") {
 }
 ```
 
-Keep a proxied route's own `maxBytes` under the platform's cap, so the refusal comes from your code with your wording rather than from the platform with none. A file that has to be bigger than the cap wants a direct browser upload instead.
+This applies to `useServerUpload` and any route of your own that the bytes pass through. It does not apply to direct browser uploads.
+
+A 413 from the platform never reached your route, so it carries no code of its own. The SDK turns it into `too_large` and attaches the limits as a hint:
+
+```
+Too large (Vercel caps a serverless request body at 4.5MB, AWS Lambda at 6MB,
+Cloudflare at 100MB on the free plan)
+```
+
+Keep a proxied route's own `maxBytes` under the platform's cap, so the refusal comes from your code with your wording. A file bigger than the cap needs a direct browser upload instead.
 
 ---
 
 ## Credential errors
-
-Three codes come from the credential service rather than from storage or from your code.
-
-| Code | Status | Meaning | What to do |
-| ---- | ------ | ------- | ---------- |
-| `unauthorized` | 401 | The bucket token was rejected. | Check `UPSTASH_BLOB_TOKEN`. Nothing retries this. |
-| `not_ready` | 503 | The bucket is not ready yet. | Retry the request. |
-| `mint_backoff` | 429 | The service asked for a backoff longer than a request can wait, over 10 seconds. `retryAfter` says how long. | Retry the request later rather than blocking on it. |
-
-The SDK waits out short backoffs itself. `mint_backoff` is what is left over: a pause no single request can sit through, handed back to you instead of holding a serverless invocation open for it.
 
 ```ts
 try {
@@ -348,4 +276,14 @@ try {
 }
 ```
 
-Credentials are short-lived and re-minted before they expire. One that expires mid-request is handled inside the SDK, so only a second refusal surfaces. See [How signing works](/blob/reference/signing) for how that lifetime caps a signed link.
+Three codes come from the credential service rather than from storage or from your code.
+
+| Code | Status | Meaning | What to do |
+| ---- | ------ | ------- | ---------- |
+| `unauthorized` | 401 | The bucket token was rejected. | Check `UPSTASH_BLOB_TOKEN`. Nothing retries this. |
+| `not_ready` | 503 | The bucket is not ready yet. | Retry the request. |
+| `mint_backoff` | 429 | The service asked for a backoff longer than a request can wait, over 10 seconds. `retryAfter` says how long. | Retry the request later rather than blocking on it. |
+
+The SDK waits out short backoffs itself. `mint_backoff` is a pause too long for one request to wait through, handed back to you instead of holding a serverless invocation open.
+
+Credentials are short-lived and re-minted before they expire. One that expires mid-request is handled inside the SDK, so only a second refusal surfaces. See [How signing works](/blob/reference/signing).

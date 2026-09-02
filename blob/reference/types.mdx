@@ -1,0 +1,89 @@
+---
+title: "Types"
+---
+
+The option and record types the rest of these docs refer to, and the upload phases named in error messages.
+
+---
+
+## Size
+
+```ts
+maxBytes: 4096       // 4,096 bytes
+maxBytes: "20mb"     // 20,000,000 bytes
+multipart: "100mb"
+```
+
+A byte count. A bare number is bytes; a string takes a unit: `b`, `kb`, `mb`, `gb`, `tb`.
+
+Sizes are **decimal**, matching how storage is billed. `'2mb'` is 2,000,000 bytes, not 2,097,152. Binary spellings like `'5mib'` throw. An unparseable size throws a `TypeError` where the option is written, not per request.
+
+`formatBytes`, exported from all three entrypoints, formats a number the same decimal way: `formatBytes(2_400_000)` is `2.4 MB`.
+
+---
+
+## Duration
+
+```ts
+expiresIn: 900       // 15 minutes
+expiresIn: "15m"
+olderThan: "7d"
+cache: "1h"
+```
+
+A span of time. A bare number is **seconds**; a string takes a unit: `ms`, `s`, `m`, `h`, `d`, or a long form (`sec`, `seconds`, `min`, `minutes`, `hr`, `hours`, `day`, `days`). A string with no unit is seconds. An unparseable duration throws a `TypeError` naming the option.
+
+---
+
+## CacheOption
+
+```ts
+cache: "immutable"
+cache: "revalidate"
+cache: "no-store"
+cache: "15m"
+cache: "public, max-age=60, s-maxage=31536000"
+```
+
+One of three words, a `Duration`, or a raw `Cache-Control` header. The header each one stores is on [Caching](/blob/bucket/caching#the-cache-option).
+
+---
+
+## Records
+
+Four record shapes come back from the SDK. They nest.
+
+| Type | Fields | Returned by |
+| --- | --- | --- |
+| `BlobObject` | `path`, `url?`, `versionedUrl?`, `size`, `etag`, `uploadedAt` | `list()`, `copy()`, `move()`, `updateJson()` |
+| `CompletedBlob` | `BlobObject` plus `contentType` | `put()`, `onUploadComplete`, a finished browser upload |
+| `BlobInfo` | `BlobObject` plus `contentType` and `metadata` | `info()` |
+| `BlobDownload` | `BlobInfo` plus `body: ReadableStream<Uint8Array>` | `get()` |
+
+`BlobObject` fields:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `path` | `string` | The object's key. |
+| `url` | `string \| undefined` | The public object URL. `undefined` on a private bucket. |
+| `versionedUrl` | `string \| undefined` | `${url}?v=${etag}`, etag percent-encoded. `undefined` when `url` is. |
+| `size` | `number` | Bytes. |
+| `etag` | `string` | Storage's etag, quoted: `"9f3c..."`. |
+| `uploadedAt` | `Date` | Last modified. |
+
+Across the SDK, `blob` names a record, never the bytes. Bytes go in and come out as `body`.
+
+---
+
+## Upload phases
+
+A direct browser upload makes up to four kinds of request to your upload route. The names appear in error messages and across these docs.
+
+| Phase | When | What your route does |
+| --- | --- | --- |
+| `begin` | First request, once | Checks constraints, runs `onBeforeUpload`, signs the first URL(s). Never retried. |
+| `parts` | Multipart only, as needed | Signs the next batch of part URLs. |
+| `end` | Once the bytes landed | Completes the upload, runs `onUploadComplete`. Retried by the browser on failure. |
+| `cancel` | On `cancel()` | Aborts the multipart upload, or deletes the single-PUT object. |
+
+The PUTs that carry the bytes go to storage, never to your route. [How signing works](/blob/reference/signing#the-direct-upload-handshake) has the full handshake.

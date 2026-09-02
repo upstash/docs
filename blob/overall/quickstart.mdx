@@ -2,19 +2,11 @@
 title: "Quickstart"
 ---
 
-Upstash Blob is S3-compatible object storage with an SDK that covers the whole upload path:
-
-- **Write from your server.** One `bucket.put()` call. No clients to configure, no streams to wire up.
-- **Upload straight from the browser.** Bytes go browser to storage. Your app sets the rules and never touches the file, so no function timeouts and no body limits.
-- **Drive it from React.** `useUpload` gives you progress, state and a fully typed result out of the box.
-
-This page goes from an empty Next.js App Router project to a working file picker that uploads directly to your bucket.
+Upstash Blob is S3-compatible object storage. `@upstash/blob` has a `Bucket` client for your server, and an upload handler plus React hooks that upload from the browser straight to storage. This page builds a working file picker on Next.js App Router. Other frameworks work the same way; see [Other frameworks](/blob/uploads/upload-handler#other-frameworks).
 
 ---
 
 ## Setup
-
-Install the package:
 
 <CodeGroup>
 ```bash npm
@@ -34,19 +26,20 @@ bun add @upstash/blob
 ```
 </CodeGroup>
 
-Then create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment.
+Create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment.
 
 ```bash .env
 UPSTASH_BLOB_TOKEN=...
 ```
 
-A public bucket serves every object over a public URL, which is what you want for avatars, product images, and anything a page links to directly. A private bucket has no public host: every object is read through a time-limited [signed URL](/blob/reference/signing), which is the right choice for user documents, invoices, and anything else that should not be guessable. Pick private if you are unsure, since a public bucket cannot take back what it has already served.
+The console asks whether the bucket is public or private:
+
+- **Public**: every object has a public URL. For avatars, product images, anything a page links to directly.
+- **Private**: no public URL. Every read goes through a time-limited [signed URL](/blob/bucket/reading#signedreadurl). For user documents, invoices, anything that must not be guessable.
 
 ---
 
 ## Upload from your server
-
-Bytes already on your server go straight to the bucket.
 
 ```ts lib/reports.ts
 import { Bucket } from "@upstash/blob"
@@ -61,19 +54,17 @@ export async function saveReport(file: Blob) {
 }
 ```
 
-`blob.url` is the public object URL, and `undefined` on a private bucket. Metadata, caching and conditional writes are in [Writing](/blob/bucket/writing).
+Bytes already on your server go to the bucket with `put`. `blob.url` is the public object URL, `undefined` on a private bucket. See [Writing](/blob/bucket/writing).
 
 ---
 
 ## Upload from the browser
 
+Files a user picks go straight from the browser to storage. Your server only authorizes the upload and records the result, so the bytes never pass through it.
+
 <Steps>
 
 <Step title="Write the upload handler">
-
-The handler runs on your server and decides who may upload, where the object goes, and what happens once it lands. It never sees the bytes.
-
-The smallest one that works states what it accepts and where the object goes:
 
 ```ts lib/uploads.ts
 import "server-only"
@@ -89,13 +80,13 @@ export const uploads = uploadHandler({
 })
 ```
 
-See [Upload handler](/blob/uploads/upload-handler) for everything these callbacks can do.
+The handler runs on your server. It decides who may upload, where the object goes, and what happens once it lands. It never sees the bytes.
+
+This one accepts anyone. [Upload handler](/blob/uploads/upload-handler) adds the auth check and the completion callback.
 
 </Step>
 
 <Step title="Mount it as a route">
-
-The handler is already a pair of route handlers. `POST` runs the upload, `GET` serves the route's constraints.
 
 ```ts app/api/upload/route.ts
 import { uploads } from "@/lib/uploads"
@@ -103,13 +94,11 @@ import { uploads } from "@/lib/uploads"
 export const { GET, POST } = uploads
 ```
 
-`/api/upload` is where the hooks look by default, so nothing else has to name a URL.
+`POST` runs the upload and `GET` serves the route's constraints. The hooks look at `/api/upload` by default, so nothing else has to name a URL.
 
 </Step>
 
 <Step title="Bind the hooks to the handler">
-
-`uploadHooks<typeof uploads>()` reads the handler's type, so `upload.blob.data` on the client is typed from what `onUploadComplete` returned.
 
 ```ts lib/upload-hooks.ts
 "use client"
@@ -120,7 +109,7 @@ import type { uploads } from "./uploads"
 export const { useUpload } = uploadHooks<typeof uploads>()
 ```
 
-The import is `import type`, so the `server-only` module is erased and never reaches the browser bundle.
+`uploadHooks<typeof uploads>()` reads the handler's type, so route names and completion data are checked at compile time. The `import type` is erased at build time and never pulls server code into the browser bundle.
 
 </Step>
 
@@ -157,16 +146,13 @@ export default function Page() {
 
 </Steps>
 
-That is the whole integration, and a fair amount comes with it:
+You get these without more code:
 
-- **Big files just work.** Past 16 MB the SDK switches to multipart on its own, picks the part size, signs part URLs in batches and uploads four parts at a time, which is what makes pause, resume and per-part retry possible. See [Large files](/blob/uploads/large-files).
-- **Flaky networks are retried for you.** Failed parts back off and go again, `Retry-After` is honoured, and an expired signature is refreshed against your route mid-upload without the user noticing.
-- **The picker matches the server.** `accept` and `constraints` are served by the route's own `GET`, so an oversized file is refused before a single request goes out and the server still has the last word. See [Constraints](/blob/uploads/constraints).
-- **Progress is already there.** `percent`, `status` and `pending` read the same whether the file went up as one PUT or 200 parts.
-- **Fully typesafe.** Whatever `onUploadComplete` returns is what `upload.blob.data` is on the client, checked at compile time.
-- **The bytes never touch your app.** They go browser to storage, so no function timeout or body limit sits in the middle.
-
-Uploads work at this point, but the handler does not yet check who is asking or write anything down. Both go in the same two callbacks: see [Upload handler](/blob/uploads/upload-handler).
+- **Multipart for large files.** Past 16 MB the SDK switches to parts, with pause, resume and per-part retry. See [Large files](/blob/uploads/large-files).
+- **Retries.** Failed parts back off and retry, and an expired signature is refreshed mid-upload.
+- **A picker that matches the server.** `accept` comes from the route's own `GET`, so an oversized file is refused before any request goes out. See [Constraints](/blob/uploads/constraints).
+- **Progress.** `percent`, `status` and `pending` read the same for one PUT or 200 parts.
+- **Types end to end.** Whatever `onUploadComplete` returns is `upload.blob.data` on the client.
 
 ---
 
@@ -174,34 +160,18 @@ Uploads work at this point, but the handler does not yet check who is asking or 
 
 <CardGroup cols={2}>
   <Card title="Upload handler" href="/blob/uploads/upload-handler">
-    Routes, context, input schemas and the completion callback in full.
+    Auth, routes, and the completion callback in full.
   </Card>
 
   <Card title="Upload client" href="/blob/uploads/upload-client">
-    `uploadHooks`, `useUpload`, the record it renders, and the non-React client.
-  </Card>
-
-  <Card title="Constraints" href="/blob/uploads/constraints">
-    Size limits, content types and what the byte check does and does not prove.
-  </Card>
-
-  <Card title="Large files" href="/blob/uploads/large-files">
-    Parts, pause, resume and retry, and where the threshold sits.
+    `useUpload`, the record it renders, and the non-React client.
   </Card>
 
   <Card title="Writing" href="/blob/bucket/writing">
     `put`, metadata, conditional writes and multipart from the server.
   </Card>
 
-  <Card title="How signing works" href="/blob/reference/signing">
-    Read and upload links for anything outside the browser flow.
-  </Card>
-
-  <Card title="Recipes" href="/blob/recipes/overview">
-    Eight features wired end to end, from profile pictures to private exports.
-  </Card>
-
-  <Card title="Pricing" href="/blob/overall/pricing">
-    What storage, requests and egress cost.
+  <Card title="Recipes" href="/blob/recipes/avatars">
+    Avatars, attachments and private documents, wired end to end.
   </Card>
 </CardGroup>
