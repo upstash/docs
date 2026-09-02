@@ -39,8 +39,8 @@ fails the run so the reviewer notices.
 
 ### 1. `walkNavigation` (generator.ts)
 
-A generator that walks the `navigation.tabs` tree in `docs.json` and yields
-one item per node:
+A generator that walks `navigation.tabs` and each tab's `productGroups` tree
+in `docs.json` and yields one item per node:
 
 ```ts
 type WalkItem =
@@ -50,8 +50,8 @@ type WalkItem =
                        content: string };
 ```
 
-- Tab names are emitted as groups at `depth: 0`. Nested groups increase
-  the depth by one per level.
+- Tab and product names are emitted as groups at `depth: 0`. Nested groups
+  increase the depth by one per level.
 - `pages` and `groups` are mutually exclusive at every level — the types
   enforce that.
 - A bare-string `openapi` (used at the tab level, e.g. Developer API) is
