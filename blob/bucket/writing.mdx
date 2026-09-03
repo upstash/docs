@@ -221,17 +221,27 @@ await bucket.updateJson<Settings>("u/7.json", (prev) => ({
 }))
 ```
 
-`updateJson` reads the document, calls your function with the parsed value, and writes the result back with `ifUnchanged`. If somebody wrote in between, it reads again and re-runs your function. After six failed attempts it throws `conflict`.
+`updateJson` runs in the SDK, not in storage. It reads the document, calls your function with the parsed value, and writes the result back with `ifUnchanged`. If somebody wrote in between, it pauses briefly, reads again and re-runs your function. After `maxAttempts` failed writes it throws `conflict`.
 
 - Your function gets `null` when there is nothing to read. An empty object reads as `null` too.
 - It may be async. It runs on every attempt, so keep it a pure transform.
 - The object is written as `application/json`. Existing metadata is carried over unless you pass your own.
 
+### Options
+
+Every option is optional.
+
+| Option | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `maxAttempts` | `number` | `6` | How many read-transform-write rounds to try before throwing `conflict`. The pause between rounds is jittered and doubles each time, starting under 50 ms. |
+| `cache` | `CacheOption` | the bucket default | The `Cache-Control` the rewritten object is stored with. |
+| `metadata` | `Record<string, string>` | the existing metadata | Replaces the metadata on the object. |
+
 ```ts
 await bucket.updateJson<Settings>(
   "u/7.json",
   (prev) => ({ ...(prev ?? {}), theme: "dark" }),
-  { metadata: { owner: "u7" }, cache: "no-store" },
+  { maxAttempts: 10, metadata: { owner: "u7" }, cache: "no-store" },
 )
 ```
 
@@ -241,10 +251,24 @@ await bucket.updateJson<Settings>(
 
 ```ts
 const archived = await bucket.copy("tmp/9f3c", "archive/2026/report.pdf")
-const moved = await bucket.move("tmp/9f3c", "reports/q3.pdf")
+const moved = await bucket.move("tmp/9f3c", "reports/q3.pdf", { contentType: "application/pdf" })
 ```
 
-`copy` runs inside storage, so the bytes never travel through your app. `move` is a copy followed by a delete of the source. Both return the destination's record. A missing source throws `not_found`.
+`copy` runs inside storage, so the bytes never travel through your app. Storage has no rename, so `move` is a copy followed by a delete of the source. Both return the destination's record. A missing source throws `not_found`.
+
+An existing destination is overwritten. There is no `allowOverwrite` here because storage does not honor a precondition on a copy's destination.
+
+### Options
+
+Every option is optional. Both commands take the same three.
+
+| Option | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `contentType` | `string` | the source's | What the destination is stored as. |
+| `cache` | `CacheOption` | the source's | The `Cache-Control` the destination is stored with. |
+| `metadata` | `Record<string, string>` | the source's | Replaces the metadata outright. It is not merged with the source's. |
+
+With no options the destination is an exact copy. Passing any one of them makes storage rewrite all three, so the SDK reads the other two off the source first and sends them back unchanged.
 
 A move is not atomic. If the copy lands and the delete fails, `move` throws `move_left_a_copy` and keeps both objects. Retry the source delete to recover; see [Deleting](/blob/bucket/deleting#move-leaves-a-copy-on-failure).
 
