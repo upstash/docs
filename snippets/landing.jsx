@@ -73,8 +73,8 @@ export const ProductGrid = () => {
 
 export const UtilityGrid = () => {
   const tools = [
-    { name: "RateLimit", desc: "Protect your APIs from abuse.", href: "/redis/sdks/ratelimit-ts/overview" },
-    { name: "RealTime", desc: "The easiest way to add realtime.", href: "/realtime/overall/quickstart" },
+    { name: "Rate Limit", desc: "Protect your APIs from abuse.", href: "/redis/sdks/ratelimit-ts/overview" },
+    { name: "Realtime", desc: "The easiest way to add realtime.", href: "/realtime/overall/quickstart" },
     { name: "AI Tracking", desc: "AI agent traffic analytics for Next.js.", href: "https://github.com/upstash/agent-analytics" },
   ];
 
