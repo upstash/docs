@@ -192,15 +192,15 @@ Or add this to `.vscode/mcp.json`, or paste it into the `mcp.servers` user setti
 }
 ```
 
-## Windsurf
+## Devin Desktop
 
-Install the skills with the Agent Skills CLI:
+Devin Desktop is the new name for Windsurf. It keeps the same skill target and settings. Install the skills with the Agent Skills CLI:
 
 ```bash
 npx skills add upstash/skills --agent windsurf
 ```
 
-For the MCP server, add this to `~/.codeium/windsurf/mcp_config.json`. See the [Windsurf MCP docs](https://docs.windsurf.com/windsurf/cascade/mcp) for more info.
+For the MCP server, add this to `~/.codeium/windsurf/mcp_config.json`. See the [Devin Desktop migration notes](https://devin.ai/desktop) for more info.
 
 ```json
 {
@@ -482,6 +482,5 @@ Some of the clients that use it, with their Agent Skills CLI `id`:
 | Roo Code | `roo` | MCP settings file (`mcp_settings.json`) |
 | Trae | `trae` | **MCP → Add manually** |
 | Augment Code | `augment` | **Settings → MCP → +**, command `npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY` |
-| Devin Desktop | `devin` | MCP config file |
 | Zencoder | `zencoder` | **Agent tools → Add custom MCP**, paste the `upstash` entry |
 | Rovo Dev CLI | `rovodev` | `acli rovodev mcp` opens the config file |

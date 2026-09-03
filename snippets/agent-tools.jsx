@@ -1,5 +1,5 @@
 // Agent grid for /agent-resources/overview.
-// Icons: Simple Icons (CC0, https://simpleicons.org) for brand marks and lobe-icons (MIT, https://github.com/lobehub/lobe-icons) for OpenAI, Grok, and Antigravity.
+// Icons: Simple Icons (CC0, https://simpleicons.org) for brand marks and lobe-icons (MIT, https://github.com/lobehub/lobe-icons) for OpenAI, Gemini, Devin, Grok, and Antigravity.
 // Everything lives inside the exported component: Mintlify does not expose non-exported top-level consts to snippet components.
 
 export const AgentGrid = () => {
@@ -18,17 +18,6 @@ export const AgentGrid = () => {
     "opencode": {
       "paths": [
         "M22 24H2V0h20zM17 4.8H7v14.4h10z"
-      ]
-    },
-    "windsurf": {
-      "paths": [
-        "M23.55 5.067c-1.2038-.002-2.1806.973-2.1806 2.1765v4.8676c0 .972-.8035 1.7594-1.7597 1.7594-.568 0-1.1352-.286-1.4718-.7659l-4.9713-7.1003c-.4125-.5896-1.0837-.941-1.8103-.941-1.1334 0-2.1533.9635-2.1533 2.153v4.8957c0 .972-.7969 1.7594-1.7596 1.7594-.57 0-1.1363-.286-1.4728-.7658L.4076 5.1598C.2822 4.9798 0 5.0688 0 5.2882v4.2452c0 .2147.0656.4228.1884.599l5.4748 7.8183c.3234.462.8006.8052 1.3509.9298 1.3771.313 2.6446-.747 2.6446-2.0977v-4.893c0-.972.7875-1.7593 1.7596-1.7593h.003a1.798 1.798 0 0 1 1.4718.7658l4.9723 7.0994c.4135.5905 1.05.941 1.8093.941 1.1587 0 2.1515-.9645 2.1515-2.153v-4.8948c0-.972.7875-1.7594 1.7596-1.7594h.194a.22.22 0 0 0 .2204-.2202v-4.622a.22.22 0 0 0-.2203-.2203Z"
-      ]
-    },
-    "gemini": {
-      "color": "#8E75B2",
-      "paths": [
-        "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"
       ]
     },
     "deepseek": {
@@ -73,7 +62,7 @@ export const AgentGrid = () => {
     { name: "OpenCode", slug: "opencode", icon: "opencode", desc: "Open-source terminal agent that loads Agent Skills natively. MCP via its config." },
     { name: "Zed", slug: "zed", icon: "zed", desc: "Editor with a built-in Agent Panel. Skills via the CLI, MCP via the Zed extension." },
     { name: "GitHub Copilot", slug: "github-copilot", icon: "copilot", desc: "Copilot agent mode in VS Code. MCP via .vscode/mcp.json." },
-    { name: "Windsurf", slug: "windsurf", icon: "windsurf", desc: "Cascade agent in the Windsurf editor. Skills via the CLI, MCP via its config file." },
+    { name: "Devin Desktop", slug: "devin-desktop", icon: "devin", desc: "Cognition's desktop agent workspace and IDE. Skills via the CLI, MCP via its config file." },
     { name: "Gemini CLI", slug: "gemini-cli", icon: "gemini", desc: "Google's open-source terminal agent. Skills via the CLI, MCP via settings.json." },
     { name: "Google Antigravity", slug: "google-antigravity", icon: "antigravity", desc: "Google's agent-first IDE. Skills via the CLI, MCP via the Antigravity MCP config." },
     { name: "DeepSeek Harness", slug: "deepseek-harness", icon: "deepseek", desc: "One bundle installs the skills and the MCP server. Log in once from a session." },
@@ -82,9 +71,45 @@ export const AgentGrid = () => {
   ];
 
   const AgentIcon = ({ id }) => {
+    if (id === "devin") {
+      return (
+        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24">
+          <path d="M2.033 9.867l2.554 1.483a.589.589 0 00.592 0l2.554-1.483.01-.008a.608.608 0 00.11-.084l.013-.015a.631.631 0 00.076-.1c.003-.005.008-.01.01-.016a.558.558 0 00.052-.125l.007-.028a.611.611 0 00.019-.14V7.868c0-.572.307-1.105.8-1.392a1.595 1.595 0 011.598 0l1.277.742a.54.54 0 00.129.053l.028.01c.044.01.088.015.133.016h.006l.013-.002a.587.587 0 00.27-.074l.011-.004 2.554-1.483a.596.596 0 00.297-.516V2.253a.595.595 0 00-.297-.516L12.293.257a.587.587 0 00-.591 0L9.148 1.737l-.01.01a.609.609 0 00-.109.083l-.014.015a.632.632 0 00-.076.1c-.003.005-.008.01-.01.016a.57.57 0 00-.052.124l-.007.028a.612.612 0 00-.018.14v1.483c0 .572-.307 1.105-.8 1.393a1.597 1.597 0 01-1.599 0l-1.276-.742a.603.603 0 00-.13-.053l-.028-.008a.658.658 0 00-.133-.018h-.02a.57.57 0 00-.269.074c-.003.002-.008.002-.012.005L2.033 5.872a.596.596 0 00-.297.515v2.966c0 .213.113.41.297.515z" fill="#3969CA" />
+          <path d="M15.943 10.607a1.596 1.596 0 011.599 0l1.276.74c.041.025.085.04.13.055l.028.008c.043.01.088.016.133.018h.005c.005 0 .01-.002.014-.003a.474.474 0 00.122-.016l.021-.005a.616.616 0 00.126-.052c.004-.002.009-.002.013-.005l2.554-1.482a.597.597 0 00.297-.516V6.383a.596.596 0 00-.297-.515l-2.552-1.483a.587.587 0 00-.592 0l-2.553 1.482-.011.008a.61.61 0 00-.108.084l-.014.016a.637.637 0 00-.076.1c-.003.005-.008.01-.01.016a.57.57 0 00-.052.124l-.007.029a.612.612 0 00-.018.14v1.482c0 .572-.307 1.105-.8 1.393a1.597 1.597 0 01-1.599 0l-1.276-.742a.584.584 0 00-.13-.053l-.028-.008a.62.62 0 00-.133-.018h-.02a.587.587 0 00-.269.074l-.012.004L9.15 10a.596.596 0 00-.296.516v2.966c0 .212.112.409.296.515l2.554 1.483s.008.002.012.005c.04.022.082.04.126.052l.02.004a.57.57 0 00.123.017l.014.002h.006c.054 0 .108-.01.16-.025a.587.587 0 00.13-.054l1.277-.741a1.597 1.597 0 012.398 1.392v1.482c0 .049.007.095.019.14l.007.028a.619.619 0 00.051.125c.004.006.008.01.01.016a.6.6 0 00.076.1l.014.015c.033.032.069.06.108.084.004.002.006.006.011.008l2.554 1.483a.59.59 0 00.593 0l2.554-1.483a.597.597 0 00.296-.516v-2.965a.595.595 0 00-.296-.516l-2.554-1.483s-.008-.002-.012-.005a.54.54 0 00-.126-.051c-.007-.003-.013-.003-.02-.005a.635.635 0 00-.125-.017h-.018a.557.557 0 00-.16.026.588.588 0 00-.13.053l-1.276.742a1.595 1.595 0 01-1.598 0 1.615 1.615 0 010-2.785l-.005-.001z" fill="#21C19A" />
+          <path d="M14.848 18.265l-2.554-1.482-.012-.005a.526.526 0 00-.126-.052c-.007-.002-.014-.002-.02-.005a.64.64 0 00-.124-.017h-.02a.56.56 0 00-.16.026.588.588 0 00-.13.053l-1.276.742a1.594 1.594 0 01-1.598 0c-.493-.286-.8-.82-.8-1.393V14.65a.563.563 0 00-.018-.14l-.008-.028a.604.604 0 00-.051-.124l-.01-.017a.603.603 0 00-.076-.1l-.014-.015a.596.596 0 00-.109-.084c-.003-.002-.005-.006-.01-.008L5.178 12.65a.587.587 0 00-.591 0l-2.554 1.483a.596.596 0 00-.297.516v2.965c0 .213.113.41.297.516l2.554 1.483.012.004a.618.618 0 00.267.074l.016.002h.007a.55.55 0 00.16-.026.584.584 0 00.129-.053l1.277-.742a1.597 1.597 0 012.398 1.393v1.482c0 .05.007.095.019.14l.007.028c.013.044.03.085.051.125l.01.016c.022.036.047.07.076.1l.014.015c.032.032.069.06.109.084l.01.008 2.554 1.483a.587.587 0 00.593 0l2.554-1.483a.596.596 0 00.296-.515v-2.966a.596.596 0 00-.296-.516h-.002z" fill="#0294DE" />
+        </svg>
+      );
+    }
+
+    if (id === "gemini") {
+      const path = "M20.616 10.835a14.147 14.147 0 0 1-4.45-3.001 14.111 14.111 0 0 1-3.678-6.452.503.503 0 0 0-.975 0 14.134 14.134 0 0 1-3.679 6.452 14.155 14.155 0 0 1-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 0 0 0 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 0 1 4.45 3.001 14.112 14.112 0 0 1 3.679 6.453.502.502 0 0 0 .975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 0 1 3.001-4.45 14.113 14.113 0 0 1 6.453-3.678.503.503 0 0 0 0-.975 13.245 13.245 0 0 1-2.003-.678z";
+      return (
+        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24">
+          <path d={path} fill="#3186FF" />
+          <path d={path} fill="url(#gemini-green)" />
+          <path d={path} fill="url(#gemini-red)" />
+          <path d={path} fill="url(#gemini-yellow)" />
+          <defs>
+            <linearGradient id="gemini-green" gradientUnits="userSpaceOnUse" x1="7" x2="11" y1="15.5" y2="12">
+              <stop stopColor="#08B962" />
+              <stop offset="1" stopColor="#08B962" stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id="gemini-red" gradientUnits="userSpaceOnUse" x1="8" x2="11.5" y1="5.5" y2="11">
+              <stop stopColor="#F94543" />
+              <stop offset="1" stopColor="#F94543" stopOpacity="0" />
+            </linearGradient>
+            <linearGradient id="gemini-yellow" gradientUnits="userSpaceOnUse" x1="3.5" x2="17.5" y1="13.5" y2="12">
+              <stop stopColor="#FABC12" />
+              <stop offset="0.46" stopColor="#FABC12" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+        </svg>
+      );
+    }
+
     const ic = ICONS[id];
     return (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill={ic.color || "currentColor"}>
+      <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill={ic.color || "currentColor"}>
         {ic.paths.map((d, i) => <path key={i} d={d} />)}
       </svg>
     );
