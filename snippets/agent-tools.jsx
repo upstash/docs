@@ -90,18 +90,20 @@ export const AgentGrid = () => {
 
   const SKILLS = "Skills";
   const MCP = "MCP";
+  const PLUGIN = "Plugin";
+  const EXTENSION = "Extension";
 
   const AGENTS = [
-    { name: "Claude Code", slug: "claude-code", icon: "claude", desc: "Anthropic's terminal and IDE agent. Install Upstash as a plugin from the marketplace.", badges: [SKILLS, MCP] },
+    { name: "Claude Code", slug: "claude-code", icon: "claude", desc: "Anthropic's terminal and IDE agent. The marketplace plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP] },
     { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. One-click MCP install button; skills via the Agent Skills CLI.", badges: [SKILLS, MCP] },
-    { name: "OpenAI Codex", slug: "openai-codex", icon: "openai", desc: "OpenAI's coding agent. Install the plugin and the MCP server with the Codex CLI.", badges: [SKILLS, MCP] },
+    { name: "OpenAI Codex", slug: "openai-codex", icon: "openai", desc: "OpenAI's coding agent. The Codex plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP] },
     { name: "OpenCode", slug: "opencode", icon: "opencode", desc: "Open-source terminal agent that loads Agent Skills natively. MCP via its config.", badges: [SKILLS, MCP] },
-    { name: "Zed", slug: "zed", icon: "zed", desc: "Editor with a built-in Agent Panel. Skills via the CLI, MCP via the Zed extension.", badges: [SKILLS, MCP] },
+    { name: "Zed", slug: "zed", icon: "zed", desc: "Editor with a built-in Agent Panel. Skills via the CLI, MCP via the Zed extension.", badges: [EXTENSION, SKILLS, MCP] },
     { name: "GitHub Copilot", slug: "github-copilot", icon: "copilot", desc: "Copilot agent mode in VS Code. MCP via .vscode/mcp.json.", badges: [SKILLS, MCP] },
     { name: "Windsurf", slug: "windsurf", icon: "windsurf", desc: "Cascade agent in the Windsurf editor. Skills via the CLI, MCP via its config file.", badges: [SKILLS, MCP] },
     { name: "Gemini CLI", slug: "gemini-cli", icon: "gemini", desc: "Google's open-source terminal agent. Skills via the CLI, MCP via settings.json.", badges: [SKILLS, MCP] },
     { name: "Google Antigravity", slug: "google-antigravity", icon: "rocket", desc: "Google's agent-first IDE. Skills via the CLI, MCP via the Antigravity MCP config.", badges: [SKILLS, MCP] },
-    { name: "DeepSeek Harness", slug: "deepseek-harness", icon: "deepseek", desc: "One bundle installs the skills and the MCP server. Log in once from a session.", badges: [SKILLS, MCP] },
+    { name: "DeepSeek Harness", slug: "deepseek-harness", icon: "deepseek", desc: "One bundle installs the skills and the MCP server. Log in once from a session.", badges: [PLUGIN, SKILLS, MCP] },
     { name: "Claude Desktop", slug: "claude-desktop", icon: "claude", desc: "Upload the skill to Claude Desktop or claude.ai; MCP via the desktop app.", badges: [SKILLS, MCP] },
     { name: "Grok", slug: "grok", icon: "grok", desc: "xAI's Grok Build agent. Skills via the Agent Skills CLI, MCP via grok mcp add.", badges: [SKILLS, MCP] },
   ];
