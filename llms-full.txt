@@ -1514,7 +1514,7 @@ await bucket.put("avatars/7.png", file, {
 })
 ```
 
-`updateJson` takes it too, for the object it rewrites.
+`updateJson` takes it too, for the object it rewrites. So do `copy` and `move`, for the destination. Without it the source's value carries over.
 
 ### On a signed upload URL
 
@@ -1606,8 +1606,8 @@ See [signedReadUrl](/docs/blob/bucket/reading#signedreadurl) for link lifetimes.
 
 An upload route's `GET` serves its constraints document with a 60 second `Cache-Control` of its own, unrelated to the objects the route stores. See [Constraints](/docs/blob/uploads/constraints#in-the-browser).
 
-# Configuration
-Source: https://upstash.com/docs/blob/bucket/configuration
+# Connecting
+Source: https://upstash.com/docs/blob/bucket/connecting
 
 This page covers creating the `Bucket` client, the options it takes, and running it on platforms without `process.env`.
 
@@ -1819,7 +1819,7 @@ try {
 }
 ```
 
-`move` is a copy followed by a delete. If the copy fails, nothing changed and you get the copy's error. If the copy succeeds and the delete fails, `move` throws `move_left_a_copy` and **keeps the destination**, so you have two objects rather than none. The original error is on `cause`.
+`move` is a copy followed by a delete, because storage has no rename. If the copy fails, nothing changed and you get the copy's error. If the copy succeeds and the delete fails, `move` throws `move_left_a_copy` and **keeps the destination**, so you have two objects rather than none. The original error is on `cause`.
 
 ***
 
@@ -1921,7 +1921,7 @@ const buffer = await new Response((await bucket.get("img/1.png")).body).arrayBuf
 
 A missing object throws a `BlobError` with code `not_found`, status 404. See [Errors](/docs/blob/reference/errors).
 
-There is no range option. For byte ranges, use an [S3 client](/docs/blob/bucket/configuration#using-an-s3-client).
+There is no range option. For byte ranges, use an [S3 client](/docs/blob/bucket/connecting#using-an-s3-client).
 
 ***
 
@@ -2115,7 +2115,7 @@ export async function saveReport(pdf: Blob) {
 }
 ```
 
-`bucket` is the client from [Configuration](/docs/blob/bucket/configuration). Everything here runs on your server with the bucket token.
+`bucket` is the client from [Connecting](/docs/blob/bucket/connecting). Everything here runs on your server with the bucket token.
 
 For files a user picks in the browser, do not proxy the bytes through your app. Use an [upload handler](/docs/blob/uploads/upload-handler) instead.
 
@@ -2323,17 +2323,27 @@ await bucket.updateJson<Settings>("u/7.json", (prev) => ({
 }))
 ```
 
-`updateJson` reads the document, calls your function with the parsed value, and writes the result back with `ifUnchanged`. If somebody wrote in between, it reads again and re-runs your function. After six failed attempts it throws `conflict`.
+`updateJson` runs in the SDK, not in storage. It reads the document, calls your function with the parsed value, and writes the result back with `ifUnchanged`. If somebody wrote in between, it pauses briefly, reads again and re-runs your function. After `maxAttempts` failed writes it throws `conflict`.
 
 * Your function gets `null` when there is nothing to read. An empty object reads as `null` too.
 * It may be async. It runs on every attempt, so keep it a pure transform.
 * The object is written as `application/json`. Existing metadata is carried over unless you pass your own.
 
+### Options
+
+Every option is optional.
+
+| Option | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `maxAttempts` | `number` | `6` | How many read-transform-write rounds to try before throwing `conflict`. The pause between rounds is jittered and doubles each time, starting under 50 ms. |
+| `cache` | `CacheOption` | the bucket default | The `Cache-Control` the rewritten object is stored with. |
+| `metadata` | `Record<string, string>` | the existing metadata | Replaces the metadata on the object. |
+
 ```ts
 await bucket.updateJson<Settings>(
   "u/7.json",
   (prev) => ({ ...(prev ?? {}), theme: "dark" }),
-  { metadata: { owner: "u7" }, cache: "no-store" },
+  { maxAttempts: 10, metadata: { owner: "u7" }, cache: "no-store" },
 )
 ```
 
@@ -2343,10 +2353,24 @@ await bucket.updateJson<Settings>(
 
 ```ts
 const archived = await bucket.copy("tmp/9f3c", "archive/2026/report.pdf")
-const moved = await bucket.move("tmp/9f3c", "reports/q3.pdf")
+const moved = await bucket.move("tmp/9f3c", "reports/q3.pdf", { contentType: "application/pdf" })
 ```
 
-`copy` runs inside storage, so the bytes never travel through your app. `move` is a copy followed by a delete of the source. Both return the destination's record. A missing source throws `not_found`.
+`copy` runs inside storage, so the bytes never travel through your app. Storage has no rename, so `move` is a copy followed by a delete of the source. Both return the destination's record. A missing source throws `not_found`.
+
+An existing destination is overwritten. There is no `allowOverwrite` here because storage does not honor a precondition on a copy's destination.
+
+### Options
+
+Every option is optional, and `move` takes the same ones as `copy`.
+
+| Option | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `contentType` | `string` | the source's | What the destination is stored as. |
+| `cache` | `CacheOption` | the source's, else the bucket default | The `Cache-Control` the destination is stored with. |
+| `metadata` | `Record<string, string>` | the source's | Replaces the metadata outright. It is not merged with the source's. |
+
+With no options the destination is an exact copy. Passing any one of them makes storage rewrite all three, so the SDK reads the other two off the source first and sends them back unchanged.
 
 A move is not atomic. If the copy lands and the delete fails, `move` throws `move_left_a_copy` and keeps both objects. Retry the source delete to recover; see [Deleting](/docs/blob/bucket/deleting#move-leaves-a-copy-on-failure).
 
@@ -2414,7 +2438,7 @@ For a browser upload, use the [upload handler](/docs/blob/uploads/upload-handler
     What `cache` accepts and why it is written once, at upload.
   </Card>
 
-  <Card title="Configuration" href="/blob/bucket/configuration">
+  <Card title="Connecting" href="/blob/bucket/connecting">
     Client options, Cloudflare Workers, and using an S3 client directly.
   </Card>
 </CardGroup>
@@ -2605,7 +2629,7 @@ You get these without more code:
 - [File Attachments](https://upstash.com/docs/blob/recipes/attachments.md)
 - [Profile Pictures](https://upstash.com/docs/blob/recipes/avatars.md)
 - [Generated Exports](https://upstash.com/docs/blob/recipes/exports.md)
-- [Recipes](https://upstash.com/docs/blob/recipes/overview.md)
+- [Overview](https://upstash.com/docs/blob/recipes/overview.md)
 - [Private Documents](https://upstash.com/docs/blob/recipes/private-documents.md)
 - [Product Images](https://upstash.com/docs/blob/recipes/product-images.md)
 - [Site Assets and CMS Media](https://upstash.com/docs/blob/recipes/site-assets.md)
@@ -2663,7 +2687,7 @@ if (BlobError.is(e)) {
 | ---- | ------ | --------------- | --------------- |
 | `not_found` | 404 | `not found` | `get`, `info` or `copy` on a path that is not there. Storage answered `NoSuchKey` or `NoSuchUpload`. An unknown upload route. A completion whose object never landed. |
 | `already_exists` | 409 | `already exists` | `put` with `allowOverwrite: false` against a path that already has an object. Carries `etag` and `size`. |
-| `conflict` | 409 | `the object changed since it was read` | `ifUnchanged` did not match, or storage answered `PreconditionFailed`. Also `updateJson` giving up after six attempts. |
+| `conflict` | 409 | `the object changed since it was read` | `ifUnchanged` did not match, or storage answered `PreconditionFailed`. Also `updateJson` giving up after `maxAttempts` rounds, six by default. |
 | `content_type_not_allowed` | 400 | `content type not allowed` | The declared type is not in `contentTypes`, or the file's leading bytes contradict the declaration. |
 | `invalid_input` | 400 | `invalid input` | Arguments the SDK will not accept: metadata outside printable ASCII, a malformed upload request body, `input` that fails the route's schema, a `del` target that is none of the three shapes. |
 | `too_large` | 413 | `too large` | Over `maxSize`, over the route's `constraints`, or over what a single PUT can carry when `multipart: false` forbids the parts the body needs. Also a 413 from storage or from your platform. |
@@ -2930,7 +2954,7 @@ This page explains what a browser holding one of these URLs can and cannot do. T
 A malformed or tampered token is refused when it is decoded rather than on the first request.
 
 <Note>
-The token is a bearer secret. Anything holding it can mint credentials for the whole bucket. Keep it server side; see [Configuration](/docs/blob/bucket/configuration).
+The token is a bearer secret. Anything holding it can mint credentials for the whole bucket. Keep it server side; see [Connecting](/docs/blob/bucket/connecting).
 </Note>
 
 ***
@@ -3073,7 +3097,7 @@ The same machinery is available directly, for a CLI, a server-to-server job, or 
 
 `signedUploadUrl` signs every header it returns: the content type, cache control, your metadata, the length when you pass `size`, and the conditional when you pass `allowOverwrite: false`. Send the `headers` object verbatim. Anything changed, dropped or added is a 403.
 
-Full options are on [Reading](/docs/blob/bucket/reading#signedreadurl) and [Writing](/docs/blob/bucket/writing#signed-upload-urls). For an existing S3 client, see [Configuration](/docs/blob/bucket/configuration#using-an-s3-client).
+Full options are on [Reading](/docs/blob/bucket/reading#signedreadurl) and [Writing](/docs/blob/bucket/writing#signed-upload-urls). For an existing S3 client, see [Connecting](/docs/blob/bucket/connecting#using-an-s3-client).
 
 # Types
 Source: https://upstash.com/docs/blob/reference/types
@@ -4067,7 +4091,7 @@ const bucket = Bucket.fromEnv("MEDIA_BLOB_TOKEN", { cache: "immutable" })
 export const uploads = uploadHandler({ bucket, onBeforeUpload })
 ```
 
-With no `bucket`, the handler reads `UPSTASH_BLOB_TOKEN` and builds one bucket for every route, like `Bucket.fromEnv()`. Pass `bucket:` when the token lives under another variable, the bucket needs `cache`, or you are on [Cloudflare Workers](/docs/blob/bucket/configuration#cloudflare-workers).
+With no `bucket`, the handler reads `UPSTASH_BLOB_TOKEN` and builds one bucket for every route, like `Bucket.fromEnv()`. Pass `bucket:` when the token lives under another variable, the bucket needs `cache`, or you are on [Cloudflare Workers](/docs/blob/bucket/connecting#cloudflare-workers).
 
 ***
 
