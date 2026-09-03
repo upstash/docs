@@ -11,7 +11,7 @@ import { Hero, PromptToolIcons, SectionHead, ProductGrid, UtilityGrid, Community
     <div className="u-prompt-action">
       <PromptToolIcons />
       <Prompt actions={["copy"]}>
-        Help me add the right Upstash product to this project. Review the project first, then choose Redis, Vector, QStash, Workflow, Search, Box, Realtime, or Rate Limit based on its needs. Use the current Upstash documentation at https://upstash.com/docs. Implement the smallest working setup, list the required environment variables, and add a quick verification step.
+        Set up Upstash in my coding agent using the official Upstash instructions, and run the commands yourself instead of asking me to. If you are Claude Code, install the Upstash plugin — it bundles the Upstash skills (https://upstash.com/docs/agent-resources/skills) and the remote MCP server over OAuth — by running `claude plugin marketplace add upstash/skills` then `claude plugin install upstash@upstash`, and tell me to run `/reload-plugins`. If you are OpenAI Codex, install the same plugin with `codex plugin marketplace add upstash/skills` then `codex plugin add upstash@upstash`. For any other agent, install the skills with `npx -y skills add upstash/skills --global`, then add the remote MCP server https://mcp.upstash.com/mcp to your MCP config (it authenticates over OAuth on first use); see https://upstash.com/docs/agent-resources/clients for the exact location. When done, verify the skills and MCP server are installed and tell me whether a restart is needed.
       </Prompt>
     </div>
   </Hero>

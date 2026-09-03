@@ -285,7 +285,7 @@ Source: https://upstash.com/docs/agent-resources/clients
 
 Each section below covers everything for one agent: the [Upstash Skills](/docs/agent-resources/skills) (docs and the `upstash` [CLI](/docs/agent-resources/cli) reference your agent loads on demand) and the [MCP server](/docs/agent-resources/mcp) (live tools for your account).
 
-The MCP server needs your account email and an API key from [Upstash Console → Account → API Keys](https://console.upstash.com/account/api). Readonly keys work; the server then disables every tool that would change state. The skills need no credentials.
+The **remote MCP server** (`https://mcp.upstash.com/mcp`) needs no setup up front — it authenticates over OAuth on first use, and the Upstash plugins for Claude Code, Codex, Cursor, and Gemini CLI bundle it, so installing the plugin also connects the MCP. The **local (stdio) MCP server** needs your account email and a [Developer API key](/docs/devops/developer-api/introduction#create-an-api-key) (readonly keys work; the server then disables every mutating tool). The skills need no credentials. See the [MCP server page](/docs/agent-resources/mcp) for remote vs. local, authentication, and feature options.
 
 ## Claude Code
 
@@ -296,7 +296,9 @@ The [`upstash/skills`](https://github.com/upstash/skills) repo is a Claude Code 
 /plugin install upstash@upstash
 ```
 
-The plugin only carries the skills. Add the MCP server separately:
+The plugin bundles the **remote MCP server** (over OAuth), so this one install sets up both the skills and the MCP — approve the consent screen on the first tool call.
+
+Prefer the local (stdio) server instead — for example, to use [Upstash Box](/docs/box/overall/quickstart) tools, which the remote server doesn't carry? Add it separately with a [Developer API key](/docs/devops/developer-api/introduction#create-an-api-key):
 
 ```sh
 claude mcp add --transport stdio upstash -- npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY
@@ -362,7 +364,9 @@ codex plugin marketplace add upstash/skills
 codex plugin add upstash@upstash
 ```
 
-Add the MCP server with the CLI as well:
+The plugin bundles the **remote MCP server** (over OAuth), so this also connects the MCP — approve the consent screen on the first tool call.
+
+Prefer the local (stdio) server instead (for example, for [Upstash Box](/docs/box/overall/quickstart) tools)? Add it with a [Developer API key](/docs/devops/developer-api/introduction#create-an-api-key):
 
 ```sh
 codex mcp add upstash -- npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY
@@ -771,45 +775,135 @@ Source: https://upstash.com/docs/agent-resources/llms-txt
 # MCP Server
 Source: https://upstash.com/docs/agent-resources/mcp
 
-The Upstash MCP server lets your agent manage and debug your Upstash resources directly, across Redis, QStash, Workflow, and [Upstash Box](/docs/box/overall/quickstart).
+The Upstash MCP server lets your agent manage and debug your Upstash resources directly, across Redis, QStash, Workflow, Vector, Search, and [Upstash Box](/docs/box/overall/quickstart).
 
-Find the GitHub repository [here](https://github.com/upstash/mcp-server).
+Run it two ways:
 
-<Tip>
-  If you are an AI agent and need a Redis DB to use or experiment with, call the `redis_database_start_free` tool — or send a POST request to https://upstash.com/start-redis directly. Free, no signup, no API key; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly. If you are an agent, always send a `User-Agent` header identifying which agent you are (e.g. `claude-code`, `cursor`, `codex`, `opencode`) on every request you make to this API.
-</Tip>
-
-# Example prompts
-
-## Redis
-
-* "Start a free temporary Redis I can experiment with"
-* "Create a new Redis database in us-east-1"
-* "List my databases sorted by memory usage"
-* "Give me the schema of how users are stored in this Redis"
-* "Find all session keys expiring in the next hour and show me their payloads"
-* "Create a backup of this db, then clear it"
-* "Show me throughput spikes during the last 7 days"
+* **Remote (hosted)** — nothing to install. Connect over HTTP to `https://mcp.upstash.com/mcp` with OAuth or a developer API key. Covers Redis, QStash, Workflow, Vector, and Search.
+* **Local (stdio)** — run [`@upstash/mcp-server`](https://github.com/upstash/mcp-server) with `npx`, authenticated with your email and API key. Covers Redis, QStash, Workflow, and Upstash Box.
 
 <Tip>
-  Only running commands against a single Redis database? Use the dedicated [Redis MCP](/docs/redis/sdks/mcp) with only your REST/TCP credentials.
+  Only running commands against a single Redis database? Use the dedicated [Redis MCP](/docs/redis/sdks/mcp) with only that database's REST/TCP credentials.
 </Tip>
 
-## QStash & Workflow
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis. Free, no signup, no API key; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. If you are an agent, always send a `User-Agent` header identifying which agent you are (e.g. `claude-code`, `cursor`, `codex`, `opencode`).
+</Tip>
 
-* "Check the QStash logs and figure out why my webhook keeps failing"
-* "Find failed workflow runs for user `@ysfk_0x` in the last 24 hours"
-* "Retry the failed workflow run that started 2 hours ago"
-* "Summarize what's in the DLQ right now, grouped by error type"
-* "Pause the `daily-report` schedule until Monday"
+# Remote server (recommended)
 
-## Upstash Box
+Connect any MCP client over streamable HTTP to:
 
-* "Spin up a Box, clone this repo, and run the tests"
-* "Snapshot this Box and create 5 copies from it, assign each one a GitHub issue"
-* "My Box keeps failing to start, check the logs and tell me what's wrong"
+```
+https://mcp.upstash.com/mcp
+```
 
-For the MCP to interact with [Upstash Box](/docs/box/overall/quickstart), the agent needs your Box API key. By default you have to paste it into the chat (or keep it in a `.env`) every time the agent runs a Box tool. To avoid this, wire the key into the MCP setup itself so the server picks it up on startup, either as a CLI flag or an environment variable.
+Tokens never reach the agent: data-plane tools resolve each resource's REST credentials server-side and call the endpoint directly.
+
+## Connect
+
+Snippets for popular clients. For every client — and the plugin-based setup — see [Install by agent](/docs/agent-resources/clients).
+
+<Tabs>
+  <Tab title="Claude Code">
+    ```sh
+    claude mcp add --scope user --transport http upstash https://mcp.upstash.com/mcp
+    ```
+    Then run `/mcp` → **Authenticate**.
+  </Tab>
+  <Tab title="Cursor">
+    Edit `~/.cursor/mcp.json` (or `.cursor/mcp.json` in a project):
+    ```json
+    {
+      "mcpServers": {
+        "upstash": { "url": "https://mcp.upstash.com/mcp" }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="OpenCode">
+    Edit `~/.config/opencode/opencode.json` (or a project `opencode.json`):
+    ```json
+    {
+      "mcp": {
+        "upstash": {
+          "type": "remote",
+          "url": "https://mcp.upstash.com/mcp",
+          "enabled": true
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="OpenAI Codex">
+    Add to `~/.codex/config.toml` (or `.codex/config.toml`):
+    ```toml
+    [mcp_servers.upstash]
+    url = "https://mcp.upstash.com/mcp"
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  The Upstash plugin for **Claude Code, Codex, Cursor, and Gemini CLI** bundles this remote MCP server (over OAuth), so installing the plugin sets up the skills **and** the MCP in one step — no separate command. See [Install by agent](/docs/agent-resources/clients).
+</Note>
+
+## Authentication
+
+Two ways in — the remote server verifies neither locally; the Upstash API is the authority.
+
+### OAuth (default)
+
+The first tool call opens a browser consent page where you pick the **account scope** (personal or a team) and whether the connection is **read-only**. The grant is per client and revocable from the console under **Account → OAuth Clients**. Nothing to configure — this is what the `Connect` snippets above use.
+
+### Developer API key (headless / CI)
+
+No browser. Pass an API key as an `Authorization` header, in the form `email:API_KEY`:
+
+```sh
+claude mcp add --scope user --transport http upstash https://mcp.upstash.com/mcp \
+  --header "Authorization: Bearer you@example.com:YOUR_API_KEY"
+```
+
+Create a key from the console — see [Developer API → Create an API key](/docs/devops/developer-api/introduction#create-an-api-key).
+
+<Note>
+  Read-only API keys (and read-only OAuth grants) are supported — the server then disables every tool that would change state, and credential fields are omitted from tool results.
+</Note>
+
+## Feature groups
+
+Append `?features=` to the URL to scope which product tools the agent sees — comma-separated values from `redis`, `qstash_workflow`, `vector`, `search`; omitted means all:
+
+```
+https://mcp.upstash.com/mcp?features=redis,qstash_workflow
+```
+
+# Local server (`@upstash/mcp-server`)
+
+A stdio server you run with `npx`, authenticated with your account email and a Developer API key. Adds [Upstash Box](/docs/box/overall/quickstart) tools on top of Redis, QStash, and Workflow. Repository [here](https://github.com/upstash/mcp-server).
+
+Create an API key from the console — see [Developer API → Create an API key](/docs/devops/developer-api/introduction#create-an-api-key). The base command every client uses is:
+
+```bash
+npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY
+```
+
+Add it to your client with the stdio transport, e.g. Claude Code:
+
+```sh
+claude mcp add --transport stdio upstash -- npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY
+```
+
+See [Install by agent](/docs/agent-resources/clients) for a config snippet for every client.
+
+<Note>
+  Readonly API keys are supported. When the server starts with one, it disables every tool that would modify state, such as creating databases, deleting backups, or retrying workflows. Your agent can still read and query your account, but it cannot make changes.
+</Note>
+
+## Upstash Box API key (optional)
+
+For the local server to interact with [Upstash Box](/docs/box/overall/quickstart), the agent needs your Box API key. To avoid pasting it into the chat each time, wire it into the setup — as a CLI flag or an environment variable.
 
 <AccordionGroup>
   <Accordion title="CLI flag">
@@ -847,217 +941,41 @@ For the MCP to interact with [Upstash Box](/docs/box/overall/quickstart), the ag
   </Accordion>
 </AccordionGroup>
 
-# Credentials
+# Example prompts
 
-Before installing, grab your credentials:
+## Redis
 
-* **Email**: your Upstash account email
-* **API Key**: create one at [Upstash Console → Account → API Keys](https://console.upstash.com/account/api)
+* "Start a free temporary Redis I can experiment with"
+* "Create a new Redis database in us-east-1"
+* "List my databases sorted by memory usage"
+* "Give me the schema of how users are stored in this Redis"
+* "Find all session keys expiring in the next hour and show me their payloads"
+* "Create a backup of this db, then clear it"
+* "Show me throughput spikes during the last 7 days"
 
-<Note>
-  Readonly API keys are supported. When the server starts with one, it automatically disables every tool that would modify state, such as creating databases, deleting backups, or retrying workflows. Your agent can still read and query your account, but it cannot make changes.
-</Note>
+## QStash & Workflow
 
-These are passed to the server on startup. The base command every client uses is:
+* "Check the QStash logs and figure out why my webhook keeps failing"
+* "Find failed workflow runs for user `@ysfk_0x` in the last 24 hours"
+* "Retry the failed workflow run that started 2 hours ago"
+* "Summarize what's in the DLQ right now, grouped by error type"
+* "Pause the `daily-report` schedule until Monday"
 
-```bash
-npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY
-```
+## Vector & Search
 
-# MCP Clients
+* "List my Vector indexes and show the dimensions of each"
+* "Query my Vector index for the 5 nearest neighbours of this text"
+* "Upsert these documents into my Search index"
 
-The Upstash MCP server works with any MCP-compatible client. If your client isn't listed, check its documentation for how to add a stdio MCP server, then point it at the command above.
+## Upstash Box
 
-<AccordionGroup>
-  <Accordion title="Claude Code">
-    Run this command in your terminal. See the [Claude Code MCP docs](https://docs.anthropic.com/en/docs/claude-code/mcp) for more info.
-
-    ```sh
-    claude mcp add --transport stdio upstash -- npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY
-    ```
-  </Accordion>
-
-  <Accordion title="Cursor">
-    Go to `Settings` → `Cursor Settings` → `MCP` → `Add new global MCP server`, or edit `~/.cursor/mcp.json` directly. You can also scope it to a project by creating `.cursor/mcp.json` in your repo.
-
-    Since Cursor 1.0, the one-click install button also works:
-
-    [![Install MCP Server]()](https://cursor.com/en/install-mcp?name=upstash&config=eyJjb21tYW5kIjoibnB4IC15IEB1cHN0YXNoL21jcC1zZXJ2ZXJAbGF0ZXN0IC0tZW1haWwgWU9VUl9FTUFJTCAtLWFwaS1rZXkgWU9VUl9BUElfS0VZIn0%3D)
-
-    ```json
-    {
-      "mcpServers": {
-        "upstash": {
-          "command": "npx",
-          "args": ["-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"]
-        }
-      }
-    }
-    ```
-  </Accordion>
-
-  <Accordion title="Windsurf">
-    Add this to your Windsurf MCP config file at `~/.codeium/windsurf/mcp_config.json`. See the [Windsurf MCP docs](https://docs.windsurf.com/windsurf/cascade/mcp) for more info.
-
-    ```json
-    {
-      "mcpServers": {
-        "upstash": {
-          "command": "npx",
-          "args": ["-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"]
-        }
-      }
-    }
-    ```
-  </Accordion>
-
-  <Accordion title="OpenCode">
-    Add this to your OpenCode configuration file (`~/.config/opencode/opencode.json` or a project-level `opencode.json`). See the [OpenCode MCP docs](https://opencode.ai/docs/mcp-servers) for more info.
-
-    ```json
-    {
-      "mcp": {
-        "upstash": {
-          "type": "local",
-          "command": ["npx", "-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"],
-          "enabled": true
-        }
-      }
-    }
-    ```
-  </Accordion>
-
-  <Accordion title="OpenAI Codex">
-    See the [OpenAI Codex MCP docs](https://developers.openai.com/codex/mcp) for more info.
-
-    #### Using the CLI
-
-    ```sh
-    codex mcp add upstash -- npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY
-    ```
-
-    #### Manual configuration
-
-    Add this to your Codex config file (`~/.codex/config.toml` or `.codex/config.toml`):
-
-    ```toml
-    [mcp_servers.upstash]
-    command = "npx"
-    args = ["-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"]
-    startup_timeout_sec = 20
-    ```
-
-    <Note>
-      If you see startup timeout errors, increase `startup_timeout_sec` to `40`.
-    </Note>
-  </Accordion>
-
-  <Accordion title="VS Code">
-    Add this to your VS Code MCP config file at `.vscode/mcp.json`, or paste it into the `mcp.servers` user setting. See the [VS Code MCP docs](https://code.visualstudio.com/docs/copilot/chat/mcp-servers) for more info.
-
-    [<img alt="Install in VS Code (npx)" />](https://insiders.vscode.dev/redirect?url=vscode%3Amcp%2Finstall%3F%7B%22name%22%3A%22upstash-mcp%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40upstash%2Fmcp-server%40latest%22%5D%7D)
-
-    ```json
-    {
-      "servers": {
-        "upstash": {
-          "type": "stdio",
-          "command": "npx",
-          "args": ["-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"]
-        }
-      }
-    }
-    ```
-  </Accordion>
-
-  <Accordion title="Google Antigravity">
-    Add this to your Antigravity MCP config. See the [Antigravity MCP docs](https://antigravity.google/docs/mcp) for more info.
-
-    ```json
-    {
-      "mcpServers": {
-        "upstash": {
-          "command": "npx",
-          "args": ["-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"]
-        }
-      }
-    }
-    ```
-  </Accordion>
-
-  <Accordion title="Claude Desktop">
-    Open Claude Desktop's developer settings and edit `claude_desktop_config.json`. See the [Claude Desktop MCP docs](https://modelcontextprotocol.io/quickstart/user) for more info.
-
-    ```json
-    {
-      "mcpServers": {
-        "upstash": {
-          "command": "npx",
-          "args": ["-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"]
-        }
-      }
-    }
-    ```
-  </Accordion>
-
-  <Accordion title="Zed">
-    The [`upstash/skills`](https://github.com/upstash/skills) repo ships a Zed MCP extension in `zed-extension/`. Clone the repo, run `zed: install dev extension` from the command palette, and pick that directory; Zed then prompts for `upstash_email` and `upstash_api_key`.
-
-    To skip the extension, add the server to your Zed settings by hand (`zed: open settings file`). See the [Zed MCP docs](https://zed.dev/docs/ai/mcp) for more info.
-
-    ```json
-    {
-      "context_servers": {
-        "upstash": {
-          "command": "npx",
-          "args": ["-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"]
-        }
-      }
-    }
-    ```
-
-    <Note>
-      Context servers are project-scoped in Zed. Open a folder before testing, otherwise the server never starts.
-    </Note>
-  </Accordion>
-
-  <Accordion title="DeepSeek Harness">
-    Installing the [Upstash Skill](/docs/agent-resources/skills) as a DeepSeek Harness bundle also installs the MCP server. Requires `pnpm` on your `PATH`.
-
-    ```bash
-    # Install into a profile (`web` is the one `dsh web` boots)
-    dsh plugin --profile web add github:upstash/skills
-
-    # Start the harness
-    dsh web
-    ```
-
-    Then store your credentials from inside a session. The MCP server connects as soon as both are set; the skills work without them.
-
-    ```
-    /upstash-login YOUR_EMAIL YOUR_API_KEY
-    ```
-  </Accordion>
-
-  <Accordion title="Gemini CLI">
-    Open the Gemini CLI settings file at `~/.gemini/settings.json` and add Upstash to `mcpServers`. See [Gemini CLI Configuration](https://google-gemini.github.io/gemini-cli/docs/tools/mcp-server.html) for details.
-
-    ```json
-    {
-      "mcpServers": {
-        "upstash": {
-          "command": "npx",
-          "args": ["-y", "@upstash/mcp-server@latest", "--email", "YOUR_EMAIL", "--api-key", "YOUR_API_KEY"]
-        }
-      }
-    }
-    ```
-  </Accordion>
-</AccordionGroup>
+* "Spin up a Box, clone this repo, and run the tests"
+* "Snapshot this Box and create 5 copies from it, assign each one a GitHub issue"
+* "My Box keeps failing to start, check the logs and tell me what's wrong"
 
 # Telemetry
 
-The server sends anonymous diagnostic info to Upstash with each request: the MCP server SDK version, your runtime version (Node, Bun, etc.), and basic platform info (OS and architecture). No account data, tool arguments, or results are collected. To opt out, add `--disable-telemetry` to the args.
+The local server sends anonymous diagnostic info to Upstash with each request: the MCP server SDK version, your runtime version (Node, Bun, etc.), and basic platform info (OS and architecture). No account data, tool arguments, or results are collected. To opt out, add `--disable-telemetry` to the args.
 
 # AI Tools
 Source: https://upstash.com/docs/agent-resources/overview
@@ -1097,11 +1015,19 @@ Install the Upstash skill. It includes the `upstash` CLI reference, so this one 
 npx skills add upstash/skills
 ```
 
-To let your agent read and change your account directly, add the MCP server as well. Grab an API key from [Upstash Console → Account → API Keys](https://console.upstash.com/account/api) first:
+To let your agent read and change your account directly, add the MCP server. The **remote** server needs nothing installed — connect over HTTP and approve the OAuth consent on first use (shown here for Claude Code):
+
+```bash
+claude mcp add --scope user --transport http upstash https://mcp.upstash.com/mcp
+```
+
+Prefer a headless setup, or need [Upstash Box](/docs/box/overall/quickstart) tools? Run the local server with a [Developer API key](/docs/devops/developer-api/introduction#create-an-api-key):
 
 ```bash
 npx -y @upstash/mcp-server@latest --email YOUR_EMAIL --api-key YOUR_API_KEY
 ```
+
+See the [MCP server page](/docs/agent-resources/mcp) for remote vs. local, authentication, and feature options.
 
 <Note>
   Only working against a single Redis database? The lightweight [Redis MCP](/docs/redis/sdks/mcp) needs just that database's REST URL and token, not an account API key.
@@ -9721,7 +9647,8 @@ Source: https://upstash.com/docs/devops/developer-api/introduction
 Using Upstash API, you can develop applications that can create and manage
 Upstash products and resources. You can automate everything that
 you can do in the console. To use developer API, you need to create an API key
-in the console.
+in the console. The same key also authenticates the
+[Upstash CLI](/docs/agent-resources/cli) and the [MCP server](/docs/agent-resources/mcp).
 
 <Note>
 
@@ -9731,14 +9658,16 @@ The Developer API is only available to native Upstash accounts. Accounts created
 
 ### Create an API key
 
-1. Log in to the console then in the left menu click the
-   `Account > Management API` link.
+1. Log in to the console, then open `Account` and click the
+   `Developer API` tab.
 
 2. Click the `Create API Key` button.
 
   <img />
 
-3. Enter a name for your key. You can not use the same name for multiple keys.
+3. Enter a name for your key (you can not use the same name for multiple keys),
+   choose the permissions (`Read/Write` or `Read Only`) and an expiration, then
+   click `Submit`.
 
   <img />
 
@@ -9758,13 +9687,10 @@ need more than that, please send us an email at
 ### Deleting an API key
 
 When an API key is exposed (e.g. accidentally shared in a public repository) or
-not being used anymore; you should delete it. You can delete the API keys in
-`Account > API Keys` screen.
+not being used anymore; you should delete it. You can delete the API keys in the
+`Account > Developer API` tab.
 
 ### Roadmap
-
-**Role based access:** You will be able to create API keys with specific
-privileges. For example you will be able to create a key with read-only access.
 
 **Stats:** We will provide reports based on usage of your API keys.
 
@@ -11016,7 +10942,7 @@ import { Hero, PromptToolIcons, SectionHead, ProductGrid, UtilityGrid, Community
     <div className="u-prompt-action">
       <PromptToolIcons />
       <Prompt actions={["copy"]}>
-        Help me add the right Upstash product to this project. Review the project first, then choose Redis, Vector, QStash, Workflow, Search, Box, Realtime, or Rate Limit based on its needs. Use the current Upstash documentation at https://upstash.com/docs. Implement the smallest working setup, list the required environment variables, and add a quick verification step.
+        Set up Upstash in my coding agent using the official Upstash instructions, and run the commands yourself instead of asking me to. If you are Claude Code, install the Upstash plugin — it bundles the Upstash skills (https://upstash.com/docs/agent-resources/skills) and the remote MCP server over OAuth — by running `claude plugin marketplace add upstash/skills` then `claude plugin install upstash@upstash`, and tell me to run `/reload-plugins`. If you are OpenAI Codex, install the same plugin with `codex plugin marketplace add upstash/skills` then `codex plugin add upstash@upstash`. For any other agent, install the skills with `npx -y skills add upstash/skills --global`, then add the remote MCP server https://mcp.upstash.com/mcp to your MCP config (it authenticates over OAuth on first use); see https://upstash.com/docs/agent-resources/clients for the exact location. When done, verify the skills and MCP server are installed and tell me whether a restart is needed.
       </Prompt>
     </div>
   </Hero>
