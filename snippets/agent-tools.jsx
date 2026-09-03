@@ -1,11 +1,12 @@
 // Agent grid for /agent-resources/overview.
-// Icons: Simple Icons (CC0, https://simpleicons.org) for brand marks, lobe-icons (MIT, https://github.com/lobehub/lobe-icons) for Grok, Tabler Icons (MIT, https://tabler.io/icons) for the rest.
+// Icons: Simple Icons (CC0, https://simpleicons.org) for brand marks and lobe-icons (MIT, https://github.com/lobehub/lobe-icons) for Grok and Antigravity.
 // Everything lives inside the exported component: Mintlify does not expose non-exported top-level consts to snippet components.
 
 export const AgentGrid = () => {
   const ICONS = {
     "claude": {
       "kind": "fill",
+      "color": "#D97757",
       "paths": [
         "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"
       ]
@@ -30,12 +31,14 @@ export const AgentGrid = () => {
     },
     "gemini": {
       "kind": "fill",
+      "color": "#8E75B2",
       "paths": [
         "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"
       ]
     },
     "deepseek": {
       "kind": "fill",
+      "color": "#5786FE",
       "paths": [
         "M23.748 4.651c-.254-.124-.364.113-.512.233-.051.04-.094.09-.137.137-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.155-.708-.311-.955-.65-.172-.24-.219-.509-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.094.172.187.129.323-.082.28-.18.553-.266.833-.055.179-.137.218-.328.14a5.5 5.5 0 0 1-1.737-1.179c-.857-.828-1.631-1.743-2.597-2.46a12 12 0 0 0-.689-.47c-.985-.957.13-1.743.387-1.836.27-.098.094-.433-.778-.428-.872.003-1.67.295-2.687.685a3 3 0 0 1-.465.136 9.6 9.6 0 0 0-2.883-.101c-1.885.21-3.39 1.1-4.497 2.622C.082 8.776-.231 10.854.152 13.02c.403 2.284 1.568 4.175 3.36 5.653 1.857 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.132-.284 4.994-1.86.47.234.962.328 1.78.398.629.058 1.235-.031 1.705-.129.735-.155.684-.836.418-.961-2.155-1.004-1.682-.595-2.112-.926 1.095-1.295 2.768-3.598 3.284-6.733.05-.346.115-.834.108-1.114-.004-.171.035-.238.23-.257a4.2 4.2 0 0 0 1.545-.475c1.397-.763 1.96-2.016 2.093-3.517.02-.23-.004-.467-.247-.588M11.58 18.168c-2.088-1.642-3.101-2.183-3.52-2.16-.39.024-.32.472-.234.763.09.288.207.487.371.74.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.168-1.361-.801-2.5-1.86-3.301-3.306-.775-1.393-1.225-2.888-1.299-4.482-.02-.385.094-.522.477-.592a4.7 4.7 0 0 1 1.53-.038c2.131.311 3.946 1.264 5.467 2.774.868.86 1.525 1.887 2.202 2.89.72 1.066 1.494 2.082 2.48 2.915.348.291.626.513.892.677-.802.09-2.14.109-3.055-.615zm1.001-6.44a.306.306 0 0 1 .415-.287.3.3 0 0 1 .113.074.3.3 0 0 1 .086.214c0 .17-.136.307-.308.307a.303.303 0 0 1-.306-.307m3.11 1.596c-.2.081-.4.151-.591.16a1.25 1.25 0 0 1-.798-.254c-.274-.23-.47-.358-.551-.758a1.7 1.7 0 0 1 .015-.588c.07-.327-.007-.537-.238-.727-.188-.156-.426-.199-.689-.199a.6.6 0 0 1-.254-.078.253.253 0 0 1-.114-.358 1 1 0 0 1 .192-.21c.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.392.451.462.576.685.915.176.264.336.536.446.848.066.194-.02.353-.25.45"
       ]
@@ -48,6 +51,7 @@ export const AgentGrid = () => {
     },
     "zed": {
       "kind": "fill",
+      "color": "#084CCF",
       "paths": [
         "M2.25 1.5a.75.75 0 0 0-.75.75v16.5H0V2.25A2.25 2.25 0 0 1 2.25 0h20.095c1.002 0 1.504 1.212.795 1.92L10.764 14.298h3.486V12.75h1.5v1.922a1.125 1.125 0 0 1-1.125 1.125H9.264l-2.578 2.578h11.689V9h1.5v9.375a1.5 1.5 0 0 1-1.5 1.5H5.185L2.562 22.5H21.75a.75.75 0 0 0 .75-.75V5.25H24v16.5A2.25 2.25 0 0 1 21.75 24H1.655C.653 24 .151 22.788.86 22.08L13.19 9.75H9.75v1.5h-1.5V9.375A1.125 1.125 0 0 1 9.375 8.25h5.314l2.625-2.625H5.625V15h-1.5V5.625a1.5 1.5 0 0 1 1.5-1.5h13.19L21.438 1.5z"
       ]
@@ -69,32 +73,28 @@ export const AgentGrid = () => {
         "M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"
       ]
     },
-    "rocket": {
-      "kind": "stroke",
+    "antigravity": {
+      "kind": "fill",
+      "color": "#4285F4",
       "paths": [
-        "M4 13a8 8 0 0 1 7 7a6 6 0 0 0 3 -5a9 9 0 0 0 6 -8a3 3 0 0 0 -3 -3a9 9 0 0 0 -8 6a6 6 0 0 0 -5 3",
-        "M7 14a6 6 0 0 0 -3 6a6 6 0 0 0 6 -3",
-        "M14 9a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"
+        "M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z"
       ]
     },
   };
 
-  const SKILLS = "Skills";
-  const MCP = "MCP";
-
   const AGENTS = [
-    { name: "Claude Code", slug: "claude-code", icon: "claude", desc: "Anthropic's terminal and IDE agent. Install Upstash as a plugin from the marketplace.", badges: [SKILLS, MCP] },
-    { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. One-click MCP install button; skills via the Agent Skills CLI.", badges: [SKILLS, MCP] },
-    { name: "OpenAI Codex", slug: "openai-codex", icon: "openai", desc: "OpenAI's coding agent. Install the plugin and the MCP server with the Codex CLI.", badges: [SKILLS, MCP] },
-    { name: "OpenCode", slug: "opencode", icon: "opencode", desc: "Open-source terminal agent that loads Agent Skills natively. MCP via its config.", badges: [SKILLS, MCP] },
-    { name: "Zed", slug: "zed", icon: "zed", desc: "Editor with a built-in Agent Panel. Skills via the CLI, MCP via the Zed extension.", badges: [SKILLS, MCP] },
-    { name: "GitHub Copilot", slug: "github-copilot", icon: "copilot", desc: "Copilot agent mode in VS Code. MCP via .vscode/mcp.json.", badges: [SKILLS, MCP] },
-    { name: "Windsurf", slug: "windsurf", icon: "windsurf", desc: "Cascade agent in the Windsurf editor. Skills via the CLI, MCP via its config file.", badges: [SKILLS, MCP] },
-    { name: "Gemini CLI", slug: "gemini-cli", icon: "gemini", desc: "Google's open-source terminal agent. Skills via the CLI, MCP via settings.json.", badges: [SKILLS, MCP] },
-    { name: "Google Antigravity", slug: "google-antigravity", icon: "rocket", desc: "Google's agent-first IDE. Skills via the CLI, MCP via the Antigravity MCP config.", badges: [SKILLS, MCP] },
-    { name: "DeepSeek Harness", slug: "deepseek-harness", icon: "deepseek", desc: "One bundle installs the skills and the MCP server. Log in once from a session.", badges: [SKILLS, MCP] },
-    { name: "Claude Desktop", slug: "claude-desktop", icon: "claude", desc: "Upload the skill to Claude Desktop or claude.ai; MCP via the desktop app.", badges: [SKILLS, MCP] },
-    { name: "Grok", slug: "grok", icon: "grok", desc: "xAI's Grok Build agent. Skills via the Agent Skills CLI, MCP via grok mcp add.", badges: [SKILLS, MCP] },
+    { name: "Claude Code", slug: "claude-code", icon: "claude", desc: "Anthropic's terminal and IDE agent. Install Upstash as a plugin from the marketplace." },
+    { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. One-click MCP install button; skills via the Agent Skills CLI." },
+    { name: "OpenAI Codex", slug: "openai-codex", icon: "openai", desc: "OpenAI's coding agent. Install the plugin and the MCP server with the Codex CLI." },
+    { name: "OpenCode", slug: "opencode", icon: "opencode", desc: "Open-source terminal agent that loads Agent Skills natively. MCP via its config." },
+    { name: "Zed", slug: "zed", icon: "zed", desc: "Editor with a built-in Agent Panel. Skills via the CLI, MCP via the Zed extension." },
+    { name: "GitHub Copilot", slug: "github-copilot", icon: "copilot", desc: "Copilot agent mode in VS Code. MCP via .vscode/mcp.json." },
+    { name: "Windsurf", slug: "windsurf", icon: "windsurf", desc: "Cascade agent in the Windsurf editor. Skills via the CLI, MCP via its config file." },
+    { name: "Gemini CLI", slug: "gemini-cli", icon: "gemini", desc: "Google's open-source terminal agent. Skills via the CLI, MCP via settings.json." },
+    { name: "Google Antigravity", slug: "google-antigravity", icon: "antigravity", desc: "Google's agent-first IDE. Skills via the CLI, MCP via the Antigravity MCP config." },
+    { name: "DeepSeek Harness", slug: "deepseek-harness", icon: "deepseek", desc: "One bundle installs the skills and the MCP server. Log in once from a session." },
+    { name: "Claude Desktop", slug: "claude-desktop", icon: "claude", desc: "Upload the skill to Claude Desktop or claude.ai; MCP via the desktop app." },
+    { name: "Grok", slug: "grok", icon: "grok", desc: "xAI's Grok Build agent. Skills via the Agent Skills CLI, MCP via grok mcp add." },
   ];
 
   const AgentIcon = ({ id }) => {
@@ -107,7 +107,7 @@ export const AgentGrid = () => {
       );
     }
     return (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill={ic.color || "currentColor"}>
         {ic.paths.map((d, i) => <path key={i} d={d} />)}
       </svg>
     );
@@ -118,11 +118,8 @@ export const AgentGrid = () => {
       {AGENTS.map((a) => (
         <a key={a.name} className="u-card u-card--stack" href={`/agent-resources/clients#${a.slug}`}>
           <div className="u-card__head">
-            <div className="u-card__icon u-card__icon--muted"><AgentIcon id={a.icon} /></div>
+            <div className="u-card__brand-icon"><AgentIcon id={a.icon} /></div>
             <div className="u-card__title">{a.name}</div>
-          </div>
-          <div className="u-badges">
-            {a.badges.map((b) => <span key={b} className="u-badge">{b}</span>)}
           </div>
           <div className="u-card__desc">{a.desc}</div>
         </a>

@@ -14,24 +14,33 @@
 
 export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
   const languageIcons = {
-    typescript: [
-      "M15 17.5c.32.32.754.5 1.207.5h.543c.69 0 1.25-.56 1.25-1.25v-.25a1.5 1.5 0 0 0-1.5-1.5 1.5 1.5 0 0 1-1.5-1.5v-.25c0-.69.56-1.25 1.25-1.25h.543c.453 0 .887.18 1.207.5",
-      "M9 12h4",
-      "M11 12v6",
-      "M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2",
-    ],
-    python: [
-      "M12 9H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h3",
-      "M12 15h7a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3",
-      "M8 9V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-4",
-      "M11 6h.01",
-      "M13 18h.01",
-    ],
-    ruby: [
-      "M6 3h12l4 6-10 12L2 9l4-6Z",
-      "M2 9h20",
-      "m8 3 4 18 4-18",
-    ],
+    typescript: {
+      color: "#3178C6",
+      paths: [
+        "M15 17.5c.32.32.754.5 1.207.5h.543c.69 0 1.25-.56 1.25-1.25v-.25a1.5 1.5 0 0 0-1.5-1.5 1.5 1.5 0 0 1-1.5-1.5v-.25c0-.69.56-1.25 1.25-1.25h.543c.453 0 .887.18 1.207.5",
+        "M9 12h4",
+        "M11 12v6",
+        "M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2",
+      ],
+    },
+    python: {
+      color: "#3776AB",
+      paths: [
+        "M12 9H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h3",
+        "M12 15h7a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3",
+        "M8 9V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-4",
+        "M11 6h.01",
+        "M13 18h.01",
+      ],
+    },
+    ruby: {
+      color: "#CC342D",
+      paths: [
+        "M6 3h12l4 6-10 12L2 9l4-6Z",
+        "M2 9h20",
+        "m8 3 4 18 4-18",
+      ],
+    },
   };
 
   const catalog = [
@@ -118,9 +127,10 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
         <a key={entry.href} href={entry.href} className="u-card">
           {entry.lang ? (
             <span
-              className="u-card__icon u-card__icon--muted"
+              className="u-card__icon u-card__icon--brand"
               role="img"
               aria-label={entry.lang}
+              style={{ color: languageIcons[entry.lang].color }}
             >
               <svg
                 className="u-card__lang-icon"
@@ -131,7 +141,7 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
                 strokeLinecap="round"
                 strokeLinejoin="round"
               >
-                {languageIcons[entry.lang].map((path) => (
+                {languageIcons[entry.lang].paths.map((path) => (
                   <path key={path} d={path} />
                 ))}
               </svg>
