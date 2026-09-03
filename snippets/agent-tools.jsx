@@ -125,7 +125,7 @@ export const AgentGrid = () => {
   return (
     <div className="u-grid u-grid--fixed3 u-agents">
       {AGENTS.map((a) => (
-        <a key={a.name} className="u-card u-card--stack" href={`/agent-resources/agents#${a.slug}`}>
+        <a key={a.name} className="u-card u-card--stack" href={`/agent-resources/clients#${a.slug}`}>
           <div className="u-card__head">
             <div className="u-card__icon u-card__icon--muted"><AgentIcon id={a.icon} /></div>
             <div className="u-card__title">{a.name}</div>
