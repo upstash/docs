@@ -49,7 +49,7 @@ export const ProductGrid = () => {
     { name: "Box", desc: "Secure sandboxes for AI agents and code.", href: "/box/overall/quickstart", icon: "box" },
     { name: "Vector", desc: "Vector database for AI and LLM apps.", href: "/vector/overall/getstarted", icon: "vector" },
     { name: "Search", desc: "Full-text and semantic search.", href: "/search/overall/getstarted", icon: "search" },
-    { name: "Blob", desc: "S3-compatible object storage with browser uploads.", href: "/blob/overall/quickstart", icon: "blob" },
+    { name: "Blob", desc: "Serverless file storage with browser uploads.", href: "/blob/overall/quickstart", icon: "blob" },
   ];
 
   return (
