@@ -1,6 +1,6 @@
 <!--
   Source for video-light.gif / video-dark.gif.
-  window.seek(ms) sets the frame; ?theme=dark for the dark variant. DURATION is 9700ms.
+  window.seek(ms) sets the frame; ?theme=dark for the dark variant. DURATION is 14300ms.
   Record: playwright-core screenshots at 20fps (600x380, DPR 2), then
   ffmpeg -framerate 20 -i %04d.png -vf "scale=900:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a" -loop 0 out.gif
 -->
@@ -53,9 +53,12 @@
   .up .bar i { display: block; height: 100%; width: 0; background: var(--ring); border-radius: 3px; }
   .up .stats { position: absolute; left: 0; right: 0; top: 54px; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .up .stats b { color: var(--text); font-weight: 600; }
-  .up .plabel { position: absolute; left: 0; top: 86px; font-size: 11px; color: var(--muted); }
-  .up .parts { position: absolute; left: 0; top: 104px; display: flex; gap: 6px; }
-  .up .parts i { display: block; width: 23px; height: 9px; border-radius: 3px; background: var(--bar); }
+  .up .plabel { position: absolute; left: 0; right: 0; top: 78px; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+  .up .plabel b { color: var(--chip-ok-text); font-weight: 600; }
+  .up .parts { position: absolute; left: 0; top: 96px; width: 344px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .up .parts i { display: block; width: 29.9px; height: 9px; border-radius: 3px; background: var(--bar); }
+  .up .b.press { transform: scale(.96); }
+  .up .b.hot { color: var(--ring); }
 
   /* state 3: player */
   .player { opacity: 0; border-radius: 10px; overflow: hidden; background: #0f172a; }
@@ -99,11 +102,18 @@
   .dlg .b.press { transform: scale(.96); }
 
   #cursor { position: absolute; left: 0; top: 0; width: 22px; height: 26px; transform-origin: 4px 3px; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
+  .tab { position: absolute; left: 0; top: 0; width: 600px; height: 380px; background: var(--bg); opacity: 0; display: flex; align-items: center; justify-content: center; }
+  .tab .box { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; box-shadow: 0 24px 60px var(--dlg-shadow); }
+  .tab .x { width: 26px; height: 26px; border-radius: 7px; background: var(--btn); position: relative; flex: none; }
+  .tab .x::before, .tab .x::after { content: ""; position: absolute; left: 12px; top: 6px; width: 2px; height: 14px; background: var(--muted); border-radius: 1px; }
+  .tab .x::before { transform: rotate(45deg); } .tab .x::after { transform: rotate(-45deg); }
+  .tab .t1 { font-size: 13px; font-weight: 600; }
+  .tab .t2 { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 </style>
 </head>
 <body>
 <div id="stage">
-  <div class="card">
+  <div class="card" id="card">
     <h1>New lesson</h1>
     <p class="sub">MP4 or MOV, up to 5 GB.</p>
     <div class="chip" id="chip">pending</div>
@@ -118,11 +128,11 @@
       <div class="up" id="up">
         <div class="head">
           <div class="name">lesson-04.mp4</div>
-          <div class="acts"><div class="b">Pause</div><div class="b">Cancel</div></div>
+          <div class="acts"><div class="b" id="pause">Pause</div><div class="b">Cancel</div></div>
         </div>
         <div class="bar"><i id="barfill"></i></div>
         <div class="stats"><span id="sizes"><b>0 MB</b> of 1.2 GB</span><span id="eta">0%</span></div>
-        <div class="plabel" id="plabel">Part 1 of 12</div>
+        <div class="plabel"><span id="plabel">0 of 20 parts</span><b id="lanes">4 parts at once</b></div>
         <div class="parts" id="parts"></div>
       </div>
 
@@ -148,6 +158,8 @@
     <div class="foot"><div class="b">Cancel</div><div class="b primary" id="open">Open</div></div>
   </div>
 
+  <div class="tab" id="tab"><div class="box"><div class="x"></div><div><div class="t1">Tab closed halfway</div><div class="t2" id="tabt">The parts that landed stay in the bucket. The row stays pending.</div></div></div></div>
+
   <svg id="cursor" viewBox="0 0 22 26"><path d="M3 2 L3 20 L7.6 15.6 L10.8 23 L14 21.6 L10.9 14.4 L17.5 14.2 Z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>
 </div>
 <script>
@@ -160,26 +172,34 @@
   const lin = x => x;
   const seg = (t, a, b, fn=ease) => fn(clamp((t-a)/(b-a)));
   const lerp = (a, b, x) => a + (b-a)*x;
-  // click flash: 1 at moment, decays over 220ms
   const click = (t, at) => t < at ? 0 : 1 - clamp((t-at)/220);
 
-  const PARTS = 12;
+  const PARTS = 20, LANES = 4, BATCH = 800, FULL = (PARTS / LANES) * BATCH; // 4000ms of active upload
   for (let i = 0; i < PARTS; i++) $('parts').appendChild(document.createElement('i'));
   const tiles = [...$('parts').children];
   const mmss = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
 
-  // positions (stage coords, cursor hotspot), measured from layout
   const c = id => { const r = $(id).getBoundingClientRect(); return [r.left + r.width/2, r.top + r.height/2]; };
-  const P = { start:[470,330], choose:c('choose'), f2:c('f2'), open:c('open'), big:c('big'), rest:[540,300] };
-  P.after = [P.big[0] + 46, P.big[1] + 26];
-  // cursor path: list of [tFrom, tTo, from, to]
+  $('up').style.opacity = 1;
+  const P = { start:[470,330], choose:c('choose'), f2:c('f2'), open:c('open'), pause:c('pause'), rest:[540,300] };
+  $('up').style.opacity = 0;
+
+  // timeline (ms)
+  const T = {
+    pick:1450, sel:2600, open:3400, upIn:3650, up0:3700,
+    pause:5100, resume:6100,
+    tabIn:7100, tabOut:8000,
+    pick2:8950, sel2:9750, open2:10350, upIn2:10600, up1:10650,
+  };
   const path = [
-    [600, 1400, P.start, P.choose],
-    [1900, 2600, P.choose, P.f2],
-    [2900, 3450, P.f2, P.open],
-    [3800, 4400, P.open, P.rest],
-    [7000, 7600, P.rest, P.big],
-    [8100, 8600, P.big, P.after],
+    [700, 1400, P.start, P.choose],
+    [1900, 2500, P.choose, P.f2],
+    [2800, 3300, P.f2, P.open],
+    [3800, 4500, P.open, P.pause],
+    [8300, 8900, P.pause, P.choose],
+    [9300, 9700, P.choose, P.f2],
+    [9900, 10300, P.f2, P.open],
+    [10700, 11300, P.open, P.rest],
   ];
   function cursorAt(t) {
     let pos = P.start;
@@ -190,70 +210,88 @@
     }
     return pos;
   }
-
-  // timeline (ms)
-  const T = { pick:1450, sel:2700, open:3550, upA:3900, upB:6200, finA:6200, play:7700 };
+  // active upload time: stops while paused and while the tab is closed
+  function uploadTime(t) {
+    if (t < T.up0) return 0;
+    if (t < T.pause) return t - T.up0;
+    const a = T.pause - T.up0;
+    if (t < T.resume) return a;
+    if (t < T.tabIn) return a + (t - T.resume);
+    const b = a + (T.tabIn - T.resume);
+    if (t < T.up1) return b;
+    return Math.min(FULL, b + (t - T.up1));
+  }
   const TOTAL_MB = 1229, TOTAL_SEC = 754, ETA_SEC = 96;
+  const LANDED_AT_RESUME = Math.floor(uploadTime(T.up1) / BATCH) * LANES;
 
   window.seek = function(t) {
     const [cx, cy] = cursorAt(t);
-    const press = Math.max(click(t,T.pick), click(t,T.sel), click(t,T.open), click(t,T.play));
+    const press = Math.max(click(t,T.pick), click(t,T.sel), click(t,T.open), click(t,T.pause), click(t,T.resume), click(t,T.pick2), click(t,T.sel2), click(t,T.open2));
     $('cursor').style.transform = `translate(${cx-3}px, ${cy-2}px) scale(${1 - .12*press})`;
+    $('cursor').style.opacity = t >= T.tabIn + 200 && t < T.tabOut ? 0 : 1;
 
-    $('choose').className = 'choose' + (click(t, T.pick) > .3 ? ' press' : '');
+    $('choose').className = 'choose' + (Math.max(click(t, T.pick), click(t, T.pick2)) > .3 ? ' press' : '');
 
-    // dialog
-    const dOpen = seg(t, 1650, 1900, easeOut), dClose = seg(t, 3700, 3850);
-    const dO = dOpen * (1 - dClose);
+    // dialog, twice
+    const d1 = seg(t, 1650, 1900, easeOut) * (1 - seg(t, 3450, 3600));
+    const d2 = seg(t, 9150, 9400, easeOut) * (1 - seg(t, 10400, 10550));
+    const dO = Math.max(d1, d2);
     $('dlg').style.opacity = dO;
-    $('dlg').style.transform = `scale(${lerp(.94, 1, dOpen)})`;
-    $('f2').className = 'f' + (t >= T.sel && t < 3850 ? ' sel' : '');
-    $('open').className = 'b primary' + (click(t, T.open) > .3 ? ' press' : '');
+    $('dlg').style.transform = `scale(${lerp(.94, 1, dO)})`;
+    $('f2').className = 'f' + ((t >= T.sel && t < 3600) || (t >= T.sel2 && t < 10550) ? ' sel' : '');
+    $('open').className = 'b primary' + (Math.max(click(t, T.open), click(t, T.open2)) > .3 ? ' press' : '');
 
-    // dropzone out, upload in
-    const upIn = seg(t, 3750, 3950), upOut = seg(t, 6700, 6950);
-    $('drop').style.opacity = 1 - upIn;
-    $('up').style.opacity = upIn * (1 - upOut);
+    // dropzone vs upload state, twice
+    const upA = seg(t, T.upIn, T.upIn + 200) * (1 - seg(t, T.tabIn, T.tabIn + 300));
+    const upB = seg(t, T.upIn2, T.upIn2 + 200) * (1 - seg(t, 12900, 13150));
+    const upVis = Math.max(upA, upB);
+    $('drop').style.opacity = t < T.tabOut ? 1 - seg(t, T.upIn - 200, T.upIn) : 1 - seg(t, T.upIn2 - 200, T.upIn2);
+    $('up').style.opacity = upVis;
 
-    // chip: pending during upload, ready after
-    const chipIn = seg(t, 3800, 4000);
-    const ready = t >= 6850;
+    // tab closed overlay
+    const tab = seg(t, T.tabIn, T.tabIn + 300) * (1 - seg(t, T.tabOut, T.tabOut + 300));
+    $('tab').style.opacity = tab;
+
+    // chip: pending from the first byte, stays pending across the tab close, ready at the end
+    const chipIn = seg(t, T.upIn, T.upIn + 200);
+    const ready = t >= 12900;
     $('chip').style.opacity = chipIn;
     $('chip').className = 'chip' + (ready ? ' ok' : '');
     $('chip').textContent = ready ? 'ready' : 'pending';
 
-    // multipart progress: linear to 99%, then finishing
-    const up = seg(t, T.upA, T.upB, lin);
+    // progress from active upload time
+    const tu = uploadTime(t);
+    const up = tu / FULL;
+    const paused = t >= T.pause && t < T.resume;
+    const finishing = tu >= FULL && !ready;
     const pct = Math.round(up * 99);
-    const finishing = t >= T.finA;
     $('barfill').style.width = pct + '%';
     const mb = Math.round(up * TOTAL_MB);
     $('sizes').innerHTML = finishing ? 'Finishing up...' : `<b>${mb} MB</b> of 1.2 GB`;
     const left = Math.ceil((1 - up) * ETA_SEC);
-    $('eta').textContent = finishing ? '99%' : `${pct}%  ·  ${mmss(left)} left`;
-    const done = Math.floor(up * PARTS), frac = up * PARTS - done;
-    tiles.forEach((el, i) => {
-      const f = i < done ? 1 : i === done ? frac : 0;
-      el.style.background = f >= 1 ? 'var(--ring)' : 'var(--bar)';
-      if (i === done && !finishing) el.style.background = `linear-gradient(90deg, var(--ring) ${f*100}%, var(--bar) ${f*100}%)`;
-      if (finishing) el.style.background = 'var(--ring)';
-    });
-    $('plabel').textContent = finishing ? `${PARTS} of ${PARTS} parts landed` : `Part ${Math.min(done + 1, PARTS)} of ${PARTS}`;
+    $('eta').textContent = finishing ? '99%' : paused ? `${pct}%  ·  paused` : `${pct}%  ·  ${mmss(left)} left`;
+    $('pause').textContent = paused ? 'Resume' : 'Pause';
+    $('pause').className = 'b' + (paused ? ' hot' : '') + (Math.max(click(t, T.pause), click(t, T.resume)) > .3 ? ' press' : '');
 
-    // player in, then play
-    const plIn = seg(t, 6900, 7150);
+    // parts: 4 lanes, part i runs in batch floor(i/4)
+    let landed = 0;
+    tiles.forEach((el, i) => {
+      const start = Math.floor(i / LANES) * BATCH;
+      const f = clamp((tu - start) / BATCH);
+      if (f >= 1) landed++;
+      el.style.background = f >= 1 ? 'var(--ring)' : f > 0 ? `linear-gradient(90deg, var(--ring) ${f*100}%, var(--bar) ${f*100}%)` : 'var(--bar)';
+      el.style.opacity = f > 0 && f < 1 ? .55 + .45 * f : 1;
+    });
+    const resumed = t >= T.upIn2 && t < T.upIn2 + 1600;
+    $('plabel').textContent = finishing ? `${PARTS} of ${PARTS} parts landed` : resumed ? `Same file again: ${LANDED_AT_RESUME} of ${PARTS} parts were already there` : `${landed} of ${PARTS} parts`;
+    $('lanes').style.opacity = finishing || resumed || paused ? 0 : 1;
+
+    // player
+    const plIn = seg(t, 12950, 13250);
     $('player').style.opacity = plIn;
-    const playing = seg(t, T.play, T.play + 200);
-    $('big').style.opacity = 1 - playing;
-    $('big').className = 'big' + (click(t, T.play) > .3 ? ' press' : '');
-    $('tri').style.opacity = 1 - playing;
-    $('pau').style.opacity = playing;
-    const prog = seg(t, T.play, 9000, lin) * .16;
-    $('scrub').style.width = (prog * 100) + '%';
-    $('knob').style.left = (prog * 100) + '%';
-    $('time').textContent = `${mmss(prog * TOTAL_SEC)} / ${mmss(TOTAL_SEC)}`;
+    $('time').textContent = `0:00 / ${mmss(TOTAL_SEC)}`;
   };
-  window.DURATION = 9700;
+  window.DURATION = 14300;
   seek(0);
 </script>
 </body>
