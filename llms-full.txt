@@ -75173,6 +75173,66 @@ export default defineCachedTool({
   Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
 </Accordion>
 
+### How to use Eve's memory slots
+
+Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
+that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
+it, two ways. Needs Eve 0.45.2 or newer.
+
+`redisMemory()` is a full provider. It recalls the memories relevant to the current turn, captures
+what the user says afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
+`<slot>__read_session`, and `<slot>__forget_memory`:
+
+```ts
+// agent/memory/recall.ts
+import { redisMemory } from "@upstash/agentkit-eve/memory";
+import { defineMemory } from "eve/memory";
+import { byPrincipal } from "eve/memory/scope";
+
+export default defineMemory({
+  description: "Everything the caller has told this agent before, recalled by relevance.",
+  provider: redisMemory({ topK: 5 }),
+  scope: byPrincipal,
+});
+```
+
+`redisDocuments()` is a storage backend for Eve's own `fileMemory()` provider, which replays one
+short, model-curated document in full before every turn. Without a backend, `fileMemory()` only
+resolves storage under `eve dev` and on Vercel with a Blob store attached:
+
+```ts
+// agent/memory/profile.ts
+import { redisDocuments } from "@upstash/agentkit-eve/memory";
+import { defineMemory } from "eve/memory";
+import { fileMemory } from "eve/memory/file";
+import { byPrincipal } from "eve/memory/scope";
+
+export default defineMemory({
+  description: "A short, curated list of stable facts about the caller.",
+  provider: fileMemory({ backend: redisDocuments() }),
+  scope: byPrincipal,
+});
+```
+
+<Accordion title="Options and what gets recalled">
+  `redisMemory()` takes `rememberMessages` (default `true`, meaning `"fromUser"` — also `"all"`,
+  `"fromModel"`, or `false` to capture nothing), `topK`, `minScore`, `maxRecallCharacters`,
+  `maxMemoryCharacters`, `prefix` / `indexName`, and `redis`. `redisDocuments()` takes `prefix`,
+  `ttlSeconds`, and `redis`.
+
+  Automatic recall injects **only** facts saved through `save_memory`. Captured messages live in the
+  same store but are kept out of that ranking, so a passing remark can't outrank a fact the model
+  deliberately kept — they stay reachable through `search_memory` and `read_session`.
+
+  `forget_memory` redacts rather than deletes: the text is erased and the entry can never be recalled
+  or searched again, but `read_session` shows it as `[redacted]` instead of leaving a silent gap. It
+  isn't contributed under `"all"` or `"fromModel"`, because those modes store the assistant's replies
+  and a reply confirming a deletion quotes the text it just deleted.
+
+  Slots are agent-owned, so the extension can't contribute one — these are the files you write
+  yourself. `scope` is the tenant boundary; `byPrincipal` fails closed for anonymous callers.
+</Accordion>
+
 ### Memory and RAG as individual tool files
 
 The same two features the extension mounts, written as standalone `agent/tools/` files. Use these when
@@ -75691,6 +75751,66 @@ export default defineCachedTool({
   * `redis` — defaults to `Redis.fromEnv()`.
 
   Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
+</Accordion>
+
+### How to use Eve's memory slots
+
+Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
+that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
+it, two ways. Needs Eve 0.45.2 or newer.
+
+`redisMemory()` is a full provider. It recalls the memories relevant to the current turn, captures
+what the user says afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
+`<slot>__read_session`, and `<slot>__forget_memory`:
+
+```ts
+// agent/memory/recall.ts
+import { redisMemory } from "@upstash/agentkit-eve/memory";
+import { defineMemory } from "eve/memory";
+import { byPrincipal } from "eve/memory/scope";
+
+export default defineMemory({
+  description: "Everything the caller has told this agent before, recalled by relevance.",
+  provider: redisMemory({ topK: 5 }),
+  scope: byPrincipal,
+});
+```
+
+`redisDocuments()` is a storage backend for Eve's own `fileMemory()` provider, which replays one
+short, model-curated document in full before every turn. Without a backend, `fileMemory()` only
+resolves storage under `eve dev` and on Vercel with a Blob store attached:
+
+```ts
+// agent/memory/profile.ts
+import { redisDocuments } from "@upstash/agentkit-eve/memory";
+import { defineMemory } from "eve/memory";
+import { fileMemory } from "eve/memory/file";
+import { byPrincipal } from "eve/memory/scope";
+
+export default defineMemory({
+  description: "A short, curated list of stable facts about the caller.",
+  provider: fileMemory({ backend: redisDocuments() }),
+  scope: byPrincipal,
+});
+```
+
+<Accordion title="Options and what gets recalled">
+  `redisMemory()` takes `rememberMessages` (default `true`, meaning `"fromUser"` — also `"all"`,
+  `"fromModel"`, or `false` to capture nothing), `topK`, `minScore`, `maxRecallCharacters`,
+  `maxMemoryCharacters`, `prefix` / `indexName`, and `redis`. `redisDocuments()` takes `prefix`,
+  `ttlSeconds`, and `redis`.
+
+  Automatic recall injects **only** facts saved through `save_memory`. Captured messages live in the
+  same store but are kept out of that ranking, so a passing remark can't outrank a fact the model
+  deliberately kept — they stay reachable through `search_memory` and `read_session`.
+
+  `forget_memory` redacts rather than deletes: the text is erased and the entry can never be recalled
+  or searched again, but `read_session` shows it as `[redacted]` instead of leaving a silent gap. It
+  isn't contributed under `"all"` or `"fromModel"`, because those modes store the assistant's replies
+  and a reply confirming a deletion quotes the text it just deleted.
+
+  Slots are agent-owned, so the extension can't contribute one — these are the files you write
+  yourself. `scope` is the tenant boundary; `byPrincipal` fails closed for anonymous callers.
 </Accordion>
 
 ### Memory and RAG as individual tool files
