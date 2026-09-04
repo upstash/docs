@@ -475,23 +475,47 @@ export default defineMemory({
 });
 ```
 
-<Accordion title="Options and what gets recalled">
-  `redisMemory()` takes `rememberMessages` (default `true`, meaning `"fromUser"` — also `"all"`,
-  `"fromModel"`, or `false` to capture nothing), `topK`, `minScore`, `maxRecallCharacters`,
-  `maxMemoryCharacters`, `prefix` / `indexName`, and `redis`. `redisDocuments()` takes `prefix`,
-  `ttlSeconds`, and `redis`.
+<Accordion title="Options">
+  `redisMemory()`:
 
-  Automatic recall injects **only** facts saved through `save_memory`. Captured messages live in the
-  same store but are kept out of that ranking, so a passing remark can't outrank a fact the model
-  deliberately kept — they stay reachable through `search_memory` and `read_session`.
+  | Option | Default | What it does |
+  | --- | --- | --- |
+  | `rememberMessages` | `true` | What gets saved automatically. `true` (same as `"fromUser"`) saves what the user says; `"all"` saves both sides; `"fromModel"` saves the agent's replies; `false` saves nothing. |
+  | `topK` | `5` | How many memories to bring back each turn. |
+  | `minScore` | `0` | Minimum relevance score to bring one back. Scores are BM25, so unbounded. |
+  | `maxRecallCharacters` | `4000` | Size limit for everything recalled in one turn. |
+  | `maxMemoryCharacters` | `2048` | Size limit for a single stored memory. |
+  | `prefix` / `indexName` | `agentkit:memorySlot` | Redis key prefix and search index name. |
+  | `redis` | `Redis.fromEnv()` | Your Redis client. |
 
-  `forget_memory` redacts rather than deletes: the text is erased and the entry can never be recalled
-  or searched again, but `read_session` shows it as `[redacted]` instead of leaving a silent gap. It
-  isn't contributed under `"all"` or `"fromModel"`, because those modes store the assistant's replies
-  and a reply confirming a deletion quotes the text it just deleted.
+  `redisDocuments()`:
 
-  Slots are agent-owned, so the extension can't contribute one — these are the files you write
-  yourself. `scope` is the tenant boundary; `byPrincipal` fails closed for anonymous callers.
+  | Option | Default | What it does |
+  | --- | --- | --- |
+  | `prefix` | `agentkit:memoryFile` | Redis key prefix. |
+  | `ttlSeconds` | no expiry | Expire a scope's document after this long. |
+  | `redis` | `Redis.fromEnv()` | Your Redis client. |
+
+  `scope` is Eve's, not ours, but it is the tenant boundary — `byPrincipal` fails closed and disables
+  the slot for anonymous callers rather than pooling them together.
+</Accordion>
+
+<Accordion title="What does the agent remember?">
+  Two things: facts it chose to save with `save_memory`, and the messages it captured automatically
+  (see `rememberMessages` above).
+
+  Before each turn it is handed the **saved facts** that match what the user just said. Captured
+  messages are deliberately left out of that list, so an offhand remark can't crowd out a fact the
+  agent decided was worth keeping. It can still reach them itself: `search_memory` looks through
+  everything, and `read_session` replays a whole past conversation.
+
+  Asking it to forget something blanks the entry — it can never be recalled or searched again. A past
+  conversation shows the entry as `[redacted]` rather than dropping it silently, so nothing that was
+  said can look like it never happened.
+
+  One exception: with `rememberMessages` set to `"all"` or `"fromModel"` the agent gets no forget
+  tool. Those modes store its replies, and a reply confirming a deletion repeats the deleted text, so
+  forgetting couldn't be honest.
 </Accordion>
 
 ### Memory and RAG as individual tool files
