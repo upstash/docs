@@ -434,6 +434,90 @@ export default defineCachedTool({
   Keys are `agentkit:toolCache:<userId>:<toolName>:<hash>`.
 </Accordion>
 
+### How to use Eve's memory slots
+
+Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
+that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
+it, two ways. Needs Eve 0.45.2 or newer.
+
+`redisMemory()` is a full provider. It recalls the memories relevant to the current turn, stores the
+user's messages afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
+`<slot>__read_session`, and `<slot>__forget_memory`:
+
+```ts
+// agent/memory/recall.ts
+import { redisMemory } from "@upstash/agentkit-eve/memory";
+import { defineMemory } from "eve/memory";
+import { byPrincipal } from "eve/memory/scope";
+
+export default defineMemory({
+  description: "Everything the caller has told this agent before, recalled by relevance.",
+  provider: redisMemory({ topK: 5 }),
+  scope: byPrincipal,
+});
+```
+
+`redisDocuments()` is a storage backend for Eve's own `fileMemory()` provider, which replays one
+short, model-curated document in full before every turn. Without a backend, `fileMemory()` only
+resolves storage under `eve dev` and on Vercel with a Blob store attached:
+
+```ts
+// agent/memory/profile.ts
+import { redisDocuments } from "@upstash/agentkit-eve/memory";
+import { defineMemory } from "eve/memory";
+import { fileMemory } from "eve/memory/file";
+import { byPrincipal } from "eve/memory/scope";
+
+export default defineMemory({
+  description: "A short, curated list of stable facts about the caller.",
+  provider: fileMemory({ backend: redisDocuments() }),
+  scope: byPrincipal,
+});
+```
+
+<Accordion title="Options">
+  `redisMemory()`:
+
+  | Option | Default | What it does |
+  | --- | --- | --- |
+  | `rememberMessages` | `true` | What gets saved automatically. `true` (same as `"fromUser"`) saves what the user says; `"all"` saves both sides; `"fromModel"` saves the agent's replies; `false` saves nothing. |
+  | `topK` | `5` | How many memories to bring back each turn. |
+  | `minScore` | `0` | Minimum relevance score to bring one back. Scores are BM25, so unbounded. |
+  | `maxRecallCharacters` | `4000` | Size limit for everything recalled in one turn. |
+  | `maxMemoryCharacters` | `2048` | Size limit for a single stored memory. |
+  | `prefix` / `indexName` | `agentkit:memorySlot` | Redis key prefix and search index name. |
+  | `redis` | `Redis.fromEnv()` | Your Redis client. |
+
+  `redisDocuments()`:
+
+  | Option | Default | What it does |
+  | --- | --- | --- |
+  | `prefix` | `agentkit:memoryFile` | Redis key prefix. |
+  | `ttlSeconds` | no expiry | Expire a scope's document after this long. |
+  | `redis` | `Redis.fromEnv()` | Your Redis client. |
+
+  `scope` is Eve's, not ours, but it is the tenant boundary — `byPrincipal` fails closed and disables
+  the slot for anonymous callers rather than pooling them together.
+</Accordion>
+
+<Accordion title="What does the agent remember?">
+  Two things: facts it chose to save with `save_memory`, and the messages themselves — what the user
+  said, and optionally what the agent replied (see `rememberMessages` above).
+
+  Before each turn the agent is handed the **saved facts** that match what the user just said. User
+  and agent messages are deliberately left out of that list, so an offhand remark can't crowd out a
+  fact the agent decided was worth keeping. It can still reach them itself: `search_memory` looks
+  through everything, and `read_session` replays a whole past conversation.
+
+  Asking it to forget something blanks the entry — it can never be recalled or searched again. A past
+  conversation shows the entry as `[redacted]` rather than dropping it silently, so nothing that was
+  said can look like it never happened.
+
+  One exception: with `rememberMessages` set to `"all"` or `"fromModel"` the agent gets no forget
+  tool. Those modes store its replies, and a reply confirming a deletion repeats the deleted text, so
+  forgetting couldn't be honest.
+</Accordion>
+
 ### Memory and RAG as individual tool files
 
 The same two features the extension mounts, written as standalone `agent/tools/` files. Use these when
