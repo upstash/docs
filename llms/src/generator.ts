@@ -18,11 +18,26 @@ type GroupEntry = { group: string } & (
   | { openapi: OpenApiRef; pages?: never }
 );
 
+// A product owns groups or flat pages, never both.
+type ProductEntry = { product: string } & (
+  | { groups: GroupEntry[]; pages?: never }
+  | { pages: PageEntry[]; groups?: never }
+);
+
+interface ProductGroupEntry {
+  group: string;
+  products: ProductEntry[];
+}
+
 // A tab can organize content with `groups` or flat `pages` (never both).
 // Independently, a tab may carry a top-level `openapi` ref pointing at a
 // spec file — this is how Mintlify wires operation-ID page entries
 // (e.g. "GET /redis/databases") inside the tab's groups back to a spec.
-type TabEntry = { tab: string; openapi?: OpenApiRef } & (
+type TabEntry = {
+  tab: string;
+  openapi?: OpenApiRef;
+  productGroups?: ProductGroupEntry[];
+} & (
   | { groups: GroupEntry[]; pages?: never }
   | { pages: PageEntry[]; groups?: never }
 );
@@ -61,8 +76,8 @@ export interface WalkOptions {
  * Walks the navigation tree in docs.json.
  *
  * Emits a "group" item every time we enter a new named section
- * (tab, group, or nested group). depth starts at 0 for tabs and
- * increases with each level of nesting.
+ * (tab, product, group, or nested group). depth starts at 0 for tabs and
+ * products, and increases with each level of nesting.
  *
  * Emits a "page" item for each leaf page, with the parsed frontmatter
  * and the raw file body (frontmatter stripped).
@@ -74,24 +89,36 @@ export function* walkNavigation(opts: WalkOptions): Generator<WalkItem> {
   for (const tab of docs.navigation.tabs) {
     if (opts.includeTab && !opts.includeTab(tab.tab)) continue;
 
-    yield { type: "group", group: tab.tab, depth: 0 };
-
-    // A tab can also carry a top-level OpenAPI spec (e.g. Developer API).
-    // Yield it before iterating groups/pages so callers see the spec
-    // associated with the tab.
-    if (tab.openapi) {
-      yield openApiItem(tab.openapi);
+    yield* walkRoot(tab.tab, tab, opts.docsRoot);
+    for (const group of tab.productGroups ?? []) {
+      for (const product of group.products) {
+        yield* walkRoot(product.product, product, opts.docsRoot);
+      }
     }
+  }
+}
 
-    // A tab uses `groups` (most common) or `pages` directly — never both.
-    if (tab.groups) {
-      for (const group of tab.groups) {
-        yield* walkGroup(group, 1, opts.docsRoot);
-      }
-    } else {
-      for (const entry of tab.pages) {
-        yield* walkEntry(entry, 1, opts.docsRoot);
-      }
+function* walkRoot(
+  name: string,
+  root: TabEntry | ProductEntry,
+  docsRoot: string,
+): Generator<WalkItem> {
+  yield { type: "group", group: name, depth: 0 };
+
+  // A tab can also carry a top-level OpenAPI spec (e.g. Developer API).
+  // Yield it before iterating groups/pages so callers see the spec
+  // associated with the tab.
+  if ("openapi" in root && root.openapi) {
+    yield openApiItem(root.openapi);
+  }
+
+  if (root.groups) {
+    for (const group of root.groups) {
+      yield* walkGroup(group, 1, docsRoot);
+    }
+  } else {
+    for (const entry of root.pages) {
+      yield* walkEntry(entry, 1, docsRoot);
     }
   }
 }
