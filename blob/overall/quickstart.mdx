@@ -1,0 +1,177 @@
+---
+title: "Quickstart"
+---
+
+Upstash Blob is S3-compatible object storage. `@upstash/blob` has a `Bucket` client for your server, and an upload handler plus React hooks that upload from the browser straight to storage. This page builds a working file picker on Next.js App Router. Other frameworks work the same way; see [Other frameworks](/blob/uploads/upload-handler#other-frameworks).
+
+---
+
+## Setup
+
+<CodeGroup>
+```bash npm
+npm install @upstash/blob
+```
+
+```bash pnpm
+pnpm add @upstash/blob
+```
+
+```bash yarn
+yarn add @upstash/blob
+```
+
+```bash bun
+bun add @upstash/blob
+```
+</CodeGroup>
+
+Create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment.
+
+```bash .env
+UPSTASH_BLOB_TOKEN=...
+```
+
+The console asks whether the bucket is public or private:
+
+- **Public**: every object has a public URL. For avatars, product images, anything a page links to directly.
+- **Private**: no public URL. Every read goes through a time-limited [signed URL](/blob/bucket/reading#signedreadurl). For user documents, invoices, anything that must not be guessable.
+
+---
+
+## Upload from your server
+
+```ts lib/reports.ts
+import { Bucket } from "@upstash/blob"
+
+const bucket = Bucket.fromEnv()
+
+export async function saveReport(file: Blob) {
+  const blob = await bucket.put("reports/2026-01.pdf", file, {
+    contentType: "application/pdf",
+  })
+  return blob.url
+}
+```
+
+Bytes already on your server go to the bucket with `put`. `blob.url` is the public object URL, `undefined` on a private bucket. See [Writing](/blob/bucket/writing).
+
+---
+
+## Upload from the browser
+
+Files a user picks go straight from the browser to storage. Your server only authorizes the upload and records the result, so the bytes never pass through it.
+
+<Steps>
+
+<Step title="Write the upload handler">
+
+```ts lib/uploads.ts
+import "server-only"
+import { uploadHandler } from "@upstash/blob"
+
+export const uploads = uploadHandler({
+  constraints: {
+    maxSize: "20mb",
+    contentTypes: ["image/*", "application/pdf"],
+  },
+
+  onBeforeUpload: ({ file }) => ({ path: `images/${file.name}` }),
+})
+```
+
+The handler runs on your server. It decides who may upload, where the object goes, and what happens once it lands. It never sees the bytes.
+
+This one accepts anyone. [Upload handler](/blob/uploads/upload-handler) adds the auth check and the completion callback.
+
+</Step>
+
+<Step title="Mount it as a route">
+
+```ts app/api/upload/route.ts
+import { uploads } from "@/lib/uploads"
+
+export const { GET, POST } = uploads
+```
+
+`POST` runs the upload and `GET` serves the route's constraints. The hooks look at `/api/upload` by default, so nothing else has to name a URL.
+
+</Step>
+
+<Step title="Bind the hooks to the handler">
+
+```ts lib/upload-hooks.ts
+"use client"
+
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+`uploadHooks<typeof uploads>()` reads the handler's type, so route names and completion data are checked at compile time. The `import type` is erased at build time and never pulls server code into the browser bundle.
+
+</Step>
+
+<Step title="Upload a file">
+
+```tsx app/page.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
+
+export default function Page() {
+  const { start, upload, accept } = useUpload()
+
+  return (
+    <div>
+      <input
+        type="file"
+        accept={accept}
+        onChange={(e) => start({ file: e.target.files?.[0] })}
+      />
+
+      {upload && <p>{upload.status}</p>}
+      {upload?.pending && <progress value={upload.percent} max={100} />}
+      {upload?.status === "done" && (
+        <a href={upload.blob.url}>{upload.blob.path}</a>
+      )}
+      {upload?.status === "error" && <p>{upload.error.message}</p>}
+    </div>
+  )
+}
+```
+
+</Step>
+
+</Steps>
+
+You get these without more code:
+
+- **Multipart for large files.** Past 16 MB the SDK switches to parts, with pause, resume and per-part retry. See [Large files](/blob/uploads/large-files).
+- **Retries.** Failed parts back off and retry, and an expired signature is refreshed mid-upload.
+- **A picker that matches the server.** `accept` comes from the route's own `GET`, so an oversized file is refused before any request goes out. See [Constraints](/blob/uploads/constraints).
+- **Progress.** `percent`, `status` and `pending` read the same for one PUT or 200 parts.
+- **Types end to end.** Whatever `onUploadComplete` returns is `upload.blob.data` on the client.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Upload handler" href="/blob/uploads/upload-handler">
+    Auth, routes, and the completion callback in full.
+  </Card>
+
+  <Card title="Upload client" href="/blob/uploads/upload-client">
+    `useUpload`, the record it renders, and the non-React client.
+  </Card>
+
+  <Card title="Writing" href="/blob/bucket/writing">
+    `put`, metadata, conditional writes and multipart from the server.
+  </Card>
+
+  <Card title="Recipes" href="/blob/recipes/avatars">
+    Avatars, attachments and private documents, wired end to end.
+  </Card>
+</CardGroup>

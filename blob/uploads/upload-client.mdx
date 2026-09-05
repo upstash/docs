@@ -1,0 +1,193 @@
+---
+title: "Upload Client"
+---
+
+`@upstash/blob/react` is the browser side of a direct upload. `uploadHooks` binds the hooks to your [upload handler](/blob/uploads/upload-handler), and `useUpload` runs the upload and reports its progress. There is a plain function for apps without React, and `useServerUpload` for routes where the bytes do pass through your app.
+
+```ts lib/upload-hooks.ts
+"use client"
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+```tsx app/page.tsx
+const { start, upload, accept } = useUpload()
+```
+
+---
+
+## uploadHooks
+
+```ts lib/upload-hooks.ts
+"use client"
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>({
+  headers: async () => ({ authorization: `Bearer ${await getToken()}` }),
+  concurrency: 3,
+  endpoint: "/api/upload",
+  onError: ({ file, error }) => toast.error(`${file.name}: ${error.message}`),
+})
+```
+
+`uploadHooks<typeof uploads>(defaults)` binds `useUpload` to one handler. The bound hook knows the route names, so a typo does not compile, and it knows each route's `input` and completion data. Called with no type parameter, `uploadHooks()` returns an unbound `useUpload` that takes a URL instead of a route name.
+
+Every option is optional.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `headers` | none | A function returning headers to send to your route. Re-read on every request. |
+| `concurrency` | `3` | How many files upload at once. |
+| `endpoint` | `'/api/upload'` | Where the handler is mounted. |
+| `onError` | none | Runs for every failed upload. |
+
+A call-site option on `useUpload` wins over the default, except `onError`, where the default runs first and the call-site one after it.
+
+<Warning>
+  A call-site `onError` must not throw. A throw there stops the rest of the upload queue from
+  starting. A throw from the configured default `onError` is caught and logged.
+</Warning>
+
+---
+
+## useUpload
+
+```tsx app/page.tsx
+const { start, uploads, upload, clear, accept, constraints } = useUpload("attachment", {
+  concurrency: 2,
+  onDone: (record) => console.log(record.blob.data),
+  onError: (record) => console.log(record.error.code),
+})
+```
+
+| Returns | Description |
+| --- | --- |
+| `start` | Begins one upload or several. Returns the record(s). |
+| `uploads` | Every record, in the order they were started. |
+| `upload` | The newest record, or `null`. |
+| `clear(id?)` | Removes one record, or all of them. |
+| `accept` | The route's `contentTypes`, joined, for an `<input accept>`. |
+| `constraints` | What the route's [`GET`](/blob/uploads/upload-handler#the-get-endpoint) served. `undefined` until it answers. |
+
+```tsx app/page.tsx
+<input
+  type="file"
+  multiple
+  accept={accept}
+  onChange={(e) => start({ files: e.target.files })}
+/>
+```
+
+`start({ file })` returns one record, or `null` when the file is nullish, so an empty file picker is not an error. `start({ files })` takes a `File[]` or a `FileList` and returns an array.
+
+Three files upload at once by default and the rest queue. `clear(id?)` removes records from the list; a cleared upload that is still running finishes anyway. Unmounting the component does not cancel anything either.
+
+### The record
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Stable for the life of the record. Use it as the list key. |
+| `file` | `File` | The file this record uploads. |
+| `status` | `'queued' \| 'uploading' \| 'finishing' \| 'paused' \| 'done' \| 'canceled' \| 'error'` | |
+| `loaded` | `number` | Bytes that have landed. |
+| `total` | `number` | The file's size. |
+| `percent` | `number` | 0 to 99 while running, 100 only once `done`. |
+| `pending` | `boolean` | Not settled: queued, uploading, finishing or paused. |
+| `stalled` | `boolean` | Every request in flight is waiting on a backoff. |
+| `canPause` | `boolean` | Whether `pause()` would do anything. |
+| `blob` | `CompletedBlob & { data }` | On `done` only. |
+| `error` | `BlobError` | On `error` only. |
+| `pause()` `resume()` `cancel()` `retry()` | `() => boolean` | Each answers whether it did anything. |
+
+Drive UI off `pending` rather than deriving it from `status`. `percent` stays at 99 through `finishing`, because 100 means stored, not sent. See [Progress and status](/blob/uploads/large-files#progress-and-status).
+
+`blob.data` is typed from that route's [`onUploadComplete`](/blob/uploads/upload-handler#onuploadcomplete). Fields a status does not carry are `undefined` rather than absent, so `upload?.blob?.url` and `upload?.error?.message` read straight off the record with no narrowing.
+
+`canPause` is `false` for a single PUT, which is every file under the multipart threshold. `retry()` works only from `error`, and resumes from the parts that already landed. See [Large files](/blob/uploads/large-files).
+
+### headers
+
+```tsx app/page.tsx
+const { start } = useUpload("attachment", {
+  headers: async () => {
+    const token = await auth.getToken() // throwing here refuses the upload
+    return { authorization: `Bearer ${token}` }
+  },
+})
+```
+
+`headers` is a function, not an object. It is called before every request the SDK makes to your route, so a token that rotates mid-upload keeps working.
+
+A throw from it fails the upload with that error and no retry. Use this to refuse an upload from the app side, for example when a token could not be refreshed.
+
+---
+
+## Without React
+
+```ts app/uploader.ts
+import { upload } from "@upstash/blob/browser"
+
+const task = upload(file, {
+  route: "/api/upload?route=attachment",
+  headers: async () => ({ authorization: `Bearer ${await getToken()}` }),
+  input: { threadId },
+})
+
+const stop = task.subscribe(() => {
+  const { status, percent, stalled } = task.snapshot()
+  render(status, percent, stalled)
+})
+
+const blob = await task.done // CompletedBlob & { data }
+stop()
+```
+
+`upload()` starts immediately and returns an `UploadTask`: `snapshot()` for the current state, `subscribe()` for changes, `done` as a promise, and `pause()`, `resume()`, `cancel()` and `retry()`. The snapshot has the same fields as the React record.
+
+---
+
+## useServerUpload
+
+```ts app/api/avatar/route.ts
+import { Bucket } from "@upstash/blob"
+
+const bucket = Bucket.fromEnv()
+
+export async function POST(request: Request) {
+  const file = (await request.formData()).get("file")
+  if (!(file instanceof File)) return Response.json({ error: "file field required" }, { status: 400 })
+
+  const blob = await bucket.put(`avatars/${userId}`, file, { contentTypes: ["image/png"], maxSize: "2mb" })
+  return Response.json({ url: blob.versionedUrl })
+}
+```
+
+```tsx app/avatar.tsx
+"use client"
+import { useServerUpload } from "@upstash/blob/react"
+
+const { start, upload } = useServerUpload<{ url: string }>("/api/avatar", { field: "file" })
+
+start({ file })
+upload?.percent
+upload?.status === "done" && upload.response.url // typed from the generic
+```
+
+For bytes that must pass through your app, do not use an upload handler. Write an ordinary route that calls `bucket.put`, and drive it with `useServerUpload`: one POST, with upload progress, cancellation and `BlobError` decoding. The route's JSON comes back as `response`.
+
+Every option is optional.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `field` | `'file'` | The form field the file is sent under. Must match what your route reads. |
+| `headers` | none | A function returning headers to send with the request. |
+| `concurrency` | `3` | How many files upload at once. |
+| `onDone` | none | Runs for every upload that finishes. |
+| `onError` | none | Runs for every failed upload. |
+
+`start({ body })` sends a `File`, `Blob` or `FormData` as the raw body instead of a form field. The record has `cancel()` only and no pause, since there is no multipart. Statuses are `queued`, `uploading`, `finishing`, `done`, `canceled` and `error`.
+
+A proxied upload is capped by your platform's request body limit rather than by `maxSize`. The SDK surfaces that refusal as `too_large` with the platform's limit as a hint; see [Platform body limits](/blob/reference/errors#platform-body-limits). Anything larger needs a direct upload with an [upload handler](/blob/uploads/upload-handler).

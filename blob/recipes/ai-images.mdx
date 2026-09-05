@@ -1,0 +1,184 @@
+---
+title: "AI-Generated Images"
+---
+
+<Frame>
+  <img className="block dark:hidden" src="/img/blob/ai-images-light.gif" alt="Type a prompt, click Generate, watch the fox image land in the gallery with its prompt, then delete it" />
+  <img className="hidden dark:block" src="/img/blob/ai-images-dark.gif" alt="Type a prompt, click Generate, watch the fox image land in the gallery with its prompt, then delete it" />
+</Frame>
+
+An image that a model just produced, kept so the user can see it again tomorrow. Providers hand back a temporary URL or a response you can only read once, so the bytes have to land somewhere of your own before they expire.
+
+Three choices make that work:
+
+- **A server-side write.** The bytes are already on your server when the model answers, so they go up with `put`. There is no browser upload here.
+- **A new path per generation.** `generations/${user.id}/${generationId}` is written once and never overwritten, so `cache: 'immutable'` is unconditionally safe.
+- **A row per generation.** It holds the prompt, the path and the URL, and it is what the gallery reads.
+
+This recipe uses a public bucket. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart). A private gallery is covered at the end.
+
+---
+
+## Storing a generation
+
+Read the model's response as a `Blob` and hand it to `put`. A `Blob` carries its own length and its own type, so nothing has to be declared.
+
+```ts lib/generations.ts
+import "server-only"
+import { Bucket } from "@upstash/blob"
+import { db } from "./db"
+
+const bucket = Bucket.fromEnv()
+
+// Any provider works. Whatever returns a Response with image bytes fits here.
+async function generateImage(prompt: string) {
+  return fetch("https://api.your-model-provider.com/v1/images", {
+    method: "POST",
+    headers: { authorization: `Bearer ${process.env.MODEL_API_KEY}` },
+    body: JSON.stringify({ prompt }),
+  })
+}
+
+export async function createGeneration(userId: string, prompt: string) {
+  const res = await generateImage(prompt)
+  if (!res.ok) throw new Error("the model did not return an image")
+
+  const generationId = crypto.randomUUID()
+  const path = `generations/${userId}/${generationId}`
+
+  const blob = await bucket.put(path, await res.blob(), { cache: "immutable" })
+
+  return db.generations.create({
+    id: generationId,
+    userId,
+    prompt,
+    path,
+    url: blob.url,
+    createdAt: new Date(),
+  })
+}
+```
+
+The path has no extension on purpose: the object is stored and served as whatever type the provider answered with, `image/png` or `image/webp` alike. If the response carries no `Content-Type`, pass `contentType` yourself, or the object is stored as `application/octet-stream` and a browser downloads it instead of rendering it.
+
+Plenty of providers answer with JSON pointing at a temporary URL instead. Fetch that URL and store what comes back the same way:
+
+```ts
+const { imageUrl } = await res.json()
+const image = await fetch(imageUrl)
+
+const blob = await bucket.put(path, await image.blob(), { cache: "immutable" })
+```
+
+Both forms hold the image in memory for the length of the call, which is fine for an image. For a body too big for that, `put` takes the response stream with a `size`; see [Writing](/blob/bucket/writing#streams-and-unknown-lengths).
+
+---
+
+## The route
+
+```ts app/api/generate/route.ts
+import { getUser } from "@/lib/auth"
+import { createGeneration } from "@/lib/generations"
+
+export async function POST(request: Request) {
+  const user = await getUser(request)
+  if (!user) return new Response("Unauthorized", { status: 401 })
+
+  const { prompt } = await request.json()
+  const generation = await createGeneration(user.id, prompt)
+
+  return Response.json({ id: generation.id, url: generation.url })
+}
+```
+
+Return your own URL, never the provider's. The provider's link is the one that stops working in an hour.
+
+---
+
+## The gallery
+
+The bucket cannot answer "what has this user generated". Your table can, so read rows and render the URL stored on each one:
+
+```tsx app/gallery/page.tsx
+import { redirect } from "next/navigation"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+export default async function GalleryPage() {
+  const user = await getUser()
+  if (!user) redirect("/login")
+
+  const generations = await db.generations.findMany({ userId: user.id })
+
+  return (
+    <ul>
+      {generations.map((g) => (
+        <li key={g.id}>
+          <img src={g.url} alt={g.prompt} />
+          <p>{g.prompt}</p>
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+Each object is stored `immutable` under a path that is never reused, so a browser or CDN that has seen one keeps it for a year and there is nothing to invalidate.
+
+If the gallery is not public, create the bucket as private instead. `blob.url` is `undefined` there, so the row keeps only the path, and a route of yours checks ownership and calls `signedReadUrl` at click time. That shape is in [Private documents](/blob/recipes/private-documents).
+
+---
+
+## Deleting
+
+Delete the row first, then the object. The gallery stops showing the image immediately, and if the second step fails the leftover is an object nobody links to rather than a broken image. `del` treats an already missing object as success, so it is safe to retry.
+
+```ts app/actions.ts
+"use server"
+
+import { Bucket } from "@upstash/blob"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function deleteGeneration(id: string) {
+  const user = await getUser()
+  const generation = await db.generations.find({ id, userId: user?.id })
+  if (!generation) throw new Error("not found")
+
+  await db.generations.delete(id)
+  await bucket.del(generation.path)
+}
+```
+
+When a user deletes their account, the rows are the only thing that knows the paths, so read them first, delete the objects, then drop the rows. If it fails partway, run it again:
+
+```ts
+const generations = await db.generations.findMany({ userId })
+
+await bucket.del(generations.map((g) => g.path))
+await db.generations.deleteMany({ userId })
+```
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Writing" href="/blob/bucket/writing">
+    Which bodies `put` accepts, and what a stream needs.
+  </Card>
+
+  <Card title="Caching" href="/blob/bucket/caching">
+    `immutable`, `revalidate`, and what each one stores.
+  </Card>
+
+  <Card title="Deleting" href="/blob/bucket/deleting">
+    One path, an array, and what a partial delete reports.
+  </Card>
+
+  <Card title="Private documents" href="/blob/recipes/private-documents">
+    The same shape on a private bucket, with signed reads.
+  </Card>
+</CardGroup>

@@ -1,0 +1,218 @@
+---
+title: "File Attachments"
+---
+
+<Frame>
+  <img className="block dark:hidden" src="/img/blob/attachments-light.gif" alt="Click Attach, pick two files, watch each row upload, post the reply with both attached, then remove one" />
+  <img className="hidden dark:block" src="/img/blob/attachments-dark.gif" alt="Click Attach, pick two files, watch each row upload, post the reply with both attached, then remove one" />
+</Frame>
+
+Files attached to a chat message, a comment, or a support ticket: many files per thread, uploaded by many people, kept for as long as the thread is.
+
+Three choices make that work:
+
+- **A unique path per file.** `uniquePath` adds a random suffix, so two people attaching `photo.png` get two objects.
+- **A row per attachment.** Your table is the index. It answers "what is attached to this thread", and the bucket only holds the bytes.
+- **A validated `input`.** The browser sends the thread id, and your route checks it, and the user's membership, before anything is signed.
+
+This recipe uses a public bucket. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart).
+
+---
+
+## The handler
+
+```ts lib/uploads.ts
+import "server-only"
+import * as z from "zod"
+import { BlobError, uniquePath, uploadHandler, uploadRoute } from "@upstash/blob"
+import { getUser } from "./auth"
+import { db } from "./db"
+
+const attachment = uploadRoute()({
+  constraints: { maxSize: "25mb" },
+  multipart: true,
+  input: z.object({ threadId: z.string() }),
+
+  onBeforeUpload: async ({ request, input, file }) => {
+    const user = await getUser(request)
+    if (!user) throw new BlobError("unauthorized")
+
+    const member = await db.threadMembers.exists({ threadId: input.threadId, userId: user.id })
+    if (!member) throw new BlobError("forbidden")
+
+    return {
+      path: uniquePath`threads/${input.threadId}/${file.name}`,
+      state: { threadId: input.threadId, userId: user.id },
+    }
+  },
+
+  onUploadComplete: async ({ uploadId, state, path, url, size, contentType, file }) => {
+    try {
+      // The browser retries this request on a flaky network, so upsert on uploadId.
+      await db.attachments.upsert({
+        id: uploadId,
+        threadId: state.threadId,
+        userId: state.userId,
+        name: file.name,
+        path, url, size, contentType,
+      })
+    } catch (e) {
+      // A throw here deletes the object, so make it a deliberate refusal the user can retry from.
+      console.error("[uploads] could not record", path, e)
+      throw new BlobError("not_ready", { message: "could not save the attachment, try again" })
+    }
+    return { attachmentId: uploadId }
+  },
+})
+
+export const uploads = uploadHandler({ routes: { attachment } })
+```
+
+`uploadRoute()` is the route form that takes an `input` schema and a typed `state`. `file.name` is the original filename, and this callback is the only place it exists, so store it if you want to show it later.
+
+`multipart: true` sends every file up in parts, which is what big files need, and nothing is stored at the path until the upload completes. See [Large files](/blob/uploads/large-files).
+
+A throw out of `onUploadComplete` deletes the object, so the `catch` turns a database failure into a refusal the user can retry from. `not_ready` is the 503 code, the one that means try again. See [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) and [Errors](/blob/reference/errors#the-codes).
+
+---
+
+## The route
+
+Mount the handler, then bind the hooks to it.
+
+```ts app/api/upload/route.ts
+import { uploads } from "@/lib/uploads"
+
+export const { GET, POST } = uploads
+```
+
+```ts lib/upload-hooks.ts
+"use client"
+
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+---
+
+## The picker
+
+```tsx components/attachment-input.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
+
+export function AttachmentInput({ threadId }: { threadId: string }) {
+  const { start, uploads } = useUpload("attachment")
+
+  return (
+    <>
+      <input type="file" multiple onChange={(e) => start({ files: e.target.files, input: { threadId } })} />
+
+      <ul>
+        {uploads.map((u) => (
+          <li key={u.id}>
+            {u.file.name}
+            {u.pending && <progress value={u.percent} max={100} />}
+            {u.status === "done" && <span>attached</span>}
+            {u.status === "error" && <span>{u.error.message}</span>}
+            {u.pending && <button onClick={() => u.cancel()}>Cancel</button>}
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+```
+
+The route declares a schema, so `input` is required here and a missing `threadId` does not compile. There is no `accept` on the input because the route takes any type. Three files upload at a time and the rest queue; `concurrency` on [useUpload](/blob/uploads/upload-client#useupload) changes that.
+
+---
+
+## Showing attachments
+
+Read your rows, never `list()`. The bucket cannot answer "what is attached to this thread", and your table already can.
+
+```tsx components/attachment-list.tsx
+import { db } from "@/lib/db"
+
+export async function AttachmentList({ threadId }: { threadId: string }) {
+  const attachments = await db.attachments.findMany({ threadId })
+
+  return (
+    <ul>
+      {attachments.map((a) => (
+        <li key={a.id}>
+          <a href={a.url} target="_blank">{a.name}</a> ({Math.round(a.size / 1024)} KB)
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+`url` is the public URL, which is right for a public bucket. If an attachment must not be readable by anyone holding its URL, put it on a private bucket and sign each read instead.
+
+---
+
+## Deleting
+
+Delete the row first, then the object. The thread stops listing the file immediately, and if the second step fails the leftover is an object nobody links to rather than a link that 404s. `del` treats an already missing object as success, so it is safe to retry.
+
+```ts app/actions.ts
+"use server"
+
+import { Bucket } from "@upstash/blob"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function deleteAttachment(id: string) {
+  const user = await getUser()
+  const attachment = await db.attachments.find({ id, userId: user?.id })
+  if (!attachment) throw new Error("not found")
+
+  await db.attachments.delete(id)
+  await bucket.del(attachment.path)
+}
+```
+
+Deleting a whole thread is the same thing in bulk. The rows are the only thing that knows the paths, so read them first, delete the objects, then drop the rows. If it fails partway, run it again:
+
+```ts
+const attachments = await db.attachments.findMany({ threadId })
+
+await bucket.del(attachments.map((a) => a.path))
+await db.attachments.deleteMany({ threadId })
+```
+
+---
+
+## Cleanup
+
+A user can close the tab halfway through an upload, and nothing tells your server. Because this route is `multipart: true`, that leaves unfinished parts rather than a stored file, and `bucket.abortStaleMultipartUploads()` on a daily cron clears them. Set its `olderThan` longer than your slowest upload, so a paused upload is not aborted underneath the user. [Abandoned uploads](/blob/uploads/abandoned-uploads) has the cron, and what to do instead on a route that is not multipart.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Upload handler" href="/blob/uploads/upload-handler">
+    `uploadRoute`, `input`, `state`, and multiple routes on one endpoint.
+  </Card>
+
+  <Card title="Large files" href="/blob/uploads/large-files">
+    Pause, resume, and what `multipart` changes.
+  </Card>
+
+  <Card title="Deleting" href="/blob/bucket/deleting">
+    One path, a list, a prefix, and sweeping incomplete uploads.
+  </Card>
+
+  <Card title="Private documents" href="/blob/recipes/private-documents">
+    The same shape on a private bucket, with signed downloads.
+  </Card>
+</CardGroup>

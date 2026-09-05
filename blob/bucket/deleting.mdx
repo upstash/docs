@@ -1,0 +1,164 @@
+---
+title: "Deleting"
+---
+
+This page covers `del`, which deletes one path, a list of paths, or everything under a prefix, and the calls that clean up multipart uploads that were never completed.
+
+```ts
+import { bucket } from "@/lib/blob"
+
+await bucket.del("avatars/me.png")                   // one path
+await bucket.del(["a.png", "b.png", "c.png"])        // an array of paths
+await bucket.del({ prefix: "tmp/" })                 // everything under a prefix
+```
+
+All three shapes resolve to `Promise<void>` and treat "already gone" as success. They differ in how many requests they make and what they throw when storage refuses part of the work.
+
+```ts
+type DeleteTarget = string | string[] | { prefix: string; all?: boolean }
+```
+
+Anything else is refused with `invalid_input`. A path with a `.` or `..` segment throws a `TypeError`; see [Paths](/blob/bucket/writing#paths).
+
+The upload handler also deletes on its own: a throw out of `onUploadComplete`, or a `cancel()` from the browser, removes the object that upload wrote. See [onUploadComplete](/blob/uploads/upload-handler#onuploadcomplete).
+
+---
+
+## One path
+
+```ts
+await bucket.del("drafts/9f3c.txt")
+await bucket.del("drafts/9f3c.txt")  // still no throw
+```
+
+One `DELETE` request. A 404 counts as success, so a delete is safe to run from a retried job or an at-least-once queue consumer. Any other failure throws; see [Errors](/blob/reference/errors#what-storage-errors-map-to).
+
+`del` never says whether anything was there. To find out, call `bucket.exists(path)` first.
+
+---
+
+## An array
+
+```ts
+import { BlobError } from "@upstash/blob"
+
+try {
+  await bucket.del(paths)
+} catch (e) {
+  if (BlobError.is(e) && e.code === "partial_delete") {
+    await requeue(e.failed ?? [])  // the paths still in the bucket, verified one by one
+    return
+  }
+  throw e
+}
+```
+
+Sent as batch deletes in chunks of 1000 paths, so a 5000-path array is five requests. A bad path fails the chunk it is in; earlier chunks have already run.
+
+When storage reports keys as failed, the SDK re-checks each one and keeps only the paths still there. If any survive, `del` throws `partial_delete` with them in `failed`. Everything not in `failed` was deleted. To recover, retry with `e.failed`.
+
+Use `BlobError.is(e)`, never `instanceof`. See [Errors](/blob/reference/errors).
+
+---
+
+## A prefix
+
+```ts
+await bucket.del({ prefix: "users/7/tmp/" })
+```
+
+Pages through `list()` at 1000 objects per page and batch-deletes each page as it goes. A prefix with 100,000 objects is 100 list requests and 100 batch deletes, run one after another. It is not atomic; objects written under the prefix while it runs may or may not be caught.
+
+Failures work as for an array. Survivors from every page are collected and thrown as `partial_delete`.
+
+<Warning>
+`del({ prefix: '' })` would match every object in the bucket, so an empty prefix is refused with `invalid_input`. This protects against an unset variable or an empty form field. To wipe the bucket on purpose, say so:
+
+```ts
+await bucket.del({ prefix: "", all: true })
+```
+
+`all` is only consulted for the empty prefix.
+</Warning>
+
+---
+
+## `move` leaves a copy on failure
+
+```ts
+import { BlobError } from "@upstash/blob"
+
+try {
+  await bucket.move("tmp/9f3c", "avatars/7.png")
+} catch (e) {
+  if (BlobError.is(e) && e.code === "move_left_a_copy") {
+    // avatars/7.png exists and is correct. tmp/9f3c is also still there.
+    await bucket.del("tmp/9f3c")  // retry the source delete, not the move
+    return
+  }
+  throw e
+}
+```
+
+`move` is a copy followed by a delete, because storage has no rename. If the copy fails, nothing changed and you get the copy's error. If the copy succeeds and the delete fails, `move` throws `move_left_a_copy` and **keeps the destination**, so you have two objects rather than none. The original error is on `cause`.
+
+---
+
+## Incomplete multipart uploads
+
+A multipart upload becomes an object only when it is completed. Until then its parts are billed storage that `list()` cannot see, and the bucket cannot be deleted while one exists. A browser tab closed mid-upload leaves exactly this behind.
+
+`bucket.put()` and a browser `cancel()` abort their own uploads on failure. Anything else needs a sweep. The cron that runs it is on [Abandoned uploads](/blob/uploads/abandoned-uploads#sweeping-incomplete-multipart-uploads); the calls it uses are below.
+
+### listMultipartUploads
+
+```ts
+const uploads = await bucket.listMultipartUploads({ prefix: "uploads/" })
+// [{ path: 'uploads/big.mp4', uploadId: 'ABC...', initiatedAt: Date }, ...]
+```
+
+Returns every upload started and neither completed nor aborted, paging internally until it has them all. `prefix` is optional.
+
+| Field | Meaning |
+| --- | --- |
+| `path` | The key the upload was started for. Nothing is stored there yet. |
+| `uploadId` | Storage's id for the upload, needed to abort it. |
+| `initiatedAt` | When it was started. What "stale" is measured against. |
+
+### abortMultipartUpload
+
+```ts
+await bucket.abortMultipartUpload({ path: "uploads/big.mp4", uploadId: "ABC..." })
+```
+
+Throws the upload away with every part that landed for it. An upload that is already gone counts as success. An empty `uploadId` is refused with `invalid_input`.
+
+`onUploadComplete` receives `multipartUploadId` for exactly this pair. Store it with your row and you can abort a specific upload later without listing the bucket. It is `undefined` for a single PUT.
+
+### abortStaleMultipartUploads
+
+```ts
+const aborted = await bucket.abortStaleMultipartUploads({
+  olderThan: "1d",
+  prefix: "uploads/",
+})
+// [{ path, uploadId, initiatedAt }, ...]
+```
+
+List plus abort in one call, meant for a cron. `olderThan` is required, a [Duration](/blob/reference/types#duration). Only uploads started longer ago than that are touched, so a window longer than your slowest upload never aborts one still running. A day is a reasonable default.
+
+<Note>
+An abandoned upload **under** the multipart threshold is not a multipart upload. It is an ordinary stored object that `list()` can see, and none of the calls above can find it. See [Abandoned uploads](/blob/uploads/abandoned-uploads).
+</Note>
+
+---
+
+## Error codes
+
+| Code | Raised by |
+| --- | --- |
+| `partial_delete` | An array or prefix delete where objects survived. `failed` lists them. |
+| `move_left_a_copy` | `move`, when the source delete failed. |
+| `invalid_input` | A bad `DeleteTarget`, an empty prefix without `all`, an empty `uploadId`. |
+
+`del` never raises `not_found`. Statuses and extra fields are on [Errors](/blob/reference/errors#the-codes).

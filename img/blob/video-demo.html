@@ -1,0 +1,298 @@
+<!--
+  Source for video-light.gif / video-dark.gif.
+  window.seek(ms) sets the frame; ?theme=dark for the dark variant. DURATION is 14300ms.
+  Record: playwright-core screenshots at 20fps (600x380, DPR 2), then
+  ffmpeg -framerate 20 -i %04d.png -vf "scale=900:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a" -loop 0 out.gif
+-->
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --border: #e5e7eb; --text: #111827; --muted: #6b7280;
+    --ring: #10b981; --btn: #f3f4f6; --btn-text: #374151; --dlg: #ffffff; --dlg-shadow: rgba(0,0,0,.18);
+    --bar: #e5e7eb; --danger: #dc2626; --sil: #d1d5db; --sil-bg: #eef0f3; --chip: #f3f4f6; --chip-ok: #d1fae5; --chip-ok-text: #047857;
+  }
+  html[data-theme="dark"] {
+    --bg: #0b0f14; --card: #131920; --border: #232b35; --text: #e5e7eb; --muted: #8b95a5;
+    --ring: #34d399; --btn: #1c242e; --btn-text: #d1d5db; --dlg: #1a222c; --dlg-shadow: rgba(0,0,0,.6);
+    --bar: #2a3441; --danger: #f87171; --sil: #3a4552; --sil-bg: #1c242e; --chip: #1c242e; --chip-ok: #064e3b; --chip-ok-text: #6ee7b7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 600px; height: 380px; overflow: hidden; background: var(--bg);
+    font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif; color: var(--text); }
+  #stage { position: relative; width: 600px; height: 380px; }
+  .card { position: absolute; left: 100px; top: 70px; width: 400px; height: 240px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 14px; padding: 26px 28px; }
+  .card h1 { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  .card p.sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .chip { position: absolute; right: 28px; top: 26px; font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 999px;
+    background: var(--chip); color: var(--muted); opacity: 0; }
+  .chip.ok { background: var(--chip-ok); color: var(--chip-ok-text); }
+
+  .zone { position: absolute; left: 28px; top: 78px; width: 344px; height: 134px; }
+  .zone > div { position: absolute; inset: 0; }
+
+  /* state 1: dropzone */
+  .drop { border: 1.5px dashed var(--border); border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+  .drop .clip { width: 30px; height: 22px; border-radius: 5px; background: var(--sil-bg); position: relative; }
+  .drop .clip::after { content: ""; position: absolute; left: 12px; top: 6px; border-left: 8px solid var(--sil); border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+  .drop .txt { font-size: 12px; color: var(--muted); }
+  .choose { font-size: 12.5px; font-weight: 500; color: var(--btn-text); background: var(--btn); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 12px; }
+  .choose.press { transform: scale(.96); }
+
+  /* state 2: upload */
+  .up { opacity: 0; }
+  .up .head { display: flex; align-items: center; justify-content: space-between; height: 26px; }
+  .up .name { font-size: 13px; font-weight: 500; }
+  .up .acts { display: flex; gap: 6px; }
+  .up .b { font-size: 11.5px; font-weight: 500; color: var(--btn-text); background: var(--btn); border: 1px solid var(--border); border-radius: 7px; padding: 4px 9px; }
+  .up .bar { position: absolute; left: 0; top: 40px; width: 344px; height: 6px; border-radius: 3px; background: var(--bar); overflow: hidden; }
+  .up .bar i { display: block; height: 100%; width: 0; background: var(--ring); border-radius: 3px; }
+  .up .stats { position: absolute; left: 0; right: 0; top: 54px; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .up .stats b { color: var(--text); font-weight: 600; }
+  .up .plabel { position: absolute; left: 0; right: 0; top: 78px; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+  .up .plabel b { color: var(--chip-ok-text); font-weight: 600; }
+  .up .parts { position: absolute; left: 0; top: 96px; width: 344px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .up .parts i { display: block; width: 29.9px; height: 9px; border-radius: 3px; background: var(--bar); }
+  .up .b.press { transform: scale(.96); }
+  .up .b.hot { color: var(--ring); }
+
+  /* state 3: player */
+  .player { opacity: 0; border-radius: 10px; overflow: hidden; background: #0f172a; }
+  .poster { position: absolute; inset: 0; background: linear-gradient(180deg, #1e3a8a 0%, #0e7490 55%, #134e4a 100%); overflow: hidden; }
+  .poster .sun { position: absolute; width: 44px; height: 44px; border-radius: 50%; background: #fde68a; left: 250px; top: 24px; box-shadow: 0 0 22px #fbbf24; }
+  .poster .cloud { position: absolute; width: 60px; height: 16px; border-radius: 999px; background: #dbeafe; left: 60px; top: 34px; opacity: .85; }
+  .poster .cloud::before { content: ""; position: absolute; width: 22px; height: 22px; border-radius: 50%; background: #dbeafe; left: 14px; top: -10px; }
+  .poster .m1 { position: absolute; left: -10%; bottom: 0; width: 70%; height: 70%; background: #0f2f4b; clip-path: polygon(0 100%, 50% 0, 100% 100%); }
+  .poster .m2 { position: absolute; left: 40%; bottom: 0; width: 75%; height: 85%; background: #0a2239; clip-path: polygon(0 100%, 50% 0, 100% 100%); }
+  .poster .shade { position: absolute; left: 0; right: 0; bottom: 0; height: 60px; background: linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,.55)); }
+  .big { position: absolute; left: 148px; top: 38px; width: 48px; height: 48px; border-radius: 50%; background: rgba(255,255,255,.92); }
+  .big::after { content: ""; position: absolute; left: 19px; top: 15px; border-left: 15px solid #0f172a; border-top: 9px solid transparent; border-bottom: 9px solid transparent; }
+  .big.press { transform: scale(.94); }
+  .ctl { position: absolute; left: 12px; right: 12px; bottom: 10px; display: flex; align-items: center; gap: 10px; }
+  .ctl .ico { width: 10px; height: 12px; position: relative; flex: none; }
+  .ctl .ico .tri { position: absolute; left: 0; top: 0; border-left: 10px solid #fff; border-top: 6px solid transparent; border-bottom: 6px solid transparent; }
+  .ctl .ico .pau { position: absolute; left: 0; top: 0; width: 10px; height: 12px; opacity: 0; }
+  .ctl .ico .pau::before, .ctl .ico .pau::after { content: ""; position: absolute; top: 0; width: 3px; height: 12px; background: #fff; border-radius: 1px; }
+  .ctl .ico .pau::before { left: 0; } .ctl .ico .pau::after { left: 7px; }
+  .ctl .scrub { flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.3); position: relative; }
+  .ctl .scrub i { position: absolute; left: 0; top: 0; height: 100%; width: 0; background: #fff; border-radius: 2px; }
+  .ctl .scrub s { position: absolute; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: #fff; margin-left: -5px; }
+  .ctl .time { font-size: 11px; color: #fff; font-variant-numeric: tabular-nums; flex: none; }
+
+  .dlg { position: absolute; left: 150px; top: 66px; width: 300px; background: var(--dlg); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: 0 24px 60px var(--dlg-shadow); padding: 16px; opacity: 0; transform-origin: 50% 30%; }
+  .dlg .t { font-size: 13px; font-weight: 600; text-align: center; }
+  .dlg .list { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .dlg .f { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; font-size: 12px; box-shadow: 0 0 0 0px var(--ring); }
+  .dlg .f.sel { box-shadow: 0 0 0 2px var(--ring); background: var(--btn); }
+  .dlg .f .ic { width: 26px; height: 18px; border-radius: 4px; flex: none; position: relative; }
+  .dlg .f .ic::after { content: ""; position: absolute; left: 10px; top: 5px; border-left: 7px solid rgba(255,255,255,.9); border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
+  .i1 { background: linear-gradient(135deg, #a5b4fc, #60a5fa); }
+  .i2 { background: linear-gradient(135deg, #1e3a8a, #0e7490); }
+  .i3 { background: linear-gradient(135deg, #fda4af, #f472b6); }
+  .dlg .f .n { flex: 1; }
+  .dlg .f .s { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dlg .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .dlg .b { font-size: 12.5px; padding: 7px 14px; border-radius: 8px; background: var(--btn); color: var(--btn-text); border: 1px solid var(--border); }
+  .dlg .b.primary { background: var(--ring); color: #fff; border-color: transparent; font-weight: 600; }
+  .dlg .b.press { transform: scale(.96); }
+
+  #cursor { position: absolute; left: 0; top: 0; width: 22px; height: 26px; transform-origin: 4px 3px; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
+  .tab { position: absolute; left: 0; top: 0; width: 600px; height: 380px; background: var(--bg); opacity: 0; display: flex; align-items: center; justify-content: center; }
+  .tab .box { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; box-shadow: 0 24px 60px var(--dlg-shadow); }
+  .tab .x { width: 26px; height: 26px; border-radius: 7px; background: var(--btn); position: relative; flex: none; }
+  .tab .x::before, .tab .x::after { content: ""; position: absolute; left: 12px; top: 6px; width: 2px; height: 14px; background: var(--muted); border-radius: 1px; }
+  .tab .x::before { transform: rotate(45deg); } .tab .x::after { transform: rotate(-45deg); }
+  .tab .t1 { font-size: 13px; font-weight: 600; }
+  .tab .t2 { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="card" id="card">
+    <h1>New lesson</h1>
+    <p class="sub">MP4 or MOV, up to 5 GB.</p>
+    <div class="chip" id="chip">pending</div>
+
+    <div class="zone">
+      <div class="drop" id="drop">
+        <div class="clip"></div>
+        <div class="txt">Drop a video here, or</div>
+        <div class="choose" id="choose">Choose file</div>
+      </div>
+
+      <div class="up" id="up">
+        <div class="head">
+          <div class="name">lesson-04.mp4</div>
+          <div class="acts"><div class="b" id="pause">Pause</div><div class="b">Cancel</div></div>
+        </div>
+        <div class="bar"><i id="barfill"></i></div>
+        <div class="stats"><span id="sizes"><b>0 MB</b> of 1.2 GB</span><span id="eta">0%</span></div>
+        <div class="plabel"><span id="plabel">0 of 20 parts</span><b id="lanes">4 parts at once</b></div>
+        <div class="parts" id="parts"></div>
+      </div>
+
+      <div class="player" id="player">
+        <div class="poster"><div class="cloud" id="cloud"></div><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="shade"></div></div>
+        <div class="big" id="big"></div>
+        <div class="ctl">
+          <div class="ico"><div class="tri" id="tri"></div><div class="pau" id="pau"></div></div>
+          <div class="scrub"><i id="scrub"></i><s id="knob"></s></div>
+          <div class="time" id="time">0:00 / 12:34</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dlg" id="dlg">
+    <div class="t">Choose a video</div>
+    <div class="list">
+      <div class="f"><div class="ic i1"></div><span class="n">intro.mov</span><span class="s">840 MB</span></div>
+      <div class="f" id="f2"><div class="ic i2"></div><span class="n">lesson-04.mp4</span><span class="s">1.2 GB</span></div>
+      <div class="f"><div class="ic i3"></div><span class="n">outro.mp4</span><span class="s">310 MB</span></div>
+    </div>
+    <div class="foot"><div class="b">Cancel</div><div class="b primary" id="open">Open</div></div>
+  </div>
+
+  <div class="tab" id="tab"><div class="box"><div class="x"></div><div><div class="t1">Tab closed halfway</div><div class="t2" id="tabt">The parts that landed stay in the bucket. The row stays pending.</div></div></div></div>
+
+  <svg id="cursor" viewBox="0 0 22 26"><path d="M3 2 L3 20 L7.6 15.6 L10.8 23 L14 21.6 L10.9 14.4 L17.5 14.2 Z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>
+</div>
+<script>
+  const q = new URLSearchParams(location.search);
+  if (q.get('theme') === 'dark') document.documentElement.dataset.theme = 'dark';
+  const $ = id => document.getElementById(id);
+  const clamp = (x, a=0, b=1) => Math.max(a, Math.min(b, x));
+  const ease = x => x < .5 ? 2*x*x : 1 - Math.pow(-2*x+2, 2)/2;
+  const easeOut = x => 1 - Math.pow(1-x, 3);
+  const lin = x => x;
+  const seg = (t, a, b, fn=ease) => fn(clamp((t-a)/(b-a)));
+  const lerp = (a, b, x) => a + (b-a)*x;
+  const click = (t, at) => t < at ? 0 : 1 - clamp((t-at)/220);
+
+  const PARTS = 20, LANES = 4, BATCH = 800, FULL = (PARTS / LANES) * BATCH; // 4000ms of active upload
+  for (let i = 0; i < PARTS; i++) $('parts').appendChild(document.createElement('i'));
+  const tiles = [...$('parts').children];
+  const mmss = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+
+  const c = id => { const r = $(id).getBoundingClientRect(); return [r.left + r.width/2, r.top + r.height/2]; };
+  $('up').style.opacity = 1;
+  const P = { start:[470,330], choose:c('choose'), f2:c('f2'), open:c('open'), pause:c('pause'), rest:[540,300] };
+  $('up').style.opacity = 0;
+
+  // timeline (ms)
+  const T = {
+    pick:1450, sel:2600, open:3400, upIn:3650, up0:3700,
+    pause:5100, resume:6100,
+    tabIn:7100, tabOut:8000,
+    pick2:8950, sel2:9750, open2:10350, upIn2:10600, up1:10650,
+  };
+  const path = [
+    [700, 1400, P.start, P.choose],
+    [1900, 2500, P.choose, P.f2],
+    [2800, 3300, P.f2, P.open],
+    [3800, 4500, P.open, P.pause],
+    [8300, 8900, P.pause, P.choose],
+    [9300, 9700, P.choose, P.f2],
+    [9900, 10300, P.f2, P.open],
+    [10700, 11300, P.open, P.rest],
+  ];
+  function cursorAt(t) {
+    let pos = P.start;
+    for (const [a, b, f, to] of path) {
+      if (t < a) break;
+      const x = seg(t, a, b);
+      pos = [lerp(f[0], to[0], x), lerp(f[1], to[1], x)];
+    }
+    return pos;
+  }
+  // active upload time: stops while paused and while the tab is closed
+  function uploadTime(t) {
+    if (t < T.up0) return 0;
+    if (t < T.pause) return t - T.up0;
+    const a = T.pause - T.up0;
+    if (t < T.resume) return a;
+    if (t < T.tabIn) return a + (t - T.resume);
+    const b = a + (T.tabIn - T.resume);
+    if (t < T.up1) return b;
+    return Math.min(FULL, b + (t - T.up1));
+  }
+  const TOTAL_MB = 1229, TOTAL_SEC = 754, ETA_SEC = 96;
+  const LANDED_AT_RESUME = Math.floor(uploadTime(T.up1) / BATCH) * LANES;
+
+  window.seek = function(t) {
+    const [cx, cy] = cursorAt(t);
+    const press = Math.max(click(t,T.pick), click(t,T.sel), click(t,T.open), click(t,T.pause), click(t,T.resume), click(t,T.pick2), click(t,T.sel2), click(t,T.open2));
+    $('cursor').style.transform = `translate(${cx-3}px, ${cy-2}px) scale(${1 - .12*press})`;
+    $('cursor').style.opacity = t >= T.tabIn + 200 && t < T.tabOut ? 0 : 1;
+
+    $('choose').className = 'choose' + (Math.max(click(t, T.pick), click(t, T.pick2)) > .3 ? ' press' : '');
+
+    // dialog, twice
+    const d1 = seg(t, 1650, 1900, easeOut) * (1 - seg(t, 3450, 3600));
+    const d2 = seg(t, 9150, 9400, easeOut) * (1 - seg(t, 10400, 10550));
+    const dO = Math.max(d1, d2);
+    $('dlg').style.opacity = dO;
+    $('dlg').style.transform = `scale(${lerp(.94, 1, dO)})`;
+    $('f2').className = 'f' + ((t >= T.sel && t < 3600) || (t >= T.sel2 && t < 10550) ? ' sel' : '');
+    $('open').className = 'b primary' + (Math.max(click(t, T.open), click(t, T.open2)) > .3 ? ' press' : '');
+
+    // dropzone vs upload state, twice
+    const upA = seg(t, T.upIn, T.upIn + 200) * (1 - seg(t, T.tabIn, T.tabIn + 300));
+    const upB = seg(t, T.upIn2, T.upIn2 + 200) * (1 - seg(t, 12900, 13150));
+    const upVis = Math.max(upA, upB);
+    $('drop').style.opacity = t < T.tabOut ? 1 - seg(t, T.upIn - 200, T.upIn) : 1 - seg(t, T.upIn2 - 200, T.upIn2);
+    $('up').style.opacity = upVis;
+
+    // tab closed overlay
+    const tab = seg(t, T.tabIn, T.tabIn + 300) * (1 - seg(t, T.tabOut, T.tabOut + 300));
+    $('tab').style.opacity = tab;
+
+    // chip: pending from the first byte, stays pending across the tab close, ready at the end
+    const chipIn = seg(t, T.upIn, T.upIn + 200);
+    const ready = t >= 12900;
+    $('chip').style.opacity = chipIn;
+    $('chip').className = 'chip' + (ready ? ' ok' : '');
+    $('chip').textContent = ready ? 'ready' : 'pending';
+
+    // progress from active upload time
+    const tu = uploadTime(t);
+    const up = tu / FULL;
+    const paused = t >= T.pause && t < T.resume;
+    const finishing = tu >= FULL && !ready;
+    const pct = Math.round(up * 99);
+    $('barfill').style.width = pct + '%';
+    const mb = Math.round(up * TOTAL_MB);
+    $('sizes').innerHTML = finishing ? 'Finishing up...' : `<b>${mb} MB</b> of 1.2 GB`;
+    const left = Math.ceil((1 - up) * ETA_SEC);
+    $('eta').textContent = finishing ? '99%' : paused ? `${pct}%  ·  paused` : `${pct}%  ·  ${mmss(left)} left`;
+    $('pause').textContent = paused ? 'Resume' : 'Pause';
+    $('pause').className = 'b' + (paused ? ' hot' : '') + (Math.max(click(t, T.pause), click(t, T.resume)) > .3 ? ' press' : '');
+
+    // parts: 4 lanes, part i runs in batch floor(i/4)
+    let landed = 0;
+    tiles.forEach((el, i) => {
+      const start = Math.floor(i / LANES) * BATCH;
+      const f = clamp((tu - start) / BATCH);
+      if (f >= 1) landed++;
+      el.style.background = f >= 1 ? 'var(--ring)' : f > 0 ? `linear-gradient(90deg, var(--ring) ${f*100}%, var(--bar) ${f*100}%)` : 'var(--bar)';
+      el.style.opacity = f > 0 && f < 1 ? .55 + .45 * f : 1;
+    });
+    const resumed = t >= T.upIn2 && t < T.upIn2 + 1600;
+    $('plabel').textContent = finishing ? `${PARTS} of ${PARTS} parts landed` : resumed ? `Same file again: ${LANDED_AT_RESUME} of ${PARTS} parts were already there` : `${landed} of ${PARTS} parts`;
+    $('lanes').style.opacity = finishing || resumed || paused ? 0 : 1;
+
+    // player
+    const plIn = seg(t, 12950, 13250);
+    $('player').style.opacity = plIn;
+    $('time').textContent = `0:00 / ${mmss(TOTAL_SEC)}`;
+  };
+  window.DURATION = 14300;
+  seek(0);
+</script>
+</body>
+</html>

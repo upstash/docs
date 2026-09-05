@@ -1,0 +1,176 @@
+---
+title: "Profile Pictures"
+---
+
+<Frame>
+  <img className="block dark:hidden" src="/img/blob/avatars-light.gif" alt="Click the avatar, pick a photo, watch it upload, then remove it" />
+  <img className="hidden dark:block" src="/img/blob/avatars-dark.gif" alt="Click the avatar, pick a photo, watch it upload, then remove it" />
+</Frame>
+
+One picture per user. A new upload replaces the old one, and every page shows the new picture right away, even though the image is cached for a year.
+
+Three choices make that work:
+
+- **A stable path.** `avatars/${user.id}` is overwritten on every upload, so there is never an old picture to clean up.
+- **A versioned URL.** `versionedUrl` carries the object's etag on the query, so new bytes are a new URL and `cache: "immutable"` is safe.
+- **A URL on the user's row.** The bucket holds the bytes, your database is the index. Every page renders `user.avatarUrl`.
+
+The bytes go straight from the browser to storage, and your server only authorizes the upload.
+
+This recipe uses a public bucket. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart).
+
+---
+
+## The handler
+
+```ts lib/uploads.ts
+import "server-only"
+import { BlobError, uploadHandler } from "@upstash/blob"
+import { getUser } from "./auth"
+import { db } from "./db"
+
+export const uploads = uploadHandler({
+  constraints: { contentTypes: ["image/*"], maxSize: "5mb" },
+
+  onBeforeUpload: async ({ request }) => {
+    const user = await getUser(request)
+    if (!user) throw new BlobError("unauthorized")
+
+    return {
+      path: `avatars/${user.id}`,
+      cache: "immutable",
+      metadata: { owner: user.id },
+    }
+  },
+
+  onUploadComplete: async ({ metadata, path, versionedUrl }) => {
+    try {
+      await db.users.update({ id: metadata.owner, avatarUrl: versionedUrl })
+    } catch (e) {
+      // A throw here deletes the object, so make it a deliberate refusal the user can retry from.
+      console.error("[uploads] could not record", path, e)
+      throw new BlobError("not_ready", { message: "could not save your picture, try again" })
+    }
+    return { avatarUrl: versionedUrl }
+  },
+})
+```
+
+The route takes images only, up to 5 MB, and refuses anything else before a byte is uploaded. The path has no extension on purpose: the object is stored and served as the type the browser declared.
+
+That is the whole update story. The path is the user id, so every upload overwrites the same object, and `versionedUrl` ends in the new etag, so the row now points at a URL no browser or CDN has ever seen. The old cached picture is never requested again. [Caching](/blob/bucket/caching) has the alternative, `cache: "revalidate"`, for a URL that has to stay fixed.
+
+A throw out of `onUploadComplete` deletes the object, so the `catch` turns a database failure into a refusal the user can retry from. `not_ready` is the 503 code, the one that means try again. See [Upload handler](/blob/uploads/upload-handler#onuploadcomplete) and [Errors](/blob/reference/errors#the-codes).
+
+**A refusal costs more on a stable path.** The old picture was already overwritten, so a user whose save fails is left with no picture rather than the previous one.
+
+---
+
+## The route
+
+Mount the handler, then bind the hooks to it.
+
+```ts app/api/upload/route.ts
+import { uploads } from "@/lib/uploads"
+
+export const { GET, POST } = uploads
+```
+
+```ts lib/upload-hooks.ts
+"use client"
+
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+---
+
+## The picker
+
+```tsx components/avatar-picker.tsx
+"use client"
+
+import { useUpload } from "@/lib/upload-hooks"
+
+export function AvatarPicker({ src }: { src?: string }) {
+  const { start, upload, accept } = useUpload()
+  const current = upload?.status === "done" ? upload.blob.data.avatarUrl : src
+
+  return (
+    <label>
+      <img src={current ?? "/default-avatar.png"} alt="" width={96} height={96} />
+      <input
+        type="file"
+        accept={accept}
+        onChange={(e) => start({ file: e.target.files?.[0] })}
+      />
+      {upload?.pending && <progress value={upload.percent} max={100} />}
+      {upload?.status === "error" && <p>{upload.error.message}</p>}
+    </label>
+  )
+}
+```
+
+`accept` comes from the route's constraints, so the file dialog only offers images. `upload.blob.data.avatarUrl` is typed from what `onUploadComplete` returned, so the new picture is on screen the moment the upload finishes.
+
+---
+
+## Showing the picture
+
+Everywhere else, render the URL from your own row:
+
+```tsx
+<img src={user.avatarUrl} alt={user.name} />
+```
+
+---
+
+## Removing a picture
+
+Clear the row first, then delete the object. The page stops showing the picture immediately, and if the second step fails the leftover is an object nobody links to rather than a broken image. `del` treats an already missing object as success, so this is safe to retry.
+
+```ts app/actions.ts
+"use server"
+
+import { Bucket } from "@upstash/blob"
+import { getUser } from "@/lib/auth"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+
+export async function removeAvatar() {
+  const user = await getUser()
+  if (!user) throw new Error("unauthorized")
+
+  await db.users.update({ id: user.id, avatarUrl: null })
+  await bucket.del(`avatars/${user.id}`)
+}
+```
+
+---
+
+The same pattern fits any single image per row: a workspace logo, a product's hero image, a cover photo. Name the path after the row's id, and store `versionedUrl` on the row. When one row owns many images, give each upload its own path instead, as in [Product images](/blob/recipes/product-images).
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Caching" href="/blob/bucket/caching">
+    `immutable`, `revalidate`, and the versioned URL pattern in full.
+  </Card>
+
+  <Card title="Constraints" href="/blob/uploads/constraints">
+    What `image/*` expands to, and why SVG is not in it.
+  </Card>
+
+  <Card title="Upload handler" href="/blob/uploads/upload-handler">
+    Everything the callbacks receive and return.
+  </Card>
+
+  <Card title="File attachments" href="/blob/recipes/attachments">
+    Many files per thread, each with its own row.
+  </Card>
+</CardGroup>
