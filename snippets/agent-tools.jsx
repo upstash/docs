@@ -71,7 +71,7 @@ export const AgentGrid = () => {
     { name: "Gemini CLI", slug: "gemini-cli", icon: "gemini", desc: "Google's open-source terminal agent. Skills via the CLI, MCP via settings.json.", badges: [SKILLS, MCP] },
     { name: "Google Antigravity", slug: "google-antigravity", icon: "antigravity", desc: "Google's agent-first IDE. Skills via the CLI, MCP via the Antigravity MCP config.", badges: [SKILLS, MCP] },
     { name: "DeepSeek Harness", slug: "deepseek-harness", icon: "deepseek", desc: "One bundle installs the skills and the MCP server. Log in once from a session.", badges: [PLUGIN, SKILLS, MCP] },
-    { name: "Claude Desktop", slug: "claude-desktop", icon: "claude", desc: "Upload the skill to Claude Desktop or claude.ai; MCP via the desktop app.", badges: [SKILLS, MCP] },
+    { name: "Claude Desktop", slug: "claude-desktop", icon: "claude", desc: "Anthropic's desktop app. The marketplace plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP] },
     { name: "Grok", slug: "grok", icon: "grok", desc: "xAI's Grok Build agent. Skills via the Agent Skills CLI, MCP via grok mcp add.", badges: [SKILLS, MCP] },
   ];
 
