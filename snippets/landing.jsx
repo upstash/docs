@@ -6,7 +6,7 @@ export const Hero = ({ children }) => (
       zero, pay per request.
     </p>
     <div className="u-actions">
-      <a className="u-action u-action--primary" href="/agent-resources/mcp">
+      <a className="u-action u-action--primary" href="/agent-resources/overview">
         Agent Setup
       </a>
       {children}
