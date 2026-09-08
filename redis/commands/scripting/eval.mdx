@@ -54,6 +54,32 @@ EVAL <script> <numkeys> [<key> [<key> ...]] [<arg> [<arg> ...]]
 - A script queued inside a `MULTI`/`EXEC` transaction always runs under the global lock, even when it sets `allow-key-locking`. Call it directly if you want per-key locking.
 - Pass every key the script touches through `KEYS` whether or not `allow-key-locking` is set. A key built inside the script is read from disk under the lock when it is not in memory, and it is rejected outright when the flag is set. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
 
+## Reply conversion
+
+Replies from `redis.call` and `redis.pcall` reach the script as Lua values, converted with RESP2 rules by default whatever protocol the client connection itself negotiated. `redis.setresp(3)` switches the script to RESP3 conversions for every call that follows, and `redis.setresp(2)` switches back. The setting lasts for the rest of the script's execution and does not change how the script's own return value is sent to the client.
+
+RESP3 conversions keep information that RESP2 flattens away: a double stays a number instead of becoming a formatted string, a map keeps its keys, and a null is distinguishable from `false`.
+
+| Reply type | RESP2 conversion | RESP3 conversion |
+| --- | --- | --- |
+| Null | `false` | `nil` |
+| Boolean | `1` or `0` | `true` or `false` |
+| Double | string | `{ double = <number> }` |
+| Big number | string | `{ big_number = "<digits>" }` |
+| Verbatim string | string | `{ verbatim_string = { format = "<3-char format>", string = "<value>" } }` |
+| Map | flat array of alternating keys and values | `{ map = { [key] = value, ... } }` |
+| Set | array of members | `{ set = { [member] = true, ... } }` |
+
+```lua
+redis.call('ZADD', KEYS[1], '1.5', 'member')
+
+redis.setresp(3)
+local score = redis.call('ZSCORE', KEYS[1], 'member')
+return score['double']  -- 1.5 as a number, not the string "1.5"
+```
+
+The same tables are accepted on the way out: returning `{ double = 1.5 }` from a script sends a double reply to a RESP3 client, and `{ map = { ... } }` sends a map.
+
 ## Response
 
 The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.

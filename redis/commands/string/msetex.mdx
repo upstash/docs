@@ -1,0 +1,190 @@
+---
+title: "MSETEX"
+description: "Set multiple keys with one expiration."
+---
+
+Use `MSETEX` to set several keys and give them all the same expiration in one atomic step.
+
+[`MSET`](/redis/commands/string/mset) can write a group of keys together but leaves them without a lifetime, so attaching one has to be a second round trip during which the keys already exist unbounded. `MSETEX` closes that window: the values and the expiration are applied together, which is what you want for a set of keys that are only meaningful as a group, such as the parts of one cached response.
+
+`NX` writes only when none of the keys exists and `XX` only when all of them do. The check covers the whole group, so a single key breaking the condition leaves everything unwritten and the reply is `0`. `EX`, `PX`, `EXAT`, and `PXAT` set the lifetime as a duration or as an absolute deadline, and `KEEPTTL` keeps whatever lifetime each key already had. Without any of these the keys are written without an expiration, discarding any they had, exactly as [`MSET`](/redis/commands/string/mset) does.
+
+`<numkeys>` says how many key-value pairs follow; anything after them is read as options.
+
+## Syntax
+
+```redis
+MSETEX <numkeys> <key> <value> [<key> <value> ...]
+  [NX | XX]
+  [EX <seconds> | PX <milliseconds> | EXAT <unix-time-seconds> |
+    PXAT <unix-time-milliseconds> | KEEPTTL]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<numkeys>` | Yes | No | Number of key-value pairs that follow. Must be at least `1`. |
+| `<key> <value>` | Yes | Yes | Key and the value to store in it. Repeat `<numkeys>` times. |
+| `(NX \| XX)` | No | No | Choose one form: `NX` (write only when none of the keys exists); `XX` (write only when all of them exist). |
+| `(EX <seconds> \| PX <milliseconds> \| EXAT <unix-time-seconds> \| PXAT <unix-time-milliseconds> \| KEEPTTL)` | No | No | Choose one form: `EX` (set a lifetime in seconds); `PX` (set a lifetime in milliseconds); `EXAT` (expire at a Unix timestamp in seconds); `PXAT` (expire at a Unix timestamp in milliseconds); `KEEPTTL` (preserve each key's existing lifetime). |
+
+## Important points
+
+- `NX` and `XX` are mutually exclusive, and at most one expiration form may be given.
+- The condition is evaluated over the whole group: with `NX` a single existing key stops the write, and with `XX` a single missing key does.
+- Without an expiration option the keys are written without a lifetime, discarding any they had. `KEEPTTL` preserves each key's own current lifetime.
+- `EX` and `PX` must be greater than `0`. An `EXAT` or `PXAT` deadline in the past deletes the keys instead of writing them, and the reply is still `1`.
+- The options may be given in any order after the key-value pairs.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Integer: `1` if the keys were set, `0` if a condition prevented the write |
+| RESP3 | Integer: `1` if the keys were set, `0` if a condition prevented the write |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+MSETEX 2 key1 value1 key2 value2 EX 60
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.msetex(2, "key1", "value1", "key2", "value2", "EX", 60);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.mSetEx(
+  { key1: "value1", key2: "value2" },
+  { expiration: { type: "EX", value: 60 } },
+);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.msetex(mapping={"key1": "value1", "key2": "value2"}, ex=60)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    args := redis.MSetEXArgs{Expiration: &redis.ExpirationOption{Mode: redis.EX, Value: 60}}
+    result, err := client.MSetEX(context.Background(), args, "key1", "value1", "key2", "value2").Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.params.MSetExParams;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  boolean result = jedis.msetex(new MSetExParams().ex(60), "key1", "value1", "key2", "value2");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let options = redis::MSetOptions::default().with_expiration(redis::SetExpiry::EX(60));
+    let result = connection.mset_ex(&[("key1", "value1"), ("key2", "value2")], options)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>
