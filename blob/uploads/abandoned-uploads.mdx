@@ -1,0 +1,162 @@
+---
+title: "Abandoned Uploads"
+---
+
+A user picks a file, the upload starts, and the tab closes halfway through. No callback runs and your server never hears about it again. This page covers what that leaves in the bucket and how to clean it up.
+
+What is left depends on which side of the [multipart threshold](/blob/uploads/large-files#the-multipart-threshold) the file was on:
+
+| | Under the threshold, one PUT | Over the threshold, multipart |
+| --- | --- | --- |
+| When the object exists | the moment the last byte lands | when `end` completes the upload |
+| What a dead tab leaves | a whole stored object, visible to `list()` | incomplete parts, invisible to `list()` |
+| Who cleans it up | you, with a pending row or a list sweep | `bucket.abortStaleMultipartUploads()` |
+
+One cron handles both halves. The multipart half is one call. The single-PUT half needs your app's help, because the SDK cannot tell an abandoned object from a completed one by looking at the bucket. Only your own records can.
+
+---
+
+## The simplest fix: always multipart
+
+```ts lib/uploads.ts
+export const uploads = uploadHandler({
+  multipart: true,
+  onBeforeUpload: ({ file }) => ({ path: uniquePath`uploads/${file.name}` }),
+  onUploadComplete: async ({ path }) => recordFile(path),
+})
+```
+
+`multipart: true` on the handler or a route uses parts at every size. Nothing is stored until your handler completes the upload, so a closed tab always leaves an incomplete multipart upload, which the cron below cleans up. The single-PUT case disappears, and small files gain pause, resume and per-part retry.
+
+The cost is two extra round trips between your server and storage per upload, and no extra browser requests. For most apps this one option is enough.
+
+---
+
+## Sweeping incomplete multipart uploads
+
+```ts app/api/cron/sweep-uploads/route.ts
+import { Bucket } from "@upstash/blob"
+
+const bucket = Bucket.fromEnv()
+
+export const GET = async () => {
+  const aborted = await bucket.abortStaleMultipartUploads({ olderThan: "1d", prefix: "uploads/" })
+  return Response.json({ aborted: aborted.length, paths: aborted.map((u) => u.path) })
+}
+```
+
+```json vercel.json
+{ "crons": [{ "path": "/api/cron/sweep-uploads", "schedule": "0 4 * * *" }] }
+```
+
+`abortStaleMultipartUploads` lists the bucket's incomplete uploads, aborts every one started longer ago than `olderThan`, and returns what it aborted. Pick an `olderThan` comfortably longer than your slowest upload, since a paused upload can be resumed long after it started. A day is a reasonable default.
+
+On an all-multipart app this route is the whole cleanup. The calls it is built from are on [Deleting](/blob/bucket/deleting#incomplete-multipart-uploads).
+
+---
+
+## Single PUT: the pending row
+
+If you keep the single-PUT path, write a row before the bytes, flip it after them, and sweep what never flipped from the same cron.
+
+```ts lib/uploads.ts
+import "server-only"
+import { BlobError, uniquePath, uploadHandler, uploadRoute } from "@upstash/blob"
+import { db } from "@/lib/db"
+
+const attachment = uploadRoute()({
+  constraints: { maxSize: "20mb", contentTypes: ["image/*", "application/pdf"] },
+
+  onBeforeUpload: async ({ request, file }) => {
+    const user = await getUser(request)
+    if (!user) throw new BlobError("unauthorized")
+
+    const rowId = crypto.randomUUID()
+    const path = uniquePath`uploads/${user.id}/${file.name}`
+    await db.uploads.insert({ id: rowId, owner: user.id, path, status: "pending" })
+
+    // state crosses in the completion token, so the callback can read it without a lookup.
+    return { path, state: { rowId } }
+  },
+
+  onUploadComplete: async ({ path, size, contentType, url, state }) => {
+    await indexForSearch(path, contentType)
+    await notifyOwner(state.rowId)
+
+    // Last. Everything above has to be done before the row stops looking abandoned.
+    await db.uploads.update(state.rowId, { status: "ready", size, url })
+
+    return { rowId: state.rowId }
+  },
+})
+
+export const uploads = uploadHandler({ routes: { attachment } })
+```
+
+<Steps>
+  <Step title="Insert a pending row in onBeforeUpload">
+    It runs once per upload, before anything is signed, and already knows the path.
+  </Step>
+  <Step title="Flip it to ready as the last thing onUploadComplete does">
+    Do all other work first. If the flip came earlier, a crash after it would leave a ready row whose work never happened.
+  </Step>
+  <Step title="Sweep rows still pending from the same cron, after the abort">
+    An indexed query on your own table, not a bucket scan. Each row names the exact path to check.
+  </Step>
+</Steps>
+
+<Note>
+  `uploadId` first reaches your code in `onUploadComplete`, so the example mints its own row id in `onBeforeUpload` and passes it as `state`, which reaches `onUploadComplete` typed.
+</Note>
+
+### The cron
+
+Add the row sweep to the route above. The abort runs first, and both halves share one window.
+
+```ts app/api/cron/sweep-uploads/route.ts
+import { Bucket } from "@upstash/blob"
+import { db } from "@/lib/db"
+
+const bucket = Bucket.fromEnv()
+const olderThan = "1d"
+
+export const GET = async () => {
+  const aborted = await bucket.abortStaleMultipartUploads({ olderThan, prefix: "uploads/" })
+
+  const rows = await db.uploads.findPending({ olderThan, limit: 500 })
+  if (rows.length) {
+    // del does not throw for a path with nothing at it, so a PUT that never finished
+    // and parts the abort above just cleared are both covered by the same call.
+    await bucket.del(rows.map((r) => r.path))
+    await db.uploads.delete(rows.map((r) => r.id))
+  }
+
+  return Response.json({ aborted: aborted.length, swept: rows.length })
+}
+```
+
+Two things this example depends on:
+
+- **One path, one upload.** The sweep deletes whatever stands at a pending row's path, so a path must never be shared. `uniquePath` gives you that. With a reused path, a retry that succeeded leaves a ready row and an older pending row pointing at the same object, and the sweep would delete the good file. If you must reuse paths, skip rows whose path also has a ready row.
+- **Abort first, one window.** A route without `multipart: true` still uses parts for a file over the threshold, so a pending row can belong to a paused multipart upload with nothing at its path yet. Running the abort first with the same window means the parts are gone before the row is, so a late resume fails instead of completing against a row that no longer exists. A row sweep on a shorter window would delete rows out from under uploads that can still resume.
+
+### Without a pending row
+
+```ts
+const page = await bucket.list({ prefix: "uploads/", limit: 1000 })
+const known = new Set(await recordedPaths())
+const cutoff = Date.now() - 24 * 60 * 60 * 1000
+
+const orphans = page.blobs.filter((b) => !known.has(b.path) && b.uploadedAt.getTime() < cutoff)
+if (orphans.length) await bucket.del(orphans.map((b) => b.path))
+```
+
+An app that will not take a database write on the upload path can list the prefix and diff it against the rows it does have. This is weaker: `list()` carries no metadata, so it cannot tell which upload wrote an object, and it pages through every object under the prefix to find the few that do not belong. Use it only when a pending row is not an option.
+
+---
+
+## Related traps
+
+- **Do not let `onUploadComplete` throw on a database error.** Any throw deletes the object, and the browser's retried `end` then reports a 404. See [Retries and throws](/blob/uploads/upload-handler#retries-and-throws).
+- **Use unique paths unless overwriting is the intent.** Two single-PUT uploads to the same path race, and the loser's `end` fails with `not_found` even though its bytes landed. `uniquePath` is the fix; see [Writing](/blob/bucket/writing#uniquepath).
+- **An explicit `cancel()` is already handled.** It tells your route, which aborts the multipart upload or deletes the single-PUT object. The gap is everything that is not an explicit cancel: a crash, a closed tab, a lost network.

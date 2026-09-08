@@ -1,0 +1,190 @@
+<!--
+  Source for avatars-light.gif / avatars-dark.gif.
+  window.seek(ms) sets the frame; ?theme=dark for the dark variant. DURATION is 9000ms.
+  Record: playwright-core screenshots at 20fps (600x380, DPR 2), then
+  ffmpeg -framerate 20 -i %04d.png -vf "scale=900:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a" -loop 0 out.gif
+-->
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --border: #e5e7eb; --text: #111827; --muted: #6b7280;
+    --ring: #10b981; --btn: #f3f4f6; --btn-text: #374151; --dlg: #ffffff; --dlg-shadow: rgba(0,0,0,.18);
+    --bar: #e5e7eb; --danger: #dc2626; --sil: #d1d5db; --sil-bg: #eef0f3;
+  }
+  html[data-theme="dark"] {
+    --bg: #0b0f14; --card: #131920; --border: #232b35; --text: #e5e7eb; --muted: #8b95a5;
+    --ring: #34d399; --btn: #1c242e; --btn-text: #d1d5db; --dlg: #1a222c; --dlg-shadow: rgba(0,0,0,.6);
+    --bar: #2a3441; --danger: #f87171; --sil: #3a4552; --sil-bg: #1c242e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 600px; height: 380px; overflow: hidden; background: var(--bg);
+    font-family: -apple-system, "Inter", "Segoe UI", system-ui, sans-serif; color: var(--text); }
+  #stage { position: relative; width: 600px; height: 380px; }
+  .card { position: absolute; left: 100px; top: 70px; width: 400px; height: 240px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 14px; padding: 26px 28px; }
+  .card h1 { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  .card p.sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .row { display: flex; align-items: center; gap: 22px; margin-top: 30px; }
+  .avatar { position: relative; width: 96px; height: 96px; border-radius: 50%; overflow: hidden; background: var(--sil-bg);
+    flex: none; box-shadow: 0 0 0 0px var(--ring); }
+  .avatar .sil { position: absolute; inset: 0; }
+  .avatar .sil .head { position: absolute; left: 33px; top: 20px; width: 30px; height: 30px; border-radius: 50%; background: var(--sil); }
+  .avatar .sil .body { position: absolute; left: 13px; top: 58px; width: 70px; height: 70px; border-radius: 50%; background: var(--sil); }
+  .avatar .photo { position: absolute; inset: 0; opacity: 0; }
+  .photo { background: linear-gradient(180deg, #ffd08a 0%, #ff8a5b 45%, #6a4c93 100%); position: relative; overflow: hidden; }
+  .photo .sun { position: absolute; width: 34%; height: 34%; border-radius: 50%; background: #fff3c4; left: 52%; top: 18%; box-shadow: 0 0 18px #ffe08a; }
+  .photo .m1 { position: absolute; left: -20%; bottom: -8%; width: 90%; height: 60%; background: #3b2a5d; clip-path: polygon(0 100%, 50% 0, 100% 100%); }
+  .photo .m2 { position: absolute; left: 35%; bottom: -8%; width: 90%; height: 70%; background: #2a1f45; clip-path: polygon(0 100%, 50% 0, 100% 100%); }
+  .meta { flex: 1; }
+  .meta .label { font-size: 13px; font-weight: 500; }
+  .meta .hint { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .slot { position: relative; height: 34px; margin-top: 12px; }
+  .bar { position: absolute; left: 0; top: 4px; height: 6px; border-radius: 3px; background: var(--bar); overflow: hidden; opacity: 0; width: 180px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--ring); border-radius: 3px; }
+  .pct { position: absolute; left: 0; top: 16px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; opacity: 0; }
+  .url { position: absolute; left: 28px; bottom: 22px; font: 11.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); opacity: 0;
+    display: flex; align-items: center; gap: 8px; }
+  .url .chk { width: 14px; height: 14px; border-radius: 50%; background: var(--ring); display: inline-flex; align-items: center; justify-content: center; }
+  .url .chk svg { width: 9px; height: 9px; }
+  .url b { color: var(--text); font-weight: 600; }
+  .btn { display: none; position: absolute; left: 0; top: 0; }
+  .remove { font-size: 12.5px; font-weight: 500; color: var(--btn-text); background: var(--btn); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 11px; display: inline-block; }
+  .remove.hot { color: var(--danger); }
+  .remove.press { transform: scale(.96); }
+
+  .dlg { position: absolute; left: 150px; top: 58px; width: 300px; background: var(--dlg); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: 0 24px 60px var(--dlg-shadow); padding: 16px; opacity: 0; transform-origin: 50% 30%; }
+  .dlg .t { font-size: 13px; font-weight: 600; text-align: center; }
+  .dlg .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; }
+  .dlg .th { aspect-ratio: 1; border-radius: 9px; overflow: hidden; position: relative; box-shadow: 0 0 0 0px var(--ring); }
+  .dlg .th.sel { box-shadow: 0 0 0 2.5px var(--ring); }
+  .dlg .th .photo { position: absolute; inset: 0; }
+  .g1 { background: linear-gradient(135deg, #a5b4fc, #60a5fa); }
+  .g3 { background: linear-gradient(135deg, #86efac, #14b8a6); }
+  .g4 { background: linear-gradient(135deg, #fda4af, #f472b6); }
+  .dlg .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .dlg .b { font-size: 12.5px; padding: 7px 14px; border-radius: 8px; background: var(--btn); color: var(--btn-text); border: 1px solid var(--border); }
+  .dlg .b.primary { background: var(--ring); color: #fff; border-color: transparent; font-weight: 600; }
+  .dlg .b.press { transform: scale(.96); }
+
+  #cursor { position: absolute; left: 0; top: 0; width: 22px; height: 26px; transform-origin: 4px 3px; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.35)); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="card">
+    <h1>Profile</h1>
+    <p class="sub">How you appear to other members.</p>
+    <div class="row">
+      <div class="avatar" id="avatar">
+        <div class="sil"><div class="head"></div><div class="body"></div></div>
+        <div class="photo" id="avphoto"><div class="sun"></div><div class="m1"></div><div class="m2"></div></div>
+      </div>
+      <div class="meta">
+        <div class="label">Profile picture</div>
+        <div class="hint">PNG or JPG, up to 5 MB.</div>
+        <div class="slot">
+        <div class="bar" id="bar"><i id="barfill"></i></div>
+        <div class="pct" id="pct">0%</div>
+        <div class="btn"><div class="remove" id="remove">Remove</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="url" id="url"><span class="chk"><svg viewBox="0 0 10 10" fill="none" stroke="#fff" stroke-width="2"><path d="M1.5 5.5l2.3 2.2L8.5 2.5"/></svg></span><span>avatars/<b>u_42</b>?v=9f2c1e</span></div>
+  </div>
+
+  <div class="dlg" id="dlg">
+    <div class="t">Choose a photo</div>
+    <div class="grid">
+      <div class="th"><div class="photo g1"></div></div>
+      <div class="th" id="th2"><div class="photo"><div class="sun"></div><div class="m1"></div><div class="m2"></div></div></div>
+      <div class="th"><div class="photo g3"></div></div>
+      <div class="th"><div class="photo g4"></div></div>
+    </div>
+    <div class="foot"><div class="b">Cancel</div><div class="b primary" id="open">Open</div></div>
+  </div>
+
+  <svg id="cursor" viewBox="0 0 22 26"><path d="M3 2 L3 20 L7.6 15.6 L10.8 23 L14 21.6 L10.9 14.4 L17.5 14.2 Z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>
+</div>
+<script>
+  const q = new URLSearchParams(location.search);
+  if (q.get('theme') === 'dark') document.documentElement.dataset.theme = 'dark';
+  const $ = id => document.getElementById(id);
+  const clamp = (x, a=0, b=1) => Math.max(a, Math.min(b, x));
+  const ease = x => x < .5 ? 2*x*x : 1 - Math.pow(-2*x+2, 2)/2;
+  const easeOut = x => 1 - Math.pow(1-x, 3);
+  const seg = (t, a, b, fn=ease) => fn(clamp((t-a)/(b-a)));
+  const lerp = (a, b, x) => a + (b-a)*x;
+  // click flash: 1 at moment, decays over 220ms
+  const click = (t, at) => t < at ? 0 : 1 - clamp((t-at)/220);
+
+  // positions (stage coords, cursor hotspot)
+  const c = id => { const r = $(id).getBoundingClientRect(); return [r.left + r.width/2, r.top + r.height/2]; };
+  document.querySelector('.btn').style.display = 'block';
+  const P = { start:[470,330], avatar:c('avatar'), th2:c('th2'), open:c('open'), remove:c('remove') };
+  document.querySelector('.btn').style.display = 'none';
+  // cursor path: list of [tFrom, tTo, from, to]
+  const path = [
+    [600, 1400, P.start, P.avatar],
+    [1900, 2700, P.avatar, P.th2],
+    [2950, 3550, P.th2, P.open],
+    [6600, 7400, P.avatar, P.remove],
+  ];
+  function cursorAt(t) {
+    let pos = P.start;
+    for (const [a, b, f, to] of path) {
+      if (t < a) break;
+      const x = seg(t, a, b);
+      pos = [lerp(f[0], to[0], x), lerp(f[1], to[1], x)];
+    }
+    // after dialog closes, cursor rests near avatar for the upload; it is already at 'open', glide it back
+    if (t >= 3800 && t < 6600) { const x = seg(t, 3800, 4400); pos = [lerp(P.open[0], P.avatar[0], x), lerp(P.open[1], P.avatar[1], x)]; }
+    return pos;
+  }
+
+  window.seek = function(t) {
+    const [cx, cy] = cursorAt(t);
+    const press = Math.max(click(t,1450), click(t,2800), click(t,3650), click(t,7500));
+    $('cursor').style.transform = `translate(${cx-3}px, ${cy-2}px) scale(${1 - .12*press})`;
+
+    // avatar click ring
+    const ring = click(t, 1450);
+    $('avatar').style.boxShadow = `0 0 0 ${4*ring}px var(--ring)`;
+
+    // dialog
+    const dOpen = seg(t, 1650, 1900, easeOut), dClose = seg(t, 3700, 3850);
+    const dO = dOpen * (1 - dClose);
+    $('dlg').style.opacity = dO;
+    $('dlg').style.transform = `scale(${lerp(.94, 1, dOpen)})`;
+    $('th2').className = 'th' + (t >= 2800 && t < 3850 ? ' sel' : '');
+    $('open').className = 'b primary' + (click(t, 3650) > .3 ? ' press' : '');
+
+    // progress
+    const up = seg(t, 3900, 5400);
+    const barVis = seg(t, 3850, 4000) * (1 - seg(t, 5450, 5700));
+    $('bar').style.opacity = barVis; $('pct').style.opacity = barVis;
+    $('barfill').style.width = (up*100) + '%';
+    $('pct').textContent = Math.round(up*100) + '%';
+
+    // photo swap in, then out on remove
+    const photoIn = seg(t, 5400, 5750), photoOut = seg(t, 7600, 7950);
+    $('avphoto').style.opacity = photoIn * (1 - photoOut);
+
+    // url + remove button
+    const urlIn = seg(t, 5650, 5950), urlOut = seg(t, 7600, 7850);
+    $('url').style.opacity = urlIn * (1 - urlOut);
+    const btn = document.querySelector('.btn');
+    btn.style.display = urlIn > 0 && urlOut < 1 ? 'block' : 'none';
+    btn.style.opacity = urlIn * (1 - urlOut);
+    const hot = t >= 7350 && t < 7600;
+    $('remove').className = 'remove' + (hot ? ' hot' : '') + (click(t, 7500) > .3 ? ' press' : '');
+  };
+  window.DURATION = 9000;
+  seek(0);
+</script>
+</body>
+</html>

@@ -9,6 +9,8 @@ The filter is a JSON object naming index fields and the values to match, so `'{"
 
 Results come back ordered by relevance score by default. `ORDERBY` sorts by a `FAST` field instead, `LIMIT` and `OFFSET` page through the matches, `SELECT` and `NOCONTENT` cut the payload down to the fields you need, `HIGHLIGHT` wraps the matched terms in tags for display, and `SCOREFUNC` blends numeric fields such as popularity or recency into the relevance score.
 
+A `KEYWORD` or `TEXT` field whose value is a JSON array is indexed element by element, so a document matches when any element matches the condition. `HIGHLIGHT` preserves that shape: the field comes back as the same array with the matching elements marked up, and elements that did not match, including non-string ones, unchanged. The stored document is never modified.
+
 See [Querying and filtering](/redis/search/querying) for the full filter syntax and worked examples, and [`SEARCH.COUNT`](/redis/commands/search/search-count) when you only need the number of matches.
 
 ## Syntax
@@ -56,7 +58,9 @@ Returns an array of `[key, score, content]` results, or `null` if the index does
 - `score` is the floating-point relevance score.
 - `content` is an array of field-value pairs. JSON indexes return `[["$", "<json_string>"]]`; hash indexes return `[["field", "value"], ...]`.
 
-When `NOCONTENT` is used, each result is `[key, score]`. When `SELECT` is used, only fields that exist in the document appear in the content.
+When `NOCONTENT` is used, each result is `[key, score]`. When `SELECT` is used, only fields that exist in the document appear in the content. For an index created with `ON STREAM`, `key` is the entry ID of the matching stream entry.
+
+A highlighted multi-valued field keeps its array form in the reply. Highlighting `a` on a document whose `a` is `["hello world", "foo & bar", 7]` returns `["<em>hello</em> world","foo & bar",7]`.
 
 ```text
 [
@@ -156,6 +160,111 @@ const results = await products.query({
   limit: 10,
   offset: 0,
 });
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.execute_command(
+    "SEARCH.QUERY",
+    "products",
+    "{\"name\": \"wireless\"}",
+    "LIMIT",
+    "10",
+    "OFFSET",
+    "0",
+)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.Do(
+        context.Background(),
+        "SEARCH.QUERY",
+        "products",
+        "{\"name\": \"wireless\"}",
+        "LIMIT",
+        "10",
+        "OFFSET",
+        "0",
+    ).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.sendCommand(
+      () -> "SEARCH.QUERY".getBytes(),
+      "products",
+      "{\"name\": \"wireless\"}",
+      "LIMIT",
+      "10",
+      "OFFSET",
+      "0"
+  );
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("SEARCH.QUERY");
+    command.arg("products");
+    command.arg("{\"name\": \"wireless\"}");
+    command.arg("LIMIT");
+    command.arg("10");
+    command.arg("OFFSET");
+    command.arg("0");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
 ```
 
 </Accordion>

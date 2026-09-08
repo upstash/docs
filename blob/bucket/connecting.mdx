@@ -1,0 +1,112 @@
+---
+title: "Connecting"
+---
+
+This page covers creating the `Bucket` client, the options it takes, and running it on platforms without `process.env`.
+
+```ts lib/blob.ts
+import { Bucket } from "@upstash/blob"
+
+export const bucket = Bucket.fromEnv() // reads UPSTASH_BLOB_TOKEN
+```
+
+Create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment:
+
+```bash .env
+UPSTASH_BLOB_TOKEN=...
+```
+
+The token is a bearer secret. Anything holding it can read and write the whole bucket. Keep it server side, never in `NEXT_PUBLIC_`, `VITE_`, or any other variable your bundler inlines into client code.
+
+---
+
+## Options
+
+```ts lib/blob.ts
+import { Bucket } from "@upstash/blob"
+
+export const bucket = new Bucket({
+  token: process.env.UPSTASH_BLOB_TOKEN!,
+  cache: "immutable",
+  enableTelemetry: false,
+})
+```
+
+`Bucket.fromEnv()` is the same constructor with `token` read from `UPSTASH_BLOB_TOKEN`. It takes the same options minus the token, and a variable name when the token lives somewhere else:
+
+```ts
+Bucket.fromEnv({ cache: "immutable" })
+Bucket.fromEnv("REPORTS_BUCKET_TOKEN", { cache: "immutable" })
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `token` | `string` | required | The bucket token. |
+| `cache` | `CacheOption` | `'1h'` | The default `Cache-Control` for every object this client stores. A per-call `cache` overrides it. See [Caching](/blob/bucket/caching). |
+| `enableTelemetry` | `boolean` | `true` | See [Telemetry](#telemetry). |
+
+Whether the bucket is public or private is a console setting, not an option: the SDK learns it from the backend on the first request. See [Private buckets](/blob/bucket/reading#private-buckets).
+
+Constructing a `Bucket` per request is fine. Credentials are cached per token, so two clients built from the same token share one.
+
+---
+
+## Cloudflare Workers
+
+There is no `process.env` on Workers, so `Bucket.fromEnv()` throws. Pass the token from the request's `env`:
+
+```ts src/index.ts
+import { Bucket } from "@upstash/blob"
+
+export default {
+  async fetch(request: Request, env: { UPSTASH_BLOB_TOKEN: string }) {
+    const bucket = new Bucket({ token: env.UPSTASH_BLOB_TOKEN })
+    await bucket.put("hits.txt", "1")
+    return new Response("ok")
+  },
+}
+```
+
+An [upload handler](/blob/uploads/upload-handler#the-bucket) on Workers needs the same thing: build the bucket from `env` and pass it as `bucket:`.
+
+---
+
+## Telemetry
+
+The SDK sends its version, runtime and platform as headers on credential requests to Upstash. Turn it off with `UPSTASH_DISABLE_TELEMETRY` in the environment (any value), or `enableTelemetry: false` on the `Bucket`.
+
+---
+
+## Using an S3 client
+
+```ts
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3"
+import { bucket } from "@/lib/blob"
+
+const { endpoint, region, bucket: name, credentials } = bucket.s3()
+const s3 = new S3Client({ endpoint, region, credentials })
+
+await s3.send(
+  new GetObjectCommand({ Bucket: name, Key: "reports/q3.pdf", Range: "bytes=0-1023" }),
+)
+```
+
+Buckets are backed by Cloudflare R2 and are S3-compatible. `bucket.s3()` returns a config for `@aws-sdk/client-s3`, for anything the SDK does not wrap: byte ranges, conditional GETs, delimiters and common prefixes, object tagging.
+
+`endpoint` and `credentials` are async providers rather than values. Pass them through as they come, so the aws-sdk can pick up a fresh credential when the old one expires.
+
+An error message that mentions R2 is talking about the storage layer.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Writing" href="/blob/bucket/writing">
+    `put`, metadata, conditional writes and multipart from the server.
+  </Card>
+
+  <Card title="Reading" href="/blob/bucket/reading">
+    `get`, `info`, `exists`, `list` and signed read URLs.
+  </Card>
+</CardGroup>
