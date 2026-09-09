@@ -9,7 +9,7 @@ Use `EVAL` to run a Lua script on the server.
 
 The script runs as a single atomic step, which makes it the standard way to do read, decide, and write logic, such as a rate limiter or a compare-and-set update, in one round trip and without a transaction. Keep scripts short, since a script that holds the database blocks everything else, and keep them deterministic by deriving values from `KEYS`, `ARGV`, or data read inside the script rather than from clock or random sources.
 
-Upstash isolates a script with a lock. By default that is the global lock, because the engine cannot know in advance which keys the script will touch, so no other command runs while the script does. Adding the `allow-key-locking` flag to the script's shebang line makes it lock only the keys passed in `KEYS` instead, so calls that work on disjoint keys run in parallel:
+Upstash isolates a script with a lock. By default that is the global lock, because the engine cannot know in advance which keys the script will touch, so no other command runs while the script does. Adding the `allow-key-locking` flag to the script's shebang line makes it lock the [hash tag](/redis/features/key-locking#hash-tags) of each key passed in `KEYS` instead, so calls that work on disjoint [hash tags](/redis/features/key-locking#hash-tags) run in parallel:
 
 ```lua
 #!lua flags=allow-key-locking
@@ -18,15 +18,16 @@ redis.call('INCR', KEYS[1])
 return 1
 ```
 
-With the flag set, every key the script touches must appear in `KEYS`, and commands that need database-wide access, such as `FLUSHDB`, are rejected. See [Key-Based Locking](/redis/features/key-locking) for the full rules.
+With the flag set, every key the script touches must appear in `KEYS` or share a valid [hash tag](/redis/features/key-locking#hash-tags) with an already locked key. Commands that need database-wide access, such as `FLUSHDB`, are rejected. See [Key-Based Locking](/redis/features/key-locking) for the full rules.
 
 <Warning>
-  Pass every key the script touches through `KEYS`, even when the script runs
-  under the global lock. Upstash keeps idle entries
+  Pass every key the script touches through `KEYS` when possible, even when the
+  script runs under the global lock. Upstash keeps idle entries
   [on disk](/redis/features/durability): declared keys are loaded before the
-  script starts and the lock is released during that read, but a key that the
-  script builds while it runs is read from disk with the lock held, stalling
-  every command waiting on it. See
+  script starts and the lock is released during that read. A same-tag dynamic
+  key is allowed with `allow-key-locking`, but it is read from disk with the
+  lock held. This stalls commands using the same hash tag, or the whole
+  database when the script uses the global lock. See
   [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
 </Warning>
 
@@ -50,9 +51,9 @@ EVAL <script> <numkeys> [<key> [<key> ...]] [<arg> [<arg> ...]]
 ## Important points
 
 - `numkeys` must equal the number of key arguments that immediately follow it; remaining arguments are available to the script or function as ordinary arguments.
-- The script takes the global lock unless its shebang sets the `allow-key-locking` flag, in which case it locks only the keys passed in `KEYS`. See [Key-Based Locking](/redis/features/key-locking).
+- The script takes the global lock unless its shebang sets the `allow-key-locking` flag, in which case it locks the hash tag of each key passed in `KEYS` and any matching Search indexes. See [Key-Based Locking](/redis/features/key-locking).
 - A script queued inside a `MULTI`/`EXEC` transaction always runs under the global lock, even when it sets `allow-key-locking`. Call it directly if you want per-key locking.
-- Pass every key the script touches through `KEYS` whether or not `allow-key-locking` is set. A key built inside the script is read from disk under the lock when it is not in memory, and it is rejected outright when the flag is set. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
+- Pass every key the script touches through `KEYS` when possible. With `allow-key-locking`, a dynamic key is accepted only when its hash tag is already locked, and a cold dynamic key is loaded with that lock held. See [Dynamic Keys and Latency](/redis/features/key-locking#dynamic-keys-and-latency).
 
 ## Reply conversion
 

@@ -5,8 +5,9 @@ description: "Key-based locks for concurrent command execution"
 
 Upstash Redis databases use locks to keep commands isolated while allowing
 independent keys to be processed in parallel. The engine automatically locks
-the keys used by the command. Commands that operate on different keys can run
-concurrently, subject to the parallelism available to your database.
+the [hash tag](#hash-tags) of each key a command uses. Commands whose keys
+have different [hash tags](#hash-tags) can run concurrently, subject to the
+parallelism available to your database.
 
 Key-based locking is transparent to clients. You do not need to change regular
 Redis commands to use it.
@@ -14,14 +15,25 @@ Redis commands to use it.
 ## How It Works
 
 - Single-key commands (for example `GET`, `SET`, `INCR`, `HSET`) acquire a
-  lock on just that key.
-- Multi-key commands acquire locks on every key they reference, in a
-  deterministic order to avoid deadlocks.
+  lock on that key's hash tag.
+- Multi-key commands acquire locks on the hash tag of every key they
+  reference, in a deterministic order to avoid deadlocks.
 - Read-only commands (for example `GET`, `HGET`, `LRANGE`) take a shared read
-  lock, so multiple readers on the same key run concurrently. Read
-  locks block writers on that key until they complete.
+  lock, so multiple readers on the same hash tag run concurrently. Read locks
+  block writers on that hash tag until they complete.
 - Commands that need a database-wide operation, such as `FLUSHDB` and
   `FLUSHALL`, take the global lock and can reduce concurrency while they run.
+
+A valid Redis hash tag is the non-empty value between the first `{` in a key
+and the first `}` that follows it. If a key has no valid hash tag, its full
+name acts as its hash tag. Locking works on hash tags: `{queue}:wait` and
+`{queue}:active` share the `queue` hash tag and lock together; `queue:wait`
+and `queue:active` have no hash tag, so each locks under its own full name.
+
+Commands that write indexed data also lock the matching
+[Search indexes](/redis/search/getting-started). Two commands can therefore
+contend even when their data keys differ if both commands update the same
+index.
 
 ## Transactions
 
@@ -30,8 +42,9 @@ commands are queued, Upstash collects the keys referenced by the transaction.
 When `EXEC` runs, the engine takes an exclusive write lock for the union of
 those keys and executes the queued commands atomically.
 
-Transactions that touch disjoint key sets can run concurrently. Transactions
-that share any key block each other until one transaction finishes.
+Transactions whose keys have disjoint hash tags can run concurrently.
+Transactions that share a hash tag block each other until one transaction
+finishes.
 
 ```redis
 MULTI
@@ -70,25 +83,38 @@ redis.call('INCRBY', KEYS[2], ARGV[1])
 return "OK"
 ```
 
-When the flag is set, Upstash locks only the keys passed through the `KEYS`
-array when the script is invoked. Other commands and scripts that touch disjoint
-keys can run in parallel.
+When the flag is set, Upstash locks the hash tag of each key passed through
+the `KEYS` array when the script is invoked. For writes, it also locks the
+matching Search indexes. Other commands and scripts whose keys have disjoint
+hash tags can run in parallel.
 
 ### Rules for `allow-key-locking`
 
-- **Every key passed to `redis.call` must appear in `KEYS`.** You may compute
-  the key value inside the script (for example by concatenating parts of
-  `ARGV`), but the final string must exactly match one of the entries declared
-  in the `KEYS` array. Otherwise the engine rejects the command:
+- **Every key passed to `redis.call` must be covered by an existing lock.** A
+  key is covered when its hash tag is already locked — usually because the key
+  itself appears in `KEYS`, or because it shares a hash tag with one that does.
+  A Search index matched by a declared key can also lock a hash tag. For
+  example, declaring `{queue}:wait` locks the `queue` hash tag, which also
+  covers a dynamic `{queue}:active` key. A key with a different hash tag is
+  rejected, and a key with no valid hash tag — whose hash tag is its own full
+  name — is covered only when it appears in `KEYS` itself.
+
+  When a command writes indexed data, all matching Search indexes must also be
+  covered by locks acquired before the script starts. Upstash automatically
+  includes the indexes that match declared keys. An indexed dynamic key is
+  rejected if it requires another index that is not already covered.
+
+  An uncovered key or index produces an error such as:
 
   ```
   ERR Dynamic keys are not allowed in Lua scripts when 'allow-key-locking' flag is set. Key was: <key>
   ```
 
-  In practice, this means you should pass fully resolved keys through `KEYS`
-  rather than reconstructing them from `ARGV` inside the script. This is worth
-  doing even for scripts that run under the global lock, because an undeclared
-  key can force a disk read while the lock is held. See
+  Even when a dynamic key shares a declared hash tag, pass the fully resolved
+  key through `KEYS` when possible. Declared keys and their matching indexes
+  can be loaded before the script runs. A dynamic key can instead force a disk
+  read while the lock is held. This is also worth avoiding in scripts that use
+  the global lock. See
   [Dynamic Keys and Latency](#dynamic-keys-and-latency).
 
 - **Database-wide writes are not allowed.** Commands that require database-wide
@@ -135,6 +161,30 @@ EVAL "<script>" 1 user:42:quota 100
 Multiple clients calling this script for different users will execute
 concurrently, each holding a lock only on its own `user:<id>:quota` key.
 
+### Example: Dynamic Keys with a Shared Hash Tag
+
+```lua
+#!lua flags=allow-key-locking
+
+local destination = '{queue}:' .. ARGV[1]
+local job = redis.call('LPOP', KEYS[1])
+if job then
+  redis.call('RPUSH', destination, job)
+end
+return job
+```
+
+Invoke the script with `{queue}:wait` as its declared key and `active` as an
+argument:
+
+```redis
+EVAL "<script>" 1 {queue}:wait active
+```
+
+The declared key locks the `queue` hash tag, so the dynamically constructed
+`{queue}:active` key is covered by the same lock. Constructing `{other}:active`
+would be rejected because the `other` hash tag was not locked.
+
 ## Redis Functions
 
 Redis functions ([`FCALL`](/redis/commands/functions/fcall),
@@ -169,9 +219,10 @@ Invoked with:
 FCALL incr_if_below 1 user:42:quota 100
 ```
 
-The same rules apply: every key used by the function must be passed in the
-`FCALL` key list. Keys passed as regular arguments are not locked unless they
-also appear in the key list.
+The same rules apply to functions. A key is covered when it appears in the
+`FCALL` key list or shares a hash tag with an already locked key, including a
+Search index matched by a declared key. A key passed as a regular argument is
+rejected if its hash tag is not already locked.
 
 If the function is also read-only, include both flags in the function
 registration:
@@ -183,25 +234,25 @@ flags={'no-writes', 'allow-key-locking'}
 ## Dynamic Keys and Latency
 
 Pass every key a script or function touches through the key list of the call,
-where it arrives as `KEYS`, even when you are not using `allow-key-locking`.
-With the flag set, a key that was not declared is rejected outright. Without it
-the call still succeeds, but it can be slow, and the slowdown is not limited to
-the caller.
+where it arrives as `KEYS`, when possible. This remains the best choice even
+when you are not using `allow-key-locking`. With the flag set, a dynamic key is
+accepted only when its hash tag is already locked. Without the flag, the
+call uses the global lock and dynamic keys are accepted, but they can be slow,
+and the slowdown is not limited to the caller.
 
 Upstash keeps data [in memory and on disk](/redis/features/durability), and an
 entry that has been idle long enough to be evicted from memory is read back from
 disk on the next access. Declared keys are loaded before the script body starts
 running, and the engine releases the lock while it waits for that read, so other
 commands keep making progress. A key that only becomes known in the middle of
-the script cannot be handled that way: script execution has to stay atomic, so
-the engine holds the lock across the disk read. Under the global lock, that
-means the whole database waits for a disk read in the middle of your script.
-It is also why dynamic keys are rejected when `allow-key-locking` is set: a key
-the engine was never told about can be neither locked nor loaded up front.
+the script cannot be loaded that way: script execution has to stay atomic, so
+the engine holds the lock across the disk read. With `allow-key-locking`, this
+blocks other work on the same hash tag. Under the global lock, the whole
+database waits for the disk read.
 
 ```lua
--- Dynamic key: resolved inside the script, may be read from disk under the lock
-local key = 'user:' .. ARGV[1] .. ':quota'
+-- A same-tag dynamic key is locked, but may be read from disk under that lock
+local key = '{user:42}:' .. ARGV[1]
 redis.call('INCR', key)
 ```
 
@@ -210,6 +261,7 @@ redis.call('INCR', key)
 redis.call('INCR', KEYS[1])
 ```
 
-The cost only appears when the key is not already in memory, so it is easy to
-miss against a small, warm test dataset and easy to hit in production against a
-large one. Resolve key names in your application and pass them in the key list.
+The cost only appears when the key or a matching Search index is not already in
+memory, so it is easy to miss against a small, warm test dataset and easy to hit
+in production against a large one. Resolve key names in your application and
+pass them in the key list whenever possible.
