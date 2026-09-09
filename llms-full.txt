@@ -53367,7 +53367,7 @@ Use `SEARCH.CREATE` to create a search index over JSON, hash, or string values, 
 
 `ON STREAM` indexes a single stream instead of a set of keys, so it takes the stream key in place of `PREFIX`. Each entry added with [`XADD`](/docs/redis/commands/streams/xadd) becomes a document whose fields are the entry's fields and whose ID is the entry ID, which is what makes a stream searchable by content rather than only by ID range. Entries removed from the stream leave the index as well.
 
-A `KEYWORD` or `TEXT` field whose value is a JSON array of values is indexed as several values rather than as one string. A document matches when any element matches, so a tags field or a list of descriptions needs no separate key per value. `HIGHLIGHT` follows the same shape: the reply keeps the array, with the matching elements marked up and the others, including any non-string elements, left as they are.
+`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields can index multiple values. Store the field as a JSON array; for hash and stream indexes, store the complete JSON-encoded array in the field string. Each valid element is indexed separately, and a document matches when any element matches. `BOOL` and `FACET` fields remain single-valued.
 
 Creating an index starts an initial scan of the matching keys, which `SKIPINITIALSCAN` skips when you only want to index data written from now on; [`SEARCH.REINDEX`](/docs/redis/commands/search/search-reindex) can run that scan later. `EXISTSOK` makes the command succeed instead of failing when the index already exists.
 
@@ -53414,7 +53414,7 @@ SEARCH.CREATE <name>
 | `NOTOKENIZE` | `TEXT` | Index the entire value as one token. |
 | `FROM <source_field>` | All field types | Read the value from a different document field or nested dot path while exposing it under `<field>` in the index. |
 
-`KEYWORD` and `TEXT` fields accept multiple values: a field whose value is a JSON array is indexed element by element, and a document matches when any element matches.
+`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields accept multiple values. A field whose value is a JSON array is indexed element by element, and a document matches when any valid element matches. See [Multi-value fields](/docs/redis/search/schema-definition#multi-value-fields) for data-type-specific input formats and query behavior.
 
 ## Response
 
@@ -54476,7 +54476,7 @@ The filter is a JSON object naming index fields and the values to match, so `'{"
 
 Results come back ordered by relevance score by default. `ORDERBY` sorts by a `FAST` field instead, `LIMIT` and `OFFSET` page through the matches, `SELECT` and `NOCONTENT` cut the payload down to the fields you need, `HIGHLIGHT` wraps the matched terms in tags for display, and `SCOREFUNC` blends numeric fields such as popularity or recency into the relevance score.
 
-A `KEYWORD` or `TEXT` field whose value is a JSON array is indexed element by element, so a document matches when any element matches the condition. `HIGHLIGHT` preserves that shape: the field comes back as the same array with the matching elements marked up, and elements that did not match, including non-string ones, unchanged. The stored document is never modified.
+For multi-value `TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields, a document matches when any indexed array element satisfies the condition. Phrase queries on `TEXT` stay within one array element. `HIGHLIGHT` preserves the stored array shape in the response, marking matching string elements while leaving other elements unchanged. See [Multi-value queries](/docs/redis/search/querying#multi-value-fields) for examples.
 
 See [Querying and filtering](/docs/redis/search/querying) for the full filter syntax and worked examples, and [`SEARCH.COUNT`](/docs/redis/commands/search/search-count) when you only need the number of matches.
 
@@ -92421,6 +92421,76 @@ or [`$fuzzy`](./query-operators/field-operators/fuzzy).
 
 ***
 
+## Multi-value fields
+
+`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields can contain multiple values. A condition
+matches the document when at least one array element matches it. The query value remains a single
+value; you do not need to search the whole stored array.
+
+Given this document:
+
+```json
+{
+  "tags": ["new", "sale"],
+  "descriptions": ["Wireless headphones", "Includes a travel case"],
+  "prices": [199.99, 179.99]
+}
+```
+
+each query below matches it:
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await products.query({
+  filter: { tags: { $eq: "sale" } },
+});
+
+await products.query({
+  filter: { prices: { $lt: 180 } },
+});
+
+await products.query({
+  filter: { descriptions: { $phrase: "wireless headphones" } },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+products.query(filter={"tags": {"$eq": "sale"}})
+
+products.query(filter={"prices": {"$lt": 180}})
+
+products.query(filter={"descriptions": {"$phrase": "wireless headphones"}})
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"tags":{"$eq":"sale"}}'
+
+SEARCH.QUERY products '{"prices":{"$lt":180}}'
+
+SEARCH.QUERY products '{"descriptions":{"$phrase":"wireless headphones"}}'
+```
+</Tab>
+
+</Tabs>
+
+For `TEXT`, phrase matching stays within one array element. For example, `"headphones includes"`
+does not match the document above because those words are in different elements.
+
+Search results keep the field's stored array unchanged. When you use `HIGHLIGHT` on a multi-value
+`TEXT` field, only matching string elements are marked up in the response. Other elements keep their
+original values, and highlighting does not change the stored document.
+
+See [Multi-value fields in schema definitions](/docs/redis/search/schema-definition#multi-value-fields)
+for supported types and the required storage format for JSON, string, hash, and stream indexes.
+
+***
+
 ## Query Options
 
 ### 1. Pagination with Limit and Offset
@@ -92873,14 +92943,14 @@ import { Redis, s } from "@upstash/redis"
 
 ### Field Type Reference
 
-| SDK Method | Redis CLI Type | Description | Supports FAST | Range Operators | Text Operators |
-|---|---|---|---|---|---|
-| `s.string()` | `TEXT` | Full-text searchable field with tokenization and stemming | No | No | `$smart`, `$phrase`, `$fuzzy`, `$regex` |
-| `s.keyword()` | `KEYWORD` | Exact-match string (no tokenization) | Yes | Yes (`$gt`, `$gte`, `$lt`, `$lte`) | No |
-| `s.number()` | `F64` (default), `U64`, `I64` | Numeric field | Yes | Yes | No |
-| `s.date()` | `DATE` | Date/time field | Yes | Yes | No |
-| `s.boolean()` | `BOOL` | Boolean field | Yes | No | No |
-| `s.facet()` | `FACET` | Hierarchical path-based field | No | No | No (only `$eq`, `$in`) |
+| SDK Method    | Redis CLI Type                | Description                                               | Supports FAST | Multiple values | Range Operators                    | Text Operators                          |
+| ------------- | ----------------------------- | --------------------------------------------------------- | ------------- | --------------- | ---------------------------------- | --------------------------------------- |
+| `s.string()`  | `TEXT`                        | Full-text searchable field with tokenization and stemming | No            | Yes             | No                                 | `$smart`, `$phrase`, `$fuzzy`, `$regex` |
+| `s.keyword()` | `KEYWORD`                     | Exact-match string (no tokenization)                      | Yes           | Yes             | Yes (`$gt`, `$gte`, `$lt`, `$lte`) | No                                      |
+| `s.number()`  | `F64` (default), `U64`, `I64` | Numeric field                                             | Yes           | Yes             | Yes                                | No                                      |
+| `s.date()`    | `DATE`                        | Date/time field                                           | Yes           | Yes             | Yes                                | No                                      |
+| `s.boolean()` | `BOOL`                        | Boolean field                                             | Yes           | No              | No                                 | No                                      |
+| `s.facet()`   | `FACET`                       | Hierarchical path-based field                             | No            | No              | No                                 | No (only `$eq`, `$in`)                  |
 
 <Note>
 In the TypeScript SDK, `s.number()` defaults to `F64`. You can specify `s.number("U64")` or
@@ -92949,6 +93019,51 @@ const schema = s.object({
   }),
 })
 ```
+
+## Multi-value fields
+
+A document field can contain several values without a separate array type in the schema. Declare the
+field as `TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, or `DATE`, then store its value as a JSON array.
+Search indexes every valid array element under the same field.
+
+For example, this schema accepts several tags, descriptions, prices, and restock dates per product:
+
+```ts
+const schema = s.object({
+  tags: s.keyword(),
+  descriptions: s.string(),
+  prices: s.number("F64"),
+  restockedAt: s.date(),
+});
+```
+
+The way you store the array depends on the index data type:
+
+| Index data type | How to store multiple values                              | Example                                            |
+| --------------- | --------------------------------------------------------- | -------------------------------------------------- |
+| `JSON`          | A JSON array in the document                              | `JSON.SET product:1 $ '{"tags":["new","sale"]}'`   |
+| `STRING`        | A JSON array inside the JSON object stored in the string  | `SET product:1 '{"tags":["new","sale"]}'`          |
+| `HASH`          | A complete, JSON-encoded array in the hash field string   | `HSET product:1 tags '["new","sale"]'`             |
+| `STREAM`        | A complete, JSON-encoded array in the stream field string | `XADD events * services '["checkout","payments"]'` |
+
+There is no separator option, a value such as `new,sale` remains one value. Use a valid JSON array `["new","sale"]` to index two values.
+
+Each array element must match the schema type. Search ignores an invalid element while still indexing
+the valid elements in the same array. An empty array, or an array with no valid elements, acts like a
+missing field. `BOOL` and `FACET` fields do not support array values.
+
+Queries match a document when any indexed element satisfies the condition. For example, both of these
+queries match a product whose `tags` value is `["new","sale"]` and whose `prices` value is
+`[19.99,24.99]`:
+
+```bash
+SEARCH.QUERY products '{"tags":{"$eq":"sale"}}'
+SEARCH.QUERY products '{"prices":{"$lt":20}}'
+```
+
+Each `TEXT` array element is analyzed separately. A phrase can match within one element, but cannot
+start in one element and continue in another. See [Multi-value queries](/docs/redis/search/querying#multi-value-fields)
+for more examples and highlighting behavior.
 
 ### Where to use the Schema
 

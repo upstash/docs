@@ -12,14 +12,14 @@ import { Redis, s } from "@upstash/redis"
 
 ### Field Type Reference
 
-| SDK Method | Redis CLI Type | Description | Supports FAST | Range Operators | Text Operators |
-|---|---|---|---|---|---|
-| `s.string()` | `TEXT` | Full-text searchable field with tokenization and stemming | No | No | `$smart`, `$phrase`, `$fuzzy`, `$regex` |
-| `s.keyword()` | `KEYWORD` | Exact-match string (no tokenization) | Yes | Yes (`$gt`, `$gte`, `$lt`, `$lte`) | No |
-| `s.number()` | `F64` (default), `U64`, `I64` | Numeric field | Yes | Yes | No |
-| `s.date()` | `DATE` | Date/time field | Yes | Yes | No |
-| `s.boolean()` | `BOOL` | Boolean field | Yes | No | No |
-| `s.facet()` | `FACET` | Hierarchical path-based field | No | No | No (only `$eq`, `$in`) |
+| SDK Method    | Redis CLI Type                | Description                                               | Supports FAST | Multiple values | Range Operators                    | Text Operators                          |
+| ------------- | ----------------------------- | --------------------------------------------------------- | ------------- | --------------- | ---------------------------------- | --------------------------------------- |
+| `s.string()`  | `TEXT`                        | Full-text searchable field with tokenization and stemming | No            | Yes             | No                                 | `$smart`, `$phrase`, `$fuzzy`, `$regex` |
+| `s.keyword()` | `KEYWORD`                     | Exact-match string (no tokenization)                      | Yes           | Yes             | Yes (`$gt`, `$gte`, `$lt`, `$lte`) | No                                      |
+| `s.number()`  | `F64` (default), `U64`, `I64` | Numeric field                                             | Yes           | Yes             | Yes                                | No                                      |
+| `s.date()`    | `DATE`                        | Date/time field                                           | Yes           | Yes             | Yes                                | No                                      |
+| `s.boolean()` | `BOOL`                        | Boolean field                                             | Yes           | No              | No                                 | No                                      |
+| `s.facet()`   | `FACET`                       | Hierarchical path-based field                             | No            | No              | No                                 | No (only `$eq`, `$in`)                  |
 
 <Note>
 In the TypeScript SDK, `s.number()` defaults to `F64`. You can specify `s.number("U64")` or
@@ -88,6 +88,51 @@ const schema = s.object({
   }),
 })
 ```
+
+## Multi-value fields
+
+A document field can contain several values without a separate array type in the schema. Declare the
+field as `TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, or `DATE`, then store its value as a JSON array.
+Search indexes every valid array element under the same field.
+
+For example, this schema accepts several tags, descriptions, prices, and restock dates per product:
+
+```ts
+const schema = s.object({
+  tags: s.keyword(),
+  descriptions: s.string(),
+  prices: s.number("F64"),
+  restockedAt: s.date(),
+});
+```
+
+The way you store the array depends on the index data type:
+
+| Index data type | How to store multiple values                              | Example                                            |
+| --------------- | --------------------------------------------------------- | -------------------------------------------------- |
+| `JSON`          | A JSON array in the document                              | `JSON.SET product:1 $ '{"tags":["new","sale"]}'`   |
+| `STRING`        | A JSON array inside the JSON object stored in the string  | `SET product:1 '{"tags":["new","sale"]}'`          |
+| `HASH`          | A complete, JSON-encoded array in the hash field string   | `HSET product:1 tags '["new","sale"]'`             |
+| `STREAM`        | A complete, JSON-encoded array in the stream field string | `XADD events * services '["checkout","payments"]'` |
+
+There is no separator option, a value such as `new,sale` remains one value. Use a valid JSON array `["new","sale"]` to index two values.
+
+Each array element must match the schema type. Search ignores an invalid element while still indexing
+the valid elements in the same array. An empty array, or an array with no valid elements, acts like a
+missing field. `BOOL` and `FACET` fields do not support array values.
+
+Queries match a document when any indexed element satisfies the condition. For example, both of these
+queries match a product whose `tags` value is `["new","sale"]` and whose `prices` value is
+`[19.99,24.99]`:
+
+```bash
+SEARCH.QUERY products '{"tags":{"$eq":"sale"}}'
+SEARCH.QUERY products '{"prices":{"$lt":20}}'
+```
+
+Each `TEXT` array element is analyzed separately. A phrase can match within one element, but cannot
+start in one element and continue in another. See [Multi-value queries](/redis/search/querying#multi-value-fields)
+for more examples and highlighting behavior.
 
 ### Where to use the Schema
 
