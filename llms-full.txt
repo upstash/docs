@@ -87990,6 +87990,181 @@ const result = await index.drop();
 The adapter exposes the exact same search API as `@upstash/redis`. Refer to the [Index Management](../index-management), [Querying](../querying), [Aggregations](../aggregations), and [Schema Definition](../schema-definition) pages for the full API reference.
 </Note>
 
+# $composite
+Source: https://upstash.com/docs/redis/search/aggregation-operators/bucket-aggregations/composite
+
+`$composite` groups documents by several fields and lets you page through every bucket.
+
+Use it when you need all combinations of several dimensions, such as category and price range. Unlike `$terms`, which returns the top buckets, `$composite` returns buckets in a stable sort order and provides an `afterKey` cursor for the next page.
+
+### Input Format
+
+Each entry in `sources` has a name and one source operator. The source names become the fields in each bucket's `key` and in the pagination cursor.
+
+```json
+{
+  "by_category_and_price": {
+    "$composite": {
+      "size": 100,
+      "sources": [
+        { "category": { "$terms": { "field": "category" } } },
+        { "price": { "$histogram": { "field": "price", "interval": 10 } } }
+      ]
+    }
+  }
+}
+```
+
+The order of `sources` controls how buckets are sorted. In this example, buckets are sorted by category first and then by price.
+
+### Arguments
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `sources` | `array` | Yes | Non-empty list of named `$terms`, `$histogram`, or `$dateHistogram` sources. Each entry must contain exactly one source name. |
+| `size` | `number` | No | Number of buckets per page. Must be a positive integer. Default: `10`. |
+| `after` | `object` | No | The `afterKey` object from the previous response. |
+
+Every source supports these arguments:
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `field` | `string` | Yes | `FAST` field to bucket on. |
+| `order` | `"asc" \| "desc"` | No | Sort direction for this source. Default: `"asc"`. |
+| `missingBucket` | `boolean` | No | Create a bucket for documents where this field is missing. Default: `false`. |
+| `missingOrder` | `"default" \| "first" \| "last"` | No | Position of the missing-value bucket. Used with `missingBucket`. Default: `"default"`. |
+
+Source-specific compatibility and arguments:
+
+| Source | Supported `FAST` field types | Extra arguments |
+|--------|------------------------------|-----------------|
+| `$terms` | U64, I64, F64, BOOL, DATE, KEYWORD | None |
+| `$histogram` | U64, I64, F64, DATE | `interval` (number, required) |
+| `$dateHistogram` | DATE | `fixedInterval` (for example, `"1d"`) or `calendarInterval` (`"year"`, `"month"`, or `"week"`) |
+
+### Paginate Through Buckets
+
+The response contains the values for the current page in `buckets`. Its `afterKey` is an opaque cursor for the next page.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const firstPage = await index.aggregate({
+  aggregations: {
+    by_category_and_price: {
+      $composite: {
+        size: 100,
+        sources: [
+          { category: { $terms: { field: "category" } } },
+          { price: { $histogram: { field: "price", interval: 10 } } },
+        ],
+      },
+    },
+  },
+});
+
+const secondPage = await index.aggregate({
+  aggregations: {
+    by_category_and_price: {
+      $composite: {
+        size: 100,
+        sources: [
+          { category: { $terms: { field: "category" } } },
+          { price: { $histogram: { field: "price", interval: 10 } } },
+        ],
+        after: firstPage.by_category_and_price.afterKey,
+      },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+sources = [
+    {"category": {"$terms": {"field": "category"}}},
+    {"price": {"$histogram": {"field": "price", "interval": 10}}},
+]
+
+first_page = index.aggregate(
+    aggregations={
+        "by_category_and_price": {
+            "$composite": {"size": 100, "sources": sources}
+        }
+    }
+)
+
+second_page = index.aggregate(
+    aggregations={
+        "by_category_and_price": {
+            "$composite": {
+                "size": 100,
+                "sources": sources,
+                "after": first_page["by_category_and_price"]["afterKey"],
+            }
+        }
+    }
+)
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.AGGREGATE products '{}' '{"by_category_and_price": {"$composite": {"size": 100, "sources": [{"category": {"$terms": {"field": "category"}}}, {"price": {"$histogram": {"field": "price", "interval": 10}}}]}}}'
+
+# Use the afterKey from the first response to request the next page.
+SEARCH.AGGREGATE products '{}' '{"by_category_and_price": {"$composite": {"size": 100, "sources": [{"category": {"$terms": {"field": "category"}}}, {"price": {"$histogram": {"field": "price", "interval": 10}}}], "after": {"category": "str:books", "price": "f64:20"}}}}'
+```
+</Tab>
+
+</Tabs>
+
+### Output
+
+```json
+{
+  "by_category_and_price": {
+    "buckets": [
+      {
+        "key": { "category": "books", "price": 20 },
+        "docCount": 12
+      }
+    ],
+    "afterKey": {
+      "category": "str:books",
+      "price": "f64:20"
+    }
+  }
+}
+```
+
+Pass `afterKey` back verbatim. Its encoded values, such as `"str:books"` and `"f64:20"`, are different from the display values in a bucket's `key`.
+
+Use the same filter, sources, and source order for every page. Continue until a request returns no buckets.
+
+### Sub-aggregations
+
+Add `$aggs` next to `$composite` to compute metrics for each composite bucket:
+
+```json
+{
+  "by_category": {
+    "$composite": {
+      "sources": [
+        { "category": { "$terms": { "field": "category" } } }
+      ]
+    },
+    "$aggs": {
+      "avg_price": { "$avg": { "field": "price" } }
+    }
+  }
+}
+```
+
+Each bucket then includes an `avg_price` result alongside `key` and `docCount`.
+
 # $dateHistogram
 Source: https://upstash.com/docs/redis/search/aggregation-operators/bucket-aggregations/date-histogram
 
@@ -88346,11 +88521,12 @@ Use bucket aggregations when you want segmented analytics (for example by catego
 | [`$range`](./range) | Explicit `from` / `to` ranges |
 | [`$histogram`](./histogram) | Fixed numeric intervals |
 | [`$dateHistogram`](./date-histogram) | Fixed date/time intervals |
+| [`$composite`](./composite) | Paginated combinations of several sources |
 | [`$facet`](./facet) | Hierarchical FACET paths |
 
 ### Input Format
 
-Every bucket operator takes an object with a `field` property and operator-specific parameters:
+Most bucket operators take an object with a `field` property and operator-specific parameters. `$composite` instead takes a `sources` array, and each source specifies its own field.
 
 **`$terms`** — group by distinct values:
 ```json
@@ -88372,10 +88548,15 @@ Every bucket operator takes an object with a `field` property and operator-speci
 {"by_month": {"$dateHistogram": {"field": "createdAt", "fixedInterval": "30d"}}}
 ```
 
+**`$composite`** — paginated buckets across several sources:
+```json
+{"by_category_and_price": {"$composite": {"size": 100, "sources": [{"category": {"$terms": {"field": "category"}}}, {"price": {"$histogram": {"field": "price", "interval": 10}}}]}}}
+```
+
 ### Behavior Notes
 
 * Bucket operators can contain nested `$aggs` for per-bucket metrics.
-* `$terms`, `$range`, `$histogram`, and `$dateHistogram` support nested `$aggs`.
+* `$terms`, `$range`, `$histogram`, `$dateHistogram`, and `$composite` support nested `$aggs`.
 * `$facet` does not support nested `$aggs` and cannot be used as a sub-aggregation.
 
 # $range
@@ -89171,6 +89352,8 @@ Source: https://upstash.com/docs/redis/search/aggregation-operators/metric-aggre
 
 If `missing` is set, missing fields contribute that fallback value.
 
+By default, `$sum` returns `0` when no values are collected — either no documents match, or the matching documents all have a missing/null value for the field and no `missing` fallback is set. Set `nullIfNoMatch` to `true` to return `null` instead, so you can distinguish that case from a real total of zero.
+
 ### Compatibility
 
 | Field Type | Supported |
@@ -89190,6 +89373,7 @@ Field must be `FAST`.
 |----------|------|----------|-------------|
 | `field` | `string` | Yes | Field to aggregate. |
 | `missing` | `number` | No | Fallback value for missing fields. |
+| `nullIfNoMatch` | `boolean` | No | Return `null` instead of `0` when no values are collected. Default: `false`. |
 
 <Tabs>
 
@@ -89197,7 +89381,7 @@ Field must be `FAST`.
 ```ts
 await index.aggregate({
   aggregations: {
-    total_price: { $sum: { field: "price", missing: 0 } },
+    total_price: { $sum: { field: "price", nullIfNoMatch: true } },
   },
 });
 ```
@@ -89206,14 +89390,18 @@ await index.aggregate({
 <Tab title="Python">
 ```python
 index.aggregate(
-    aggregations={"total_price": {"$sum": {"field": "price", "missing": 0}}}
+    aggregations={
+        "total_price": {
+            "$sum": {"field": "price", "nullIfNoMatch": True}
+        }
+    },
 )
 ```
 </Tab>
 
 <Tab title="Redis CLI">
 ```bash
-SEARCH.AGGREGATE products '{}' '{"total_price": {"$sum": {"field": "price", "missing": 0}}}'
+SEARCH.AGGREGATE products '{}' '{"total_price": {"$sum": {"field": "price", "nullIfNoMatch": true}}}'
 ```
 </Tab>
 
@@ -89225,7 +89413,13 @@ SEARCH.AGGREGATE products '{}' '{"total_price": {"$sum": {"field": "price", "mis
 { "total_price": { "value": 360 } }
 ```
 
-`value` can be `null` when no values are available.
+With `nullIfNoMatch: true`, an aggregation with no collected values (for example, the filter above matches no documents) returns:
+
+```json
+{ "total_price": { "value": null } }
+```
+
+Without `nullIfNoMatch`, the same aggregation returns `0`. This option does not change results where at least one value was collected, including a real sum of zero.
 
 # Aggregations
 Source: https://upstash.com/docs/redis/search/aggregations
@@ -89241,6 +89435,7 @@ They are useful when you want to answer questions like:
 * "How many unique users do we have?"
 * "How many orders fall into each price range?"
 * "How does traffic change per hour/day?"
+* "How can I page through every category and price-range combination?"
 
 <Tabs>
 
@@ -89430,7 +89625,7 @@ SEARCH.AGGREGATE products '{}' '{"avg_price": {"$avg": {"field": "price"}}, "pri
 
 Bucket operators can include sub-aggregations via `$aggs`, so you can compute per-bucket metrics.
 
-* `$terms`, `$range`, `$histogram`, and `$dateHistogram` support nested `$aggs`.
+* `$terms`, `$range`, `$histogram`, `$dateHistogram`, and `$composite` support nested `$aggs`.
 * `$facet` does not support nested `$aggs`.
 * Metric operators do not support nested `$aggs`.
 
@@ -89485,7 +89680,7 @@ Metric aggregations return numeric summaries.
 | Operator | Typical use |
 |----------|-------------|
 | [`$avg`](./aggregation-operators/metric-aggregations/avg) | Mean value |
-| [`$sum`](./aggregation-operators/metric-aggregations/sum) | Total |
+| [`$sum`](./aggregation-operators/metric-aggregations/sum) | Total, with an option to return `null` when no values are collected |
 | [`$min`](./aggregation-operators/metric-aggregations/min) | Smallest value |
 | [`$max`](./aggregation-operators/metric-aggregations/max) | Largest value |
 | [`$count`](./aggregation-operators/metric-aggregations/count) | Number of values |
@@ -89495,6 +89690,8 @@ Metric aggregations return numeric summaries.
 | [`$percentiles`](./aggregation-operators/metric-aggregations/percentiles) | Distribution cut points |
 
 See the [metric overview](./aggregation-operators/metric-aggregations/overview).
+
+By default, `$sum` returns `0` when no values are collected — either no documents match, or the matching documents all have a missing/null value for the field and no `missing` fallback is set. Set `nullIfNoMatch: true` to return `null` for that case. This lets you distinguish it from a real sum of zero.
 
 ### Bucket Aggregations
 
@@ -89506,6 +89703,7 @@ Bucket aggregations partition documents into groups.
 | [`$range`](./aggregation-operators/bucket-aggregations/range) | Custom ranges |
 | [`$histogram`](./aggregation-operators/bucket-aggregations/histogram) | Fixed numeric bins |
 | [`$dateHistogram`](./aggregation-operators/bucket-aggregations/date-histogram) | Fixed time bins |
+| [`$composite`](./aggregation-operators/bucket-aggregations/composite) | Paginated combinations of several sources |
 | [`$facet`](./aggregation-operators/bucket-aggregations/facet) | Hierarchical facets |
 
 See the [bucket overview](./aggregation-operators/bucket-aggregations/overview).

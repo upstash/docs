@@ -1,0 +1,175 @@
+---
+title: $composite
+---
+
+`$composite` groups documents by several fields and lets you page through every bucket.
+
+Use it when you need all combinations of several dimensions, such as category and price range. Unlike `$terms`, which returns the top buckets, `$composite` returns buckets in a stable sort order and provides an `afterKey` cursor for the next page.
+
+### Input Format
+
+Each entry in `sources` has a name and one source operator. The source names become the fields in each bucket's `key` and in the pagination cursor.
+
+```json
+{
+  "by_category_and_price": {
+    "$composite": {
+      "size": 100,
+      "sources": [
+        { "category": { "$terms": { "field": "category" } } },
+        { "price": { "$histogram": { "field": "price", "interval": 10 } } }
+      ]
+    }
+  }
+}
+```
+
+The order of `sources` controls how buckets are sorted. In this example, buckets are sorted by category first and then by price.
+
+### Arguments
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `sources` | `array` | Yes | Non-empty list of named `$terms`, `$histogram`, or `$dateHistogram` sources. Each entry must contain exactly one source name. |
+| `size` | `number` | No | Number of buckets per page. Must be a positive integer. Default: `10`. |
+| `after` | `object` | No | The `afterKey` object from the previous response. |
+
+Every source supports these arguments:
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `field` | `string` | Yes | `FAST` field to bucket on. |
+| `order` | `"asc" \| "desc"` | No | Sort direction for this source. Default: `"asc"`. |
+| `missingBucket` | `boolean` | No | Create a bucket for documents where this field is missing. Default: `false`. |
+| `missingOrder` | `"default" \| "first" \| "last"` | No | Position of the missing-value bucket. Used with `missingBucket`. Default: `"default"`. |
+
+Source-specific compatibility and arguments:
+
+| Source | Supported `FAST` field types | Extra arguments |
+|--------|------------------------------|-----------------|
+| `$terms` | U64, I64, F64, BOOL, DATE, KEYWORD | None |
+| `$histogram` | U64, I64, F64, DATE | `interval` (number, required) |
+| `$dateHistogram` | DATE | `fixedInterval` (for example, `"1d"`) or `calendarInterval` (`"year"`, `"month"`, or `"week"`) |
+
+### Paginate Through Buckets
+
+The response contains the values for the current page in `buckets`. Its `afterKey` is an opaque cursor for the next page.
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+const firstPage = await index.aggregate({
+  aggregations: {
+    by_category_and_price: {
+      $composite: {
+        size: 100,
+        sources: [
+          { category: { $terms: { field: "category" } } },
+          { price: { $histogram: { field: "price", interval: 10 } } },
+        ],
+      },
+    },
+  },
+});
+
+const secondPage = await index.aggregate({
+  aggregations: {
+    by_category_and_price: {
+      $composite: {
+        size: 100,
+        sources: [
+          { category: { $terms: { field: "category" } } },
+          { price: { $histogram: { field: "price", interval: 10 } } },
+        ],
+        after: firstPage.by_category_and_price.afterKey,
+      },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+sources = [
+    {"category": {"$terms": {"field": "category"}}},
+    {"price": {"$histogram": {"field": "price", "interval": 10}}},
+]
+
+first_page = index.aggregate(
+    aggregations={
+        "by_category_and_price": {
+            "$composite": {"size": 100, "sources": sources}
+        }
+    }
+)
+
+second_page = index.aggregate(
+    aggregations={
+        "by_category_and_price": {
+            "$composite": {
+                "size": 100,
+                "sources": sources,
+                "after": first_page["by_category_and_price"]["afterKey"],
+            }
+        }
+    }
+)
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.AGGREGATE products '{}' '{"by_category_and_price": {"$composite": {"size": 100, "sources": [{"category": {"$terms": {"field": "category"}}}, {"price": {"$histogram": {"field": "price", "interval": 10}}}]}}}'
+
+# Use the afterKey from the first response to request the next page.
+SEARCH.AGGREGATE products '{}' '{"by_category_and_price": {"$composite": {"size": 100, "sources": [{"category": {"$terms": {"field": "category"}}}, {"price": {"$histogram": {"field": "price", "interval": 10}}}], "after": {"category": "str:books", "price": "f64:20"}}}}'
+```
+</Tab>
+
+</Tabs>
+
+### Output
+
+```json
+{
+  "by_category_and_price": {
+    "buckets": [
+      {
+        "key": { "category": "books", "price": 20 },
+        "docCount": 12
+      }
+    ],
+    "afterKey": {
+      "category": "str:books",
+      "price": "f64:20"
+    }
+  }
+}
+```
+
+Pass `afterKey` back verbatim. Its encoded values, such as `"str:books"` and `"f64:20"`, are different from the display values in a bucket's `key`.
+
+Use the same filter, sources, and source order for every page. Continue until a request returns no buckets.
+
+### Sub-aggregations
+
+Add `$aggs` next to `$composite` to compute metrics for each composite bucket:
+
+```json
+{
+  "by_category": {
+    "$composite": {
+      "sources": [
+        { "category": { "$terms": { "field": "category" } } }
+      ]
+    },
+    "$aggs": {
+      "avg_price": { "$avg": { "field": "price" } }
+    }
+  }
+}
+```
+
+Each bucket then includes an `avg_price` result alongside `key` and `docCount`.
