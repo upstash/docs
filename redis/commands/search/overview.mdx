@@ -15,7 +15,6 @@ For feature guides and tutorials, start with the [Upstash Redis Search introduct
 
 <CardGroup cols={2}>
 <Card title="SEARCH.CREATE" href="/redis/commands/search/search-create">Create a search index</Card>
-<Card title="SEARCH.REINDEX" href="/redis/commands/search/search-reindex">Rebuild a search index from the current data</Card>
 <Card title="SEARCH.DROP" href="/redis/commands/search/search-drop">Remove a search index</Card>
 <Card title="SEARCH.DESCRIBE" href="/redis/commands/search/search-describe">Return metadata about a search index</Card>
 <Card title="SEARCH.WAITINDEXING" href="/redis/commands/search/search-waitindexing">Wait until pending index updates are visible</Card>
@@ -28,7 +27,7 @@ For feature guides and tutorials, start with the [Upstash Redis Search introduct
 <Card title="SEARCH.LISTALIASES" href="/redis/commands/search/search-listaliases">List index aliases</Card>
 </CardGroup>
 
-`SEARCH.QUERY`, `SEARCH.COUNT`, `SEARCH.AGGREGATE`, `SEARCH.DESCRIBE`, `SEARCH.WAITINDEXING`, and `SEARCH.REINDEX` accept either an index name or alias. `SEARCH.DROP` always treats its argument as a literal index name. This makes it possible to switch an alias to a replacement index and then drop the old index without dropping the replacement.
+`SEARCH.QUERY`, `SEARCH.COUNT`, `SEARCH.AGGREGATE`, `SEARCH.DESCRIBE`, and `SEARCH.WAITINDEXING` accept either an index name or alias. `SEARCH.DROP` always treats its argument as a literal index name. This makes it possible to switch an alias to a replacement index and then drop the old index without dropping the replacement.
 
 ## REST API Usage
 
