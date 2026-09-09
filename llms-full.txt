@@ -4971,6 +4971,494 @@ crabbox run --provider upstash-box --env-from-profile .env -- bun test
 
 For the full list of commands and options, see the [Upstash Box provider reference](https://crabbox.sh/providers/upstash-box.html).
 
+# Running an Agent Fleet with Herdr
+Source: https://upstash.com/docs/box/guides/herdr-agent-fleet
+
+One coding agent on your laptop competes with you for the machine. A fleet of them is worse: they
+fight over ports, dependencies, and the same working tree.
+
+[Herdr](https://herdr.dev) is a terminal workspace manager for coding agents. The Upstash Box plugin
+gives each agent its own box, so you can run several at once, on different branches, with different
+agents and different models, and manage and monitor all of them from one board. Nothing runs on your
+machine, and nothing reaches your worktree until you approve a patch.
+
+<Note>
+  Changes come back only when you run **Apply changes** and approve the patch. Agents never edit your
+  local files directly.
+</Note>
+
+***
+
+## 1. Requirements
+
+* Herdr 0.8.0 or newer
+* Node.js 22 or newer
+* Git and `tar`
+* An [Upstash Box API key](/docs/box/overall/quickstart#1-get-your-api-key)
+
+Beyond that, the two modes differ in one thing only:
+
+* **TUI mode** needs an API key on your machine for the model's provider (Anthropic, OpenAI,
+  OpenRouter, or OpenCode), because your key is what authenticates the agent.
+* **Native mode** needs no extra key, since it can use the Box managed key.
+
+***
+
+## 2. Install the plugin
+
+```bash
+herdr plugin install upstash/herdr-upstash-box
+```
+
+Herdr fetches the dependencies and compiles the plugin during install, so nothing has to be on your
+`PATH`.
+
+***
+
+## 3. Add your keys
+
+Keys can come from the environment Herdr runs in, or from a `secrets.json` in the plugin config
+directory. Find that directory with:
+
+```bash
+herdr plugin config-dir upstash.box
+```
+
+Then create `secrets.json` there:
+
+```json
+{
+  "UPSTASH_BOX_API_KEY": "...",
+  "ANTHROPIC_API_KEY": "...",
+  "OPENROUTER_API_KEY": "..."
+}
+```
+
+Which provider key you need follows the prefix of the model you configure next. An `anthropic/` model
+reads `ANTHROPIC_API_KEY`, `openrouter/` reads `OPENROUTER_API_KEY`, `openai/` reads
+`OPENAI_API_KEY`, and `opencode/` reads `OPENCODE_API_KEY`. Set `providerApiKeyEnv` in `config.json`
+to point at a different variable.
+
+Environment variables take precedence over the file. The file must be a regular file that you own
+with mode `600`, otherwise the plugin refuses to read it.
+
+```bash
+chmod 600 "$(herdr plugin config-dir upstash.box)/secrets.json"
+```
+
+***
+
+## 4. Choose an agent, a model, and a mode
+
+Create `config.json` next to `secrets.json`:
+
+```json
+{
+  "mode": "tui",
+  "harness": "claude-code",
+  "model": "anthropic/claude-sonnet-5",
+  "size": "small"
+}
+```
+
+Every key is optional. `harness` accepts `claude-code`, `codex`, or `opencode`, all of which are
+already installed in every box image. The `model` is a Box model id including its provider prefix.
+Claude Code takes `anthropic/` and `openrouter/` models, so `openrouter/anthropic/claude-sonnet-5` is
+valid alongside `anthropic/claude-sonnet-5`. Codex needs an `openai/` model, and OpenCode takes any.
+An incompatible pair fails at config time rather than halfway through a start.
+
+The `mode` decides what actually sits in your pane:
+
+|                       | TUI mode (default)                                                             | Native mode                                                     |
+| --------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| What runs in the pane | The real Claude Code, Codex, or OpenCode terminal UI, running inside the box   | The Upstash Box CLI REPL, driving the box's own agent            |
+| Credential            | Your provider key, passed to the session only and never stored in the box      | The Box managed key, or your own with `nativeKey: "local"`       |
+| Server-side runs      | Not available                                                                  | Typed runs and schedules                                         |
+
+TUI mode gives you the agent interface you already know. Native mode is the one to pick for the
+scheduled and typed server-side runs covered in section 8.
+
+<Tip>
+  The full list of settings, including upload limits, preview ports, and run history limits, is in
+  the [plugin README](https://github.com/upstash/herdr-upstash-box#configure). Unknown keys and
+  invalid values stop the action with a named error, so a typo will not be silently ignored.
+</Tip>
+
+***
+
+## 5. Start your first agent
+
+Focus a Herdr pane whose working directory is inside a Git worktree, then run:
+
+```bash
+herdr plugin action invoke start-agent --plugin upstash.box
+```
+
+The plugin splits the pane, shows you exactly which files it is about to upload and which it is
+leaving out, creates a box named after the worktree, unpacks the tree, records a Git baseline commit,
+and opens the agent.
+
+<Note>
+  Run from a terminal, `herdr plugin action invoke` only acknowledges that the action was accepted.
+  The work happens in Herdr, where the new pane opens. Watch the Herdr window, not the terminal you
+  typed in.
+</Note>
+
+A key binding is more convenient than typing the command:
+
+```toml
+[[keys.command]]
+key = "prefix+shift+u"
+command = "herdr plugin action invoke start-agent --plugin upstash.box"
+```
+
+### What gets uploaded
+
+The upload is `git ls-files` plus untracked files, minus everything `.gitignore` excludes, minus:
+
+* `.git`, dependency and build directories, `.aws`, `.ssh`, `.gnupg`
+* `.env` files, except examples and samples
+* credential files by name and extension, such as `id_rsa`, `.npmrc`, `.pem`
+* text files containing a private key block or a recognisable API token
+* symlinks and anything that is not a regular file
+
+Every excluded file is listed with its reason before the box is created. Use `allowSensitivePaths`
+for a specific file you want anyway, and `excludedPaths` to leave more out.
+
+The filter reads content, not just paths, so a test fixture holding a credential-shaped string is
+excluded as `detected-secret` even though it is not a real secret. Check the excluded list on the
+first start of a repository, and list anything you actually need in `allowSensitivePaths`.
+
+<Warning>
+  The upload is capped at 100 MiB in total (`maxUploadBytes`) and 10 MiB per file (`maxFileBytes`).
+  Raising the total past 100 MiB will not help, because Box itself rejects an upload of more than
+  100 MB.
+</Warning>
+
+***
+
+## 6. Fan out across worktrees
+
+The plugin keys everything off the Git worktree the focused pane sits in. A worktree gets one box,
+and that pairing is what the plugin calls a mapping. That makes Git worktrees the natural way to fan
+out: give each task its own branch and directory, then start an agent in each.
+
+```bash
+git worktree add ../app-auth-refactor -b auth-refactor
+git worktree add ../app-flaky-tests -b flaky-tests
+git worktree add ../app-upgrade-deps -b upgrade-deps
+```
+
+The three agents share nothing: separate boxes, separate filesystems, separate branches.
+
+### A different agent per box
+
+`config.json` is read at Start, and the mapping records the agent, model, mode, and credential it was
+created with. Later actions use what the mapping stored, not what the config says today, so editing
+`config.json` between starts gives you a mixed fleet:
+
+```bash
+# Claude Code on the refactor
+herdr plugin action invoke start-agent --plugin upstash.box
+
+# switch harness, then start the next one
+$EDITOR "$(herdr plugin config-dir upstash.box)/config.json"
+herdr plugin action invoke start-agent --plugin upstash.box
+```
+
+Codex on the flaky tests, Claude Code on the refactor, and a cheaper model on the dependency bump all
+coexist. Reconnecting to any of them brings back the agent that box was created with.
+
+<Tip>
+  This is the cheapest way to compare agents honestly. Point two boxes at the same task with
+  different harnesses and read both patches.
+</Tip>
+
+### Two agents on the same worktree
+
+A second Start on a worktree that already has a live box is refused, so you cannot lose track of one
+by accident. When you deliberately want two attempts at the same problem, use **Fork**:
+
+```bash
+herdr plugin action invoke fork --plugin upstash.box
+```
+
+Fork snapshots the current box and starts a second one from that snapshot, for the same worktree,
+with its own mapping. Both continue from the same point and diverge from there. It asks you to type
+`FORK` first, because it doubles what you are paying for.
+
+To keep several unrelated boxes on one worktree instead, set `allowMultipleBoxes` to `true`.
+
+***
+
+## 7. The dashboard
+
+Once more than one agent is running, the dashboard is where you live:
+
+```bash
+herdr plugin action invoke dashboard --plugin upstash.box
+```
+
+It opens zoomed and lists every box the plugin owns, newest first:
+
+```
+   WORKTREE / BRANCH        BOX                  AGENT        MODE    LOCAL        REMOTE         SCHED    AGE
+ > app-auth-refactor        herdr-auth-9021      claude-code  tui     connected    running        -        14m
+   auth-refactor
+   app-flaky-tests          herdr-flaky-4417     codex        tui     stopped      paused         -        2h
+   flaky-tests
+   app-nightly-triage       herdr-triage-8830    claude-code  native  ready        running        2a/1p    3d
+   nightly-triage
+   (no mapping)             herdr-old-1120       -            -       orphan       paused         -        6d
+```
+
+The remote column refreshes every few seconds, so the board keeps up with boxes that pause, resume,
+or get woken by a schedule while you are looking at it.
+
+Every action is one key away, and each opens the same pane the equivalent action would:
+
+```
+[j/k] Select  [enter/r] Reconnect  [a] Apply  [i] Info  [s] Stop  [p] Pause  [u] Resume
+[n] Snapshot  [f] Fork  [v] Previews  [t] Run task  [h] Results  [c] Schedules
+[d] Delete  [R] Refresh  [q] Close
+```
+
+Bind it too, since it is the entry point to everything else:
+
+```toml
+[[keys.command]]
+key = "prefix+shift+b"
+command = "herdr plugin action invoke dashboard --plugin upstash.box"
+```
+
+### Reading the columns
+
+**AGENT** and **MODE** are what that box was created with, which is how a mixed fleet stays legible
+at a glance.
+
+**LOCAL** is what the plugin believes about the mapping, and it moves through the lifecycle:
+`provisional`, `creating`, `uploading`, `preparing`, `ready`, `connecting`, `connected`, `stopped`,
+`paused`, `missing`, `deleting`, `failed`. A row sitting in `connected` has a pane attached. A row in
+`stopped` or `paused` is work you can pick back up with Reconnect.
+
+**REMOTE** is what Box reports about the machine itself, fetched live. The two disagreeing is normal
+and informative: `connected` locally with a `paused` remote means the box idled out while your pane
+was still open, and Reconnect will resume it.
+
+**SCHED** counts server-side schedules attached to that box. `2a/1p` means two active and one paused,
+and `-` means none.
+
+**AGE** is how long the box has existed, which is the quickest way to spot something you started days
+ago and forgot.
+
+### Orphans
+
+A row showing `(no mapping)` with `orphan` in the LOCAL column is a box that carries the plugin's
+labels but that no mapping claims any more, usually because local state was lost. Orphans support
+exactly one action, Delete, so they are a cleanup list rather than something you can reconnect to.
+
+<Warning>
+  Delete boxes through the plugin, with `d` here or the Delete action, rather than through the
+  Upstash console. Deleting in the console leaves the local mapping behind, and Start keeps refusing
+  that worktree until the mapping is gone too.
+</Warning>
+
+***
+
+## 8. Monitoring without watching
+
+Reconnecting to three panes to see whether anything happened does not scale. Two features let a box
+report instead.
+
+### Scheduled agents
+
+In native mode, a box can run an agent on a cron, server-side, with nothing attached:
+
+```bash
+herdr plugin action invoke schedules --plugin upstash.box
+```
+
+The popup takes short textual commands:
+
+```
+c 0 9 * * 1 | review open PRs and summarise what needs attention
+p <id>
+r <id>
+d <id>
+```
+
+`c` creates, `p` pauses, `r` resumes, `d` deletes. The scheduler wakes a paused box when the cron
+fires, so a nightly triage box can sit paused all day and cost nothing until it runs.
+
+<Warning>
+  That also means a schedule spends money while Herdr is closed and nobody is watching. Model and
+  compute costs accrue on every fire. Pause or delete schedules you no longer want, and check the
+  SCHED column when a box costs more than you expected.
+</Warning>
+
+### Run results
+
+```bash
+herdr plugin action invoke run-results --plugin upstash.box
+```
+
+This syncs the scheduled run records from Box and shows recent manual and scheduled history, so you
+can read what an agent did overnight rather than reattaching to find out. Any run whose pane never
+came back is marked failed rather than left hanging.
+
+History is kept per mapping in a private file with mode `600`, holding the last 50 runs by default
+(`runHistoryLimit`), each capped at 256 KiB of output (`maxRunResultBytes`). At those defaults it can
+reach roughly 12 MB per install, so lower either setting if that matters to you.
+
+### Typed runs
+
+When you want one specific answer rather than a conversation, run a task with a schema:
+
+```bash
+herdr plugin action invoke run-task --plugin upstash.box
+```
+
+It asks for a prompt and a one-line JSON Schema, runs server-side from the mapped working directory,
+and persists the typed result with its cost. Press Ctrl-C in the pane to cancel it.
+
+<Note>
+  Run task, Run results, and Schedules need a native-mode mapping. With a TUI mapping they stop
+  before opening a pane, so decide the mode when you create the box.
+</Note>
+
+***
+
+## 9. Working with a running agent
+
+```bash
+herdr plugin action invoke reconnect --plugin upstash.box
+herdr plugin action invoke info --plugin upstash.box
+herdr plugin action invoke stop --plugin upstash.box
+```
+
+**Reconnect** attaches you again from any pane. If the box is still running, this is a live reattach:
+the agent's session comes back exactly as you left it, scrollback and all. If the box paused while
+you were away, it resumes first, and because a pause does not preserve the running process, Reconnect
+relaunches the harness with its continue flag to pick the conversation back up from disk. If there is
+no conversation to continue, which is the case when a first launch never got past the trust prompt,
+it falls back to starting the agent fresh in the same worktree.
+
+**Info** shows the box status, the agent session, the paths in use, and the export markers.
+
+**Stop** ends the agent session and keeps the box and its files.
+
+<Note>
+  In TUI mode the agent runs under tmux inside the box. A Box exec session owns its process, so
+  without tmux, closing the pane would kill the agent. This is what lets you close a pane mid-task.
+  It does not survive the box pausing, which is the one case where Reconnect resumes the
+  conversation from disk instead of reattaching to a live process.
+</Note>
+
+**Previews** exposes one of your configured ports with a [public URL](/docs/box/overall/preview), so you
+can look at what an agent built. Basic auth is on by default; setting `previewAuth` to `none` makes
+the link reachable by anyone who has it.
+
+***
+
+## 10. Keeping the bill down
+
+Boxes pause on their own when idle, which is what makes a wide fleet affordable: the ones you are not
+using stop costing compute. A few habits keep that working for you.
+
+Use **Pause** and **Resume** when you want to be deliberate about it:
+
+```bash
+herdr plugin action invoke pause --plugin upstash.box
+herdr plugin action invoke resume --plugin upstash.box
+```
+
+Pause before taking a snapshot or a patch you want to be stable, since a scheduled run firing
+underneath you would change the tree mid-export.
+
+Check the AGE column regularly. A three-day-old box on a branch you already merged is the most common
+source of surprise cost, and Delete is one key away.
+
+Leave `keepAlive` off unless a box genuinely needs to stay warm, since it disables the idle pause for
+that box.
+
+***
+
+## 11. Collecting the work
+
+When an agent has finished, bring its changes home:
+
+```bash
+herdr plugin action invoke apply-changes --plugin upstash.box
+```
+
+Apply exports everything that changed in the box since your last apply as a binary Git patch, checks
+it against your worktree with `git apply --check`, shows you the summary, and applies it only after
+you approve. Because each agent worked in its own worktree on its own branch, three finished agents
+produce three independent patches with nothing to untangle.
+
+The same secret filter that governs uploads governs the patch coming back, so an agent cannot
+introduce a credential file into your tree.
+
+Apply from the dashboard with `a` to work down the list without leaving the board.
+
+**Snapshot** saves a box's state under a timestamped name if you want a point to come back to before
+letting an agent continue.
+
+***
+
+## 12. Rails that matter at scale
+
+A few behaviours only become visible once several boxes are live, and they are all deliberate.
+
+**One mutating action per box at a time.** Stop, pause, resume, snapshot, apply, delete, fork, and
+schedule changes take a per-mapping lock. A second one is refused rather than queued, so two actions
+can never write conflicting outcomes. A typed run holds the lock only while starting and while
+recording its result, never during the model call, so stop and delete stay available while it thinks.
+
+**Actions refuse to guess.** When more than one box matches a pane or a worktree, which is always the
+case right after a fork, actions stop and point you at the dashboard instead of picking one. Select
+the box you meant there.
+
+**One popup at a time.** Herdr shows a single popup, so if an action reports that one is already
+open, close it and retry. An unattended popup closes itself after two minutes so it cannot block the
+rest of the board.
+
+***
+
+## Troubleshooting
+
+**Native mode connects to the wrong API.** The `box` CLI reads a `.env` from the directory it runs
+in, which is your worktree. If that file sets `UPSTASH_BOX_BASE_URL`, the REPL uses it while the rest
+of the plugin uses its own. Unset it, or set the same value in the environment Herdr runs in.
+
+**A second Start is refused.** One live box per worktree is the default, and Start reports the box
+that already holds it. Reconnect to that box, or delete it with the Delete action or `d` in the
+dashboard, then start again. Deleting the box from the Upstash console instead leaves the mapping
+behind, so Start keeps refusing. Set `allowMultipleBoxes` to `true` if you genuinely want more than
+one, or use Fork.
+
+**An action refuses to guess which box to use.** More than one box matches that pane or worktree,
+which is always the case right after a fork. Pick the box you meant from the dashboard.
+
+***
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Schedules" icon="clock" href="/box/overall/schedules">
+    Server-side agent schedules in detail.
+  </Card>
+  <Card title="Snapshots" icon="camera" href="/box/overall/snapshots">
+    Save and branch box state.
+  </Card>
+  <Card title="Pricing" icon="tag" href="/box/overall/pricing">
+    What a running and a paused box cost.
+  </Card>
+  <Card title="Plugin source" icon="github" href="https://github.com/upstash/herdr-upstash-box">
+    The plugin repository and full configuration reference.
+  </Card>
+</CardGroup>
+
 # Hermes Setup
 Source: https://upstash.com/docs/box/guides/hermes-setup
 
