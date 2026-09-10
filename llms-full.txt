@@ -12272,6 +12272,53 @@ Each request is then automatically served by the closest read replica for maximu
 
 Check out [our blog post](https://upstash.com/blog/global-database) to learn more about our global replication philosophy. You can also explore our [live benchmark](https://latency.upstash.com/) to see Upstash Redis latency from different locations around the world.
 
+# How Upstash Works
+Source: https://upstash.com/docs/common/concepts/how-upstash-works
+
+Upstash is a platform of fully managed serverless services. Most products are
+**managed infrastructure your code calls out to**: Upstash operates the
+service, while your application code runs in your own environment (serverless
+functions, edge runtimes, or your own servers). Box is the exception — it is
+compute hosted by Upstash.
+
+## Managed services your code calls
+
+* [Redis](/docs/redis/overall/getstarted) — a serverless Redis-compatible database
+  you access over TCP or HTTPS from anywhere. Upstash operates the database;
+  requests originate from your client code.
+* [Vector](/docs/vector/overall/getstarted) — a managed vector database accessed
+  over REST with our SDKs.
+* [Blob](/docs/blob/overall/quickstart) — S3-compatible object storage accessed
+  with the `@upstash/blob` client.
+* [Realtime](/docs/realtime/overall/quickstart) — managed realtime messaging over
+  HTTP-based channels (Redis streams and SSE) that your app connects to.
+* [Search](/docs/redis/search/introduction) — full-text search over your Redis
+  data, available as a Redis extension.
+
+## Services that call your endpoints
+
+* [QStash](/docs/qstash/overall/getstarted) — serverless messaging and scheduling.
+  QStash acts as a guaranteed-delivery middleman: it sends HTTP requests to
+  your API endpoints and retries them on failure.
+* [Workflow](/docs/workflow/getstarted) — built on QStash. Each workflow step runs
+  as its own HTTP call to your application's endpoint (for example a serverless
+  function on Vercel or a Worker on Cloudflare Workers), with state stored by
+  Upstash between steps.
+
+Your code behind these lives in your own deployment — Vercel, Cloudflare
+Workers, AWS Lambda, or any HTTP endpoint — and Upstash invokes it.
+
+## Upstash-hosted compute
+
+* [Box](/docs/box/overall/how-it-works) — durable execution environments managed by
+  Upstash. A box is an isolated container that executes your prompts, shell
+  commands, and coding agents, and is billed per active CPU time.
+
+Related: [Serverless](/docs/common/concepts/serverless),
+[Scale to Zero](/docs/common/concepts/scale-to-zero),
+[Global Replication](/docs/common/concepts/global-replication),
+[Access Anywhere](/docs/common/concepts/access-anywhere).
+
 # Scale to Zero
 Source: https://upstash.com/docs/common/concepts/scale-to-zero
 
@@ -13872,6 +13919,10 @@ import { Hero, PromptToolIcons, SectionHead, ProductGrid, UtilityGrid, Community
       </Prompt>
     </div>
   </Hero>
+  <p className="u-hero-note">
+    New here? Read <a href="/common/concepts/how-upstash-works">How Upstash
+    Works</a> to see where your code runs and what Upstash manages.
+  </p>
 
   <SectionHead divider title="Pick a product and start building" sub={<>See <a href="https://upstash.com/pricing">pricing</a> for each product's plans, billing, and limits.</>} />
   <ProductGrid />
@@ -79555,6 +79606,25 @@ In the current version, we do not expose any metrics specific to API calls in
 the console. But the metrics of the database backing the API should give a good
 summary about the performance of your APIs.
 
+The Redis [`INFO`](/docs/redis/commands/server/info) command works over REST with a
+database token, so you can inspect the database backing your API without
+management API credentials:
+
+```shell
+curl -X POST https://us1-merry-cat-32748.upstash.io/info \
+  -H "Authorization: Bearer 2553feg6a2d9842h2a0gcdb5f8efe9934"
+```
+
+The reply is the standard CRLF-delimited `INFO` text report. The `memory`,
+`clients` and `stats` sections include `used_memory`, `connected_clients`,
+`total_commands_processed` and `instantaneous_ops_per_sec`, which summarize
+current load and past command volume. Plan limits appear as errors when
+exceeded: for example, free databases fail with
+`ERR max daily request limit exceeded` (see
+[troubleshooting](/docs/redis/troubleshooting/max_daily_request_limit)). Billing is
+per command, identically for REST and Redis protocol — see
+[Cost and Pricing](#cost-and-pricing).
+
 ## REST - Redis API Compatibility
 
 | Feature                                                       | REST Support? |                               Notes                               |
@@ -79721,6 +79791,14 @@ Upstash works for all the common usecases for Redis®. You can use Upstash in yo
 ## Do you support all Redis® API?
 
 Most of them. See [Redis® API Compatibility](/docs/redis/overall/compatibility) for the list of supported commands.
+
+## Can I use multiple databases (SELECT / db index)?
+
+No. Upstash exposes a single logical database, so `0` is the only valid index and `SELECT` with any other index returns an error. The command is accepted so that clients which issue `SELECT 0` while setting up a connection keep working. To separate concerns inside one database, use key prefixes instead of numbered databases. See [`SELECT`](/docs/redis/commands/connection/select) for details.
+
+## Are there restricted or unsupported commands?
+
+Yes, depending on the protocol. Over the REST API, for example, connection commands are limited to `PING` and `ECHO`. Blocking commands, `WATCH`/`UNWATCH`/`DISCARD` and Cluster are not supported. See [Redis® API Compatibility](/docs/redis/overall/compatibility) for the full list.
 
 ## Can I use any Redis client?
 
@@ -82425,6 +82503,9 @@ support larger data sizes and custom limits — [contact us](/docs/common/help/s
   executed. This applies equally to the [REST API](/docs/redis/features/restapi) and to
   commands made over the Redis protocol — one command is one billable request in both
   cases.
+* **Monitoring usage.** Run [`INFO`](/docs/redis/commands/server/info) over REST with your
+  database token to inspect live usage (memory, clients, processed commands) — see
+  [Metrics and Monitoring](/docs/redis/features/restapi#metrics-and-monitoring).
 * **Global databases.** With [Global replication](/docs/redis/features/globaldatabase),
   each write is replicated to every read region, and each replicated write counts as a
   command for billing. Adding read regions to a Fixed plan costs 50% of the base tier
@@ -82713,6 +82794,11 @@ Extension commands are reachable from any client through its generic command int
 
 SDK command references may cover a smaller set of typed helpers.
 For example, see the [TypeScript SDK command reference](/docs/redis/sdks/ts/commands/overview) for the commands documented in `@upstash/redis`.
+
+## Limitations
+
+* Upstash exposes a single logical database. Only index `0` is valid for [`SELECT`](/docs/redis/commands/connection/select); any other index returns an error. Use key prefixes to separate concerns instead of numbered databases.
+* Command support varies by protocol. For example, connection commands are limited to `PING` and `ECHO` over the [REST API](/docs/redis/features/restapi#rest-redis-api-compatibility). See the [REST API compatibility table](/docs/redis/features/restapi) for details.
 
 Most unsupported items are on our roadmap. If you need a feature that we do not support, email [support@upstash.com](mailto:support@upstash.com) so we can let you know when we plan to support it.
 
@@ -87405,6 +87491,10 @@ await redis.sadd('animals', 'cat')
 data  = await redis.spop('animals', 1)
 console.log(data)
 ```
+
+The client retries failed requests automatically (5 retries with an exponential
+backoff). You can set a custom retry policy through the `retry` option in the
+`Redis` constructor — see [Retries](/docs/redis/sdks/ts/retries).
 
 # Overview
 Source: https://upstash.com/docs/redis/sdks/ts/overview
@@ -102972,6 +103062,8 @@ curl $UPSTASH_VECTOR_REST_URL/query-data \
 # FAQ
 Source: https://upstash.com/docs/vector/help/faq
 
+For pricing and a consolidated list of index limits, see [Pricing & Limits](/docs/vector/overall/pricing).
+
 **Account and Usage:**
 
 * **What is the maximum number of indexes I can create in my account?**
@@ -104064,7 +104156,53 @@ Source: https://upstash.com/docs/vector/overall/llms-txt
 # Pricing & Limits
 Source: https://upstash.com/docs/vector/overall/pricing
 
-Please check our [pricing page](https://upstash.com/pricing/vector) for the most up-to-date information on pricing and limits.
+The numbers below reflect current pricing — see the [pricing page](https://upstash.com/pricing/vector) for the most up-to-date information.
+
+## Pay as you go
+
+| Item | Price |
+| ---- | ----- |
+| Storage | $0.25 / GB per month |
+| Operations (queries, upserts, deletes) | $0.40 per 100,000 operations |
+| Bandwidth | Free up to 200 GB / month, then $0.03 / GB |
+
+There are no hourly charges for having an index created. A range, query or
+fetch is counted as one operation regardless of the number of vectors returned,
+while an upsert or delete is counted per vector (a batch upsert of 1000 vectors
+is 1000 billable operations).
+
+Storage is the sum of vector, metadata, and data storage. Vector storage is
+estimated at 4 bytes per dimension, so it is
+`vector count × dimension count × 4 bytes`. Metadata and data are counted by
+the average size per vector, up to 48 KB and 1 MB respectively; they have a
+soft limit and you will be emailed when an index approaches it.
+
+## Free plan
+
+The free plan is suitable for small projects. It is limited to 10,000 queries
+and 10,000 updates per day.
+
+## Limits
+
+| Item | Limit |
+| ---- | ----- |
+| Maximum dimension | 1536 on the free plan, 3072 on fixed and pay-as-you-go, 5376 on Pro |
+| Maximum vector count | Each plan has a vector × dimension cap; 2 billion on pay-as-you-go |
+| Metadata size per vector | Up to 48 KB |
+| Data size per vector | Up to 1 MB |
+| `topK` | Defaults to 10; the maximum number of vectors returned by a query |
+| Vector ID | Required and cannot be an empty string |
+
+For batch inserts we recommend an array size of up to 1000 vectors. You can
+send either a single vector or an array of vectors to the upsert endpoint.
+
+## Regions
+
+Upstash Vector is currently available in AWS `us-east-1` and AWS `eu-west-1`.
+
+## FAQ
+
+For more billing and limit details, see the [FAQ](/docs/vector/help/faq).
 
 # What is Upstash Vector?
 Source: https://upstash.com/docs/vector/overall/whatisvector
