@@ -1,42 +1,230 @@
 ---
 title: Compare
+description: How QStash compares to BullMQ, Kafka, Amazon SQS, Amazon SNS, and Google Pub/Sub.
 ---
 
-In this section, we will compare QStash with alternative solutions.
+QStash is a **serverless, HTTP-based messaging and scheduling service**. You publish
+a message over HTTP, and QStash delivers it to your endpoint later — with retries,
+delays, ordering, rate limits, and a dead letter queue when things go wrong.
 
-### BullMQ
+The most important difference between QStash and the alternatives below is the
+**delivery model**:
 
-BullMQ is a message queue for NodeJS based on Redis. BullMQ is open source
-project, you can run BullMQ yourself.
+- **QStash pushes.** Your existing HTTP route *is* the consumer. There is no worker
+  process, no poller, no long-lived connection, and nothing to keep running.
+- **BullMQ, Kafka, and SQS pull.** Something you deploy and operate must connect,
+  poll, and stay alive to receive messages.
+- **SNS and Pub/Sub can also push** to any public HTTPS endpoint, but with much
+  weaker per-message failure handling, and no delay or scheduling.
 
-- Using BullMQ in serverless environments is problematic due to stateless nature
-  of serverless. QStash is designed for serverless environments.
+That single difference is why QStash fits serverless and edge platforms — Vercel,
+AWS Lambda, Cloudflare Workers — where a persistent consumer process either
+doesn't exist or costs you money while it idles.
 
-- With BullMQ, you need to run a stateful application to consume messages.
-  QStash calls the API endpoints, so you do not need your application to consume
-  messages continuously.
+## Summary
 
-- You need to run and maintain BullMQ and Redis yourself. QStash is completely
-  serverless, you maintain nothing and pay for just what you use.
+| | **QStash** | **BullMQ** | **Kafka** | **Amazon SQS** | **Amazon SNS** | **Google Pub/Sub** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Delivery model** | Push  | Pull | Pull | Pull | Push | Push or pull |
+| **Consumer is** | An HTTP route you already have | A long-running Node/Python worker | A long-running consumer | A poller or a Lambda | An HTTP route or AWS target | An HTTP route or subscriber |
+| **Runs on serverless / edge** | Yes | No | No | Serverless yes (a function must poll, or use a Lambda trigger), edge no | Yes | Yes (push subscriptions) |
+| **Cron scheduling** | Yes | Yes (repeatable jobs) | No | No | No | No (needs Cloud Scheduler) |
+| **Delay** | 7 days to unlimited, by plan | Yes | No | 15 minutes | No | No |
+| **Rate limit & concurrency** | Flow Control (rate + parallelism, per key) | Worker limiter + concurrency | Consumer-side only | No | HTTP throttle only | Client-side flow control |
+| **Ordering (FIFO)** | Queues | Per queue | Per partition | FIFO queues | FIFO topics, no HTTP subscribers | Ordering keys |
+| **Fan-out** | URL Groups | No | Consumer groups | No | Yes | Yes  |
+| **Replay / history** | Logs + DLQ replay | Failed/completed sets, retryable | Yes, full log retention | DLQ redrive | FIFO topics only (archive & replay) | Seek within retention |
+| **Pricing** | Per message, scales to zero | Redis + always-on compute | Cluster cost, never zero | Per request, scales to zero | Per request | Per GB |
 
-### Zeplo
 
-Zeplo is a message queue targeting serverless. Just like QStash it allows users
-to queue and schedule HTTP requests.
+## BullMQ
 
-While Zeplo targets serverless, it has a fixed monthly price in paid plans which
-is \$39/month. In QStash, price scales to zero, you do not pay if you are not
-using it.
+[BullMQ](https://bullmq.io) is an open source job queue for Node.js and Python,
+built on Redis. It's a library, not a service: you install it, point it at a Redis
+instance, and run worker processes.
 
-With Zeplo, you can send messages to a single endpoint. With QStash, in addition
-to endpoint, you can submit messages to a URL Group which groups one or more
-endpoints into a single namespace. Zeplo does not have URL Group functionality.
+**What you have to operate.** BullMQ needs a Redis instance you keep healthy,
+backed up, and sized for your peak, plus at least one worker process running
+continuously. QStash has neither. You publish over HTTP and QStash calls your
+endpoint.
 
-### Quirrel
+**Serverless.** This is the sharp edge. A BullMQ `Worker` holds a blocking Redis
+connection and processes jobs in a loop — that model does not survive on Vercel,
+Lambda, or Cloudflare Workers, so teams end up running a separate always-on box
+just for the queue. With QStash there is nothing to keep alive; a message arrives
+as an ordinary HTTP request to a route you already deploy.
 
-Quirrel is a job queueing service for serverless. It has a similar functionality
-with QStash.
+**Where BullMQ still wins.** It is in-process, so per-job latency is very low, and
+job payloads never leave your network. If you already run persistent Node servers
+and a Redis you maintain anyway, BullMQ is a reasonable fit — and its parent/child
+flows are more granular than message chaining. For dependent multi-step work on
+QStash, use [Upstash Workflow](/workflow/getstarted) instead of hand-chaining
+messages.
 
-Quirrel is acquired by Netlify, some of its functionality is available as
-Netlify scheduled functions. QStash is platform independent, you can use it
-anywhere.
+**Feature overlap.** Both support delayed jobs, cron/repeatable jobs, retries with
+backoff, rate limiting, and concurrency caps. The difference is where those run:
+BullMQ enforces them inside your worker, QStash enforces them before the request
+ever reaches you, so an overloaded downstream never sees the traffic.
+
+## Kafka
+
+[Apache Kafka](https://kafka.apache.org) is a distributed, partitioned, replicated
+commit log — self-hosted, or managed as Amazon MSK, Confluent Cloud, or Redpanda.
+It is a genuinely different category of system, and for a large class of workloads
+it's the wrong tool by a wide margin.
+
+**Kafka is a log, QStash is a delivery service.** Kafka retains an ordered stream
+that many independent consumer groups read at their own offsets, and can re-read
+from the beginning. QStash tracks each message individually through delivery,
+retries, and failure. If you need replay of a stream, event sourcing, or the same
+events consumed by analytics *and* a service *and* a data warehouse, that's Kafka.
+
+**Operational weight.** Even managed, Kafka means brokers, partitions, replication
+factors, consumer groups, offset management, rebalancing, and a consumer process
+that stays connected. Even the smallest production cluster runs continuously, 
+so the price never scales to zero. QStash has no cluster, no partitions, and no 
+consumers to operate.
+
+**Per-message control.** The Kafka broker has no concept of retrying an individual
+message, delaying one for three days, or moving one to a dead letter queue. The
+surrounding ecosystem fills some of that in — Kafka Connect has a built-in dead
+letter queue for sink connectors, and frameworks like Spring Kafka add non-blocking
+retry topics with backoff and a dead letter topic — but for a plain consumer you
+build it yourself, and arbitrary per-message delay ("deliver this one in three
+days") has no good answer at any layer. In QStash these are per-message headers.
+
+**Choose Kafka when** you have sustained high-volume event streams, multiple
+independent consumers of the same data, or a real need for replay and log
+retention. **Choose QStash when** each message is a unit of work that should
+result in exactly one HTTP call to your service.
+
+## Amazon SQS
+
+[Amazon SQS](https://aws.amazon.com/sqs/) is AWS's managed queue. Like QStash it is
+fully managed and scales to zero, so the comparison is about the delivery model and
+the surrounding features rather than about operations.
+
+**Pull vs push.** SQS holds messages until something polls for them. That something
+is a consumer you deploy — an ECS task, an EC2 process, or a Lambda with an event
+source mapping. QStash delivers straight to your URL, anywhere on the internet, in
+any cloud. There is nothing to wire up and nothing that has to live in AWS.
+
+**Delay.** SQS message timers max out at **15 minutes**. QStash delays go up to
+**1 year** on pay-as-you-go, which covers trial expirations, reminders, and
+scheduled emails that SQS simply cannot express.
+
+**Scheduling.** SQS has no cron. You add EventBridge Scheduler as a second service
+— it can target `SendMessage` directly, but it is another resource with its own IAM
+execution role. QStash [schedules](/qstash/features/schedules) are a cron expression
+on a publish call.
+
+**Rate limiting.** SQS has no way to say "call this endpoint at most 10 times a
+minute, 5 at a time." You build it with reserved concurrency and back-pressure
+logic. QStash [Flow Control](/qstash/features/flowcontrol) does it per key, across
+multiple URLs.
+
+**Ordering and throughput.** SQS FIFO queues are limited to 300 transactions per
+second per partition (3,000 messages/s with batching) unless you enable high
+throughput mode; standard queues are effectively unlimited but only best-effort
+ordered. If you need six-figure message rates inside AWS, SQS is the stronger
+choice.
+
+**Choose SQS when** your producers and consumers all live in AWS, you already run
+Lambda or ECS consumers, and you want the deepest possible AWS integration.
+**Choose QStash when** your consumers are HTTP endpoints on serverless platforms,
+or you want cron, long delays, and rate limiting without assembling extra AWS
+services.
+
+## Amazon SNS
+
+[Amazon SNS](https://aws.amazon.com/sns/) is AWS's pub/sub notification service. It
+pushes, which makes it the closest architectural match to QStash on this list — but
+it is built for fan-out notification, not for reliable job execution.
+
+**SNS does not store messages.** It attempts delivery to each subscriber and then
+forgets. If a subscriber is down for the whole retry window, the message is
+discarded unless you attached an SQS dead letter queue to that subscription. QStash
+persists every message, retries it, and keeps whatever finally failed in the DLQ.
+
+**The retry window is capped at one hour.** For HTTP/S endpoints, the default
+delivery policy is only 3 retries, and even a fully customized policy
+[cannot exceed 3,600 seconds total](https://docs.aws.amazon.com/sns/latest/dg/sns-message-delivery-retries.html)
+— a hard AWS limit. A deploy that takes 90 minutes to fix loses the message, and no
+configuration can change that. QStash's default is 3 retries over roughly 33 minutes,
+but the ceiling is yours to set: raise the retry count and the delay expression
+[per message](/qstash/features/retry) and retries can span days.
+
+**Payload size.** SNS caps messages at **256 KB**. QStash allows 1 MB on the free
+plan, 10 MB on pay-as-you-go, and 50 MB on fixed plans.
+
+**No delay, no cron.** SNS has neither. Ordering exists only on SNS FIFO topics,
+which accept AWS-managed endpoints and cannot have HTTP/S subscribers — so it is not
+available to the kind of consumer this comparison is about. 
+
+**Fan-out.** This is what SNS is for, and QStash's equivalent is
+[URL Groups](/qstash/features/url-groups): publish once, and QStash creates an
+independent, independently-retried delivery for each subscribed endpoint. Adding a
+consumer is a URL Group change, not a producer redeploy. SNS goes further on
+*non-HTTP* targets — SQS, Lambda, email, SMS, and mobile push —
+and its message filtering lets subscribers select by attribute, which QStash does
+not do.
+
+**Choose SNS when** you're fanning out inside AWS, especially to SQS queues, Lambda,
+SMS, or mobile push. **Choose QStash when** the subscribers are HTTP endpoints and
+you need the message to actually survive a bad hour.
+
+## Google Pub/Sub
+
+[Google Cloud Pub/Sub](https://cloud.google.com/pubsub) is GCP's managed messaging
+service. It supports both pull subscriptions and push subscriptions that POST to an
+HTTPS endpoint, so it overlaps with QStash more than SQS does.
+
+**Scope.** Pub/Sub is a high-throughput event distribution backbone — it sits closer
+to Kafka than to a job queue, with 10 MB messages, seek-and-replay within the
+retention window (7 days by default, up to 31 days at the topic level), and
+snapshots. QStash is scoped to reliable per-message delivery of work.
+
+**Per-message control.** Pub/Sub configures retry policy, ack deadlines, and dead
+letter topics **per subscription**. Every message on a subscription gets the same
+treatment. In QStash, retries, backoff, delay, timeout, and flow control are set
+**per message**, so a heavy job and a trivial one can share the same endpoint with
+different policies.
+
+**Delay and scheduling.** Pub/Sub has neither. There is no per-message delay and no
+cron; scheduled work means adding Cloud Scheduler as a separate service. QStash has
+delays up to a year and cron schedules built in.
+
+**Rate limiting.** Pub/Sub flow control is configured in the *subscriber client
+library* — it protects the subscriber, and only works if you run a subscriber
+process. Push subscriptions get a delivery rate that Pub/Sub adjusts on its own.
+QStash Flow Control is enforced server-side before delivery, with an explicit rate,
+period, and parallelism you choose.
+
+**Setup.** A Pub/Sub push subscription lives inside a GCP project: a topic, a
+subscription, and — if you want the endpoint authenticated — a service account whose
+OIDC token your handler validates. QStash needs a token and, optionally,
+[signature verification](/qstash/features/security) with a one-line SDK call.
+
+**Choose Pub/Sub when** you're on GCP, need very high throughput, replay, or
+schema-validated topics, and want native integration with Dataflow and BigQuery.
+**Choose QStash when** you want per-message reliability controls and scheduling
+without a cloud project behind it.
+
+<CardGroup cols={2}>
+  <Card title="Use Cases" icon="lightbulb" href="/qstash/overall/usecases">
+    What people actually build with QStash
+  </Card>
+  <Card title="Getting Started" icon="rocket" href="/qstash/overall/getstarted">
+    Publish your first message in a few minutes
+  </Card>
+  <Card
+    title="Serverless Background Jobs and Message Queues Compared"
+    icon="scale-balanced"
+    href="https://upstash.com/blog/serverless-background-jobs-and-message-queues-every-major-option-in-2026"
+  >
+    A wider survey, including Cloud Tasks, Inngest, and Trigger.dev
+  </Card>
+  <Card title="Pricing & Limits" icon="tag" href="https://upstash.com/pricing/qstash">
+    Per-plan message sizes, delays, retention, and cost
+  </Card>
+</CardGroup>
