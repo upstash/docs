@@ -1,15 +1,13 @@
 ---
-title: "Scrape Dynamic Websites with Playwright"
+title: "Playwright Web Scraping"
 ---
 
-In this guide, we use Upstash Box to run [Playwright](https://playwright.dev) against a JavaScript-heavy site, scrape structured data from it, and pull the results back to our own server. Because a Box is a real Linux container rather than a restricted serverless runtime, Chromium and its system dependencies install and run exactly like they would on your laptop.
+Every box can come with its own browser. Create one with `browser: true` and you get a managed, headless Chromium that boots on first use. Nothing to install, no `apt-get`, no Chromium binary to keep up to date.
+
+This guide scrapes a JavaScript-heavy site with that built-in browser. We read rendered pages through the SDK, extract structured data against a schema, then connect Playwright over CDP to harvest many pages deterministically.
 
 <Note>
-  Boxes also ship a managed, pre-installed browser. Create one with `browser:
-  true` and drive Chromium through the SDK, or [connect Playwright over
-  CDP](/box/overall/browser/connect) with no install step. This guide shows
-  the manual route, where the box's agent installs and controls Playwright
-  itself. See [Browser](/box/overall/browser/overview) for the built-in one.
+  The browser can only be provisioned when the box is created. It cannot be enabled on an existing box. See [Browser](/box/overall/browser/overview) for the full surface.
 </Note>
 
 ---
@@ -17,10 +15,12 @@ In this guide, we use Upstash Box to run [Playwright](https://playwright.dev) ag
 ## 1. Installation
 
 ```bash
-npm install @upstash/box
+npm install @upstash/box playwright-core zod
 ```
 
-Set your environment variables:
+`playwright-core` is enough. You connect to the box's Chromium instead of launching one locally, so there are no browser binaries to download on your side either.
+
+Set your environment variable:
 
 ```bash title=".env"
 UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
@@ -28,102 +28,254 @@ UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
 
 ---
 
-## 2. Provision a box and install Playwright
-
-Create a box with outbound network access (the default) so it can reach the target site and download the browser binaries, then install Playwright and Chromium with its system dependencies.
+## 2. Create a box with a browser
 
 ```typescript title="scripts/scrape.ts"
 import "dotenv/config"
-import { Agent, Box } from "@upstash/box"
+import { Box } from "@upstash/box"
 
 const box = await Box.create({
   runtime: "node",
-  agent: {
-    harness: Agent.ClaudeCode,
-    model: "anthropic/claude-sonnet-4-6",
-  },
+  browser: true,
+})
+
+const tab = await box.browser.tab.create("https://books.toscrape.com", {
+  waitUntil: "domcontentloaded",
 })
 
 console.log(`Box ready: ${box.id}`)
-
-await box.exec.command("npm init -y && npm install playwright")
-
-// `--with-deps` pulls in the Linux system libraries Chromium needs via apt-get
-const setup = await box.exec.command("npx playwright install chromium --with-deps")
-
-if (setup.status !== "completed") {
-  throw new Error(`Chromium setup failed: ${setup.result}`)
-}
-
-console.log("Chromium and its system dependencies are ready.")
+console.log(tab.id, tab.url, tab.title)
 ```
+
+The first `tab.create` boots Chromium. The tab handle is addressed by its Chrome DevTools Protocol target id, so it stays valid across navigations and you can re-attach to it later with `box.browser.getTab(id)`.
 
 ---
 
-## 3. Let the agent write and run the scraper
+## 3. Read the rendered page
 
-Hand the scraping task to the box's built-in agent. It writes the Playwright script, runs it, fixes any issues it hits along the way, and saves the output to a file in the workspace.
-
-```typescript title="scripts/scrape.ts" {1}
-const run = await box.agent.run({
-  prompt: `
-Write a Node.js script that uses Playwright to:
-1. Launch headless Chromium and navigate to https://news.ycombinator.com/show
-2. Wait for the page to finish loading
-3. Extract the title, URL, and point count for the top 10 posts
-4. Save the result as a JSON array to /workspace/home/scraped_data.json
-
-Then run the script and confirm the file was written successfully.
-  `.trim(),
-})
-
-console.log(run.result)
-```
-
-The agent has shell, filesystem, and the installed Playwright package available, so it can iterate — adjusting selectors, adding waits for dynamic content, retrying on failure — until the scrape actually produces data.
-
----
-
-## 4. Pull the results back
-
-Read the file the agent wrote and bring it back into your own process.
+`content()` returns the tab's current title, URL, visible text, and links from the real DOM, including anything JavaScript rendered after load. No model is involved, so this costs no tokens.
 
 ```typescript title="scripts/scrape.ts"
-const raw = await box.files.read("/workspace/home/scraped_data.json")
-const dataset = JSON.parse(raw)
+const page = await tab.content()
 
-console.table(dataset.slice(0, 3))
+console.log(page.title)
+console.log(page.text.slice(0, 200))
 
-await box.delete()
+for (const link of page.links ?? []) {
+  console.log(link.text, link.href)
+}
 ```
 
-You now have structured data extracted from a dynamic, JavaScript-rendered page — without managing a single Chromium binary yourself.
+This is already enough for a crawler: follow the links you care about with `tab.goto(url)`, read each page with `content()`, and chunk the text into a dataset.
+
+<Note>
+  Client-rendered pages can hydrate after `domcontentloaded`. If `page.text` comes back short, wait briefly and call `content()` again until it settles.
+</Note>
 
 ---
 
-## 5. Skip the setup on every run with snapshots
+## 4. Extract structured data with a schema
 
-`npx playwright install chromium --with-deps` takes real time to stream and unpack OS-level packages. Paying that cost on every scrape request would be painful in production.
+When you want typed fields instead of raw text, `extract()` hands the page to a DOM-aware agent inside the box and validates the result against a [Zod](https://zod.dev) schema:
 
-[Snapshot](/box/overall/snapshots) the box once Chromium and its dependencies are installed, and restore from that snapshot whenever you need a ready-to-go scraping environment:
+```typescript title="scripts/scrape.ts"
+import { z } from "zod"
 
-```typescript title="scripts/prepare-snapshot.ts"
-const snapshot = await box.snapshot({ name: "playwright-ready" })
-console.log(`Snapshot ready: ${snapshot.id}`)
+const catalog = await tab.extract(
+  "extract every book in the listing with its title and price",
+  z.object({
+    books: z.array(
+      z.object({
+        title: z.string(),
+        price: z.string(),
+      }),
+    ),
+  }),
+)
+
+console.table(catalog.books.slice(0, 5))
 ```
 
-Store `snapshot.id` somewhere your application can reach (an env var, a database row, etc.), then spin up pre-warmed boxes from it on demand:
+The result is parsed with your schema before it is returned, so a successful call always gives you the shape you asked for. Capture a screenshot next to it if you want provenance for what was on screen:
+
+```typescript
+import { writeFile } from "node:fs/promises"
+
+await writeFile("catalog.png", await tab.screenshot({ fullPage: true }))
+```
+
+<Note>
+  `extract` uses an LLM and is metered. It needs a model provider key on the box or your account. See [AI Actions](/box/overall/browser/ai-actions) for the model override and the full list of providers.
+</Note>
+
+---
+
+## 5. Scrape many pages with Playwright over CDP
+
+An AI call per page gets expensive fast. For repeatable multi-page work, drive the same browser with Playwright. `cdpUrl()` returns an authenticated WebSocket URL that `chromium.connectOverCDP` accepts directly:
+
+```typescript title="scripts/scrape.ts"
+import { chromium } from "playwright-core"
+
+const browser = await chromium.connectOverCDP(await box.browser.cdpUrl())
+
+try {
+  const ctx = browser.contexts()[0] ?? (await browser.newContext())
+  const p = await ctx.newPage()
+
+  const books: { title: string | null; price: string | null }[] = []
+
+  for (let n = 1; n <= 3; n++) {
+    await p.goto(`https://books.toscrape.com/catalogue/page-${n}.html`, {
+      waitUntil: "domcontentloaded",
+    })
+
+    books.push(
+      ...(await p.$$eval("article.product_pod", (rows) =>
+        rows.map((row) => ({
+          title: row.querySelector("h3 a")?.getAttribute("title") ?? null,
+          price: row.querySelector(".price_color")?.textContent?.trim() ?? null,
+        })),
+      )),
+    )
+  }
+
+  console.log(`${books.length} books scraped`)
+} finally {
+  await browser.close()
+}
+```
+
+This is an ordinary Playwright script. Migrating an existing one is usually a single line: `chromium.launch()` becomes `chromium.connectOverCDP(await box.browser.cdpUrl())`, and your selectors, actions, and assertions stay as they are.
+
+<Warning>
+  The CDP URL carries its auth token in the URL. Anyone who has it gets full control of the browser, so treat it as a secret.
+</Warning>
+
+CDP and the SDK drive the same browser and the same tabs. A page opened by Playwright shows up in `box.browser.listTabs()`, and a tab created by the SDK is visible to Playwright, so you can mix scripted steps with AI steps in one run.
+
+---
+
+## 6. Compile the selectors once, then scrape for free
+
+The two previous sections combine into the pattern worth using in production: let the model read the layout **once** and emit selectors, then run every later scrape deterministically with no model tokens at all.
+
+This is a file of its own rather than a continuation of the script above, so it opens its own box and browser:
+
+```typescript title="scripts/compile-and-scrape.ts"
+import "dotenv/config"
+import { Box } from "@upstash/box"
+import { chromium } from "playwright-core"
+import { z } from "zod"
+
+const PAGE = (n: number) => `https://books.toscrape.com/catalogue/page-${n}.html`
+const RECIPE_PATH = "recipe-books.json"
+
+const RecipeSchema = z.object({
+  itemSelector: z.string(),
+  title: z.object({ selector: z.string(), attr: z.string() }),
+  price: z.object({ selector: z.string(), attr: z.string() }),
+})
+type Recipe = z.infer<typeof RecipeSchema>
+
+const box = await Box.create({ runtime: "node", browser: true })
+
+// Ask for the selectors, not the data. One metered call per layout.
+async function compile(): Promise<Recipe> {
+  const tab = await box.browser.tab.create(PAGE(1), { waitUntil: "domcontentloaded" })
+  return await tab.extract(
+    [
+      "You are compiling a scraper for the repeating list of books.",
+      "Return `itemSelector`: a CSS selector matching each book's container.",
+      "Return `title` and `price` field specs: each with a CSS `selector`",
+      'RELATIVE to the container and `attr` ("text" or an attribute name).',
+      "If the visible text is truncated, prefer an attribute holding the",
+      "full value (such as an anchor's title attribute).",
+      "Selectors must be generic, no :nth-child tied to one item.",
+    ].join(" "),
+    RecipeSchema,
+  )
+}
+
+// Deterministic harvest: same recipe, every page, zero model tokens.
+async function scrape(recipe: Recipe, pages: number) {
+  const browser = await chromium.connectOverCDP(await box.browser.cdpUrl())
+  try {
+    const ctx = browser.contexts()[0] ?? (await browser.newContext())
+    const p = await ctx.newPage()
+    const rows = []
+    for (let n = 1; n <= pages; n++) {
+      await p.goto(PAGE(n), { waitUntil: "domcontentloaded" })
+      rows.push(
+        ...(await p.$$eval(
+          recipe.itemSelector,
+          (items, fields) =>
+            items.map((row) => {
+              const read = (field: { selector: string; attr: string }) => {
+                const el = field.selector ? row.querySelector(field.selector) : row
+                if (!el) return null
+                return field.attr === "text" ? el.textContent?.trim() ?? null : el.getAttribute(field.attr)
+              }
+              return { title: read(fields.title), price: read(fields.price) }
+            }),
+          { title: recipe.title, price: recipe.price },
+        )),
+      )
+    }
+    return rows
+  } finally {
+    await browser.close()
+  }
+}
+
+// Reuse the recipe cached on the box, or compile and cache a fresh one.
+let recipe: Recipe
+try {
+  recipe = RecipeSchema.parse(JSON.parse(await box.files.read(RECIPE_PATH)))
+} catch {
+  recipe = await compile()
+  await box.files.write({ path: RECIPE_PATH, content: JSON.stringify(recipe, null, 2) })
+}
+
+const rows = await scrape(recipe, 3)
+console.log(`${rows.length} books`, rows[0])
+```
+
+Leave that tab open. Closing the last tab shuts the browser down, and the CDP connection in `scrape()` then fails with `The browser is shutting down`.
+
+Caching the recipe on the box filesystem means the box carries its own knowledge: the next run reuses it and calls no model at all.
+
+Validate the harvest (row count, non-empty fields, price format) on every run. When validation fails, the site's layout changed: recompile the recipe with one `extract` call and cache the new one. That way the AI cost is paid once per layout, not once per page.
+
+A full runnable version of this is the [AI-compiled scraper](https://github.com/upstash/box/blob/main/packages/sdk/examples/browser/retrieval/02-ai-compiled-scraper.ts) example.
+
+---
+
+## 7. Reuse the box across runs
+
+A browser box has nothing to install, so there is no setup cost to snapshot away. What is worth keeping is the box itself: the cached recipe, the cookies, and a logged-in session.
+
+Keep the box id and re-attach on the next run:
 
 ```typescript title="scripts/run-scrape-job.ts"
-import { Box } from "@upstash/box"
+const box = process.env.SCRAPER_BOX_ID
+  ? await Box.get(process.env.SCRAPER_BOX_ID)
+  : await Box.create({ runtime: "node", browser: true })
+```
 
-const box = await Box.fromSnapshot(process.env.PLAYWRIGHT_SNAPSHOT_ID!)
+The box pauses when idle and resumes on demand with its filesystem intact. It bills until you delete it, so delete it when you are done with the target site:
 
-const run = await box.agent.run({
-  prompt: "Navigate to <url> and extract <data>...",
-})
-
+```typescript
 await box.delete()
 ```
 
-Restoring from a snapshot starts the box with Chromium and its system libraries already in place, so the agent can start scraping immediately instead of waiting on `apt-get` and binary downloads.
+To log in once and have every later script reuse that session, see the [login once, reuse session](https://github.com/upstash/box/blob/main/packages/sdk/examples/browser/automation/04a-login-once-keep-alive.ts) example.
+
+---
+
+## Next steps
+
+- [Reading pages](/box/overall/browser/reading-pages) for `content`, `screenshot`, and `extract`.
+- [AI actions](/box/overall/browser/ai-actions) for `observe` and `act`, including replaying a resolved action with no LLM.
+- [Live view](/box/overall/browser/live-view) and [recordings](/box/overall/browser/recordings) to watch or replay a scrape.
+- [Browser cookbook](/box/overall/browser/cookbook) for runnable examples across crawling, automation, and testing.
