@@ -15,10 +15,10 @@ The most important difference between QStash and the alternatives below is the
 - **BullMQ, Kafka, and SQS pull.** Something you deploy and operate must connect,
   poll, and stay alive to receive messages.
 - **SNS and Pub/Sub can also push** to any public HTTPS endpoint, but with much
-  weaker per-message failure handling, and no delay or scheduling at all.
+  weaker per-message failure handling, and no delay or scheduling.
 
 That single difference is why QStash fits serverless and edge platforms — Vercel,
-AWS Lambda, Cloudflare Workers, Fly.io — where a persistent consumer process either
+AWS Lambda, Cloudflare Workers — where a persistent consumer process either
 doesn't exist or costs you money while it idles.
 
 ## Summary
@@ -27,13 +27,13 @@ doesn't exist or costs you money while it idles.
 | --- | --- | --- | --- | --- | --- | --- |
 | **Delivery model** | Push  | Pull | Pull | Pull | Push | Push or pull |
 | **Consumer is** | An HTTP route you already have | A long-running Node/Python worker | A long-running consumer | A poller or a Lambda | An HTTP route or AWS target | An HTTP route or subscriber |
-| **Runs on serverless / edge** | Yes | No | No | Only with a Lambda trigger | Yes | Yes (push subscriptions) |
+| **Runs on serverless / edge** | Yes | No | No | Serverless yes (a function must poll, or use a Lambda trigger), edge no | Yes | Yes (push subscriptions) |
 | **Cron scheduling** | Yes | Yes (repeatable jobs) | No | No | No | No (needs Cloud Scheduler) |
-| **Delay** | Up to 1 year | Yes | No | 15 minutes | No | No |
+| **Delay** | 7 days to unlimited, by plan | Yes | No | 15 minutes | No | No |
 | **Rate limit & concurrency** | Flow Control (rate + parallelism, per key) | Worker limiter + concurrency | Consumer-side only | No | HTTP throttle only | Client-side flow control |
-| **Ordering (FIFO)** | Queues | Per queue | Per partition | FIFO queues | No | Ordering keys |
+| **Ordering (FIFO)** | Queues | Per queue | Per partition | FIFO queues | FIFO topics, no HTTP subscribers | Ordering keys |
 | **Fan-out** | URL Groups | No | Consumer groups | No | Yes | Yes  |
-| **Replay / history** | Logs + DLQ replay | No | Yes, full log retention | No | No | Seek within retention |
+| **Replay / history** | Logs + DLQ replay | Failed/completed sets, retryable | Yes, full log retention | DLQ redrive | FIFO topics only (archive & replay) | Seek within retention |
 | **Pricing** | Per message, scales to zero | Redis + always-on compute | Cluster cost, never zero | Per request, scales to zero | Per request | Per GB |
 
 
@@ -53,10 +53,6 @@ connection and processes jobs in a loop — that model does not survive on Verce
 Lambda, or Cloudflare Workers, so teams end up running a separate always-on box
 just for the queue. With QStash there is nothing to keep alive; a message arrives
 as an ordinary HTTP request to a route you already deploy.
-
-**Cost shape.** BullMQ itself is free, but the Redis instance and the worker
-container are billed by the hour whether or not you have jobs. QStash is billed per
-message and scales to zero.
 
 **Where BullMQ still wins.** It is in-process, so per-job latency is very low, and
 job payloads never leave your network. If you already run persistent Node servers
@@ -85,20 +81,17 @@ events consumed by analytics *and* a service *and* a data warehouse, that's Kafk
 
 **Operational weight.** Even managed, Kafka means brokers, partitions, replication
 factors, consumer groups, offset management, rebalancing, and a consumer process
-that stays connected. The smallest sensible production cluster costs meaningfully
-more per month than most teams' entire QStash bill, and the price never scales to
-zero. QStash has no cluster, no partitions, and no consumers to operate.
+that stays connected. Even the smallest production cluster runs continuously, 
+so the price never scales to zero. QStash has no cluster, no partitions, and no 
+consumers to operate.
 
-**Per-message control.** Kafka has no built-in concept of retrying an individual
-message, delaying one for three days, or moving one to a dead letter queue — you
-build all of that yourself with retry topics and custom consumer logic. In QStash
-these are per-message headers.
-
-**Ordering.** Kafka orders within a partition and scales by adding partitions.
-QStash [queues](/qstash/features/queues) deliver FIFO and only start the next
-message once the current one is delivered or has exhausted its retries. Kafka's
-throughput ceiling is far higher; QStash's ordering guarantee is stricter and
-requires no partition key design.
+**Per-message control.** The Kafka broker has no concept of retrying an individual
+message, delaying one for three days, or moving one to a dead letter queue. The
+surrounding ecosystem fills some of that in — Kafka Connect has a built-in dead
+letter queue for sink connectors, and frameworks like Spring Kafka add non-blocking
+retry topics with backoff and a dead letter topic — but for a plain consumer you
+build it yourself, and arbitrary per-message delay ("deliver this one in three
+days") has no good answer at any layer. In QStash these are per-message headers.
 
 **Choose Kafka when** you have sustained high-volume event streams, multiple
 independent consumers of the same data, or a real need for replay and log
@@ -116,21 +109,14 @@ is a consumer you deploy — an ECS task, an EC2 process, or a Lambda with an ev
 source mapping. QStash delivers straight to your URL, anywhere on the internet, in
 any cloud. There is nothing to wire up and nothing that has to live in AWS.
 
-**Failure handling.** SQS uses visibility timeouts: a failed message reappears after
-the timeout and is retried until `maxReceiveCount`, then moves to a
-[dead letter queue you created and attached yourself](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)
-— and which you then have to consume too. QStash retries with exponential backoff
-by default, lets you [override the backoff expression per message](/qstash/features/retry),
-and gives every project an automatic [DLQ](/qstash/features/dlq) you can inspect and
-replay from the console.
-
 **Delay.** SQS message timers max out at **15 minutes**. QStash delays go up to
 **1 year** on pay-as-you-go, which covers trial expirations, reminders, and
 scheduled emails that SQS simply cannot express.
 
-**Scheduling.** SQS has no cron. You add EventBridge Scheduler and a Lambda.
-QStash [schedules](/qstash/features/schedules) are a cron expression on a publish
-call, with timezone support.
+**Scheduling.** SQS has no cron. You add EventBridge Scheduler as a second service
+— it can target `SendMessage` directly, but it is another resource with its own IAM
+execution role. QStash [schedules](/qstash/features/schedules) are a cron expression
+on a publish call.
 
 **Rate limiting.** SQS has no way to say "call this endpoint at most 10 times a
 minute, 5 at a time." You build it with reserved concurrency and back-pressure
@@ -146,8 +132,8 @@ choice.
 **Choose SQS when** your producers and consumers all live in AWS, you already run
 Lambda or ECS consumers, and you want the deepest possible AWS integration.
 **Choose QStash when** your consumers are HTTP endpoints on serverless platforms,
-or you want retries, DLQ, cron, long delays, and rate limiting without assembling
-four AWS services.
+or you want cron, long delays, and rate limiting without assembling extra AWS
+services.
 
 ## Amazon SNS
 
@@ -163,20 +149,23 @@ persists every message, retries it, and keeps whatever finally failed in the DLQ
 **The retry window is capped at one hour.** For HTTP/S endpoints, the default
 delivery policy is only 3 retries, and even a fully customized policy
 [cannot exceed 3,600 seconds total](https://docs.aws.amazon.com/sns/latest/dg/sns-message-delivery-retries.html)
-— a hard AWS limit. A deploy that takes 90 minutes to fix loses the message. QStash's
-default backoff already stretches retries across roughly a day, and you can set both
-the retry count and the delay expression per message.
+— a hard AWS limit. A deploy that takes 90 minutes to fix loses the message, and no
+configuration can change that. QStash's default is 3 retries over roughly 33 minutes,
+but the ceiling is yours to set: raise the retry count and the delay expression
+[per message](/qstash/features/retry) and retries can span days.
 
 **Payload size.** SNS caps messages at **256 KB**. QStash allows 1 MB on the free
-plan and up to 50 MB on fixed plans.
+plan, 10 MB on pay-as-you-go, and 50 MB on fixed plans.
 
-**No delay, no cron, no ordering.** SNS has none of these. QStash has all three.
+**No delay, no cron.** SNS has neither. Ordering exists only on SNS FIFO topics,
+which accept AWS-managed endpoints and cannot have HTTP/S subscribers — so it is not
+available to the kind of consumer this comparison is about. 
 
 **Fan-out.** This is what SNS is for, and QStash's equivalent is
 [URL Groups](/qstash/features/url-groups): publish once, and QStash creates an
 independent, independently-retried delivery for each subscribed endpoint. Adding a
 consumer is a URL Group change, not a producer redeploy. SNS goes further on
-*non-HTTP* targets — SQS, Lambda, Kinesis Firehose, email, SMS, and mobile push —
+*non-HTTP* targets — SQS, Lambda, email, SMS, and mobile push —
 and its message filtering lets subscribers select by attribute, which QStash does
 not do.
 
