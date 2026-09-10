@@ -1,0 +1,280 @@
+---
+title: "TanStack AI Coding Agents"
+---
+
+[TanStack AI](https://tanstack.com/ai) ships a native Upstash Box sandbox provider. Install `@tanstack/ai-sandbox-upstash-box`, point it at your API key, and a coding agent driven by `chat()` runs inside a Box with a real filesystem, shell, background processes, preview URLs, and snapshots. No glue code.
+
+A sandboxed run has three independent parts:
+
+- **Provider**: where the agent runs. That is Upstash Box here.
+- **Workspace**: what the agent sees. The repo, the package manager, setup commands, secrets.
+- **Harness**: which agent runs. Claude Code, Codex, Grok Build, OpenCode, or any ACP agent.
+
+Only the provider changes when you move a run from a local container to Upstash Box. The workspace and the harness stay the same.
+
+---
+
+## 1. Install
+
+```bash
+npm install @tanstack/ai @tanstack/ai-sandbox @tanstack/ai-sandbox-upstash-box @tanstack/ai-claude-code
+```
+
+- `@tanstack/ai`: the `chat()` pipeline.
+- `@tanstack/ai-sandbox`: `defineSandbox`, `defineWorkspace`, `withSandbox`.
+- `@tanstack/ai-sandbox-upstash-box`: the Upstash Box provider.
+- `@tanstack/ai-claude-code`: the harness adapter. Swap it for `@tanstack/ai-codex` or `@tanstack/ai-grok-build` if you prefer another agent.
+
+---
+
+## 2. Set your environment variables
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box).
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
+```
+
+`upstashBoxSandbox()` reads `UPSTASH_BOX_API_KEY` when you omit `apiKey`. The harness key is different: it belongs to the agent running **inside** the box, so it travels as a workspace secret.
+
+---
+
+## 3. Define the sandbox
+
+`defineSandbox()` binds a provider, a workspace, and a lifecycle into one reusable object.
+
+```typescript title="sandbox.ts"
+import {
+  createSecrets,
+  defineSandbox,
+  defineWorkspace,
+} from "@tanstack/ai-sandbox";
+import { upstashBoxSandbox } from "@tanstack/ai-sandbox-upstash-box";
+
+const REPO = "https://github.com/owner/buggy-app.git";
+
+export const repoSandbox = defineSandbox({
+  id: "bug-fixer",
+  provider: upstashBoxSandbox({
+    apiKey: process.env.UPSTASH_BOX_API_KEY,
+    runtime: "node",
+    size: "small",
+  }),
+  workspace: defineWorkspace({
+    source: { type: "none" },
+    packageManager: "pnpm",
+    setup: [
+      `git clone --depth 1 --single-branch ${REPO} /tmp/repo && cp -a /tmp/repo/. /workspace/home/ && rm -rf /tmp/repo`,
+      "pnpm install",
+    ],
+    secrets: createSecrets({
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
+    }),
+  }),
+  lifecycle: { reuse: "thread", snapshot: "after-setup", keepAlive: "30m" },
+});
+```
+
+<Warning>
+  Clone the repo in a `setup` step rather than with `source: githubRepo(...)`. A box's home directory is created with agent dotfiles already in it (`.claude`, `.codex`, `.cursor`, `.local`), and `@tanstack/ai-sandbox` clones the source straight into that directory. `git clone` refuses a non-empty target and exits `128`, the bootstrap does not surface the failure, and your setup steps then run against an empty workspace. Cloning into `/tmp` and copying the contents across sidesteps it.
+</Warning>
+
+The harness spawns its CLI inside the box, so the CLI has to be on the box's `PATH`. The `node` runtime already ships `claude`, `codex`, and `opencode` in `/usr/local/bin`, so those three need no setup step at all.
+
+For any other CLI, install it with `sudo -n`. A box runs as the non-root `boxuser`, and `/usr/local/lib/node_modules` is root-owned, so a plain `npm install -g` fails with `EACCES` and takes the whole bootstrap down with it:
+
+```typescript
+setup: ["sudo -n npm install -g @some/agent-cli --include=optional && some-agent --version"],
+```
+
+Agent CLIs ship their binary as an optional npm dependency, so `npm install -g` can exit `0` with a broken install. Running the CLI in the same step turns that into a loud bootstrap failure instead of a broken run.
+
+Secrets are injected into the box environment on create and resume. They are never written to snapshots, the sandbox store, or the event log.
+
+<Note>
+  TanStack AI's conventional `/workspace` virtual root maps to the box home directory, `/workspace/home`. That is the handle's `workspaceRoot`, and it is where the cloned repo lands.
+</Note>
+
+---
+
+## 4. Run the agent
+
+`withSandbox()` is `chat()` middleware. It resumes or creates the box, bootstraps the workspace, runs the harness inside it, and tears everything down according to the lifecycle.
+
+```typescript title="run.ts"
+import { chat } from "@tanstack/ai";
+import { claudeCodeText } from "@tanstack/ai-claude-code";
+import { withSandbox } from "@tanstack/ai-sandbox";
+import { repoSandbox } from "./sandbox";
+
+const stream = chat({
+  threadId: "thread_123",
+  adapter: claudeCodeText("claude-opus-4-8"),
+  messages: [{ role: "user", content: "Fix the failing test in utils.test.ts" }],
+  middleware: [withSandbox(repoSandbox)],
+});
+
+for await (const chunk of stream) {
+  if (chunk.type === "TEXT_MESSAGE_CONTENT") {
+    process.stdout.write(chunk.delta);
+  }
+
+  if (chunk.type === "CUSTOM" && chunk.name === "file.changed") {
+    const value = chunk.value;
+    if (value !== null && typeof value === "object" && "diff" in value) {
+      console.log("\n--- diff ---\n");
+      console.log(value.diff);
+    }
+  }
+}
+```
+
+The `threadId` keys the box. Two runs on the same thread reuse the same box instead of cloning and installing again.
+
+Harness runs emit standard AG-UI chunks (text, tool calls, reasoning) plus a namespaced `CUSTOM` event. When the run finishes, the adapter emits `file.changed` with the working tree `git diff`, which is the change the agent made.
+
+To serve the same run from a server route, return the stream as Server-Sent Events:
+
+```typescript title="app/api/chat/route.ts"
+import { chat, chatParamsFromRequest, toServerSentEventsResponse } from "@tanstack/ai";
+import { claudeCodeText } from "@tanstack/ai-claude-code";
+import { withSandbox } from "@tanstack/ai-sandbox";
+import { repoSandbox } from "@/sandbox";
+
+export async function POST(request: Request) {
+  const { messages, threadId } = await chatParamsFromRequest(request);
+
+  const stream = chat({
+    threadId,
+    adapter: claudeCodeText("claude-opus-4-8"),
+    messages,
+    middleware: [withSandbox(repoSandbox)],
+  });
+
+  return toServerSentEventsResponse(stream);
+}
+```
+
+---
+
+## 5. Preview the app the agent builds
+
+If the agent starts a dev server inside the box, `ports.connect()` mints a public preview URL for it. It is a method on the `SandboxHandle`, which you get from the provider directly ([step 7](#7-use-the-box-without-a-harness)) or from the sandbox instance inside a middleware hook:
+
+```typescript
+import { upstashBoxSandbox } from "@tanstack/ai-sandbox-upstash-box";
+
+const handle = await upstashBoxSandbox({ runtime: "node" }).create({});
+
+const channel = await handle.ports.connect(3000);
+console.log(channel.url);
+```
+
+Preview URLs are public by default. Pass `publicUrlAuth` on the provider to gate them:
+
+```typescript
+upstashBoxSandbox({
+  publicUrlAuth: { bearerToken: true },
+});
+```
+
+`{ bearerToken: true }` returns a token plus an `Authorization: Bearer` header. `{ basicAuth: true }` returns Basic credentials instead.
+
+---
+
+## 6. Skip the cold start with snapshots
+
+Cloning the repo and installing dependencies is the expensive part of a run. Upstash Box supports native snapshots, so `snapshot: "after-setup"` is the default: bootstrap runs once, the result is snapshotted, and later runs resume from it.
+
+```typescript
+lifecycle: {
+  reuse: "thread",
+  snapshot: "after-setup",
+  snapshotMaxAge: "24h",
+  destroyOnComplete: false,
+}
+```
+
+<Note>
+  There are two `keepAlive` settings and they are unrelated. The one in `lifecycle` is TanStack's duration hint (`"30m"`) for how long a sandbox should stay warm between runs. The one on `upstashBoxSandbox({ keepAlive })` is Box's boolean: `false` (the default) lets the box auto-pause when idle, `true` keeps it running and billing.
+</Note>
+
+A snapshot outlives the box that produced it. `restoreSnapshot()` rebuilds a fresh box from it with `Box.fromSnapshot()`, and resume by id probes the box status first, so a deleted box resumes as `null` rather than a dead handle.
+
+`fork()` works the same way, snapshot plus create from that snapshot. It costs a full snapshot round trip, roughly 25 seconds.
+
+---
+
+## 7. Use the box without a harness
+
+The provider also gives you the uniform `SandboxHandle` directly, with no `chat()` or agent involved. This is the quickest way to check that your key and runtime are wired correctly.
+
+```typescript title="smoke-test.ts"
+import { upstashBoxSandbox } from "@tanstack/ai-sandbox-upstash-box";
+
+const provider = upstashBoxSandbox({ runtime: "node" });
+const box = await provider.create({});
+
+try {
+  await box.fs.write("/workspace/hello.txt", "hello from upstash box");
+  console.log(await box.fs.read("/workspace/hello.txt"));
+
+  const run = await box.process.exec("node --version");
+  console.log("node", run.stdout.trim(), "(exit", run.exitCode, ")");
+} finally {
+  await box.destroy();
+}
+```
+
+---
+
+## Provider options
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `apiKey` | `UPSTASH_BOX_API_KEY` | Your Box API key. |
+| `baseUrl` | SDK default | Overrides the Box API base URL. |
+| `runtime` | `node` | Box runtime image: `node`, `python`, `golang`, `ruby`, `rust`. |
+| `size` | `small` | `small` (2 CPU / 4 GB), `medium` (4 / 8), `large` (8 / 16). |
+| `keepAlive` | `false` | `false` avoids billing a perpetually running box and keeps `pause()` available. `true` prevents auto-pause mid-run, bills continuously, and disables pausing. |
+| `snapshot` | none | Base snapshot id to create the box from. |
+| `name` | none | Human readable box name. A deterministic sandbox id from `ensure()` takes precedence. |
+| `publicUrlAuth` | none | `{ bearerToken?, basicAuth? }` for `ports.connect()`. |
+
+---
+
+## What the provider supports
+
+| Capability | Supported | Notes |
+| --- | --- | --- |
+| `fs` | Yes | Native Box file API. |
+| `exec` | Yes | Separate `stdout` and `stderr`. |
+| `env` | Yes | Shell `export` prefixes for `exec`, passed natively to `spawn`. |
+| `ports` | Yes | Public preview URLs. |
+| `snapshots` | Yes | Native `box.snapshot()` and `Box.fromSnapshot()`. |
+| `durableFilesystem` | Yes | Persists across pause and resume until the box is deleted. |
+| `backgroundProcesses` | Yes | `spawn()` opens a live `exec.session` with a real in-box pid. |
+| `writableStdin` | Yes | `stdin.write()` and `stdin.end()`. |
+| `killableProcesses` | Yes | `kill()` signals the process tree server-side. |
+| `networkPolicy` | Yes | `network: "deny"` maps to the `deny-all` egress mode. |
+| `fork` | Yes | Snapshot round trip, about 25 seconds. |
+
+---
+
+## Things to know
+
+**Spawned processes are tied to the handle.** `spawn()` runs the command as a live `exec.session` over a WebSocket, which is what gives it a real pid, a writable stdin, and server-side signals. The session owns its process, so dropping the connection kills the command and sessions cannot be reattached. A spawned process lives as long as the handle, not as long as the box.
+
+**`network: "deny"` is strict.** It maps to Box's `deny-all` egress mode, which blocks every outbound connection. Providers that model deny as an allowlist are more permissive. An agent that works under one of those will not reach package registries or model provider hosts here. Leave the capability unset if the agent needs either, and use [network policies](/box/overall/network-policy) on the box for domain and CIDR rules.
+
+**Bridged tools need a tunnel in local development.** Tools you pass to `chat()` execute on your host and are bridged into the box over an authenticated proxy the box dials back to. A box is a remote machine, so it cannot reach `localhost` on your laptop. Deployed orchestrators work as they are. For local development, tunnel the bridge with `withNgrokBridge`. See the TanStack AI [tools guide](https://tanstack.com/ai/latest/docs/sandbox/tools).
+
+---
+
+## Next steps
+
+- [Sandbox providers](https://tanstack.com/ai/latest/docs/sandbox/providers) for the full provider reference.
+- [Workspace](https://tanstack.com/ai/latest/docs/sandbox/workspace) for repo sources, setup groups, and scripts.
+- [Harnesses](https://tanstack.com/ai/latest/docs/sandbox/harnesses) for running Codex, Grok Build, or any ACP agent instead.
+- [Snapshots](/box/overall/snapshots) and [preview URLs](/box/overall/preview) for what the box does underneath.

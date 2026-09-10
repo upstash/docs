@@ -1,0 +1,169 @@
+---
+title: "Vercel Eve Sandboxes"
+---
+
+[Eve](https://eve.dev) is Vercel's agent framework. It gives an agent a code-execution sandbox through a single `agent/sandbox.ts` file, and the backend behind that file is swappable.
+
+[`@upstash/agentkit-eve`](https://www.npmjs.com/package/@upstash/agentkit-eve) ships an Upstash Box backend for it. It is a drop-in replacement for Eve's `vercel()` backend: change one import and your agent runs its code inside a Box, with deny-all egress by default, snapshot-backed templates, and one box per conversation.
+
+---
+
+## 1. Start from an Eve project
+
+Scaffold one if you do not have it yet. This installs `eve` and an AI SDK provider for you.
+
+```bash
+npx eve@latest init my-agent
+# or, to start with a Next.js app:
+npx eve@latest init my-agent --channel-web-nextjs
+```
+
+Use eve `0.43.0` or later.
+
+---
+
+## 2. Install the packages
+
+```bash
+npm install @upstash/agentkit-eve @upstash/redis @upstash/box
+```
+
+`@upstash/box` is an optional peer dependency of the AgentKit package. You only need it because you are importing the sandbox backend.
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box):
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+UPSTASH_REDIS_REST_URL=https://xxxxx.upstash.io
+UPSTASH_REDIS_REST_TOKEN=xxxxxxxxxxxxxxxxxxxx
+```
+
+Redis backs the template registry described in [step 5](#5-bake-setup-into-a-template). It is only touched when your sandbox has a template, so a sandbox with no seed files and no `bootstrap` runs on the Box key alone.
+
+---
+
+## 3. Swap the backend
+
+Point `defineSandbox` at the `upstash` backend. Everything else in the [sandbox file](https://eve.dev/docs/sandbox) stays as it is.
+
+```typescript title="agent/sandbox.ts"
+import { defineSandbox } from "eve/sandbox";
+import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: eve/sandbox/vercel
+
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  async onSession({ use }) {
+    await use();
+  },
+});
+```
+
+`upstash(config)` takes the `@upstash/box` `BoxConfig`. Whatever you would pass to `Box.create({ ... })` you pass here: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`, `initCommand`, `env`, `git`, `skills`, `mcpServers`, `timeout`, and so on. There are no renamed knobs to keep in sync.
+
+Two things differ from a raw `Box.create`. `networkPolicy` is not accepted at all, because egress is governed per session (see the next step). And a few AgentKit-only fields sit alongside the Box config and are stripped before the rest is handed to `Box.create`: `redis` and `templatePrefix` for the template registry, `baseSnapshot` ([step 5](#heavy-slow-changing-setup)), and `enableTelemetry`.
+
+That is the whole setup. Run your agent and ask it to execute something:
+
+```bash
+npx eve dev
+```
+
+---
+
+## 4. Open egress per session
+
+The sandbox runs model-generated code, so egress is [deny-all](/box/overall/network-policy) by default. Open it where you need it, in the `use(...)` call, never as a backend-level setting.
+
+```typescript title="agent/sandbox.ts"
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  async onSession({ use }) {
+    await use({ networkPolicy: { allow: ["registry.npmjs.org", "api.github.com"] } });
+  },
+});
+```
+
+Pass `"allow-all"` when the agent genuinely needs the open internet, and nothing at all to inherit the secure default.
+
+<Warning>
+  `env` passed to `upstash({ env })` is readable by code running in the box. Do not put secrets there that the model should not see.
+</Warning>
+
+### Brokering credentials
+
+Box network policies are plain domain and CIDR allow lists. Eve's per-domain firewall rules (`transform` header injection, `forwardURL`) have no Box equivalent, so passing them to `use({ networkPolicy })` throws instead of quietly sending the request unauthenticated.
+
+Use Box's [`attachHeaders`](/box/overall/attach-headers) instead. A proxy on the box injects the header at the firewall, so the secret never enters the box:
+
+```typescript title="agent/sandbox.ts"
+export default defineSandbox({
+  backend: upstash({
+    runtime: "node",
+    attachHeaders: { "api.example.com": { Authorization: "Bearer ..." } },
+  }),
+  async onSession({ use }) {
+    await use({ networkPolicy: { allow: ["api.example.com"] } });
+  },
+});
+```
+
+---
+
+## 5. Bake setup into a template
+
+A `bootstrap` hook runs once, and Eve caches the result as a template so later sessions start from it. On Box that template is a [snapshot](/box/overall/snapshots).
+
+```typescript title="agent/sandbox.ts"
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  revalidationKey: () => "repo-bootstrap-v1",
+  async bootstrap({ use }) {
+    const sandbox = await use({ networkPolicy: "allow-all" });
+    await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+  },
+  async onSession({ use }) {
+    await use();
+  },
+});
+```
+
+A box runs as the non-root `boxuser`, so system-wide installs need `sudo -n`. Without it `apt-get` exits `100` on the dpkg lock and the bootstrap fails. Workspace-local installs such as `npm install` need no sudo.
+
+Eve builds the template at build or startup time, while session creation runs per request in a different process. The snapshot id is therefore stored in a durable Redis registry (`redis`, defaulting to `Redis.fromEnv()`, under the `agentkit:sandbox:template` prefix). An in-memory map would orphan the prewarmed box.
+
+Bump `revalidationKey` when the bootstrap should run again.
+
+### Heavy, slow-changing setup
+
+For things too heavy for a per-repo bootstrap (browser binaries, ffmpeg, a full toolchain), build a Box snapshot yourself out of band and point `baseSnapshot` at it. Every fresh session restores from it instead of creating a bare box.
+
+```typescript
+upstash({
+  runtime: "node",
+  baseSnapshot: async () => (await redis.get<string>("toolchain-snapshot")) ?? undefined,
+});
+```
+
+Pass a snapshot id or a resolver, since Box addresses snapshots by id rather than by name. Returning `undefined`, or an id that no longer exists, falls back to a fresh box. When a prewarmed template snapshot also applies, the template wins and `baseSnapshot` is the fallback for sessions that have no template.
+
+---
+
+## 6. Lifecycle
+
+Eve re-opens a session several times per turn. The backend reattaches to the same box instead of creating a new one, so you get one box per conversation rather than one per tool call.
+
+Boxes use Box's pause-based idle lifecycle by default (`keepAlive: false`): auto-paused when idle, resumed on reattach, and reaped by Box. Pass [`keepAlive: true`](/box/overall/keep-alive) only when you want an always-running box that you manage and delete yourself.
+
+<Note>
+  Eve roots its tools at `/workspace`, while a Box session lives at `/workspace/home`. The backend rewrites paths and command text between the two automatically, so tools like glob and grep search the right directory.
+</Note>
+
+---
+
+## Next steps
+
+The same package carries the rest of AgentKit for Eve: long-term memory, searchable chat history, RAG over Redis Search, a rate-limit gate for your channel's auth walk, and Redis-memoized tools.
+
+- [AgentKit for Vercel Eve](/redis/sdks/agentkit/eve) for the full package reference.
+- [Network policies](/box/overall/network-policy) for what Box's allow lists can express.
+- [Snapshots](/box/overall/snapshots) for building and restoring the boxes behind templates.

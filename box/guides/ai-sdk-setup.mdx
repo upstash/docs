@@ -1,0 +1,350 @@
+---
+title: "Vercel AI SDK Tools"
+---
+
+A Box is a real Linux container: shell, filesystem, ports, and a browser. This guide wraps those capabilities as [Vercel AI SDK](https://ai-sdk.dev) tools, so any `streamText` call can hand the model a computer instead of just a chat window.
+
+You define the tools once against a `Box` instance, then spread them into `tools`. The model decides when to run code, read a file, or start a server.
+
+---
+
+## 1. Installation
+
+```bash
+npm install @upstash/box @ai-sdk/anthropic @ai-sdk/react ai zod
+```
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box):
+
+```bash title=".env.local"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
+```
+
+---
+
+## 2. One box per conversation
+
+Tools need a box to act on. Give each conversation its own, so every tool call in it lands on the same filesystem. A box auto-pauses when idle and resumes on the next call, so an open chat costs nothing while nobody is typing.
+
+Derive the box name from the authenticated user **and** the chat id, and hash the pair. A box name is an address: anyone who can guess or supply it gets a shell on that box, so a name taken straight from the request body would let one user attach to another user's conversation.
+
+```typescript title="lib/box.ts"
+import { createHash } from "node:crypto";
+import { Box, BoxError } from "@upstash/box";
+
+export function boxNameFor(userId: string, chatId: string) {
+  const digest = createHash("sha256").update(`${userId}:${chatId}`).digest("hex");
+  return `chat-${digest.slice(0, 32)}`;
+}
+
+export async function getBox(userId: string, chatId: string) {
+  const name = boxNameFor(userId, chatId);
+  try {
+    return await Box.get(name);
+  } catch (error) {
+    // Only a missing box means "create one". A 401 or a network blip must not
+    // silently mint a second box and hide the real failure.
+    if (!(error instanceof BoxError) || error.statusCode !== 404) throw error;
+    return await Box.create({ runtime: "node", name });
+  }
+}
+```
+
+`userId` has to come from your session on the server. Never from the request body.
+
+For one-shot computation with no state to keep, use an `EphemeralBox` instead. [Step 6](#6-one-off-runs-with-an-ephemeralbox) shows that variant.
+
+---
+
+## 3. Define the tools
+
+Each tool is a thin wrapper over one Box capability. Keep the returned objects small and JSON-serializable: they go back into the model's context on the next step.
+
+```typescript title="lib/box-tools.ts"
+import { tool } from "ai";
+import { Box } from "@upstash/box";
+import { z } from "zod";
+
+export function boxTools(box: Box) {
+  return {
+    runCode: tool({
+      description:
+        "Run Python or JavaScript in the sandbox. Use this for math, data analysis, " +
+        "or any computation instead of estimating an answer.",
+      inputSchema: z.object({
+        lang: z.enum(["python", "js"]),
+        code: z.string().describe("The code to execute. Print the result."),
+      }),
+      execute: async ({ lang, code }) => {
+        const run = await box.exec.code({ lang, code, timeout: 30_000 });
+        return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
+      },
+    }),
+
+    runCommand: tool({
+      description:
+        "Run a shell command in the sandbox and wait for it to finish: install packages, " +
+        "run tests, use git, inspect the system. The command must exit on its own. " +
+        "For a server or any process that keeps running, use startServer instead.",
+      inputSchema: z.object({
+        command: z.string().describe("A shell command, e.g. `npm install zod`"),
+      }),
+      execute: async ({ command }) => {
+        const run = await box.exec.command(command);
+        return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
+      },
+    }),
+
+    startServer: tool({
+      description:
+        "Start a long-running server in the background and return its public URL. " +
+        "Use this for anything that does not exit on its own, such as `npm run dev`.",
+      inputSchema: z.object({
+        command: z.string().describe("The server command, e.g. `node server.js`"),
+        port: z.number().describe("The port the command listens on"),
+      }),
+      execute: async ({ command, port }) => {
+        const log = `/tmp/server-${port}.log`;
+        const quoted = `'${command.replace(/'/g, `'\\''`)}'`;
+        await box.exec.command(`nohup sh -c ${quoted} > ${log} 2>&1 & sleep 2`);
+
+        const check = await box.exec.command(
+          `curl -s -o /dev/null --max-time 5 http://localhost:${port} && echo up || echo down`,
+        );
+        if (check.result.trim() !== "up") {
+          const tail = await box.exec.command(`tail -20 ${log}`);
+          return { ok: false, error: `nothing listening on ${port}`, log: tail.result.slice(0, 2_000) };
+        }
+
+        const preview = await box.getPublicURL(port);
+        return { ok: true, url: preview.url, log };
+      },
+    }),
+
+    writeFile: tool({
+      description: "Create or overwrite a file in the sandbox.",
+      inputSchema: z.object({
+        path: z.string().describe("Absolute path under /workspace/home"),
+        content: z.string(),
+      }),
+      execute: async ({ path, content }) => {
+        await box.files.write({ path, content });
+        return { ok: true, path };
+      },
+    }),
+
+    readFile: tool({
+      description: "Read a file from the sandbox.",
+      inputSchema: z.object({
+        path: z.string(),
+        length: z.number().optional().describe("Read only the first N bytes"),
+      }),
+      execute: async ({ path, length }) => {
+        const content = await box.files.read(path, length ? { length } : undefined);
+        return { ok: true, content };
+      },
+    }),
+
+    listFiles: tool({
+      description: "List the entries in a sandbox directory.",
+      inputSchema: z.object({ path: z.string().default("/workspace/home") }),
+      execute: async ({ path }) => {
+        const entries = await box.files.list(path);
+        return { entries: entries.map((e) => ({ path: e.path, isDir: e.is_dir, size: e.size })) };
+      },
+    }),
+
+    exposePort: tool({
+      description:
+        "Expose a port the sandbox is listening on and return a public URL the user can open.",
+      inputSchema: z.object({ port: z.number() }),
+      execute: async ({ port }) => {
+        const preview = await box.getPublicURL(port);
+        return { url: preview.url };
+      },
+    }),
+  };
+}
+```
+
+<Note>
+  The file tools are rooted at **`/workspace/home`**, and paths outside it are rejected. `exec` can write anywhere, but anything you move through the files API has to live under that root. Tell the model so in the system prompt.
+</Note>
+
+`runCommand` waits for the command to exit, which is why `startServer` exists: a foreground `npm run dev` would block the tool call forever and the model would never reach `exposePort`. `startServer` detaches the process, confirms something is actually listening, and returns the crash log when nothing is.
+
+Take only the tools you need. A support bot that answers numeric questions wants `runCode` alone. A coding agent wants the whole set.
+
+---
+
+## 4. Wire them into a route
+
+`stopWhen: stepCountIs(...)` is what lets the model chain calls: write a file, run it, read the output, then answer.
+
+```typescript title="app/api/chat/route.ts"
+import { streamText, convertToModelMessages, stepCountIs } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { boxTools } from "@/lib/box-tools";
+import { getBox } from "@/lib/box";
+import { auth } from "@/lib/auth";
+
+export async function POST(req: Request) {
+  const { messages, id } = await req.json();
+
+  // Your own session lookup. The box is addressed by the *authenticated* user.
+  const session = await auth();
+  if (!session) return new Response("Unauthorized", { status: 401 });
+
+  const box = await getBox(session.userId, id);
+
+  const result = streamText({
+    model: anthropic("claude-sonnet-4-6"),
+    system:
+      "You have a Linux sandbox with a shell, a filesystem, and exposable ports. " +
+      "Work in /workspace/home. Run code instead of estimating answers, and when " +
+      "you start a server, expose its port and give the user the URL.",
+    messages: await convertToModelMessages(messages),
+    stopWhen: stepCountIs(10),
+    tools: boxTools(box),
+  });
+
+  return result.toUIMessageStreamResponse();
+}
+```
+
+---
+
+## 5. Add a UI
+
+`useChat` renders tool calls as `tool-*` parts, so you can show each step as the model works.
+
+```typescript title="app/page.tsx"
+"use client";
+
+import { useState } from "react";
+import { useChat } from "@ai-sdk/react";
+
+export default function Page() {
+  const { messages, sendMessage, status } = useChat();
+  const [input, setInput] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!input.trim()) return;
+    sendMessage({ text: input });
+    setInput("");
+  }
+
+  return (
+    <div className="mx-auto flex h-screen max-w-2xl flex-col p-4">
+      <h1 className="mb-4 text-lg font-semibold">Box Agent</h1>
+
+      <div className="flex-1 space-y-4 overflow-y-auto">
+        {messages.map((message) => (
+          <div key={message.id}>
+            <div className="text-xs font-medium text-gray-500">
+              {message.role === "user" ? "You" : "Assistant"}
+            </div>
+            {message.parts.map((part, i) => {
+              if (part.type === "text") {
+                return (
+                  <p key={i} className="whitespace-pre-wrap text-sm">
+                    {part.text}
+                  </p>
+                );
+              }
+              if (part.type.startsWith("tool-")) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const p = part as any;
+                const isDone = p.state === "output-available";
+                return (
+                  <div
+                    key={i}
+                    className="my-1 rounded border border-gray-200 bg-gray-50 p-2 text-xs"
+                  >
+                    <code>{part.type.slice(5)}</code>{" "}
+                    <span className={isDone ? "text-green-600" : "text-gray-400"}>
+                      {isDone ? "✓" : "running…"}
+                    </span>
+                    {isDone && p.output && (
+                      <pre className="mt-1 overflow-x-auto">
+                        {typeof p.output === "string" ? p.output : JSON.stringify(p.output, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                );
+              }
+              return null;
+            })}
+          </div>
+        ))}
+      </div>
+
+      <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask me to build or compute something..."
+          disabled={status === "streaming"}
+          className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400"
+        />
+        <button
+          type="submit"
+          disabled={status === "streaming"}
+          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
+        >
+          Send
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+Ask it to *"plot the first 20 Fibonacci numbers and serve the chart on port 8000"* and you can watch it write a script, run it, start a server, and hand back a URL.
+
+---
+
+## 6. One-off runs with an EphemeralBox
+
+When there is no state worth keeping between calls, skip the per-chat box entirely. An `EphemeralBox` is created for the tool call and deleted when it returns, so nothing persists and nothing leaks.
+
+```typescript title="lib/code-interpreter.ts"
+import { tool } from "ai";
+import { EphemeralBox } from "@upstash/box";
+import { z } from "zod";
+
+export const runCode = tool({
+  description: "Run Python or JavaScript in a disposable sandbox.",
+  inputSchema: z.object({
+    lang: z.enum(["python", "js"]),
+    code: z.string(),
+  }),
+  execute: async ({ lang, code }) => {
+    const box = await EphemeralBox.create({
+      apiKey: process.env.UPSTASH_BOX_API_KEY,
+      runtime: lang === "python" ? "python" : "node",
+      ttl: 120,
+    });
+
+    try {
+      const run = await box.exec.code({ lang, code, timeout: 10_000 });
+      return { ok: run.exitCode === 0, output: run.result };
+    } finally {
+      await box.delete();
+    }
+  },
+});
+```
+
+`ttl: 120` deletes the box after two minutes even if the `finally` never runs. Always set a `timeout` on `exec.code` too: without one, an infinite loop hangs the request until the backend gives up.
+
+---
+
+## Next steps
+
+- [Filesystem](/box/overall/files) and [shell](/box/overall/shell) for the full API behind these tools.
+- [Browser](/box/overall/browser/overview) to add page reading and screenshots to the toolset.
+- [Public URLs](/box/overall/preview) for authenticating the URLs `exposePort` hands out.
+- [Snapshots](/box/overall/snapshots) to boot each conversation from a pre-installed environment.

@@ -4563,10 +4563,12 @@ Use `uploadRoute()` when a route needs an `input` schema for data the browser se
 
 `GET` on the route serves its constraints as JSON. That is what fills [`accept` and `constraints`](/docs/blob/uploads/upload-client#useupload) on the hook, and it lets the hook refuse an oversized file before any request leaves the browser. The server still enforces the same limits at `begin`. The document and its caching are on [Constraints](/docs/blob/uploads/constraints#in-the-browser).
 
-# Code Interpreter with Vercel AI SDK
-Source: https://upstash.com/docs/box/guides/ai-sdk-code-interpreter
+# Vercel AI SDK Tools
+Source: https://upstash.com/docs/box/guides/ai-sdk-setup
 
-In this guide we'll add a **code interpreter** tool to a Vercel AI SDK chat app. When a user asks a question that needs computation — math, data analysis, statistics — the model writes code and sends it to a fresh `EphemeralBox` to run. The sandbox is isolated, disposable, and auto-expires when the session ends.
+A Box is a real Linux container: shell, filesystem, ports, and a browser. This guide wraps those capabilities as [Vercel AI SDK](https://ai-sdk.dev) tools, so any `streamText` call can hand the model a computer instead of just a chat window.
+
+You define the tools once against a `Box` instance, then spread them into `tools`. The model decides when to run code, read a file, or start a server.
 
 ***
 
@@ -4576,79 +4578,210 @@ In this guide we'll add a **code interpreter** tool to a Vercel AI SDK chat app.
 npm install @upstash/box @ai-sdk/anthropic @ai-sdk/react ai zod
 ```
 
-Get a Box API key from the [Upstash Console](https://console.upstash.com/box) and add your environment variables:
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box):
 
 ```bash title=".env.local"
 UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
-ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
 ```
 
 ***
 
-## 2. Create the API route
+## 2. One box per conversation
 
-Each time the model decides to run code, the tool spins up a fresh `EphemeralBox`, executes the snippet, and deletes the box immediately after. Nothing persists between tool calls.
+Tools need a box to act on. Give each conversation its own, so every tool call in it lands on the same filesystem. A box auto-pauses when idle and resumes on the next call, so an open chat costs nothing while nobody is typing.
 
-```typescript title="app/api/chat/route.ts"
-import { streamText, tool, convertToModelMessages, stepCountIs } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
-import { EphemeralBox } from "@upstash/box";
+Derive the box name from the authenticated user **and** the chat id, and hash the pair. A box name is an address: anyone who can guess or supply it gets a shell on that box, so a name taken straight from the request body would let one user attach to another user's conversation.
+
+```typescript title="lib/box.ts"
+import { createHash } from "node:crypto";
+import { Box, BoxError } from "@upstash/box";
+
+export function boxNameFor(userId: string, chatId: string) {
+  const digest = createHash("sha256").update(`${userId}:${chatId}`).digest("hex");
+  return `chat-${digest.slice(0, 32)}`;
+}
+
+export async function getBox(userId: string, chatId: string) {
+  const name = boxNameFor(userId, chatId);
+  try {
+    return await Box.get(name);
+  } catch (error) {
+    // Only a missing box means "create one". A 401 or a network blip must not
+    // silently mint a second box and hide the real failure.
+    if (!(error instanceof BoxError) || error.statusCode !== 404) throw error;
+    return await Box.create({ runtime: "node", name });
+  }
+}
+```
+
+`userId` has to come from your session on the server. Never from the request body.
+
+For one-shot computation with no state to keep, use an `EphemeralBox` instead. [Step 6](#6-one-off-runs-with-an-ephemeralbox) shows that variant.
+
+***
+
+## 3. Define the tools
+
+Each tool is a thin wrapper over one Box capability. Keep the returned objects small and JSON-serializable: they go back into the model's context on the next step.
+
+```typescript title="lib/box-tools.ts"
+import { tool } from "ai";
+import { Box } from "@upstash/box";
 import { z } from "zod";
 
+export function boxTools(box: Box) {
+  return {
+    runCode: tool({
+      description:
+        "Run Python or JavaScript in the sandbox. Use this for math, data analysis, " +
+        "or any computation instead of estimating an answer.",
+      inputSchema: z.object({
+        lang: z.enum(["python", "js"]),
+        code: z.string().describe("The code to execute. Print the result."),
+      }),
+      execute: async ({ lang, code }) => {
+        const run = await box.exec.code({ lang, code, timeout: 30_000 });
+        return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
+      },
+    }),
+
+    runCommand: tool({
+      description:
+        "Run a shell command in the sandbox and wait for it to finish: install packages, " +
+        "run tests, use git, inspect the system. The command must exit on its own. " +
+        "For a server or any process that keeps running, use startServer instead.",
+      inputSchema: z.object({
+        command: z.string().describe("A shell command, e.g. `npm install zod`"),
+      }),
+      execute: async ({ command }) => {
+        const run = await box.exec.command(command);
+        return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
+      },
+    }),
+
+    startServer: tool({
+      description:
+        "Start a long-running server in the background and return its public URL. " +
+        "Use this for anything that does not exit on its own, such as `npm run dev`.",
+      inputSchema: z.object({
+        command: z.string().describe("The server command, e.g. `node server.js`"),
+        port: z.number().describe("The port the command listens on"),
+      }),
+      execute: async ({ command, port }) => {
+        const log = `/tmp/server-${port}.log`;
+        const quoted = `'${command.replace(/'/g, `'\\''`)}'`;
+        await box.exec.command(`nohup sh -c ${quoted} > ${log} 2>&1 & sleep 2`);
+
+        const check = await box.exec.command(
+          `curl -s -o /dev/null --max-time 5 http://localhost:${port} && echo up || echo down`,
+        );
+        if (check.result.trim() !== "up") {
+          const tail = await box.exec.command(`tail -20 ${log}`);
+          return { ok: false, error: `nothing listening on ${port}`, log: tail.result.slice(0, 2_000) };
+        }
+
+        const preview = await box.getPublicURL(port);
+        return { ok: true, url: preview.url, log };
+      },
+    }),
+
+    writeFile: tool({
+      description: "Create or overwrite a file in the sandbox.",
+      inputSchema: z.object({
+        path: z.string().describe("Absolute path under /workspace/home"),
+        content: z.string(),
+      }),
+      execute: async ({ path, content }) => {
+        await box.files.write({ path, content });
+        return { ok: true, path };
+      },
+    }),
+
+    readFile: tool({
+      description: "Read a file from the sandbox.",
+      inputSchema: z.object({
+        path: z.string(),
+        length: z.number().optional().describe("Read only the first N bytes"),
+      }),
+      execute: async ({ path, length }) => {
+        const content = await box.files.read(path, length ? { length } : undefined);
+        return { ok: true, content };
+      },
+    }),
+
+    listFiles: tool({
+      description: "List the entries in a sandbox directory.",
+      inputSchema: z.object({ path: z.string().default("/workspace/home") }),
+      execute: async ({ path }) => {
+        const entries = await box.files.list(path);
+        return { entries: entries.map((e) => ({ path: e.path, isDir: e.is_dir, size: e.size })) };
+      },
+    }),
+
+    exposePort: tool({
+      description:
+        "Expose a port the sandbox is listening on and return a public URL the user can open.",
+      inputSchema: z.object({ port: z.number() }),
+      execute: async ({ port }) => {
+        const preview = await box.getPublicURL(port);
+        return { url: preview.url };
+      },
+    }),
+  };
+}
+```
+
+<Note>
+  The file tools are rooted at **`/workspace/home`**, and paths outside it are rejected. `exec` can write anywhere, but anything you move through the files API has to live under that root. Tell the model so in the system prompt.
+</Note>
+
+`runCommand` waits for the command to exit, which is why `startServer` exists: a foreground `npm run dev` would block the tool call forever and the model would never reach `exposePort`. `startServer` detaches the process, confirms something is actually listening, and returns the crash log when nothing is.
+
+Take only the tools you need. A support bot that answers numeric questions wants `runCode` alone. A coding agent wants the whole set.
+
+***
+
+## 4. Wire them into a route
+
+`stopWhen: stepCountIs(...)` is what lets the model chain calls: write a file, run it, read the output, then answer.
+
+```typescript title="app/api/chat/route.ts"
+import { streamText, convertToModelMessages, stepCountIs } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { boxTools } from "@/lib/box-tools";
+import { getBox } from "@/lib/box";
+import { auth } from "@/lib/auth";
+
 export async function POST(req: Request) {
-  const { messages } = await req.json();
+  const { messages, id } = await req.json();
+
+  // Your own session lookup. The box is addressed by the *authenticated* user.
+  const session = await auth();
+  if (!session) return new Response("Unauthorized", { status: 401 });
+
+  const box = await getBox(session.userId, id);
 
   const result = streamText({
     model: anthropic("claude-sonnet-4-6"),
     system:
-      "You are a helpful assistant with access to a secure code sandbox. " +
-      "When the user asks for computation, data analysis, or math — write and run code " +
-      "instead of estimating. Prefer Python for numerical work, JavaScript for JSON or string processing.",
+      "You have a Linux sandbox with a shell, a filesystem, and exposable ports. " +
+      "Work in /workspace/home. Run code instead of estimating answers, and when " +
+      "you start a server, expose its port and give the user the URL.",
     messages: await convertToModelMessages(messages),
     stopWhen: stepCountIs(10),
-    tools: {
-      executeSandboxCode: tool({
-        description:
-          "Run Python or JavaScript code in a secure, isolated sandbox. " +
-          "Use this for any math, data processing, or computation.",
-        inputSchema: z.object({
-          lang: z.enum(["python", "js"]).describe("Language to run"),
-          code: z.string().describe("The code to execute"),
-        }),
-        execute: async ({ lang, code }) => {
-          const box = await EphemeralBox.create({
-            apiKey: process.env.UPSTASH_BOX_API_KEY,
-            runtime: lang === "python" ? "python" : "node",
-            ttl: 120,
-          });
-
-          try {
-            const run = await box.exec.code({ lang, code, timeout: 10_000 });
-            return {
-              success: run.exitCode === 0,
-              output: run.result,
-            };
-          } finally {
-            await box.delete();
-          }
-        },
-      }),
-    },
+    tools: boxTools(box),
   });
 
   return result.toUIMessageStreamResponse();
 }
 ```
 
-<Note>
-`ttl: 120` means the box auto-deletes after 2 minutes even if the `finally` block is skipped. For longer-running scripts, increase this value.
-</Note>
-
 ***
 
-## 3. Add a simple UI
+## 5. Add a UI
 
-Wire up a simple chat UI with `useChat` from the AI SDK. This UI also will display tool calls so that we can test the functionality.
+`useChat` renders tool calls as `tool-*` parts, so you can show each step as the model works.
 
 ```typescript title="app/page.tsx"
 "use client";
@@ -4669,7 +4802,7 @@ export default function Page() {
 
   return (
     <div className="mx-auto flex h-screen max-w-2xl flex-col p-4">
-      <h1 className="mb-4 text-lg font-semibold">Code Interpreter</h1>
+      <h1 className="mb-4 text-lg font-semibold">Box Agent</h1>
 
       <div className="flex-1 space-y-4 overflow-y-auto">
         {messages.map((message) => (
@@ -4688,20 +4821,19 @@ export default function Page() {
               if (part.type.startsWith("tool-")) {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const p = part as any;
-                const toolName = part.type.slice(5);
                 const isDone = p.state === "output-available";
                 return (
                   <div
                     key={i}
                     className="my-1 rounded border border-gray-200 bg-gray-50 p-2 text-xs"
                   >
-                    <code>{toolName}</code>{" "}
+                    <code>{part.type.slice(5)}</code>{" "}
                     <span className={isDone ? "text-green-600" : "text-gray-400"}>
                       {isDone ? "✓" : "running…"}
                     </span>
                     {isDone && p.output && (
                       <pre className="mt-1 overflow-x-auto">
-                        {String(p.output.output)}
+                        {typeof p.output === "string" ? p.output : JSON.stringify(p.output, null, 2)}
                       </pre>
                     )}
                   </div>
@@ -4717,7 +4849,7 @@ export default function Page() {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask me to compute something..."
+          placeholder="Ask me to build or compute something..."
           disabled={status === "streaming"}
           className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400"
         />
@@ -4734,25 +4866,52 @@ export default function Page() {
 }
 ```
 
+Ask it to *"plot the first 20 Fibonacci numbers and serve the chart on port 8000"* and you can watch it write a script, run it, start a server, and hand back a URL.
+
 ***
 
-## 4. Try it
+## 6. One-off runs with an EphemeralBox
 
-Start your Next.js app and ask anything that needs real computation:
+When there is no state worth keeping between calls, skip the per-chat box entirely. An `EphemeralBox` is created for the tool call and deleted when it returns, so nothing persists and nothing leaks.
 
-> *"What is the square root of 144 plus 25 factorial?"*
+```typescript title="lib/code-interpreter.ts"
+import { tool } from "ai";
+import { EphemeralBox } from "@upstash/box";
+import { z } from "zod";
 
-The model writes a Python snippet, the `executeSandboxCode` tool fires, a fresh `EphemeralBox` boots, the code runs, and the result streams back — all within a single response turn.
+export const runCode = tool({
+  description: "Run Python or JavaScript in a disposable sandbox.",
+  inputSchema: z.object({
+    lang: z.enum(["python", "js"]),
+    code: z.string(),
+  }),
+  execute: async ({ lang, code }) => {
+    const box = await EphemeralBox.create({
+      apiKey: process.env.UPSTASH_BOX_API_KEY,
+      runtime: lang === "python" ? "python" : "node",
+      ttl: 120,
+    });
 
+    try {
+      const run = await box.exec.code({ lang, code, timeout: 10_000 });
+      return { ok: run.exitCode === 0, output: run.result };
+    } finally {
+      await box.delete();
+    }
+  },
+});
 ```
-executeSandboxCode  ✓
 
-Square root of 144: 12.0
-25 factorial: 15511210043330985984000000
-Sum: 1.5511210043330986e+25
-```
+`ttl: 120` deletes the box after two minutes even if the `finally` never runs. Always set a `timeout` on `exec.code` too: without one, an infinite loop hangs the request until the backend gives up.
 
-Every tool call gets its own isolated box, so a crash in one never affects the others. The `timeout: 10_000` on `exec.code` cuts off the HTTP call after 10 seconds — without it, an infinite loop would hang until the backend times out or the `ttl` deletes the box. Raise the timeout for long-running scripts, but always set one.
+***
+
+## Next steps
+
+* [Filesystem](/docs/box/overall/files) and [shell](/docs/box/overall/shell) for the full API behind these tools.
+* [Browser](/docs/box/overall/browser/overview) to add page reading and screenshots to the toolset.
+* [Public URLs](/docs/box/overall/preview) for authenticating the URLs `exposePort` hands out.
+* [Snapshots](/docs/box/overall/snapshots) to boot each conversation from a pre-installed environment.
 
 # Build a Code Review Agent
 Source: https://upstash.com/docs/box/guides/code-review-agent
@@ -4905,71 +5064,174 @@ if (result.verdict === "changes_requested") {
 
 This gives you an automated gate similar to CodeRabbit or Greptile, running inside an isolated, durable Box.
 
-# Running Tests with Crabbox
-Source: https://upstash.com/docs/box/guides/crabbox-setup
+# Vercel Eve Sandboxes
+Source: https://upstash.com/docs/box/guides/eve-setup
 
-[Crabbox](https://crabbox.sh) is a CLI tool that runs commands inside a remote box from your local machine. This guide shows how to use it with Upstash Box to run your test suite in a clean cloud environment without touching your local setup.
+[Eve](https://eve.dev) is Vercel's agent framework. It gives an agent a code-execution sandbox through a single `agent/sandbox.ts` file, and the backend behind that file is swappable.
+
+[`@upstash/agentkit-eve`](https://www.npmjs.com/package/@upstash/agentkit-eve) ships an Upstash Box backend for it. It is a drop-in replacement for Eve's `vercel()` backend: change one import and your agent runs its code inside a Box, with deny-all egress by default, snapshot-backed templates, and one box per conversation.
 
 ***
 
-## 1. Install Crabbox
+## 1. Start from an Eve project
+
+Scaffold one if you do not have it yet. This installs `eve` and an AI SDK provider for you.
 
 ```bash
-brew install openclaw/tap/crabbox
+npx eve@latest init my-agent
+# or, to start with a Next.js app:
+npx eve@latest init my-agent --channel-web-nextjs
+```
+
+Use eve `0.43.0` or later.
+
+***
+
+## 2. Install the packages
+
+```bash
+npm install @upstash/agentkit-eve @upstash/redis @upstash/box
+```
+
+`@upstash/box` is an optional peer dependency of the AgentKit package. You only need it because you are importing the sandbox backend.
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box):
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+UPSTASH_REDIS_REST_URL=https://xxxxx.upstash.io
+UPSTASH_REDIS_REST_TOKEN=xxxxxxxxxxxxxxxxxxxx
+```
+
+Redis backs the template registry described in [step 5](#5-bake-setup-into-a-template). It is only touched when your sandbox has a template, so a sandbox with no seed files and no `bootstrap` runs on the Box key alone.
+
+***
+
+## 3. Swap the backend
+
+Point `defineSandbox` at the `upstash` backend. Everything else in the [sandbox file](https://eve.dev/docs/sandbox) stays as it is.
+
+```typescript title="agent/sandbox.ts"
+import { defineSandbox } from "eve/sandbox";
+import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: eve/sandbox/vercel
+
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  async onSession({ use }) {
+    await use();
+  },
+});
+```
+
+`upstash(config)` takes the `@upstash/box` `BoxConfig`. Whatever you would pass to `Box.create({ ... })` you pass here: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`, `initCommand`, `env`, `git`, `skills`, `mcpServers`, `timeout`, and so on. There are no renamed knobs to keep in sync.
+
+Two things differ from a raw `Box.create`. `networkPolicy` is not accepted at all, because egress is governed per session (see the next step). And a few AgentKit-only fields sit alongside the Box config and are stripped before the rest is handed to `Box.create`: `redis` and `templatePrefix` for the template registry, `baseSnapshot` ([step 5](#heavy-slow-changing-setup)), and `enableTelemetry`.
+
+That is the whole setup. Run your agent and ask it to execute something:
+
+```bash
+npx eve dev
 ```
 
 ***
 
-## 2. Get Your API Key
+## 4. Open egress per session
 
-Go to the [Upstash Console](https://console.upstash.com) and create a Box API key. Then export it in your terminal:
+The sandbox runs model-generated code, so egress is [deny-all](/docs/box/overall/network-policy) by default. Open it where you need it, in the `use(...)` call, never as a backend-level setting.
 
-```bash
-export UPSTASH_BOX_API_KEY=your_api_key_here
+```typescript title="agent/sandbox.ts"
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  async onSession({ use }) {
+    await use({ networkPolicy: { allow: ["registry.npmjs.org", "api.github.com"] } });
+  },
+});
+```
+
+Pass `"allow-all"` when the agent genuinely needs the open internet, and nothing at all to inherit the secure default.
+
+<Warning>
+  `env` passed to `upstash({ env })` is readable by code running in the box. Do not put secrets there that the model should not see.
+</Warning>
+
+### Brokering credentials
+
+Box network policies are plain domain and CIDR allow lists. Eve's per-domain firewall rules (`transform` header injection, `forwardURL`) have no Box equivalent, so passing them to `use({ networkPolicy })` throws instead of quietly sending the request unauthenticated.
+
+Use Box's [`attachHeaders`](/docs/box/overall/attach-headers) instead. A proxy on the box injects the header at the firewall, so the secret never enters the box:
+
+```typescript title="agent/sandbox.ts"
+export default defineSandbox({
+  backend: upstash({
+    runtime: "node",
+    attachHeaders: { "api.example.com": { Authorization: "Bearer ..." } },
+  }),
+  async onSession({ use }) {
+    await use({ networkPolicy: { allow: ["api.example.com"] } });
+  },
+});
 ```
 
 ***
 
-## 3. Warm Up a Box
+## 5. Bake setup into a template
 
-Create a box with the `warmup` command. This provisions the box ahead of time so it's ready when you need it.
+A `bootstrap` hook runs once, and Eve caches the result as a template so later sessions start from it. On Box that template is a [snapshot](/docs/box/overall/snapshots).
 
-```bash
-crabbox warmup --provider upstash-box --upstash-box-runtime node --upstash-box-size small
+```typescript title="agent/sandbox.ts"
+export default defineSandbox({
+  backend: upstash({ runtime: "node", size: "medium" }),
+  revalidationKey: () => "repo-bootstrap-v1",
+  async bootstrap({ use }) {
+    const sandbox = await use({ networkPolicy: "allow-all" });
+    await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+  },
+  async onSession({ use }) {
+    await use();
+  },
+});
 ```
 
-You can customize the box to match your project's needs:
+A box runs as the non-root `boxuser`, so system-wide installs need `sudo -n`. Without it `apt-get` exits `100` on the dpkg lock and the bootstrap fails. Workspace-local installs such as `npm install` need no sudo.
 
-| Flag | Description | Values |
-|---|---|---|
-| `--upstash-box-runtime` | Runtime environment | `node`, `python`, `golang`, `ruby`, `rust` (or `-alpine` variants) |
-| `--upstash-box-size` | Box size | `small`, `medium`, `large` |
-| `--upstash-box-workdir` | Working directory inside the box | Any path (default: `/workspace/home/crabbox`) |
-| `--upstash-box-keep-alive` | Keep the box up and running at all times | `true` / `false` |
+Eve builds the template at build or startup time, while session creation runs per request in a different process. The snapshot id is therefore stored in a durable Redis registry (`redis`, defaulting to `Redis.fromEnv()`, under the `agentkit:sandbox:template` prefix). An in-memory map would orphan the prewarmed box.
+
+Bump `revalidationKey` when the bootstrap should run again.
+
+### Heavy, slow-changing setup
+
+For things too heavy for a per-repo bootstrap (browser binaries, ffmpeg, a full toolchain), build a Box snapshot yourself out of band and point `baseSnapshot` at it. Every fresh session restores from it instead of creating a bare box.
+
+```typescript
+upstash({
+  runtime: "node",
+  baseSnapshot: async () => (await redis.get<string>("toolchain-snapshot")) ?? undefined,
+});
+```
+
+Pass a snapshot id or a resolver, since Box addresses snapshots by id rather than by name. Returning `undefined`, or an id that no longer exists, falls back to a fresh box. When a prewarmed template snapshot also applies, the template wins and `baseSnapshot` is the fallback for sessions that have no template.
 
 ***
 
-## 4. Run Your Tests
+## 6. Lifecycle
 
-Run your test command inside the box. Use `--env-from-profile` to load environment variables from a local `.env` file — they'll be injected into the box without being stored anywhere.
+Eve re-opens a session several times per turn. The backend reattaches to the same box instead of creating a new one, so you get one box per conversation rather than one per tool call.
 
-```bash
-crabbox run --provider upstash-box --env-from-profile .env -- pnpm test
-```
+Boxes use Box's pause-based idle lifecycle by default (`keepAlive: false`): auto-paused when idle, resumed on reattach, and reaped by Box. Pass [`keepAlive: true`](/docs/box/overall/keep-alive) only when you want an always-running box that you manage and delete yourself.
 
-You can use any package manager or test runner:
-
-```bash
-# npm
-crabbox run --provider upstash-box --env-from-profile .env -- npm test
-
-# bun
-crabbox run --provider upstash-box --env-from-profile .env -- bun test
-```
+<Note>
+  Eve roots its tools at `/workspace`, while a Box session lives at `/workspace/home`. The backend rewrites paths and command text between the two automatically, so tools like glob and grep search the right directory.
+</Note>
 
 ***
 
-For the full list of commands and options, see the [Upstash Box provider reference](https://crabbox.sh/providers/upstash-box.html).
+## Next steps
+
+The same package carries the rest of AgentKit for Eve: long-term memory, searchable chat history, RAG over Redis Search, a rate-limit gate for your channel's auth walk, and Redis-memoized tools.
+
+* [AgentKit for Vercel Eve](/docs/redis/sdks/agentkit/eve) for the full package reference.
+* [Network policies](/docs/box/overall/network-policy) for what Box's allow lists can express.
+* [Snapshots](/docs/box/overall/snapshots) for building and restoring the boxes behind templates.
 
 # Hermes Setup
 Source: https://upstash.com/docs/box/guides/hermes-setup
@@ -5521,290 +5783,295 @@ https://<box-id>-3000.preview.box.upstash.com
 
 <img alt="Public preview URL for a Box port" />
 
-# AI File Editor with TanStack AI
-Source: https://upstash.com/docs/box/guides/tanstack-ai-file-editor
+# TanStack AI Coding Agents
+Source: https://upstash.com/docs/box/guides/tanstack-setup
 
-An `EphemeralBox` gives you exactly two capabilities: **code execution** and **file operations**. That turns out to be all you need to hand an AI agent a real, disposable computer. This guide uses both. The model writes the code, and a single tool moves files in and out of the sandbox to run it against.
+[TanStack AI](https://tanstack.com/ai) ships a native Upstash Box sandbox provider. Install `@tanstack/ai-sandbox-upstash-box`, point it at your API key, and a coding agent driven by `chat()` runs inside a Box with a real filesystem, shell, background processes, preview URLs, and snapshots. No glue code.
 
-We'll build a file editor with [TanStack AI](https://tanstack.com/ai). The user uploads a file and asks for a change. The model writes the code to do it. A single tool then **spins up a Box, uploads the file, runs that code, downloads the result, and tears the Box down**. The model's code and its dependencies never touch your server. They run inside an isolated sandbox that exists only for the length of the call.
+A sandboxed run has three independent parts:
+
+* **Provider**: where the agent runs. That is Upstash Box here.
+* **Workspace**: what the agent sees. The repo, the package manager, setup commands, secrets.
+* **Harness**: which agent runs. Claude Code, Codex, Grok Build, OpenCode, or any ACP agent.
+
+Only the provider changes when you move a run from a local container to Upstash Box. The workspace and the harness stay the same.
 
 ***
 
-## 1. Installation
+## 1. Install
 
 ```bash
-npm install @tanstack/ai @tanstack/ai-anthropic @tanstack/ai-react @upstash/box zod
+npm install @tanstack/ai @tanstack/ai-sandbox @tanstack/ai-sandbox-upstash-box @tanstack/ai-claude-code
 ```
 
-Get a Box API key from the [Upstash Console](https://console.upstash.com/box) and add your environment variables:
+* `@tanstack/ai`: the `chat()` pipeline.
+* `@tanstack/ai-sandbox`: `defineSandbox`, `defineWorkspace`, `withSandbox`.
+* `@tanstack/ai-sandbox-upstash-box`: the Upstash Box provider.
+* `@tanstack/ai-claude-code`: the harness adapter. Swap it for `@tanstack/ai-codex` or `@tanstack/ai-grok-build` if you prefer another agent.
 
-```bash title=".env.local"
+***
+
+## 2. Set your environment variables
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box).
+
+```bash title=".env"
 UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
 ```
 
+`upstashBoxSandbox()` reads `UPSTASH_BOX_API_KEY` when you omit `apiKey`. The harness key is different: it belongs to the agent running **inside** the box, so it travels as a workspace secret.
+
 ***
 
-## 2. The API route
+## 3. Define the sandbox
 
-The route hands the model a single `editFile` tool. Each time the model calls it, the tool runs one self-contained lifecycle: it **creates a fresh `EphemeralBox`, uploads the user's file, runs the model's code, finds the result with `files.list`, reads it back, and deletes the Box in a `finally`**. The model writes code that reads the input file and drops its result into an output directory. Those four calls (`files.write`, `exec`, `files.list`, and `files.read`) are the entire `EphemeralBox` surface, and they're enough to drive a real feature.
+`defineSandbox()` binds a provider, a workspace, and a lifecycle into one reusable object.
+
+```typescript title="sandbox.ts"
+import {
+  createSecrets,
+  defineSandbox,
+  defineWorkspace,
+} from "@tanstack/ai-sandbox";
+import { upstashBoxSandbox } from "@tanstack/ai-sandbox-upstash-box";
+
+const REPO = "https://github.com/owner/buggy-app.git";
+
+export const repoSandbox = defineSandbox({
+  id: "bug-fixer",
+  provider: upstashBoxSandbox({
+    apiKey: process.env.UPSTASH_BOX_API_KEY,
+    runtime: "node",
+    size: "small",
+  }),
+  workspace: defineWorkspace({
+    source: { type: "none" },
+    packageManager: "pnpm",
+    setup: [
+      `git clone --depth 1 --single-branch ${REPO} /tmp/repo && cp -a /tmp/repo/. /workspace/home/ && rm -rf /tmp/repo`,
+      "pnpm install",
+    ],
+    secrets: createSecrets({
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
+    }),
+  }),
+  lifecycle: { reuse: "thread", snapshot: "after-setup", keepAlive: "30m" },
+});
+```
+
+<Warning>
+  Clone the repo in a `setup` step rather than with `source: githubRepo(...)`. A box's home directory is created with agent dotfiles already in it (`.claude`, `.codex`, `.cursor`, `.local`), and `@tanstack/ai-sandbox` clones the source straight into that directory. `git clone` refuses a non-empty target and exits `128`, the bootstrap does not surface the failure, and your setup steps then run against an empty workspace. Cloning into `/tmp` and copying the contents across sidesteps it.
+</Warning>
+
+The harness spawns its CLI inside the box, so the CLI has to be on the box's `PATH`. The `node` runtime already ships `claude`, `codex`, and `opencode` in `/usr/local/bin`, so those three need no setup step at all.
+
+For any other CLI, install it with `sudo -n`. A box runs as the non-root `boxuser`, and `/usr/local/lib/node_modules` is root-owned, so a plain `npm install -g` fails with `EACCES` and takes the whole bootstrap down with it:
+
+```typescript
+setup: ["sudo -n npm install -g @some/agent-cli --include=optional && some-agent --version"],
+```
+
+Agent CLIs ship their binary as an optional npm dependency, so `npm install -g` can exit `0` with a broken install. Running the CLI in the same step turns that into a loud bootstrap failure instead of a broken run.
+
+Secrets are injected into the box environment on create and resume. They are never written to snapshots, the sandbox store, or the event log.
+
+<Note>
+  TanStack AI's conventional `/workspace` virtual root maps to the box home directory, `/workspace/home`. That is the handle's `workspaceRoot`, and it is where the cloned repo lands.
+</Note>
+
+***
+
+## 4. Run the agent
+
+`withSandbox()` is `chat()` middleware. It resumes or creates the box, bootstraps the workspace, runs the harness inside it, and tears everything down according to the lifecycle.
+
+```typescript title="run.ts"
+import { chat } from "@tanstack/ai";
+import { claudeCodeText } from "@tanstack/ai-claude-code";
+import { withSandbox } from "@tanstack/ai-sandbox";
+import { repoSandbox } from "./sandbox";
+
+const stream = chat({
+  threadId: "thread_123",
+  adapter: claudeCodeText("claude-opus-4-8"),
+  messages: [{ role: "user", content: "Fix the failing test in utils.test.ts" }],
+  middleware: [withSandbox(repoSandbox)],
+});
+
+for await (const chunk of stream) {
+  if (chunk.type === "TEXT_MESSAGE_CONTENT") {
+    process.stdout.write(chunk.delta);
+  }
+
+  if (chunk.type === "CUSTOM" && chunk.name === "file.changed") {
+    const value = chunk.value;
+    if (value !== null && typeof value === "object" && "diff" in value) {
+      console.log("\n--- diff ---\n");
+      console.log(value.diff);
+    }
+  }
+}
+```
+
+The `threadId` keys the box. Two runs on the same thread reuse the same box instead of cloning and installing again.
+
+Harness runs emit standard AG-UI chunks (text, tool calls, reasoning) plus a namespaced `CUSTOM` event. When the run finishes, the adapter emits `file.changed` with the working tree `git diff`, which is the change the agent made.
+
+To serve the same run from a server route, return the stream as Server-Sent Events:
 
 ```typescript title="app/api/chat/route.ts"
-import { chat, toServerSentEventsResponse, toolDefinition } from "@tanstack/ai";
-import { anthropicText } from "@tanstack/ai-anthropic";
-import { EphemeralBox } from "@upstash/box";
-import { z } from "zod";
-
-const OUT_DIR = "/workspace/home/out";
-
-const MIME: Record<string, string> = {
-  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
-  webp: "image/webp", json: "application/json", csv: "text/csv",
-  txt: "text/plain", md: "text/markdown", pdf: "application/pdf",
-  mp3: "audio/mpeg", wav: "audio/wav",
-};
-const mimeOf = (name: string) => MIME[name.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream";
+import { chat, chatParamsFromRequest, toServerSentEventsResponse } from "@tanstack/ai";
+import { claudeCodeText } from "@tanstack/ai-claude-code";
+import { withSandbox } from "@tanstack/ai-sandbox";
+import { repoSandbox } from "@/sandbox";
 
 export async function POST(request: Request) {
-  const { messages, forwardedProps } = await request.json();
-  const file = forwardedProps?.file; // useChat forwards the connection `body` here
-
-  // The browser sends { name, dataUrl }; keep the base64 payload + a safe name.
-  const base64 = String(file?.dataUrl ?? "").replace(/^data:.*;base64,/, "");
-  const inputName = String(file?.name ?? "input").replace(/[^a-zA-Z0-9._-]/g, "_");
-  const inputPath = `/workspace/home/${inputName}`;
-
-  const editFile = toolDefinition({
-    name: "editFile",
-    description:
-      "Transform the uploaded file by running Python. Your code reads the input file and " +
-      `writes its result into ${OUT_DIR}/ with an appropriate extension.`,
-    inputSchema: z.object({
-      code: z.string().describe(`Python that reads the input file and writes the result into ${OUT_DIR}/.`),
-    }),
-    outputSchema: z.object({
-      ok: z.boolean(),
-      stdout: z.string(),
-      file: z
-        .object({ name: z.string(), mediaType: z.string(), base64: z.string() })
-        .nullable(),
-    }),
-  }).server(async ({ code }) => {
-    // No file uploaded? Don't even spin up a box.
-    if (!base64) {
-      return { ok: false, stdout: "No file has been uploaded yet.", file: null };
-    }
-
-    // A fresh sandbox per call: created here, torn down in `finally`.
-    const box = await EphemeralBox.create({
-      apiKey: process.env.UPSTASH_BOX_API_KEY,
-      runtime: "python",
-      ttl: 120, // safety net in case `delete()` is skipped
-    });
-
-    try {
-      // Prepare the box: output dir + libraries. (For production, bake these into a snapshot.)
-      await box.exec.command(`mkdir -p ${OUT_DIR} && pip install -q pillow pandas pypdf`);
-
-      // UPLOAD: the user's file goes into the sandbox (file op)
-      await box.files.write({ path: inputPath, content: base64, encoding: "base64" });
-
-      // EXEC: run the Python the model wrote
-      const run = await box.exec.code({ lang: "python", code });
-      if (run.exitCode !== 0) {
-        return { ok: false, stdout: run.result, file: null };
-      }
-
-      // LIST: discover what the code produced (file op)
-      const entries = await box.files.list(OUT_DIR);
-      const out = entries.find((e) => !e.is_dir);
-      if (!out) {
-        return { ok: false, stdout: run.result + "\n(no output file produced)", file: null };
-      }
-
-      // DOWNLOAD: read the result back out as base64 (file op)
-      const result = await box.files.read(out.path, { encoding: "base64" });
-      return {
-        ok: true,
-        stdout: run.result,
-        file: { name: out.name, mediaType: mimeOf(out.name), base64: result },
-      };
-    } finally {
-      await box.delete();
-    }
-  });
+  const { messages, threadId } = await chatParamsFromRequest(request);
 
   const stream = chat({
-    adapter: anthropicText("claude-sonnet-4-6"),
-    modelOptions: { max_tokens: 2048 },
-    systemPrompts: [
-      "You are a file editor backed by a secure sandbox. " +
-        "Reply normally to greetings, questions, and small talk WITHOUT calling any tool. " +
-        "Only call the editFile tool when the user actually asks you to transform or edit their uploaded file. " +
-        `The uploaded file, when present, is at ${inputPath}. To edit it, write Python that reads it, applies ` +
-        `the change, and saves the result into ${OUT_DIR}/ with a sensible filename and extension, then call ` +
-        "editFile with that code. Libraries available: Pillow, pandas, numpy, pypdf, plus the standard library (e.g. `wave` for audio). " +
-        "After the tool succeeds, tell the user in one short sentence what you did.",
-    ],
+    threadId,
+    adapter: claudeCodeText("claude-opus-4-8"),
     messages,
-    tools: [editFile],
+    middleware: [withSandbox(repoSandbox)],
   });
 
   return toServerSentEventsResponse(stream);
 }
 ```
 
-<Note>
-The file tools (`files.write`, `files.list`, and `files.read`) are rooted at **`/workspace/home`**, and paths outside it are rejected. `exec` can write anywhere, but anything you move through the files API has to live under `/workspace/home`. That's why both the input file and `OUT_DIR` sit there.
-</Note>
+***
 
-Because the model writes the code and we find the output with `files.list`, nothing here is image-specific. Ask for "convert this CSV to JSON" and the model uses pandas to write `out/data.json`, and the tool reads it back the same way. To support more formats, add their libraries to the `pip install` line, or bake them into a snapshot.
+## 5. Preview the app the agent builds
+
+If the agent starts a dev server inside the box, `ports.connect()` mints a public preview URL for it. It is a method on the `SandboxHandle`, which you get from the provider directly ([step 7](#7-use-the-box-without-a-harness)) or from the sandbox instance inside a middleware hook:
+
+```typescript
+import { upstashBoxSandbox } from "@tanstack/ai-sandbox-upstash-box";
+
+const handle = await upstashBoxSandbox({ runtime: "node" }).create({});
+
+const channel = await handle.ports.connect(3000);
+console.log(channel.url);
+```
+
+Preview URLs are public by default. Pass `publicUrlAuth` on the provider to gate them:
+
+```typescript
+upstashBoxSandbox({
+  publicUrlAuth: { bearerToken: true },
+});
+```
+
+`{ bearerToken: true }` returns a token plus an `Authorization: Bearer` header. `{ basicAuth: true }` returns Basic credentials instead.
 
 ***
 
-## 3. The UI
+## 6. Skip the cold start with snapshots
 
-Wire up `useChat` from `@tanstack/ai-react`. The uploaded file rides along on the request through the connection's dynamic `body` option. TanStack AI delivers that payload to the server under **`forwardedProps`**, which is why the route reads `forwardedProps.file` instead of a top-level field. We keep the file in a ref so each send picks up the latest one. Tool-call parts carry the typed `output`, so we render images inline and show a download link for everything else. A plain text prompt with no file is just a normal chat turn.
+Cloning the repo and installing dependencies is the expensive part of a run. Upstash Box supports native snapshots, so `snapshot: "after-setup"` is the default: bootstrap runs once, the result is snapshotted, and later runs resume from it.
 
-```tsx title="app/page.tsx"
-"use client";
+```typescript
+lifecycle: {
+  reuse: "thread",
+  snapshot: "after-setup",
+  snapshotMaxAge: "24h",
+  destroyOnComplete: false,
+}
+```
 
-import { useRef, useState } from "react";
-import { useChat, fetchServerSentEvents } from "@tanstack/ai-react";
+<Note>
+  There are two `keepAlive` settings and they are unrelated. The one in `lifecycle` is TanStack's duration hint (`"30m"`) for how long a sandbox should stay warm between runs. The one on `upstashBoxSandbox({ keepAlive })` is Box's boolean: `false` (the default) lets the box auto-pause when idle, `true` keeps it running and billing.
+</Note>
 
-type ResultFile = { name: string; mediaType: string; base64: string };
+A snapshot outlives the box that produced it. `restoreSnapshot()` rebuilds a fresh box from it with `Box.fromSnapshot()`, and resume by id probes the box status first, so a deleted box resumes as `null` rather than a dead handle.
 
-export default function Page() {
-  const [input, setInput] = useState("");
-  const [fileName, setFileName] = useState<string | null>(null);
-  const fileRef = useRef<{ name: string; dataUrl: string } | null>(null);
+`fork()` works the same way, snapshot plus create from that snapshot. It costs a full snapshot round trip, roughly 25 seconds.
 
-  const { messages, sendMessage, isLoading } = useChat({
-    // The function runs per request, so it always sends the current file.
-    connection: fetchServerSentEvents("/api/chat", () => ({
-      body: { file: fileRef.current },
-    })),
-  });
+***
 
-  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      fileRef.current = { name: f.name, dataUrl: reader.result as string };
-      setFileName(f.name);
-    };
-    reader.readAsDataURL(f);
-  }
+## 7. Use the box without a harness
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (isLoading || !input.trim()) return; // a file is only needed for edits
-    sendMessage(input.trim());
-    setInput("");
-  }
+The provider also gives you the uniform `SandboxHandle` directly, with no `chat()` or agent involved. This is the quickest way to check that your key and runtime are wired correctly.
 
-  function renderResult(file: ResultFile, key: number) {
-    const src = `data:${file.mediaType};base64,${file.base64}`;
-    if (file.mediaType.startsWith("image/")) {
-      return <img key={key} src={src} alt={file.name} className="max-h-72 rounded border" />;
-    }
-    return (
-      <a key={key} href={src} download={file.name} className="text-sm text-blue-600 underline">
-        ⬇ Download {file.name}
-      </a>
-    );
-  }
+```typescript title="smoke-test.ts"
+import { upstashBoxSandbox } from "@tanstack/ai-sandbox-upstash-box";
 
-  return (
-    <div className="mx-auto flex h-screen max-w-2xl flex-col gap-4 p-4">
-      <h1 className="text-lg font-semibold">AI File Editor</h1>
+const provider = upstashBoxSandbox({ runtime: "node" });
+const box = await provider.create({});
 
-      <input type="file" onChange={handleFile} />
-      {fileName && <p className="text-xs text-gray-500">Selected: {fileName}</p>}
+try {
+  await box.fs.write("/workspace/hello.txt", "hello from upstash box");
+  console.log(await box.fs.read("/workspace/hello.txt"));
 
-      <div className="flex-1 space-y-4 overflow-y-auto">
-        {messages.map((message) => (
-          <div key={message.id}>
-            <div className="text-xs font-medium text-gray-500">
-              {message.role === "user" ? "You" : "Editor"}
-            </div>
-            {message.parts.map((part, i) => {
-              if (part.type === "text") {
-                return (
-                  <p key={i} className="whitespace-pre-wrap text-sm">
-                    {part.content}
-                  </p>
-                );
-              }
-              if (part.type === "tool-call") {
-                const result = part.output as
-                  | { ok: boolean; file: ResultFile | null }
-                  | undefined;
-                if (!result) return <p key={i} className="text-xs text-gray-400">editing…</p>;
-                if (result.ok && result.file) return renderResult(result.file, i);
-                return <p key={i} className="text-xs text-red-500">edit failed</p>;
-              }
-              return null;
-            })}
-          </div>
-        ))}
-      </div>
-
-      <form onSubmit={handleSubmit} className="flex gap-2">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="e.g. make it black and white"
-          disabled={isLoading}
-          className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400"
-        />
-        <button
-          type="submit"
-          disabled={isLoading}
-          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
-        >
-          {isLoading ? "Editing…" : "Edit"}
-        </button>
-      </form>
-    </div>
-  );
+  const run = await box.process.exec("node --version");
+  console.log("node", run.stdout.trim(), "(exit", run.exitCode, ")");
+} finally {
+  await box.destroy();
 }
 ```
 
 ***
 
-## 4. Try it
+## Provider options
 
-Run your Next.js app, upload a file, and describe the edit. With a color photo and *"make it black and white,"* the model writes a few lines of Pillow:
+| Option | Default | Notes |
+| --- | --- | --- |
+| `apiKey` | `UPSTASH_BOX_API_KEY` | Your Box API key. |
+| `baseUrl` | SDK default | Overrides the Box API base URL. |
+| `runtime` | `node` | Box runtime image: `node`, `python`, `golang`, `ruby`, `rust`. |
+| `size` | `small` | `small` (2 CPU / 4 GB), `medium` (4 / 8), `large` (8 / 16). |
+| `keepAlive` | `false` | `false` avoids billing a perpetually running box and keeps `pause()` available. `true` prevents auto-pause mid-run, bills continuously, and disables pausing. |
+| `snapshot` | none | Base snapshot id to create the box from. |
+| `name` | none | Human readable box name. A deterministic sandbox id from `ensure()` takes precedence. |
+| `publicUrlAuth` | none | `{ bearerToken?, basicAuth? }` for `ports.connect()`. |
 
-```python
-from PIL import Image
-img = Image.open("/workspace/home/photo.png").convert("L")
-img.save("/workspace/home/out/photo.png")
-print("converted to grayscale")
-```
+***
 
-The `editFile` tool runs it, finds `out/photo.png` via `files.list`, reads it back as base64, and the UI renders the grayscale image under your message.
+## What the provider supports
 
-Swap the input and the prompt, and the same path carries the feature end to end:
+| Capability | Supported | Notes |
+| --- | --- | --- |
+| `fs` | Yes | Native Box file API. |
+| `exec` | Yes | Separate `stdout` and `stderr`. |
+| `env` | Yes | Shell `export` prefixes for `exec`, passed natively to `spawn`. |
+| `ports` | Yes | Public preview URLs. |
+| `snapshots` | Yes | Native `box.snapshot()` and `Box.fromSnapshot()`. |
+| `durableFilesystem` | Yes | Persists across pause and resume until the box is deleted. |
+| `backgroundProcesses` | Yes | `spawn()` opens a live `exec.session` with a real in-box pid. |
+| `writableStdin` | Yes | `stdin.write()` and `stdin.end()`. |
+| `killableProcesses` | Yes | `kill()` signals the process tree server-side. |
+| `networkPolicy` | Yes | `network: "deny"` maps to the `deny-all` egress mode. |
+| `fork` | Yes | Snapshot round trip, about 25 seconds. |
 
-* **CSV to JSON:** ask *"convert this to JSON"* and the model uses pandas to write `out/data.json`, which the UI shows as a download link.
-* **Uppercase the headings in a Markdown file, resize an image, or extract a page from a PDF.** Anything the model can express in Python with the installed libraries works.
+***
 
-Through all of this, the untrusted model-generated code and its dependencies stayed inside an isolated `EphemeralBox` that was created for the call and deleted the moment it returned. The whole editor is just two `EphemeralBox` capabilities wired into one tool: `exec`, plus the file operations `write`, `list`, and `read`.
+## Things to know
 
-# Scrape Dynamic Websites with Playwright
+**Spawned processes are tied to the handle.** `spawn()` runs the command as a live `exec.session` over a WebSocket, which is what gives it a real pid, a writable stdin, and server-side signals. The session owns its process, so dropping the connection kills the command and sessions cannot be reattached. A spawned process lives as long as the handle, not as long as the box.
+
+**`network: "deny"` is strict.** It maps to Box's `deny-all` egress mode, which blocks every outbound connection. Providers that model deny as an allowlist are more permissive. An agent that works under one of those will not reach package registries or model provider hosts here. Leave the capability unset if the agent needs either, and use [network policies](/docs/box/overall/network-policy) on the box for domain and CIDR rules.
+
+**Bridged tools need a tunnel in local development.** Tools you pass to `chat()` execute on your host and are bridged into the box over an authenticated proxy the box dials back to. A box is a remote machine, so it cannot reach `localhost` on your laptop. Deployed orchestrators work as they are. For local development, tunnel the bridge with `withNgrokBridge`. See the TanStack AI [tools guide](https://tanstack.com/ai/latest/docs/sandbox/tools).
+
+***
+
+## Next steps
+
+* [Sandbox providers](https://tanstack.com/ai/latest/docs/sandbox/providers) for the full provider reference.
+* [Workspace](https://tanstack.com/ai/latest/docs/sandbox/workspace) for repo sources, setup groups, and scripts.
+* [Harnesses](https://tanstack.com/ai/latest/docs/sandbox/harnesses) for running Codex, Grok Build, or any ACP agent instead.
+* [Snapshots](/docs/box/overall/snapshots) and [preview URLs](/docs/box/overall/preview) for what the box does underneath.
+
+# Playwright Web Scraping
 Source: https://upstash.com/docs/box/guides/web-scraping-playwright
 
-In this guide, we use Upstash Box to run [Playwright](https://playwright.dev) against a JavaScript-heavy site, scrape structured data from it, and pull the results back to our own server. Because a Box is a real Linux container rather than a restricted serverless runtime, Chromium and its system dependencies install and run exactly like they would on your laptop.
+Every box can come with its own browser. Create one with `browser: true` and you get a managed, headless Chromium that boots on first use. Nothing to install, no `apt-get`, no Chromium binary to keep up to date.
+
+This guide scrapes a JavaScript-heavy site with that built-in browser. We read rendered pages through the SDK, extract structured data against a schema, then connect Playwright over CDP to harvest many pages deterministically.
 
 <Note>
-  Boxes also ship a managed, pre-installed browser. Create one with `browser:
-  true` and drive Chromium through the SDK, or [connect Playwright over
-  CDP](/docs/box/overall/browser/connect) with no install step. This guide shows
-  the manual route, where the box's agent installs and controls Playwright
-  itself. See [Browser](/docs/box/overall/browser/overview) for the built-in one.
+  The browser can only be provisioned when the box is created. It cannot be enabled on an existing box. See [Browser](/docs/box/overall/browser/overview) for the full surface.
 </Note>
 
 ***
@@ -5812,10 +6079,12 @@ In this guide, we use Upstash Box to run [Playwright](https://playwright.dev) ag
 ## 1. Installation
 
 ```bash
-npm install @upstash/box
+npm install @upstash/box playwright-core zod
 ```
 
-Set your environment variables:
+`playwright-core` is enough. You connect to the box's Chromium instead of launching one locally, so there are no browser binaries to download on your side either.
+
+Set your environment variable:
 
 ```bash title=".env"
 UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
@@ -5823,105 +6092,257 @@ UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
 
 ***
 
-## 2. Provision a box and install Playwright
-
-Create a box with outbound network access (the default) so it can reach the target site and download the browser binaries, then install Playwright and Chromium with its system dependencies.
+## 2. Create a box with a browser
 
 ```typescript title="scripts/scrape.ts"
 import "dotenv/config"
-import { Agent, Box } from "@upstash/box"
+import { Box } from "@upstash/box"
 
 const box = await Box.create({
   runtime: "node",
-  agent: {
-    harness: Agent.ClaudeCode,
-    model: "anthropic/claude-sonnet-4-6",
-  },
+  browser: true,
+})
+
+const tab = await box.browser.tab.create("https://books.toscrape.com", {
+  waitUntil: "domcontentloaded",
 })
 
 console.log(`Box ready: ${box.id}`)
-
-await box.exec.command("npm init -y && npm install playwright")
-
-// `--with-deps` pulls in the Linux system libraries Chromium needs via apt-get
-const setup = await box.exec.command("npx playwright install chromium --with-deps")
-
-if (setup.status !== "completed") {
-  throw new Error(`Chromium setup failed: ${setup.result}`)
-}
-
-console.log("Chromium and its system dependencies are ready.")
+console.log(tab.id, tab.url, tab.title)
 ```
+
+The first `tab.create` boots Chromium. The tab handle is addressed by its Chrome DevTools Protocol target id, so it stays valid across navigations and you can re-attach to it later with `box.browser.getTab(id)`.
 
 ***
 
-## 3. Let the agent write and run the scraper
+## 3. Read the rendered page
 
-Hand the scraping task to the box's built-in agent. It writes the Playwright script, runs it, fixes any issues it hits along the way, and saves the output to a file in the workspace.
-
-```typescript title="scripts/scrape.ts" {1}
-const run = await box.agent.run({
-  prompt: `
-Write a Node.js script that uses Playwright to:
-1. Launch headless Chromium and navigate to https://news.ycombinator.com/show
-2. Wait for the page to finish loading
-3. Extract the title, URL, and point count for the top 10 posts
-4. Save the result as a JSON array to /workspace/home/scraped_data.json
-
-Then run the script and confirm the file was written successfully.
-  `.trim(),
-})
-
-console.log(run.result)
-```
-
-The agent has shell, filesystem, and the installed Playwright package available, so it can iterate — adjusting selectors, adding waits for dynamic content, retrying on failure — until the scrape actually produces data.
-
-***
-
-## 4. Pull the results back
-
-Read the file the agent wrote and bring it back into your own process.
+`content()` returns the tab's current title, URL, visible text, and links from the real DOM, including anything JavaScript rendered after load. No model is involved, so this costs no tokens.
 
 ```typescript title="scripts/scrape.ts"
-const raw = await box.files.read("/workspace/home/scraped_data.json")
-const dataset = JSON.parse(raw)
+const page = await tab.content()
 
-console.table(dataset.slice(0, 3))
+console.log(page.title)
+console.log(page.text.slice(0, 200))
 
-await box.delete()
+for (const link of page.links ?? []) {
+  console.log(link.text, link.href)
+}
 ```
 
-You now have structured data extracted from a dynamic, JavaScript-rendered page — without managing a single Chromium binary yourself.
+This is already enough for a crawler: follow the links you care about with `tab.goto(url)`, read each page with `content()`, and chunk the text into a dataset.
+
+<Note>
+  Client-rendered pages can hydrate after `domcontentloaded`. If `page.text` comes back short, wait briefly and call `content()` again until it settles.
+</Note>
 
 ***
 
-## 5. Skip the setup on every run with snapshots
+## 4. Extract structured data with a schema
 
-`npx playwright install chromium --with-deps` takes real time to stream and unpack OS-level packages. Paying that cost on every scrape request would be painful in production.
+When you want typed fields instead of raw text, `extract()` hands the page to a DOM-aware agent inside the box and validates the result against a [Zod](https://zod.dev) schema:
 
-[Snapshot](/docs/box/overall/snapshots) the box once Chromium and its dependencies are installed, and restore from that snapshot whenever you need a ready-to-go scraping environment:
+```typescript title="scripts/scrape.ts"
+import { z } from "zod"
 
-```typescript title="scripts/prepare-snapshot.ts"
-const snapshot = await box.snapshot({ name: "playwright-ready" })
-console.log(`Snapshot ready: ${snapshot.id}`)
+const catalog = await tab.extract(
+  "extract every book in the listing with its title and price",
+  z.object({
+    books: z.array(
+      z.object({
+        title: z.string(),
+        price: z.string(),
+      }),
+    ),
+  }),
+)
+
+console.table(catalog.books.slice(0, 5))
 ```
 
-Store `snapshot.id` somewhere your application can reach (an env var, a database row, etc.), then spin up pre-warmed boxes from it on demand:
+The result is parsed with your schema before it is returned, so a successful call always gives you the shape you asked for. Capture a screenshot next to it if you want provenance for what was on screen:
+
+```typescript
+import { writeFile } from "node:fs/promises"
+
+await writeFile("catalog.png", await tab.screenshot({ fullPage: true }))
+```
+
+<Note>
+  `extract` uses an LLM and is metered. It needs a model provider key on the box or your account. See [AI Actions](/docs/box/overall/browser/ai-actions) for the model override and the full list of providers.
+</Note>
+
+***
+
+## 5. Scrape many pages with Playwright over CDP
+
+An AI call per page gets expensive fast. For repeatable multi-page work, drive the same browser with Playwright. `cdpUrl()` returns an authenticated WebSocket URL that `chromium.connectOverCDP` accepts directly:
+
+```typescript title="scripts/scrape.ts"
+import { chromium } from "playwright-core"
+
+const browser = await chromium.connectOverCDP(await box.browser.cdpUrl())
+
+try {
+  const ctx = browser.contexts()[0] ?? (await browser.newContext())
+  const p = await ctx.newPage()
+
+  const books: { title: string | null; price: string | null }[] = []
+
+  for (let n = 1; n <= 3; n++) {
+    await p.goto(`https://books.toscrape.com/catalogue/page-${n}.html`, {
+      waitUntil: "domcontentloaded",
+    })
+
+    books.push(
+      ...(await p.$$eval("article.product_pod", (rows) =>
+        rows.map((row) => ({
+          title: row.querySelector("h3 a")?.getAttribute("title") ?? null,
+          price: row.querySelector(".price_color")?.textContent?.trim() ?? null,
+        })),
+      )),
+    )
+  }
+
+  console.log(`${books.length} books scraped`)
+} finally {
+  await browser.close()
+}
+```
+
+This is an ordinary Playwright script. Migrating an existing one is usually a single line: `chromium.launch()` becomes `chromium.connectOverCDP(await box.browser.cdpUrl())`, and your selectors, actions, and assertions stay as they are.
+
+<Warning>
+  The CDP URL carries its auth token in the URL. Anyone who has it gets full control of the browser, so treat it as a secret.
+</Warning>
+
+CDP and the SDK drive the same browser and the same tabs. A page opened by Playwright shows up in `box.browser.listTabs()`, and a tab created by the SDK is visible to Playwright, so you can mix scripted steps with AI steps in one run.
+
+***
+
+## 6. Compile the selectors once, then scrape for free
+
+The two previous sections combine into the pattern worth using in production: let the model read the layout **once** and emit selectors, then run every later scrape deterministically with no model tokens at all.
+
+This is a file of its own rather than a continuation of the script above, so it opens its own box and browser:
+
+```typescript title="scripts/compile-and-scrape.ts"
+import "dotenv/config"
+import { Box } from "@upstash/box"
+import { chromium } from "playwright-core"
+import { z } from "zod"
+
+const PAGE = (n: number) => `https://books.toscrape.com/catalogue/page-${n}.html`
+const RECIPE_PATH = "recipe-books.json"
+
+const RecipeSchema = z.object({
+  itemSelector: z.string(),
+  title: z.object({ selector: z.string(), attr: z.string() }),
+  price: z.object({ selector: z.string(), attr: z.string() }),
+})
+type Recipe = z.infer<typeof RecipeSchema>
+
+const box = await Box.create({ runtime: "node", browser: true })
+
+// Ask for the selectors, not the data. One metered call per layout.
+async function compile(): Promise<Recipe> {
+  const tab = await box.browser.tab.create(PAGE(1), { waitUntil: "domcontentloaded" })
+  return await tab.extract(
+    [
+      "You are compiling a scraper for the repeating list of books.",
+      "Return `itemSelector`: a CSS selector matching each book's container.",
+      "Return `title` and `price` field specs: each with a CSS `selector`",
+      'RELATIVE to the container and `attr` ("text" or an attribute name).',
+      "If the visible text is truncated, prefer an attribute holding the",
+      "full value (such as an anchor's title attribute).",
+      "Selectors must be generic, no :nth-child tied to one item.",
+    ].join(" "),
+    RecipeSchema,
+  )
+}
+
+// Deterministic harvest: same recipe, every page, zero model tokens.
+async function scrape(recipe: Recipe, pages: number) {
+  const browser = await chromium.connectOverCDP(await box.browser.cdpUrl())
+  try {
+    const ctx = browser.contexts()[0] ?? (await browser.newContext())
+    const p = await ctx.newPage()
+    const rows = []
+    for (let n = 1; n <= pages; n++) {
+      await p.goto(PAGE(n), { waitUntil: "domcontentloaded" })
+      rows.push(
+        ...(await p.$$eval(
+          recipe.itemSelector,
+          (items, fields) =>
+            items.map((row) => {
+              const read = (field: { selector: string; attr: string }) => {
+                const el = field.selector ? row.querySelector(field.selector) : row
+                if (!el) return null
+                return field.attr === "text" ? el.textContent?.trim() ?? null : el.getAttribute(field.attr)
+              }
+              return { title: read(fields.title), price: read(fields.price) }
+            }),
+          { title: recipe.title, price: recipe.price },
+        )),
+      )
+    }
+    return rows
+  } finally {
+    await browser.close()
+  }
+}
+
+// Reuse the recipe cached on the box, or compile and cache a fresh one.
+let recipe: Recipe
+try {
+  recipe = RecipeSchema.parse(JSON.parse(await box.files.read(RECIPE_PATH)))
+} catch {
+  recipe = await compile()
+  await box.files.write({ path: RECIPE_PATH, content: JSON.stringify(recipe, null, 2) })
+}
+
+const rows = await scrape(recipe, 3)
+console.log(`${rows.length} books`, rows[0])
+```
+
+Leave that tab open. Closing the last tab shuts the browser down, and the CDP connection in `scrape()` then fails with `The browser is shutting down`.
+
+Caching the recipe on the box filesystem means the box carries its own knowledge: the next run reuses it and calls no model at all.
+
+Validate the harvest (row count, non-empty fields, price format) on every run. When validation fails, the site's layout changed: recompile the recipe with one `extract` call and cache the new one. That way the AI cost is paid once per layout, not once per page.
+
+A full runnable version of this is the [AI-compiled scraper](https://github.com/upstash/box/blob/main/packages/sdk/examples/browser/retrieval/02-ai-compiled-scraper.ts) example.
+
+***
+
+## 7. Reuse the box across runs
+
+A browser box has nothing to install, so there is no setup cost to snapshot away. What is worth keeping is the box itself: the cached recipe, the cookies, and a logged-in session.
+
+Keep the box id and re-attach on the next run:
 
 ```typescript title="scripts/run-scrape-job.ts"
-import { Box } from "@upstash/box"
+const box = process.env.SCRAPER_BOX_ID
+  ? await Box.get(process.env.SCRAPER_BOX_ID)
+  : await Box.create({ runtime: "node", browser: true })
+```
 
-const box = await Box.fromSnapshot(process.env.PLAYWRIGHT_SNAPSHOT_ID!)
+The box pauses when idle and resumes on demand with its filesystem intact. It bills until you delete it, so delete it when you are done with the target site:
 
-const run = await box.agent.run({
-  prompt: "Navigate to <url> and extract <data>...",
-})
-
+```typescript
 await box.delete()
 ```
 
-Restoring from a snapshot starts the box with Chromium and its system libraries already in place, so the agent can start scraping immediately instead of waiting on `apt-get` and binary downloads.
+To log in once and have every later script reuse that session, see the [login once, reuse session](https://github.com/upstash/box/blob/main/packages/sdk/examples/browser/automation/04a-login-once-keep-alive.ts) example.
+
+***
+
+## Next steps
+
+* [Reading pages](/docs/box/overall/browser/reading-pages) for `content`, `screenshot`, and `extract`.
+* [AI actions](/docs/box/overall/browser/ai-actions) for `observe` and `act`, including replaying a resolved action with no LLM.
+* [Live view](/docs/box/overall/browser/live-view) and [recordings](/docs/box/overall/browser/recordings) to watch or replay a scrape.
+* [Browser cookbook](/docs/box/overall/browser/cookbook) for runnable examples across crawling, automation, and testing.
 
 # Agent
 Source: https://upstash.com/docs/box/overall/agent
