@@ -94258,9 +94258,55 @@ automatically.
 
 Use `ON STREAM` followed by the exact stream key. `PREFIX` is not supported for stream indexes.
 
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const index = await redis.search.createIndex({
+  name: "event-search",
+  dataType: "stream",
+  stream: "events", // exact stream key, in place of `prefix`
+  schema: s.object({
+    message: s.string(),
+    service: s.keyword(),
+    severity: s.number("U64"),
+    occurredAt: s.date().fast(),
+  }),
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+index = redis.search.create_index(
+    name="event-search",
+    data_type="STREAM",
+    stream="events",  # exact stream key, in place of `prefixes`
+    schema={
+        "message": "TEXT",
+        "service": "KEYWORD",
+        "severity": {"type": "U64", "fast": True},
+        "occurredAt": {"type": "DATE", "fast": True},
+    },
+)
+```
+</Tab>
+
+<Tab title="Redis CLI">
 ```bash
 SEARCH.CREATE event-search ON STREAM events SCHEMA message TEXT service KEYWORD severity U64 FAST occurredAt DATE FAST
 ```
+</Tab>
+
+</Tabs>
 
 Only one search index can be bound to a stream at a time. To bind the stream to a different index,
 first drop the existing index with [`SEARCH.DROP`](/docs/redis/commands/search/search-drop).
@@ -94270,6 +94316,59 @@ first drop the existing index with [`SEARCH.DROP`](/docs/redis/commands/search/s
 Add entries with regular stream commands. The field names do not need to appear in the schema, but
 only schema fields are searchable.
 
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.xadd("events", "1-0", {
+  message: "Payment authorization failed",
+  service: "checkout",
+  severity: 4,
+  occurredAt: "2026-08-24T09:30:00Z",
+});
+await redis.xadd("events", "2-0", {
+  message: "Order completed",
+  service: "checkout",
+  severity: 1,
+  occurredAt: "2026-08-24T09:31:00Z",
+});
+
+await index.waitIndexing();
+
+const results = await index.query({
+  filter: { message: "authorization", severity: { $gte: 3 } },
+  select: { message: true, service: true, severity: true },
+});
+// [{ key: "1-0", score, data: { message, service, severity } }]
+```
+</Tab>
+
+<Tab title="Python">
+```python
+redis.xadd("events", "1-0", {
+    "message": "Payment authorization failed",
+    "service": "checkout",
+    "severity": 4,
+    "occurredAt": "2026-08-24T09:30:00Z",
+})
+redis.xadd("events", "2-0", {
+    "message": "Order completed",
+    "service": "checkout",
+    "severity": 1,
+    "occurredAt": "2026-08-24T09:31:00Z",
+})
+
+index.wait_indexing()
+
+results = index.query(
+    filter={"message": "authorization", "severity": {"$gte": 3}},
+    select={"message": True, "service": True, "severity": True},
+)
+# [QueryResult(key="1-0", score=..., data={...})]
+```
+</Tab>
+
+<Tab title="Redis CLI">
 ```bash
 XADD events 1-0 message "Payment authorization failed" service checkout severity 4 occurredAt 2026-08-24T09:30:00Z
 XADD events 2-0 message "Order completed" service checkout severity 1 occurredAt 2026-08-24T09:31:00Z
@@ -94278,6 +94377,9 @@ SEARCH.WAITINDEXING event-search
 
 SEARCH.QUERY event-search '{"message":"authorization","severity":{"$gte":3}}' SELECT 3 message service severity
 ```
+</Tab>
+
+</Tabs>
 
 The matching result has `1-0` as its document ID. Each result contains the entry ID, relevance score,
 and field-value pairs. For example, with an illustrative score:
