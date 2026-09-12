@@ -80403,6 +80403,22 @@ AWS Private link provides private connectivity between Upstash Database and your
 Redis client inside AWS infrastructure. Private link is only available for
 Pro databases.
 
+## Security Features by Plan
+
+| Feature                         | Free | Pay-As-You-Go | Fixed (Pro) | Enterprise |
+| ------------------------------- | ---- | ------------- | ----------- | ---------- |
+| TLS                             | ✅   | ✅            | ✅          | ✅         |
+| IP allowlisting                 | –    | ✅            | ✅          | ✅         |
+| Redis ACL                       | –    | ✅            | ✅          | ✅         |
+| VPC Peering & Private Link      | –    | –             | ✅          | ✅         |
+| Encryption at rest              | –    | ✅*           | ✅*         | ✅         |
+| Backup retention up to 3 days   | –    | ✅*           | ✅*         | ✅         |
+
+<sub>*With the [Prod Pack](/docs/redis/overall/enterprise#prod-pack-features)
+add-on, available on pay-as-you-go and fixed-price plans. Enterprise also
+offers custom backup configurations on request. See [Pricing &
+Billing](/docs/redis/overall/billing) for plan details.</sub>
+
 # Compliance
 Source: https://upstash.com/docs/redis/help/compliance
 
@@ -80999,6 +81015,21 @@ const redis = new Redis({
 
 See the [Connect with @upstash/redis page](/docs/redis/howto/connect-with-upstash-redis) for more information.
 
+To customize the retry behavior, pass a `retry` option to the constructor:
+
+```typescript
+const redis = new Redis({
+  url: "UPSTASH_REDIS_REST_URL",
+  token: "UPSTASH_REDIS_REST_TOKEN",
+  retry: {
+    retries: 5,
+    backoff: (retryCount) => Math.exp(retryCount) * 50,
+  },
+});
+```
+
+See [Retries](/docs/redis/sdks/ts/retries) for all configurable retry options and the default values.
+
 ## Node.js
 
 **Library**: [ioredis](https://github.com/luin/ioredis)
@@ -81437,18 +81468,42 @@ IP Allowlist can be used to restrict which IP addresses are permitted to access 
 ![allowlist]()
 
 ## Enabling IP Allowlist
-By default, any IP address can be used to connect to your database. You must add at least one IP range to enable the allowlist. You can manage added IP ranges in the `Configuration` section on the database details page. You can either provide
+
+By default, any IP address can be used to connect to your database. To enable the allowlist:
+
+1. Open the database you want to protect in the [Upstash Console](https://console.upstash.com).
+2. Go to the `Configuration` section on the database details page.
+3. Add at least one IP range to the allowlist. The allowlist becomes active once the first range is saved.
+4. Add more ranges to allow additional clients. Meeting the criteria of just one range is enough to establish a connection.
+
+You can either provide
 * IPv4 address, e.g. `37.237.15.43`
 * CIDR block, e.g. `181.49.172.0/24`
+
 <Info>
   Currently, IP Allowlist only supports IPv4 addresses.
 </Info>
 
-You can use more than one range to allow multiple clients. Meeting the criteria of just one is enough to establish a connection.
-
 <Note>
   It may take a few minutes for changes to propagate.
 </Note>
+
+## What Happens to Blocked Requests
+
+Once the allowlist is enabled, the database compares each connection's address
+with the predefined CIDR blocks. Connections from addresses that match none of
+the listed ranges are rejected, so clients on those addresses cannot reach the
+database.
+
+## Serverless Environments
+
+IP Allowlist only works when your clients connect from static, known IP
+addresses. On serverless platforms such as AWS Lambda and Vercel Functions the
+egress IP is not under your control, so allowlisting is usually not possible
+there. As an alternative, consider [VPC
+Peering](/docs/redis/features/security#vpc-peering) or [Private
+Link](/docs/redis/features/security#private-link) to restrict access from your own
+infrastructure, or [contact us](/docs/common/help/support) for Enterprise options.
 
 # Listen Keyspace Notifications
 Source: https://upstash.com/docs/redis/howto/keyspacenotifications
@@ -83175,7 +83230,9 @@ You can start on PAYG and switch to a Fixed plan later, or vice versa.
 | 500 GB | $1,500        | 500 GB    | 20 TB     | 16,000         | 100 MB      | 5 GB       |
 
 <sub>*PAYG bandwidth is free up to 200 GB/month, then $0.03/GB. Enterprise plans
-support larger data sizes and custom limits — [contact us](/docs/common/help/support).</sub>
+support larger data sizes and custom limits — [contact us](/docs/common/help/support).
+See [Security Features by Plan](/docs/redis/features/security#security-features-by-plan)
+for which security features each plan includes.</sub>
 
 ## How billing works
 
@@ -85913,6 +85970,13 @@ default, if a request fails it'll retry once, 3 seconds after the error. If you
 want to customize that, set `rest_retries` and `rest_retry_interval` (in
 seconds).
 
+```python
+redis = Redis(url="UPSTASH_REDIS_REST_URL", token="UPSTASH_REDIS_REST_TOKEN", rest_retries=3, rest_retry_interval=2)
+```
+
+For the retry behavior of the TypeScript SDK, see
+[Retries](/docs/redis/sdks/ts/retries).
+
 # Pipelines & Transactions
 
 If you want to submit commands in batches to reduce the number of roundtrips, you can utilize pipelining or
@@ -86023,6 +86087,11 @@ redis = Redis.from_env()
 from upstash_redis.asyncio import Redis
 redis = Redis.from_env()
 ```
+
+The client retries failed requests once by default. To customize the retries,
+pass `rest_retries` and `rest_retry_interval` (seconds) to the client, e.g.
+`Redis.from_env(rest_retries=3, rest_retry_interval=2)`. See the [Retry
+mechanism](/docs/redis/sdks/py/features#retry-mechanism) section for details.
 
 If you are in a serverless environment that allows it, it's recommended to
 initialise the client outside the request handler to be reused while your
@@ -88164,6 +88233,25 @@ data  = await redis.spop('animals', 1)
 console.log(data)
 ```
 
+## Custom retry behavior
+
+By default `@upstash/redis` retries failed requests 5 times with a backoff of
+`(retryCount) => Math.exp(retryCount) * 50` milliseconds. You can customize this
+in the `Redis` constructor:
+
+```ts
+const redis = new Redis({
+  url: <UPSTASH_REDIS_REST_URL>,
+  token: <UPSTASH_REDIS_REST_TOKEN>,
+  retry: {
+    retries: 5,
+    backoff: (retryCount) => Math.exp(retryCount) * 50,
+  },
+})
+```
+
+See [Retries](/docs/redis/sdks/ts/retries) for the full list of retry options.
+
 # Overview
 Source: https://upstash.com/docs/redis/sdks/ts/overview
 
@@ -88191,6 +88279,8 @@ See
 [the list of APIs](/docs/redis/features/restapi#rest-redis-api-compatibility)
 supported by the Upstash REST API. For typed `@upstash/redis` command helpers,
 see the [TypeScript SDK command reference](/docs/redis/sdks/ts/commands/overview).
+For client configuration, such as [retries](/docs/redis/sdks/ts/retries) and
+[advanced options](/docs/redis/sdks/ts/advanced), check the related guides.
 
 # Auto-Pipelining
 Source: https://upstash.com/docs/redis/sdks/ts/pipelining/auto-pipeline
@@ -88387,6 +88477,11 @@ new Redis({
 
 The exact type definition can be found
 [here](https://github.com/upstash/upstash-redis/blob/4948b049e0d580d1de0a4cbfeac5565d7e035cc4/pkg/http.ts#LL31C1-L49C5).
+
+The Python SDK exposes retry settings through the `rest_retries` and
+`rest_retry_interval` constructor options; see the [Retry
+mechanism](/docs/redis/sdks/py/features#retry-mechanism) section in the Python
+documentation.
 
 # Troubleshooting
 Source: https://upstash.com/docs/redis/sdks/ts/troubleshooting
