@@ -484,7 +484,55 @@ components:
           description: List of labels assigned to the workflow run.
         flowControlKey:
           type: string
-          description: Flow Control Key assigned to the workflow run.  
+          description: Flow Control Key assigned to the workflow run.
+
+    BulkAction:
+      type: object
+      properties:
+        actionId:
+          type: string
+          description: The ID of the bulk action.
+        kind:
+          type: string
+          enum: [cancel]
+          description: The kind of the bulk action.
+        state:
+          type: string
+          enum: [IN_PROGRESS, FINISHED]
+          description: |
+            The state of the bulk action.
+
+            |Value	|Description|
+            |-------|------------|
+            | IN_PROGRESS	|The bulk action is running in the background.|
+            | FINISHED	|The bulk action has finished.|
+        total:
+          type: integer
+          format: int64
+          description: The number of in-progress workflow runs that matched the filter when the bulk action was created.
+        processed:
+          type: integer
+          format: int64
+          description: The number of workflow runs processed by the bulk action so far.
+        createdAt:
+          type: integer
+          format: int64
+          description: The creation time of the bulk action, in milliseconds (Unix timestamp).
+        completedAt:
+          type: integer
+          format: int64
+          description: The completion time of the bulk action, in milliseconds (Unix timestamp). Only present once the bulk action has finished.
+        filter:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: |
+            The filter the bulk action was created with. Keys are the filter parameter names of the bulk cancel request, such as `workflowUrl`, `label` or `fromDate`, and values are the given values.
+          example:
+            workflowUrl: [https://example.com/api/workflow]
+            label: [label_1, label_2]
 
 paths:
   /v2/trigger/{workflowUrl}:
@@ -775,12 +823,17 @@ paths:
         - Runs
       x-mint:
         content: |
-          <Warning>If you provide a list of workflow run IDs in the request body, only those specific workflow runs will be canceled. If you include the workflow URL parameter, all workflow runs matching the URL filter will be canceled. If the request body is empty, all workflow runs will be canceled.</Warning>
+          <Warning>If you provide a list of workflow run IDs, only those specific workflow runs will be canceled. If you include filter parameters, only the workflow runs matching the filters will be canceled. If no filter or workflow run IDs are sent, all workflow runs will be canceled.</Warning>
 
-          This operation scans all your workflow runs and attempts to cancel them.
-          If a specific workflow run cannot be canceled, it will return an error message.
-          Therefore, some workflow runs may not be cancelled at the end.
-          In such cases, you can run the bulk cancel operation multiple times.
+          Cancelling by `workflowRunIds` is synchronous, and `cancelled` is the exact number of workflow runs cancelled.
+
+          A filter-based cancel (including cancelling all workflow runs) is tracked as a [bulk action](/workflow/api-reference/bulk-actions/list-bulk-actions) and runs in the background:
+
+          - By default, the request waits up to one minute for the bulk action to finish. If it does not finish in time, a `429` is returned, and the bulk action keeps running in the background.
+          - With `async=true`, the request returns right after the bulk action is created, together with its `actionId`. You can follow its progress with [Get a Bulk Action](/workflow/api-reference/bulk-actions/get-a-bulk-action).
+          - `cancelled` is the number of in-progress workflow runs that matched the filters when the request was accepted, not the number of workflow runs actually cancelled.
+          - Sending the same filters again while an identical bulk action is still in progress does not start a new one. The in-progress bulk action is returned instead.
+          - Up to 1000 bulk actions can be in progress at the same time. Beyond that, a `412` is returned.
 
           For multi-value filters, a workflow run matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
       parameters:
@@ -794,7 +847,7 @@ paths:
           description: Optional list of specific workflow run IDs to cancel. If provided, the other filters are ignored.
         - in: query
           name: workflowUrl
-          required: true
+          required: false
           schema:
             type: array
             items:
@@ -852,16 +905,40 @@ paths:
             - `label=label_1&label=label_2`
             - `label=label_1,label_2`
         - in: query
-          name: count
+          name: host
           required: false
           schema:
+            type: array
+            items:
+              type: string
+          description: Optional host of the workflow URL to filter workflow runs to cancel. Supports multiple values.
+        - in: query
+          name: path
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+          description: Optional path of the workflow URL to filter workflow runs to cancel. Supports multiple values.
+        - in: query
+          name: async
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: |
+            Only applies to filter-based cancels. If `true`, the request returns as soon as the bulk action is created, without waiting for it to finish. The response includes the `actionId` of the bulk action.
+        - in: query
+          name: count
+          required: false
+          deprecated: true
+          schema:
             type: integer
-            default: 100
-          description: Maximum number of workflow runs to cancel. Default is 100.
+          description: Deprecated. This parameter is ignored, and all workflow runs matching the filters are cancelled.
 
       responses:
         "200":
-          description: All workflow runs cancelled successfully
+          description: Workflow runs cancelled, or the bulk action is created when `async=true`.
           content:
             application/json:
               schema:
@@ -869,7 +946,118 @@ paths:
                 properties:
                   cancelled:
                     type: integer
-                    description: The number of workflow runs that were cancelled.
+                    description: |
+                      When cancelling by `workflowRunIds`, the number of workflow runs cancelled.
+
+                      For filter-based cancels, the number of in-progress workflow runs that matched the filters when the request was accepted.
+                  actionId:
+                    type: string
+                    description: The ID of the bulk action. Only returned for filter-based cancels with `async=true`.
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "412":
+          description: Too many bulk actions are in progress. Up to 1000 bulk actions can be in progress at the same time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: The bulk action did not finish within one minute. It keeps running in the background and can be tracked via `GET /v2/workflows/bulkActions`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/bulkActions:
+    get:
+      summary: List Bulk Actions
+      description: List the bulk actions created by filter-based workflow run cancels
+      tags:
+        - Bulk Actions
+      x-mint:
+        content: |
+          A bulk action is created for every filter-based [bulk cancel](/workflow/api-reference/runs/bulk-cancel-workflow-runs) request, and tracks the progress of the cancellation running in the background.
+
+          Bulk actions are kept for 7 days after they are created.
+
+          <Note>
+          The `state` filter is applied to each page separately. A page may contain fewer than `count` bulk actions, or none at all, even when there are more to list. Keep paginating until no `cursor` is returned.
+          </Note>
+      parameters:
+        - in: query
+          name: cursor
+          required: false
+          schema:
+            type: string
+          description: By providing a cursor you can paginate through all of the bulk actions.
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+            maximum: 1000
+          description: The number of bulk actions to scan per page. Values above 1000 are treated as 1000.
+        - in: query
+          name: state
+          required: false
+          schema:
+            type: string
+            enum: [IN_PROGRESS, FINISHED]
+          description: Filter bulk actions by state.
+      responses:
+        "200":
+          description: List of bulk actions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bulkActions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BulkAction"
+                  cursor:
+                    type: string
+                    description: |
+                      A cursor which you can use in subsequent requests to paginate through all bulk actions.
+                      If no cursor is returned, you have reached the end of the bulk actions.
+        "400":
+          description: Invalid `count`, `cursor` or `state`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v2/workflows/bulkActions/{actionId}:
+    get:
+      summary: Get a Bulk Action
+      description: Retrieve the details and progress of a bulk action
+      tags:
+        - Bulk Actions
+      parameters:
+        - in: path
+          name: actionId
+          required: true
+          schema:
+            type: string
+          description: The ID of the bulk action, as returned by a filter-based bulk cancel with `async=true`.
+      responses:
+        "200":
+          description: Bulk action details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkAction"
+        "404":
+          description: Bulk action not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v2/workflows/logs:
     get:
       tags:
