@@ -12847,10 +12847,8 @@ Check out [our blog post](https://upstash.com/blog/global-database) to learn mor
 # How Upstash Works
 Source: https://upstash.com/docs/common/concepts/how-upstash-works
 
-Upstash is a platform of fully managed serverless services. Most products are
-**managed infrastructure your code calls out to**: Upstash operates the
-service, while your application code runs in your own environment (serverless
-functions, edge runtimes, or your own servers). Box is the exception — it is
+Upstash operates the services described below. Your application can run in
+serverless functions, edge runtimes, or your own servers. Box provides isolated
 compute hosted by Upstash.
 
 ## Managed services your code calls
@@ -12862,25 +12860,31 @@ compute hosted by Upstash.
   over REST with our SDKs.
 * [Blob](/docs/blob/overall/quickstart) — S3-compatible object storage accessed
   with the `@upstash/blob` client.
-* [Realtime](/docs/realtime/overall/quickstart) — managed realtime messaging over
-  HTTP-based channels (Redis streams and SSE) that your app connects to.
 * [Search](/docs/search/overall/getstarted) — a managed search service that combines
   full-text and semantic search. It is separate from the
   [Redis Search extension](/docs/redis/search/introduction), which searches data
   stored in Redis.
+
+## Realtime in your application
+
+[Realtime](/docs/realtime/overall/quickstart) is an SDK that uses managed Upstash
+Redis for messages and history. Your application hosts the SSE route that
+clients connect to. You deploy that route and pay for its compute through your
+hosting provider. See [Realtime deployment](/docs/realtime/features/serverless).
 
 ## Services that call your endpoints
 
 * [QStash](/docs/qstash/overall/getstarted) — serverless messaging and scheduling.
   QStash acts as a guaranteed-delivery middleman: it sends HTTP requests to
   your API endpoints and retries them on failure.
-* [Workflow](/docs/workflow/getstarted) — built on QStash. Each workflow step runs
-  as its own HTTP call to your application's endpoint (for example a serverless
-  function on Vercel or a Worker on Cloudflare Workers), with state stored by
-  Upstash between steps.
+* [Workflow](/docs/workflow/getstarted) uses QStash to invoke your workflow endpoint
+  and stores results between steps. Code in [`context.run`](/docs/workflow/steps/run)
+  runs in your deployment. Upstash manages waits and executes external requests
+  made with [`context.call`](/docs/workflow/steps/call). Your application does not
+  stay active while a `context.call` request runs.
 
-Your code behind these lives in your own deployment — Vercel, Cloudflare
-Workers, AWS Lambda, or any HTTP endpoint — and Upstash invokes it.
+Deploy QStash handlers and Workflow endpoints on Vercel, Cloudflare Workers,
+AWS Lambda, or another HTTP server.
 
 ## Upstash-hosted compute
 
@@ -53226,8 +53230,8 @@ curl -X POST "$UPSTASH_REDIS_REST_URL" \
   -d '["SCRIPT", "KILL"]'
 ```
 
-The current Upstash deployment returns a JSON `error` containing `NOTBUSY`,
-because it does not expose an interruptible running-script state.
+A `NOTBUSY` reply appears in the JSON `error` field. See
+[Important points](#important-points) for this command's limitations.
 See [REST API](/docs/redis/features/restapi) for request and response conventions.
 
 </Accordion>
@@ -79544,13 +79548,9 @@ database's distributed architecture, read operations can be performed with
 reduced latency, as data retrieval occurs from the closest available Read
 Region.
 
-Lua scripts follow the same routing: [`EVAL`](/docs/redis/commands/scripting/eval) and
-[`EVALSHA`](/docs/redis/commands/scripting/evalsha) always execute on the Primary
-Region, while [`EVAL_RO`](/docs/redis/commands/scripting/eval-ro) and
-[`EVALSHA_RO`](/docs/redis/commands/scripting/evalsha-ro) are served by the nearest
-Read Region. Because the script in an `EVAL_RO` call cannot write, declare
-read-only scripts with `EVAL_RO` so that reads keep being served close to the
-client.
+Use [`EVAL_RO`](/docs/redis/commands/scripting/eval-ro) or
+[`EVALSHA_RO`](/docs/redis/commands/scripting/evalsha-ro) for scripts that only read
+data. These commands reject scripts that try to write.
 
 The Global database's design thus aids in minimizing read operation latency by
 efficiently distributing data across multiple regions and enabling requests to
@@ -80029,10 +80029,11 @@ curl https://us1-merry-cat-32748.upstash.io/set/foo/bar \
 ```
 
 <Note>
-  If you connected your database through the
-  [Vercel integration](/docs/redis/tutorials/nextjs_with_redis),
-  the same values are injected as `KV_REST_API_URL` and `KV_REST_API_TOKEN`
-  instead of `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+  The [Vercel integration](/docs/redis/howto/vercelintegration) uses different
+  variable names for each setup. Linking an existing Upstash account creates
+  `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+  A Vercel-managed Upstash account uses `KV_REST_API_URL` and
+  `KV_REST_API_TOKEN` for the same credentials.
 </Note>
 
 The above script executes a `SET foo bar` command. It will return a JSON
@@ -105234,9 +105235,13 @@ is 1000 billable operations).
 
 Storage is the sum of vector, metadata, and data storage. Vector storage is
 estimated at 4 bytes per dimension, so it is
-`vector count × dimension count × 4 bytes`. Metadata and data are counted by
-the average size per vector, up to 48 KB and 1 MB respectively; they have a
-soft limit and you will be emailed when an index approaches it.
+`vector count × dimension count × 4 bytes`. Metadata and data storage equal
+the vector count multiplied by their average sizes per vector. Each vector
+can have up to 48 KB of metadata and 1 MB of data.
+
+The plan's total metadata and data storage limit is a soft limit. Upstash
+emails you when your index approaches it. This is separate from the
+per-vector size limits.
 
 ## Free plan
 
