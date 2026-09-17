@@ -1,0 +1,74 @@
+---
+title: "Retry a Step Now"
+description: "Skip the retry delay and execute a retrying workflow step immediately, from the console or the REST API."
+---
+
+When a step fails, Upstash Workflow schedules the next attempt according to the
+[retry delay](/workflow/howto/configure) of the run. If you've already fixed the issue
+on your endpoint, you don't need to wait for the next attempt. You can retry the step
+right away and let the workflow run continue.
+
+Retrying now does not add an extra attempt. It moves the already scheduled retry forward,
+so the retry count and the remaining retries stay the same. If the step fails again,
+the next retry is scheduled as usual.
+
+<Note>
+Only steps waiting for a retry can be retried now. If a run failed after all retries,
+use the [DLQ](/workflow/howto/failures) to resume or restart it instead.
+</Note>
+
+## Retrying via console
+
+In your Upstash Workflow console, go to the `Logs` tab and find the step that is waiting
+for a retry. Press the `Retry Now` button on the right side:
+
+<Frame>
+  <img src="/img/qstash-workflow/retry_now.png" alt="Retry a step now from the Logs tab in the Upstash Console" />
+</Frame>
+
+## Retrying programmatically
+
+You can retry a step now using the [Upstash Workflow REST API](/workflow/api-reference/runs/retry-a-step-now)
+with the message ID of the step.
+
+```shell cURL
+curl -XPOST \
+    -H 'Authorization: Bearer <QSTASH_TOKEN>' \
+    'https://qstash.upstash.io/v2/messages/<MESSAGE_ID>/retry'
+```
+
+The request returns `200` when the step is scheduled for immediate execution, and `404`
+when the step is not found or is not waiting for a retry.
+
+If multiple [parallel steps](/workflow/howto/parallel-runs) are waiting for a retry,
+send a request for each of them.
+
+## Message ID
+
+The message ID of a step is available in the run logs. Fetch the logs of your run with
+the [logs API](/workflow/api-reference/logs/list-workflow-run-logs) or
+[`client.logs`](/workflow/basics/client/logs), and find the step in `STEP_RETRY` state.
+Its `messageId` is the ID you need.
+
+<CodeGroup>
+```shell cURL
+curl \
+    -H 'Authorization: Bearer <QSTASH_TOKEN>' \
+    'https://qstash.upstash.io/v2/workflows/logs?workflowRunId=<WORKFLOW_RUN_ID>'
+```
+
+```typescript TypeScript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+const { runs } = await client.logs({
+  filter: { workflowRunId: "<WORKFLOW_RUN_ID>" },
+});
+
+const messageIds = runs[0].steps
+  .filter((group) => group.type === "next")
+  .flatMap((group) => group.steps)
+  .filter((step) => step.state === "STEP_RETRY")
+  .map((step) => step.messageId);
+```
+</CodeGroup>
