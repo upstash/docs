@@ -2447,26 +2447,27 @@ A path is any non-empty string, with `/` as structure. It is percent-encoded for
 ```ts
 import { uniquePath } from "@upstash/blob"
 
-const path = uniquePath`${user.id}/${file.name}`
-// 'u7/holiday-pic-3xK9mBqR.png'
+const userId = "Alice_123"
+const filename = "Q3 Report.pdf"
+const path = uniquePath`users/${userId}/${filename}`
+// 'users/Alice_123/Q3 Report-3xK9mBqR.pdf'
 ```
 
-`uniquePath` builds a safe path out of values you do not control, like a filename from a browser. Slashes in the template literal are structure. Every `${}` value is reduced to a single slugged filename, so it can never add a directory, and one random suffix goes on the finished path:
+`uniquePath` adds one random suffix to the final filename while preserving the rest of the path. Case, underscores, spaces, punctuation, and Unicode stay exactly as supplied. User IDs such as `Alice_123` remain `Alice_123`; values are not lowercased, slugged, truncated, or Unicode-normalized.
+
+Slashes in the template literal define directories. Each interpolated value must stay within one path segment. Values containing a forward slash, a backslash, or control characters, or equal to `.` or `..`, throw `TypeError` instead of being rewritten. The assembled path is also checked for `.` and `..` segments.
 
 ```ts
-uniquePath`chat/${"../admin/x.png"}`     // 'chat/x-9fQ2mAe7.png'
-uniquePath`a/${"b/c"}`                   // 'a/c-Kd3xR8wP'
-uniquePath`${"Q3 Report (final).pdf"}`   // 'q3-report-final-7hTbN2xY.pdf'
-uniquePath`${"!!! ***"}`                 // 'file-Wm4pQ8dK'
+uniquePath`chat/${"Alice_123"}/${"Photo.PNG"}` // 'chat/Alice_123/Photo-9fQ2mAe7.PNG'
+uniquePath`${"Q3 Report (final).pdf"}`         // 'Q3 Report (final)-7hTbN2xY.pdf'
+uniquePath`${"café.png"}`                      // 'café-Wm4pQ8dK.png'
+uniquePath`chat/${"../admin/x.png"}`           // throws TypeError
+uniquePath`chat/${"a/b"}`                      // throws TypeError
 ```
 
-The rules for each value:
+The suffix has 8 random characters and goes before the final extension when it is 1 to 8 ASCII letters or digits, preserving the extension's case. Otherwise it goes at the end. A leading dot stays part of the filename: `.env` becomes `.env-<random>`, while `.env.local` becomes `.env-<random>.local`. An empty final filename uses `file` as its stem. The SDK handles URL encoding when it sends the path to storage.
 
-* Lowercased. Runs of anything that is not a letter or a number become `-`.
-* Letters and digits from any script survive, so `café.pdf` keeps `café`.
-* The stem is capped at 64 characters, the extension at 8.
-
-The assembled path then gets one random 8-character suffix, on its last segment, before the extension.
+Store the returned path with the original owner ID and use that exact path for reads and deletion. The helper creates a unique key; ownership checks still belong in your application. See [Private documents](/docs/blob/recipes/private-documents).
 
 Two uploads of `photo.png` never land on the same object. To overwrite on purpose, write the path yourself.
 
@@ -4346,11 +4347,11 @@ What it returns:
 ```ts lib/uploads.ts
 import { uniquePath } from "@upstash/blob"
 
-uniquePath`chat/${threadId}/${file.name}`
-// chat/42/holiday-pic-7Kd2mQ9x.png
+uniquePath`chat/${"Thread_42"}/${"Holiday Pic.PNG"}`
+// chat/Thread_42/Holiday Pic-7Kd2mQ9x.PNG
 ```
 
-`path` is required, and may not contain `.` or `..` segments. Build it with `uniquePath`, which turns every interpolated value into a slugged filename with a random suffix, so a browser filename can never add a directory. The rules are on [Writing](/docs/blob/bucket/writing#uniquepath).
+`path` is required, and may not contain `.` or `..` segments. `uniquePath` preserves IDs and filenames, including case, underscores, spaces, and Unicode, and adds one random suffix to the final filename. Interpolated values containing directory separators or control characters, or equal to `.` or `..`, are rejected instead of rewritten. Put directory separators in the template literal. The rules are on [Writing](/docs/blob/bucket/writing#uniquepath).
 
 A stable path is an overwrite. Two concurrent uploads to the same path race, and the loser's `end` can fail with `not_found`. Use a stable path only when overwriting is the intent.
 
