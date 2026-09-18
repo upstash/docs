@@ -982,11 +982,11 @@ Source: https://upstash.com/docs/agent-resources/llms-txt
 # MCP Server
 Source: https://upstash.com/docs/agent-resources/mcp
 
-The Upstash MCP server lets your agent manage and debug your Upstash resources directly, across Redis, QStash, Workflow, Vector, Search, and [Upstash Box](/docs/box/overall/quickstart).
+The Upstash MCP server lets your agent manage and debug your Upstash resources directly, across Redis, QStash, Workflow, Vector, Search, [Upstash Box](/docs/box/overall/quickstart), and [Blob](/docs/blob/overall/quickstart).
 
 Run it two ways:
 
-* **Remote (hosted)** — nothing to install. Connect over HTTP to `https://mcp.upstash.com/mcp` with OAuth or a developer API key. Covers Redis, QStash, Workflow, Vector, and Search.
+* **Remote (hosted)** — nothing to install. Connect over HTTP to `https://mcp.upstash.com/mcp` with OAuth or a developer API key. Covers Redis, QStash, Workflow, Vector, Search, Box, and Blob.
 * **Local (stdio)** — run [`@upstash/mcp-server`](https://github.com/upstash/mcp-server) with `npx`, authenticated with your email and API key. Covers Redis, QStash, Workflow, and Upstash Box.
 
 <Tip>
@@ -1076,7 +1076,7 @@ Create a key from the console — see [Developer API → Create an API key](/doc
 
 ## Feature groups
 
-Append `?features=` to the URL to scope which product tools the agent sees — comma-separated values from `redis`, `qstash_workflow`, `vector_search`; omitted means all:
+Append `?features=` to the URL to scope which product tools the agent sees — comma-separated values from `redis`, `qstash_workflow`, `vector_search`, `box`, `blob`; omitted means all five:
 
 ```
 https://mcp.upstash.com/mcp?features=redis,qstash_workflow
@@ -1084,27 +1084,31 @@ https://mcp.upstash.com/mcp?features=redis,qstash_workflow
 
 A group covers every product it names, because those products share their tools: `qstash_workflow` carries the QStash *and* Workflow tools, and `vector_search` carries the Vector *and* Search tools. Each product's own name works as an alias for its group — `qstash`, `workflow`, `vector` and `search` are all accepted — so `?features=vector` and `?features=vector_search` return the same tools.
 
+`box` and `blob` are the two halves of one workflow — an agent works in a sandbox, then gets what it produced out of it as a URL — so a client scoping down to that names both: `?features=box,blob`.
+
 <Note>
   A name the server does not recognize is dropped, so `?features=redis,typo` still returns the Redis tools. But if *every* name is dropped, the server starts with no tools at all — and a client then reports `tools/list` as an unknown method rather than showing an empty list. If a fresh connection looks like it has no tools, check the spelling here first.
 </Note>
 
 ## Tools
 
-38 tools, grouped the way `?features=` groups them. The access column is the tool's own annotation, which clients use to decide what to confirm with you: **read** never changes anything, **write** creates or updates, **destructive** can delete or overwrite data. On a read-only connection every write and destructive tool is refused.
+49 tools, grouped the way `?features=` groups them. The access column is the tool's own annotation, which clients use to decide what to confirm with you: **read** never changes anything, **write** only adds, **destructive** can delete or overwrite what is already there. On a read-only connection every write and destructive tool is refused.
+
+The management tools that describe a resource (`redis_get_database`, `redis_create_database`, `index_get`, `index_create`, `qstash_list_users`) return its REST credentials only when called with `include_credentials: true`, so a routine lookup never carries a secret into the conversation. Listings never include credentials, and on a read-only connection they are omitted regardless.
 
 <AccordionGroup>
   <Accordion title="Redis — 11 tools">
     | Tool | Access | What it does |
     | --- | --- | --- |
     | `redis_list_databases` | read | Every Redis database in the account scope |
-    | `redis_get_database` | read | One database in detail, with its REST credentials |
+    | `redis_get_database` | read | One database in detail; REST credentials with `include_credentials` |
     | `redis_get_stats` | read | Throughput, data size, hit and miss counts |
     | `redis_list_backups` | read | Backups taken of a database |
-    | `redis_create_database` | write | Creates a database and returns its credentials |
-    | `redis_rename_database` | write | Renames a database |
-    | `redis_set_eviction` | write | Turns key eviction on or off |
-    | `redis_set_auto_upgrade` | write | Turns automatic plan upgrade on or off |
+    | `redis_create_database` | write | Creates a database; returns its credentials with `include_credentials` |
     | `redis_create_backup` | write | Takes a manual backup |
+    | `redis_rename_database` | destructive | Renames a database, replacing its current name |
+    | `redis_set_eviction` | destructive | Turns key eviction on or off |
+    | `redis_set_auto_upgrade` | destructive | Turns automatic plan upgrade on or off |
     | `redis_delete_database` | destructive | Deletes a database and everything in it |
     | `redis_run_command` | destructive | Runs Redis commands over the REST API, one or a pipeline |
 
@@ -1116,13 +1120,13 @@ A group covers every product it names, because those products share their tools:
 
     | Tool | Access | What it does |
     | --- | --- | --- |
-    | `qstash_list_users` | read | The QStash user per region, with REST tokens and signing keys |
+    | `qstash_list_users` | read | The QStash user per region; REST tokens and signing keys with `include_credentials` |
     | `qstash_list_schedules` | read | Schedules in a region |
     | `qstash_flow_control_get` | read | Rate and parallelism for a flow-control key, or the account's global parallelism |
     | `logs_list` | read | Delivery and run logs, paginated by cursor |
     | `dlq_list` | read | The dead-letter queue, paginated by cursor |
     | `qstash_publish_message` | write | Publishes a message to a destination URL |
-    | `qstash_flow_control_manage` | write | Pauses, resumes, pins, unpins or resets the rate on a key |
+    | `qstash_flow_control_manage` | destructive | Pauses, resumes, pins, unpins or resets the rate on a key |
     | `qstash_manage_schedule` | destructive | Creates, reads, deletes, pauses or resumes a schedule |
     | `workflow_manage_run` | destructive | Reads a run's steps, or cancels the run |
     | `dlq_manage` | destructive | Reads or deletes a DLQ entry; Workflow entries can also be restarted or resumed |
@@ -1134,22 +1138,51 @@ A group covers every product it names, because those products share their tools:
     | Tool | Access | What it does |
     | --- | --- | --- |
     | `index_list` | read | Every Vector index or Search database in the account scope |
-    | `index_get` | read | One of them in detail, with its REST credentials |
+    | `index_get` | read | One of them in detail; REST tokens with `include_credentials` |
     | `index_info` | read | Document counts, index size, per-namespace breakdown |
     | `index_list_namespaces` | read | Namespaces, which for Search are its named indexes |
     | `index_fetch` | read | Documents by ID or ID prefix |
     | `index_range` | read | Pages through the documents of a namespace |
-    | `index_create` | write | Creates a Vector index or a Search database |
-    | `index_update` | write | Edits one document in place, including a metadata patch mode |
-    | `index_rename_namespace` | write | Renames a namespace |
+    | `index_create` | write | Creates a Vector index or a Search database; tokens with `include_credentials` |
+    | `index_update` | destructive | Edits one document in place, including a metadata patch mode |
+    | `index_rename_namespace` | destructive | Renames a namespace |
     | `index_delete` | destructive | Deletes an index or database and everything in it |
     | `index_delete_documents` | destructive | Deletes documents by ID, prefix or filter |
     | `index_reset` | destructive | Empties a namespace, or every namespace, keeping the index |
     | `index_delete_namespace` | destructive | Deletes a namespace and its contents |
     | `vector_query` | read | Vector similarity search, with server-side embedding optional |
     | `search_query` | read | Full-text and semantic search over one named index |
-    | `vector_upsert` | write | Upserts vectors, or text for the server to embed |
-    | `search_upsert` | write | Upserts documents, creating the named index if needed |
+    | `vector_upsert` | destructive | Upserts vectors, or text for the server to embed; an existing ID is overwritten |
+    | `search_upsert` | destructive | Upserts documents, creating the named index if needed; an existing ID is overwritten |
+  </Accordion>
+
+  <Accordion title="Box — 9 tools">
+    Sandboxed cloud containers with a shell, a filesystem, git and an optional headless browser. Each tool takes an `action`, so the names and parameters match the [local server's](https://github.com/upstash/mcp-server) Box tools.
+
+    | Tool | Access | Actions |
+    | --- | --- | --- |
+    | `box_logs` | read | Timestamped log entries from a box, filterable by source, level, text and time window |
+    | `box_browser` | write | `goto`, `content`, `screenshot`, `tabs`, `tab_new`, `tab_close`, `live_view` — needs a box created with `browser: true` |
+    | `box_git` | write | `clone`, `status`, `diff`, `commit`, `checkout`, `push`, `create_pr` — authenticated by the GitHub installation linked to the account |
+    | `box_manage` | destructive | `create`, `list`, `get`, `delete`, `pause`, `resume`, `fork` |
+    | `box_exec` | destructive | Runs a shell command (argv array, optional `folder`) and waits for it |
+    | `box_preview` | destructive | `create`, `list`, `delete` — public URLs for ports in a box |
+    | `box_runs` | destructive | `list`, `get`, `cancel` — a box's run history |
+    | `box_snapshots` | destructive | `create`, `list`, `list_all`, `delete`, `restore` |
+    | `box_apikey` | destructive | `list`, `create`, `delete` — Box API keys for the account scope; `create` returns the secret once |
+
+    `box_git` `clone` is what writes the GitHub credentials into the box, so a repository cloned with `git` in `box_exec` cannot `push` or `create_pr`. A clone lands at `/workspace/home/<repo>`; pass that as `folder` on later calls. A Box API key made with `box_apikey` outlives the OAuth grant that created it — revoke it from the console when it is no longer needed.
+  </Accordion>
+
+  <Accordion title="Blob — 2 tools">
+    Object storage for getting files an agent produced somewhere else — a screenshot in a box, a build in CI — into a bucket and back out as a URL. Bytes never pass through the MCP server.
+
+    | Tool | Access | Actions |
+    | --- | --- | --- |
+    | `blob_bucket` | write | `list`, `create` — `create` defaults to a public bucket, whose objects get a permanent URL |
+    | `blob_upload_url` | write | Mints presigned `PUT` URLs for paths in a bucket, valid for at most 10 minutes |
+
+    Upload with the returned headers sent verbatim — they are part of the signature, and a changed or missing one is refused by storage. Neither tool returns bucket tokens. On a read-only connection both are refused.
   </Accordion>
 </AccordionGroup>
 
@@ -1246,6 +1279,7 @@ For the local server to interact with [Upstash Box](/docs/box/overall/quickstart
 * "Spin up a Box, clone this repo, and run the tests"
 * "Snapshot this Box and create 5 copies from it, assign each one a GitHub issue"
 * "My Box keeps failing to start, check the logs and tell me what's wrong"
+* "Run the app in a Box, screenshot the home page, upload it to Blob and open a PR with the image"
 
 # Telemetry
 
