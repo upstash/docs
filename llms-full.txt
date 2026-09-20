@@ -3293,17 +3293,25 @@ The option and record types the rest of these docs refer to, and the upload phas
 
 ```ts
 maxSize: 4096       // 4,096 bytes
-maxSize: "20mb"     // 20,000,000 bytes
-multipart: "100mb"
+maxSize: "20MB"     // 20,000,000 bytes
+maxSize: "32MiB"    // 33,554,432 bytes
+multipart: "100MB"
 ```
 
-A byte count. A bare number is bytes; a string takes a unit: `b`, `kb`, `mb`, `gb`, `tb`.
+A byte count, never a bit count. A bare number is bytes. String units ignore case, so `MB` and `mb` both mean megabytes.
 
-Sizes are **decimal**, matching how storage is billed. `'2mb'` is 2,000,000 bytes, not 2,097,152. Binary spellings like `'5mib'` throw. An unparseable size throws a `TypeError` where the option is written, not per request.
+| Units | Base | Example |
+| --- | --- | --- |
+| `B`, `KB`, `MB`, `GB`, `TB` | Decimal, powers of 1,000 | `"32MB"` = 32,000,000 bytes |
+| `KiB`, `MiB`, `GiB`, `TiB` | Binary, powers of 1,024 | `"32MiB"` = 33,554,432 bytes |
+
+For a 32 MiB file limit, use `"32MiB"` or `33_554_432`. A `"32MB"` limit is smaller and rejects that file. Existing decimal units keep their values. Bit units such as `mbit` and `Mbps` are not supported.
+
+An unparseable size throws a `TypeError` where the option is written, not per request.
 
 A limit you write by hand takes a `Size`: `maxSize`, `multipart`. A measurement you forward is a plain `number` of bytes: the `size` option on `put`, and every `size` the SDK returns. That mirrors `File.size` and `Blob.size`, so a value flows from one to the other without conversion.
 
-`formatBytes`, exported from all three entrypoints, formats a number the same decimal way: `formatBytes(2_400_000)` is `2.4 MB`.
+`formatBytes`, exported from all three entrypoints, always displays decimal byte units, including values supplied as MiB: `formatBytes(2_400_000)` is `2.4 MB`.
 
 ***
 
@@ -3558,11 +3566,14 @@ Omitting `constraints` accepts any type at any size.
 ## maxSize
 
 ```ts
-constraints: { maxSize: "2mb" }   // 2,000,000 bytes
+constraints: { maxSize: "2MB" }   // 2,000,000 bytes
+constraints: { maxSize: "32MiB" } // 33,554,432 bytes
 constraints: { maxSize: 4096 }    // a bare number is bytes
 ```
 
-`maxSize` takes a [Size](/docs/blob/reference/types#size). Sizes are decimal, so `'2mb'` is 2,000,000 and `'5mib'` throws. A refusal reads back in the same units:
+`maxSize` takes a [Size](/docs/blob/reference/types#size), always in bytes. `MB` uses powers of 1,000; `MiB` uses powers of 1,024. Units ignore case. To accept a 32 MiB file, set `maxSize: "32MiB"` or `maxSize: 33_554_432`. `"32mb"` means 32,000,000 bytes and is too small for that file.
+
+Refusal messages display decimal byte units:
 
 ```
 cat.png is 2.4 MB, over the 2 MB limit
@@ -3743,7 +3754,7 @@ export const uploads = uploadHandler({
 
 ## The multipart threshold
 
-The default is **16 MB decimal**, 16,000,000 bytes. A 16,000,000 byte body is a single PUT; 16,000,001 is multipart. [Sizes](/docs/blob/reference/types#size) are decimal everywhere. `bucket.put()` on your server and a direct browser upload use the same threshold.
+The default is **16 MB decimal**, 16,000,000 bytes. A 16,000,000 byte body is a single PUT; 16,000,001 is multipart. [Size options](/docs/blob/reference/types#size) accept decimal units such as `MB` and explicit binary units such as `MiB`, always in bytes. `bucket.put()` on your server and a direct browser upload use the same threshold.
 
 |                                        | Under the threshold                            | Over the threshold                                                                  |
 | -------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -3790,6 +3801,21 @@ await bucket.put("logs/today.ndjson", stream, { size, multipart: "50mb" })
 * An unparseable size (`'100 megs'`) throws at startup, where the option is written.
 
 `multipart: true` costs no extra browser requests, only two extra round trips between your server and storage.
+
+***
+
+## Exact file limits
+
+For a 32 MiB file, use an explicit binary unit or its byte count. `"32MB"` is only 32,000,000 bytes, below the 33,554,432-byte file size.
+
+```ts lib/uploads.ts
+export const uploads = uploadHandler({
+  constraints: { maxSize: "32MiB" }, // also accepts 33_554_432
+  onBeforeUpload: ({ file }) => ({ path: uniquePath`uploads/${file.name}` }),
+})
+```
+
+The default 16 MB threshold makes this a multipart upload. `maxSize` sets the file limit; `multipart` chooses when to split an accepted file into parts.
 
 ***
 
