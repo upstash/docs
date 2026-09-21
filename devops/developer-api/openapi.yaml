@@ -537,8 +537,8 @@ paths:
         - redis
       summary: Get Database Traffic
       description: >-
-        This endpoint reports where a database's traffic comes from. Available for databases on a
-        Pro plan or with the Production Pack.
+        This endpoint reports where a database's traffic comes from over a period. Available for
+        databases on a Pro plan or with the Production Pack.
       x-mint:
         href: /devops/developer-api/redis/get_database_traffic
       operationId: getDatabaseTraffic
@@ -549,6 +549,13 @@ paths:
           required: true
           schema:
             type: string
+        - name: period
+          in: query
+          description: "The period every figure covers: 1h, 3h, 12h, 1d, 3d, 7d or 30d. Defaults to 1d."
+          required: false
+          schema:
+            type: string
+            default: 1d
       responses:
         "200":
           description: Database traffic retrieved successfully
@@ -566,8 +573,10 @@ paths:
       description: >-
         This endpoint returns the Insights series of a database: latency percentiles, engine,
         lock-wait, Lua and disk-load latency, keys loaded from disk, throughput and disk size,
-        for the whole database, one replica or every region. Latencies are in milliseconds.
-        Available for databases on a Pro plan or with the Production Pack.
+        for the whole database, one replica or every region, with each series' latest window
+        compared to the one before it, and how much the limit, security and Lua counters grew
+        over the period. Latencies are in milliseconds. Available for databases on a Pro plan or
+        with the Production Pack.
       x-mint:
         href: /devops/developer-api/redis/get_database_insights
       operationId: getDatabaseInsights
@@ -2506,43 +2515,17 @@ components:
           example: [{ "x": "2025-08-31 15:12:52.799480932 +0000 UTC", "y": 0 }]
         lua_scripts:
           type: array
-          description: Most executed Lua scripts today, Pro and Production Pack only
+          description: Most executed Lua scripts since midnight UTC, Pro and Production Pack only
           items:
             $ref: "#/components/schemas/LuaScriptStat"
         lua_script_count:
           type: number
-          description: Number of Lua scripts tracked today, Pro and Production Pack only
+          description: Number of Lua scripts loaded, Pro and Production Pack only
         slow_commands:
           type: array
           description: Commands that exceeded the slow threshold today, Pro and Production Pack only
           items:
             $ref: "#/components/schemas/SlowCommandStat"
-        over_size_requests_today:
-          type: number
-          description: Requests rejected today for exceeding the request size limit, Pro and Production Pack only
-        over_size_record_accesses_today:
-          type: number
-          description: Accesses today to keys above the record size limit, Pro and Production Pack only
-        throttled_commands_today:
-          type: number
-          description: Commands throttled today, Pro and Production Pack only
-        auth_failures:
-          type: number
-          description: >-
-            Failed authentications the server itself saw over the period. Proxied databases
-            reject bad credentials at the proxy, so this stays 0 for them. Pro and Production Pack only
-        keyspace_notifications:
-          type: number
-          description: Keyspace notifications sent over the period, Pro and Production Pack only
-        connections_opened:
-          type: number
-          description: Connections opened over the period, Pro and Production Pack only
-        daily_bandwidth_ingress:
-          type: number
-          description: Bytes received from clients today, Pro and Production Pack only
-        daily_bandwidth_egress:
-          type: number
-          description: Bytes sent to clients today, Pro and Production Pack only
         acl_user_logins:
           type: array
           description: Logins per ACL user today, Pro and Production Pack only
@@ -2671,20 +2654,66 @@ components:
           description: >-
             Metric name to group key to data points. The all group is always present; region
             groups are added with by=region. Metrics: latency_p50, latency_p90, latency_p99,
-            command_latency_99, wait_latency_99, lua_latency_99, disk_load_latency_99,
-            disk_loads, throughput and diskusage.
+            command_latency_99, wait_latency_99, lua_latency_p50, lua_latency_99,
+            disk_load_latency_99, disk_loads, throughput and diskusage.
           additionalProperties:
             type: object
             additionalProperties:
               type: array
               items:
-                type: object
-                properties:
-                  x:
-                    type: string
-                    description: Timestamp of the point
-                  y:
-                    type: number
+                $ref: "#/components/schemas/InsightPoint"
+        comparison_window:
+          type: string
+          description: >-
+            Length of the latest window the comparison averages: the whole period up to three
+            hours, the last three hours for longer periods.
+          example: "3h"
+        comparison:
+          type: object
+          description: >-
+            Metric name to group key to the mean over the latest window and over the equal window
+            right before it. previous is absent when that earlier window has no data.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: object
+              properties:
+                current:
+                  type: number
+                previous:
+                  type: number
+        counters:
+          type: object
+          description: >-
+            Growth of each counter over the period, for the whole database: over_size_requests
+            (TCP and REST), over_size_record_accesses, throttled_commands (writes delayed by
+            persistence backpressure), undeliverable (requests and connections the proxies could
+            not hand to any replica), auth_failures (TCP and REST, including REST requests over the
+            rate limit), keyspace_notifications, connections_opened, bandwidth_ingress,
+            bandwidth_egress (bytes), rest_commands, lua_executions, lua_commands (commands run
+            inside scripts), lua_failures, lua_timeouts and lua_memory_limits.
+          additionalProperties:
+            type: object
+            properties:
+              total:
+                type: number
+              last_at:
+                type: string
+                format: date-time
+                description: End of the last bucket the counter grew in, absent when it did not grow
+              series:
+                type: array
+                description: Growth inside each bucket of the period
+                items:
+                  $ref: "#/components/schemas/InsightPoint"
+    InsightPoint:
+      type: object
+      properties:
+        x:
+          type: string
+          description: Timestamp of the point
+        y:
+          type: number
     TrafficRoute:
       type: object
       properties:
@@ -2700,7 +2729,7 @@ components:
           type: number
         tcp_connections:
           type: number
-          description: Connections open now
+          description: Connections open now; every other figure covers the requested period
         ingress_bytes:
           type: number
           description: Bytes clients sent
@@ -2714,12 +2743,17 @@ components:
     DatabaseTraffic:
       type: object
       properties:
+        period:
+          type: string
+          description: The period every figure covers
+          example: "1d"
         database_region:
           type: string
           description: Primary region of the database, to compare client regions against
         client_network_window:
           type: string
-          example: "1h"
+          description: Same as period
+          example: "1d"
         client_networks:
           type: array
           items:
@@ -2731,7 +2765,8 @@ components:
             observations means the list is a sample of the traffic rather than a ranking.
         telemetry_window:
           type: string
-          example: "today"
+          description: Same as period
+          example: "1d"
         telemetry:
           type: object
           properties:
@@ -2758,7 +2793,8 @@ components:
                   type: number
         routes_window:
           type: string
-          example: "today"
+          description: Same as period
+          example: "1d"
         routes:
           type: array
           items:
@@ -2777,7 +2813,7 @@ components:
           description: Share of bytes served by a replica in another region than the entry region
         commands:
           type: object
-          description: Today's exact command counts, absent until the database saw commands
+          description: Command counts over the period, absent when the database saw none
           properties:
             rest_commands:
               type: number
