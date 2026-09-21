@@ -196,6 +196,40 @@ print(public_url.password)  # -> "f0f145f0..."
 ```
 </CodeGroup>
 
+#### With Wake on Request
+
+Add `wakeOnRequest: true` (`wake_on_request` in Python and the REST API) to let an incoming HTTP request resume a paused box. Defaults to `false`. See [Wake on Request](#wake-on-request) for the full behavior and the billing caveat.
+
+<CodeGroup>
+```typescript box.ts
+const publicUrl = await box.getPublicURL(3000, { wakeOnRequest: true })
+
+console.log(publicUrl.wake_on_request) // → true
+```
+
+```python box.py
+public_url = box.get_public_url(3000, wake_on_request=True)
+
+print(public_url.wake_on_request)  # -> True
+```
+</CodeGroup>
+
+Wake on request combines with either authentication method, which is the recommended setup:
+
+<CodeGroup>
+```typescript box.ts
+const publicUrl = await box.getPublicURL(3000, { wakeOnRequest: true, bearerToken: true })
+
+console.log(publicUrl.token) // → "63d8b153..."
+```
+
+```python box.py
+public_url = box.get_public_url(3000, wake_on_request=True, bearer_token=True)
+
+print(public_url.token)  # -> "63d8b153..."
+```
+</CodeGroup>
+
 ---
 
 ### List Public URLs
@@ -208,8 +242,10 @@ const { publicURLs } = await box.listPublicURLs()
 
 console.log(publicURLs)
 // [
-//   { url: "https://{BOX_ID}-3000.preview.box.upstash.com", port: 3000 },
-//   { url: "https://{BOX_ID}-8080.preview.box.upstash.com", port: 8080 },
+//   { id: "{BOX_ID}-3000", port: 3000, url: "https://{BOX_ID}-3000.preview.box.upstash.com",
+//     created_at: 1789990404, basic_auth: false, bearer_token: false, wake_on_request: true },
+//   { id: "{BOX_ID}-8080", port: 8080, url: "https://{BOX_ID}-8080.preview.box.upstash.com",
+//     created_at: 1789990512, basic_auth: false, bearer_token: true, wake_on_request: false },
 // ]
 ```
 
@@ -218,8 +254,8 @@ result = box.list_public_urls()
 
 print(result["public_urls"])
 # [
-#   PublicURL(url="https://{BOX_ID}-3000.preview.box.upstash.com", port=3000),
-#   PublicURL(url="https://{BOX_ID}-8080.preview.box.upstash.com", port=8080),
+#   PublicURL(url="https://{BOX_ID}-3000.preview.box.upstash.com", port=3000, wake_on_request=True),
+#   PublicURL(url="https://{BOX_ID}-8080.preview.box.upstash.com", port=8080, wake_on_request=False),
 # ]
 ```
 </CodeGroup>
@@ -272,9 +308,48 @@ public_url2 = box.get_public_url(3000, bearer_token=True)
 
 ### Public URL Lifecycle
 
-Public URLs expire automatically when:
-- The box is paused
-- The box is deleted
+A public URL outlives a pause. While the box is paused, a request to the URL returns a "box is sleeping" response unless the public URL was created with wake on request.
+
+Public URLs are removed when the box is deleted.
+
+### Wake on Request
+
+A public URL created with `wakeOnRequest: true` resumes the box on an incoming HTTP request. The request is held while the box comes back and until the app's port is listening, so the caller gets the app's real response instead of an error. With `wakeOnRequest: false` (the default), the same request gets a "box is sleeping" response and the box stays paused.
+
+The wait is bounded at 30 seconds. If the port is not listening by then, the request returns `503` with a `Retry-After: 5` header rather than hanging: a browser gets a page that refreshes itself, and any other client gets a plain `503` to retry. The box keeps resuming in the background, so a retry usually succeeds. Anything slower than 30 seconds to start, such as a cold `npm install`, should be built into the image or a snapshot instead of left to the [init command](/box/overall/init-commands).
+
+Set a client timeout longer than that window. Both examples below use library defaults, and some clients default to less than the cold start takes.
+
+<CodeGroup>
+```typescript box.ts
+const publicUrl = await box.getPublicURL(3000, { wakeOnRequest: true })
+
+await box.pause()
+
+// This request resumes the box and returns the app's response
+const response = await fetch(publicUrl.url, { signal: AbortSignal.timeout(60_000) })
+console.log(response.status) // 200, or 503 if the app is still starting
+```
+
+```python box.py
+import httpx
+
+public_url = box.get_public_url(3000, wake_on_request=True)
+
+box.pause()
+
+# This request resumes the box and returns the app's response.
+# httpx defaults to a 5 second timeout, which a cold start can outlast.
+response = httpx.get(public_url.url, timeout=60.0)
+print(response.status_code)  # 200, or 503 if the app is still starting
+```
+</CodeGroup>
+
+<Warning>
+Wake on request means anyone who can reach the URL can start the box, and therefore cause compute charges. That is why it is off by default. Pair it with `bearerToken` or `basicAuth` so only callers holding the credentials can wake the box.
+</Warning>
+
+For the app to answer on its own after a resume, the box needs to start its server again. An [init command](/box/overall/init-commands) does that: the box runs it once every time the container starts, including after a resume.
 
 ### Auto-Resume
 
