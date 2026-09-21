@@ -12738,7 +12738,7 @@ This endpoint gets details of a database.
 Source: https://upstash.com/docs/devops/developer-api/redis/get_database_insights
 
 /devops/developer-api/openapi.yaml get /redis/insights/{id}
-This endpoint returns the Insights series of a database: latency percentiles, engine, lock-wait, Lua and disk-load latency, keys loaded from disk, throughput and disk size, for the whole database, one replica or every region. Latencies are in milliseconds. Available for databases on a Pro plan or with the Production Pack.
+This endpoint returns the Insights series of a database: latency percentiles, engine, lock-wait, Lua and disk-load latency, keys loaded from disk, throughput and disk size, for the whole database, one replica or every region, with each series' latest window compared to the one before it, and how much the limit, security and Lua counters grew over the period. Latencies are in milliseconds. Available for databases on a Pro plan or with the Production Pack.
 
 # Get Database Stats
 Source: https://upstash.com/docs/devops/developer-api/redis/get_database_stats
@@ -12750,7 +12750,7 @@ This endpoint gets detailed stats of a database.
 Source: https://upstash.com/docs/devops/developer-api/redis/get_database_traffic
 
 /devops/developer-api/openapi.yaml get /redis/traffic/{id}
-This endpoint reports where a database's traffic comes from. Available for databases on a Pro plan or with the Production Pack.
+This endpoint reports where a database's traffic comes from over a period. Available for databases on a Pro plan or with the Production Pack.
 
 # List Databases
 Source: https://upstash.com/docs/devops/developer-api/redis/list_databases
@@ -80519,8 +80519,8 @@ Metrics arrive in Datadog under `upstash.db.<metric>` with `team` and `database`
 | `readlatencyp50`, `readlatencyp99`, `writelatencyp50`, `writelatencyp99` | Read and write request latency |
 | `enginelatencyp99` | Time the engine spent executing commands, excluding network and queueing |
 | `lualatencyp99` | Lua script execution latency |
-| `throttledcommands` | Commands slowed down by the rate limit today |
-| `authfailures` | Failed authentications per second as seen by the server. Bad credentials are rejected at the proxy, so this stays 0 for proxied databases |
+| `throttledcommands` | Writes delayed today because persistence was falling behind |
+| `authfailures` | Refused authentications per second over TCP and REST. REST requests over the rate limit are counted here as well |
 | `restcommands` | Commands received over REST today |
 
 ## Pricing
@@ -80949,46 +80949,52 @@ Key hits and misses per second.
 
 ## Insights
 
-Databases on a Pro plan or with the Production Pack have an **Insights** tab next to Usage. It has two views.
+Databases with the Production Pack have an **Insights** tab next to Usage; databases on a Pro plan have it too. It has five views: Performance, Traffic, Limits, Lua and Keyspace. One period selector at the top right, from the past hour to the past month, drives every view except Keyspace, and every number on a view covers that period. Hover the info icon next to a title for what the figure measures.
 
-### Metrics
+### Performance
 
-One panel per signal, each with the current value, the change against the previous half of the period and the anomaly windows the console found. The chart highlights the largest anomaly with its peak against the typical value. Pick the period at the top, from the past hour to the past month.
+One chart per signal. A global database gets one line per region, always in the same color, and a dashed line with their average. Each chart shows the current value and how the latest window compares with the window before it: the whole period for the past hour and the past three hours, the last three hours for longer periods. The comparison is left out when the earlier window has no data. The chart highlights the largest anomaly with its peak against the typical value.
 
-* **Latency**: request time from arrival to response across all commands, as p50, p90 or p99.
-* **Ops per second**: commands processed each second.
-* **Engine time (p99)**: the time Redis itself spent executing the command.
-* **Network and queueing (p99)**: the request time not spent in the engine, derived as total minus engine time, so a slow p99 can be placed inside Redis or on the way to it.
-* **Lock wait (p99)**: the time commands waited for the execution lock, typically caused by large scripts or big-key commands.
-* **Lua latency (p99)**: script execution time.
-* **Disk load (p99)** and **Keys loaded from disk**: how long it took to fetch a key that was not in memory, and how often it happened in each ten-minute window.
-* **Disk size**: the stored data size.
+* **Throughput** (commands per second): commands run per second, counting each command in a pipeline or script. Console commands are excluded.
+* **Disk size** (bytes): data persisted on disk. Memory use is not included.
+* **Simple command latency** (ms): server time from reading the request to writing the response, for single-key commands served by this replica, as p50, p90 or p99. Scripts, multi-key and cross-region commands are excluded, and no network time is included.
+* **Command execution time** (p99, ms): execution time only, measured after the key lock was taken and the key was in memory.
+* **Wait and load time** (p99, ms): simple command latency minus command execution time, which is request parsing, lock wait, disk loads and the response. It is derived, not measured.
+* **Lock wait** (p99, ms): time a command waited for its key's lock before it could run.
+* **Disk load** (p99, ms): time to bring a key from disk into memory, including any wait on the load rate limit.
+* **Keys loaded from disk** (per 10 min): keys loaded from disk because they were not in memory, per ten-minute window.
 
-The **Server** selector narrows every panel to one replica. **Separate by region** draws one line per region of a global database next to the total, so a regional spike stands out. Latencies combine replicas by taking the highest value; throughput and disk loads add up.
+The **Server** selector narrows every chart to one replica. Latencies combine replicas by taking the highest value; throughput and disk loads add up. Below the charts, **Slow commands** lists the commands that took longer than 500 milliseconds today, with how often it happened and the slowest run. Only command names are recorded, not keys or arguments.
 
-Below the panels the tab lists limits and security events, slow commands and Lua scripts.
+### Traffic
 
-### Routing map
+* **Request routing**: where requests entered the proxies and which replica served them, on a world map and in a table with REST requests, their share, TCP connections, bytes in and out and errors per route. A route is cross-region when the proxy had to connect to a replica in another region, which happens when requests enter a region where the database has no replica; writes that a read replica forwards to the primary are not visible here. A large cross-region share means a read region close to your clients would remove a network round trip from every request.
+* **Client networks**: source networks seen by the proxies, masked to /24 and attributed to a cloud provider and region when the address belongs to a published AWS, Google Cloud or Cloudflare range.
+* **Client types**: SDK, platform and runtime from the telemetry headers Upstash SDKs send. TCP clients that do not announce themselves are not counted.
 
-Where requests entered the proxies today and which replica served them, drawn on a world map. Entry regions and serving replicas are marked, each route is a line whose width follows its request count, and the list next to the map has every route with its share of today's requests, whether it was served locally, in the same region or cross-region, and its error count, next to today's REST command count and the commands run inside Lua scripts. Counts reset at midnight. A route is cross-region when the proxy had to connect to a replica in another region, which happens when requests enter a region where the database has no replica; writes that a read replica forwards to the primary are not visible here. A large cross-region share means a read region close to your clients would remove a network round trip from every request.
+### Limits
 
-Under the map, the same view shows the client networks of the last hour, masked to /24 and attributed to a cloud provider and region when the address belongs to a published AWS, Google Cloud or Cloudflare range, and today's requests by SDK, platform and runtime with the share that needed a retry.
+Three meters compare the database with its plan: storage, open connections with the connections opened in the period, and the peak commands per second of the period. **Rejections** lists what a limit or a server guard refused or delayed, with a sparkline of when it happened, the count and the time of the last hit:
 
-### Limits and Security
+* **Oversize requests**: requests over the request size limit.
+* **Oversize keys**: accesses to keys over the record size limit, counted per access.
+* **Throttled writes**: writes delayed because persistence was falling behind.
+* **Undeliverable at proxy**: requests and connections the proxy could not hand to any replica. A request a replica answers with an error, such as 401 or 413, was delivered and does not count here.
+* **Auth failures**: refused credentials over TCP and REST. REST requests over the rate limit are counted here as well.
 
-Requests the proxies rejected today (bad credentials, oversize and rate-limited requests never reach the server), requests and records over the size limits and commands throttled as seen by the server, next to the limits of your plan; connections opened and keyspace notifications over the selected period; clients currently running MONITOR; bandwidth today by direction; the live data size against the monthly average; the ACL users that signed in today with their login counts; and the limits the database hit recently.
+**Access** shows the clients currently running MONITOR, keyspace notifications sent, bandwidth in each direction, the monthly storage average and the ACL users that signed in today with their login counts.
 
-### Slow Commands
+### Lua
 
-Commands that took longer than 500 milliseconds to execute today, with how often it happened and the slowest run. Only command names are recorded, not keys or arguments.
+Scripts loaded and run, executions with the commands they ran, failures split into timeouts and memory-limit hits, and the current p99 next to the script timeout of the plan. The latency chart shows p50 and p99 of EVAL, EVALSHA and FCALL including the commands they run, as the highest value across replicas. The table has the ten most executed scripts of each replica since midnight UTC, summed: executions, commands, failures, average and slowest duration and memory use.
 
-### Lua Scripts
+### Keyspace
 
-The script latency as p50 and p99, and a table of the most executed scripts today: executions, commands they ran, failures including timeouts and memory-limit hits, average and slowest duration, the share of time spent in Lua versus in Redis commands, and memory use.
+The analysis of a backup: pick a completed backup at the top. It shows the number of keys, elements and bytes, the distribution of key sizes and element counts per type, the biggest keys overall and per type with their expiry, and an expiration profile that shows how much data is persistent, already expired but not yet removed, or about to expire. Sizes are on-disk logical bytes. A backup that was not analyzed yet offers **Analyze**, which scans the backup offline without touching the running database.
 
 ## Backup Insights
 
-On the Backups tab, a completed backup of a Pro or Production Pack database has an **Analyze** action. It scans the backup offline, without touching the running database, and reports the number of keys, elements and bytes, the distribution of key sizes and element counts per type, the biggest keys overall and per type with their expiry, and an expiration profile that shows how much data is persistent, already expired but not yet removed, or about to expire. Once the report is ready the action turns into **Insights**.
+On the Backups tab, a completed backup of a database with the Production Pack has an **Insights** action. It opens the [Keyspace](#keyspace) view of the Insights tab for that backup, where the backup can be analyzed and its report read.
 
 # Migrate Regional to Global Database
 Source: https://upstash.com/docs/redis/howto/migratefromregionaltoglobal
@@ -82037,8 +82043,8 @@ Latencies are in nanoseconds and describe the last ten minutes. Daily counters r
 | `lua_latency_p50`, `_p99`, `_p99_9`, `_p99_99` | Lua script execution latency |
 | `daily_script_commands`, `daily_commands_in_scripts` | Script executions today, and the commands they ran |
 | `lua_script_count`, `lua_script_failures`, `lua_script_timeouts`, `lua_script_memory_limits` | Scripts tracked today, and how many runs failed, timed out or hit the memory limit |
-| `throttled_commands` | Commands slowed down by the rate limit today |
-| `auth_failures`, `rest_auth_failures` | Failed authentications the server saw over TCP and REST since start. Bad credentials are rejected at the proxy, so these stay 0 for proxied databases |
+| `throttled_commands` | Writes delayed today because persistence was falling behind |
+| `auth_failures`, `rest_auth_failures` | Refused authentications over TCP and REST since the server started. REST requests over the rate limit are counted in `rest_auth_failures` as well |
 | `tcp_over_size_requests`, `rest_over_size_requests` | Requests rejected for exceeding the request size limit today |
 | `over_size_record_accesses` | Accesses to keys above the record size limit today |
 | `monitor_count`, `monitored_commands` | Clients running MONITOR, and commands they observed |
