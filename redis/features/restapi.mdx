@@ -52,6 +52,8 @@ Here are some examples:
 
 - `SET foo bar EX 100` -> `REST_URL/set/foo/bar/EX/100`
 
+- `SET foo bar NX EX 100` -> `REST_URL/set/foo/bar/NX/EX/100`
+
 - `GET foo` -> `REST_URL/get/foo`
 
 - `MGET foo1 foo2 foo3` -> `REST_URL/mget/foo1/foo2/foo3`
@@ -386,6 +388,35 @@ And transaction response will be:
 ]
 ```
 
+#### Example: an atomic distributed lock
+
+The primitives above combine into a distributed lock over plain HTTP. Take a
+lock by storing a unique owner value only if the key is absent, with an
+expiration so the lock cannot be held forever:
+
+```shell
+curl "$UPSTASH_REDIS_REST_URL/set/lock:worker-1/$OWNER_ID/NX/EX/60" \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN"
+```
+
+`{"result": "OK"}` means the lock was acquired; `{"result": null}` means it is
+already held by someone else.
+
+Release it only if you still own it — never delete a lock that has expired and
+been taken over by another owner. [`DELEX`](/redis/commands/string/delex) deletes
+the key and checks the value in one atomic step:
+
+```shell
+curl "$UPSTASH_REDIS_REST_URL/delex/lock:worker-1/IFEQ/$OWNER_ID" \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN"
+```
+
+`DELEX` returns the number of deleted keys: `{"result": 1}` if the lock was
+still yours, `{"result": 0}` if it had already been replaced or expired.
+
+To update several keys while holding the lock, wrap the writes in a single
+`/multi-exec` call as shown above, so they apply atomically.
+
 ## Monitor Command
 
 Upstash REST API provides Redis [`MONITOR`](/redis/commands/server/monitor) command using
@@ -477,6 +508,17 @@ You can get/copy the tokens by clicking the copy button next to
   privilege over the database. You can expose the _Read Only_ token as it has
   access to read commands only. You can revoke both _Standard_ and _Read Only_
   tokens by resetting password of your database.
+</Warning>
+
+<Warning>
+  Resetting your database credentials (the **Reset Credentials** button in the
+  console) immediately invalidates both the _Standard_ and _Read Only_ tokens,
+  as well as any password you use for the Redis protocol: REST tokens are
+  derived from the database password, so changing it revokes every existing
+  token at once. After a reset, set the new `UPSTASH_REDIS_REST_TOKEN` in your
+  environment variables and redeploy every application that uses the database,
+  otherwise it will start failing with `401 Unauthorized`. The REST URL itself
+  does not change.
 </Warning>
 
 ### REST Token for ACL Users
