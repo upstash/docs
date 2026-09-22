@@ -9419,6 +9419,8 @@ Source: https://upstash.com/docs/box/overall/how-it-works
 
 Every Upstash Box is a **durable execution environment** for AI workloads. Each box is an isolated container with its own filesystem, shell, network stack, and optional coding agent. You send prompts or commands, the box executes them, and you get back structured results without managing infrastructure.
 
+Box is a standalone product: it runs on its own API key and requires no Redis database or other Upstash service. Any Redis connection you see in Box integrations is only for optional features such as an [AgentKit](/docs/redis/sdks/agentkit/eve) template registry.
+
 Boxes are billed per active CPU time (not idle time), state persists across runs, and you can choose from Node, Python, Go or other runtimes. By default, a box auto-pauses when idle and can be resumed days or even weeks later. If you enable `keepAlive`, the box stays on between sessions for always-available workloads.
 
 Looking for inspiration? Check out the [Use Cases](/docs/box/overall/use-cases) page.
@@ -11158,6 +11160,13 @@ box = Box.create(runtime="node")
 
 Your box is ready to use! You can already use it as a standalone, secure, isolated sandbox with full shell access, git, and filesystem operations.
 
+<Note>
+  Upstash Box is standalone. You only need a Box API key — no Redis database or
+  any other Upstash service is required. Redis appears in integrations such as
+  [AgentKit for Vercel Eve](/docs/box/guides/eve-setup), where it is used only for
+  optional features like the template registry.
+</Note>
+
 <Tip>
   You can also create a keep-alive box by setting `keepAlive: true`. Keep-alive boxes stay on between sessions and can run an `initCommand` at startup. See [Keep Alive](/docs/box/overall/keep-alive).
 </Tip>
@@ -12663,6 +12672,15 @@ Source: https://upstash.com/docs/common/account/createaccount
 You can sign up for <a href="https://console.upstash.com" target="_blank">Upstash</a> using your Amazon, Github or Google accounts. Alternatively, if you prefer not to use these authentication providers or want to sign up with a corporate email address, you can also sign up using email and password.
 
 <Note>
+  One account covers every Upstash product. After signing up, the same account
+  gives you access to Redis, QStash, Vector, Box, Workflow and the other tabs in
+  the console — you do not need a separate account or sign-up per product. Each
+  product has its own usage-based pricing, but usage of all of them is billed to
+  the same account and payment method. See [Billing
+  FAQ](/docs/common/account/faq) and the pricing page of each product for details.
+</Note>
+
+<Note>
 
 We do not access your information other than:
 
@@ -12727,7 +12745,7 @@ payment on this page.
 # Teams and Users
 Source: https://upstash.com/docs/common/account/teams
 
-Team management enables collaboration with other users. You can create a team and invite people to join by using their email addresses. Team members will have access to databases created under the team based on their assigned roles.
+Team management enables collaboration with other users. You can create a team and invite people to join by using their email addresses. Team members will have access to the resources created under the team — Redis databases, QStash topics, Vector indexes and other product resources — based on their assigned roles.
 
   <img alt="Team member list in the Upstash Console" />
 
@@ -12745,9 +12763,9 @@ You can create a team using the menu `Account > Teams`
 
 You can still continue using your personal account or switch to a team.
 
-> The databases in your personal account are not shared with anyone. If you want
-> your database to be accessible by other users, you need to create it under a
-> team.
+> The resources in your personal account are not shared with anyone. If you want
+> a database, index or topic to be accessible by other users, you need to create
+> it under a team.
 
 ## Switch Team
 
@@ -13362,7 +13380,7 @@ This endpoint renames a database.
 Source: https://upstash.com/docs/devops/developer-api/redis/reset_password
 
 /devops/developer-api/openapi.yaml post /redis/reset-password/{id}
-This endpoint updates the password of a database.
+This endpoint updates the password of a database. Resetting the password immediately revokes the current password and both the Standard and Read Only REST tokens (REST tokens are derived from the password), so update the new credentials in your applications after calling it.
 
 # Update Database Budget
 Source: https://upstash.com/docs/devops/developer-api/redis/update_budget
@@ -79590,6 +79608,8 @@ When enabled:
 **Reset Credentials**: This function remains available and, when credential protection is enabled, will generate new protected credentials.
 Navigate to the settings tab of your database and click **Reset Credentials**. You will be prompted to save the new credentials.
 
+Resetting the credentials immediately revokes the current ones — the password and both the _Standard_ and _Read Only_ REST tokens stop working at once, since the tokens are derived from the password. Update the new credentials in your environment variables and redeploy every application that uses the database.
+
   <img alt="Reset protected Redis credentials" />
 
 # Durable Storage
@@ -80194,6 +80214,8 @@ Here are some examples:
 
 * `SET foo bar EX 100` -> `REST_URL/set/foo/bar/EX/100`
 
+* `SET foo bar NX EX 100` -> `REST_URL/set/foo/bar/NX/EX/100`
+
 * `GET foo` -> `REST_URL/get/foo`
 
 * `MGET foo1 foo2 foo3` -> `REST_URL/mget/foo1/foo2/foo3`
@@ -80528,6 +80550,35 @@ And transaction response will be:
 ]
 ```
 
+#### Example: an atomic distributed lock
+
+The primitives above combine into a distributed lock over plain HTTP. Take a
+lock by storing a unique owner value only if the key is absent, with an
+expiration so the lock cannot be held forever:
+
+```shell
+curl "$UPSTASH_REDIS_REST_URL/set/lock:worker-1/$OWNER_ID/NX/EX/60" \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN"
+```
+
+`{"result": "OK"}` means the lock was acquired; `{"result": null}` means it is
+already held by someone else.
+
+Release it only if you still own it — never delete a lock that has expired and
+been taken over by another owner. [`DELEX`](/docs/redis/commands/string/delex) deletes
+the key and checks the value in one atomic step:
+
+```shell
+curl "$UPSTASH_REDIS_REST_URL/delex/lock:worker-1/IFEQ/$OWNER_ID" \
+  -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN"
+```
+
+`DELEX` returns the number of deleted keys: `{"result": 1}` if the lock was
+still yours, `{"result": 0}` if it had already been replaced or expired.
+
+To update several keys while holding the lock, wrap the writes in a single
+`/multi-exec` call as shown above, so they apply atomically.
+
 ## Monitor Command
 
 Upstash REST API provides Redis [`MONITOR`](/docs/redis/commands/server/monitor) command using
@@ -80617,6 +80668,17 @@ You can get/copy the tokens by clicking the copy button next to
   privilege over the database. You can expose the _Read Only_ token as it has
   access to read commands only. You can revoke both _Standard_ and _Read Only_
   tokens by resetting password of your database.
+</Warning>
+
+<Warning>
+  Resetting your database credentials (the **Reset Credentials** button in the
+  console) immediately invalidates both the _Standard_ and _Read Only_ tokens,
+  as well as any password you use for the Redis protocol: REST tokens are
+  derived from the database password, so changing it revokes every existing
+  token at once. After a reset, set the new `UPSTASH_REDIS_REST_TOKEN` in your
+  environment variables and redeploy every application that uses the database,
+  otherwise it will start failing with `401 Unauthorized`. The REST URL itself
+  does not change.
 </Warning>
 
 ### REST Token for ACL Users
@@ -80743,6 +80805,14 @@ management system (e.g. AWS Secrets Manager, Vercel Secrets) to keep them. Do
 not use them hardcoded in your code. If your password is leaked, reset the
 password using Upstash console.
 
+<Warning>
+  Resetting the password (the **Reset Credentials** button in the console)
+  immediately revokes the current password and every REST token — _Standard_
+  and _Read Only_ — since REST tokens are derived from the password. Update the
+  new token in your environment variables and redeploy dependent applications,
+  or they will start failing with `401 Unauthorized`.
+</Warning>
+
 ## Encryption at Rest
 
 Encryption at Rest encrypts the block storage where your data is persisted and
@@ -80858,6 +80928,14 @@ Most of them. See [Redis® API Compatibility](/docs/redis/overall/compatibility)
 ## Can I use any Redis client?
 
 Yes, Upstash is compatible Redis client protocol.
+
+## Does Upstash provide authentication for my application's users?
+
+No. Upstash secures access to your database — the credentials and REST tokens described in [Security](/docs/redis/features/security), [REST API](/docs/redis/features/restapi) and the [Shared Responsibility Model](/docs/redis/help/shared-responsibility-model). Account-level user authentication and authorization (sign-up, sessions, per-user access control) is a customer responsibility that you implement in your application.
+
+## How should I store ordered items with a priority, status, and timestamps?
+
+Redis data modeling for that shape is covered in [Redis Queue](/docs/redis/tutorials/redis_queue) and the [Sorted Set](/docs/redis/commands/sorted-set/overview) command reference. In short: a sorted set stores members ordered by a numeric score (for example a `runAt` or priority-adjusted timestamp), a hash holds the item's mutable status fields, and a Lua script or a conditional command such as [`DELEX`](/docs/redis/commands/string/delex) performs the status transition atomically so concurrent writers cannot race.
 
 ## Which cloud providers do you support?
 
@@ -83479,6 +83557,153 @@ end
 
 ## Billing Optimization
 Sidekiq accesses Redis regularly, even when there is no queue activity. This can incur extra costs because Upstash charges per request on the Pay-As-You-Go plan. With the introduction of [our Fixed plans](/docs/redis/overall/pricing#all-plans-and-limits), **we recommend switching to a Fixed plan to avoid increased command count and high costs in Sidekiq use cases.**
+
+# Architecture & Differences from Open-Source Redis
+Source: https://upstash.com/docs/redis/overall/architecture
+
+Upstash Redis speaks the Redis protocol, but it is not a self-hosted Redis
+instance in a box. This page explains how it is built and where it intentionally
+differs from open-source Redis, so you know what to expect before you move a
+workload over.
+
+## Serverless Operational Model
+
+Upstash Redis is a serverless database. There is no server to provision or
+tune, capacity scales automatically with traffic, and billing is based on the
+commands you run, not on allocated capacity. The database scales to zero when
+idle — see [Serverless](/docs/common/concepts/serverless) and
+[Scale to Zero](/docs/common/concepts/scale-to-zero).
+
+Two transports are available on every database:
+
+* **Redis protocol over TCP** (TLS enabled by default), for any standard Redis
+  client, and
+* **HTTPS REST**, for serverless and edge runtimes where TCP connections are
+  restricted, plus scripting, pipelining and transactions over HTTP. See the
+  [REST API](/docs/redis/features/restapi).
+
+Both transports hit the same engine and the same pricing: one command is one
+billable request either way.
+
+## Multi-Tier Storage
+
+Unlike open-source Redis, where all data lives in memory, Upstash stores every
+entry in **both memory and block storage** (for example AWS EBS). This is the
+[Durable Storage](/docs/redis/features/durability) model:
+
+* Writes are persisted to block storage, so data survives restarts and
+  failures; persistence is always on.
+* An entry that stays idle long enough is evicted from memory **but not
+  deleted** — it remains on disk and is reloaded on the next access.
+* This keeps frequently accessed data in memory for low latency while letting
+  you pay mainly for active data.
+
+Memory eviction based on idleness is not the same thing as the cache eviction
+policy. Cache eviction, which removes keys beyond the data-size limit, is
+disabled by default and uses Upstash's `optimistic-volatile` policy — a
+combination of Redis's `volatile-random` and `allkeys-random` — rather than the
+common `allkeys-lru`. See [Eviction](/docs/redis/features/eviction).
+
+## Replication and Consistency
+
+Paid databases are replicated across multiple instances using a
+**single-leader** model: each key is owned by a leader replica that handles its
+writes, while backup and read replicas serve reads. If a leader fails, the
+remaining replicas elect a new one. See [Replication](/docs/redis/features/replication).
+
+The trade-off, as in most replicated systems, is [eventual
+consistency](/docs/redis/features/consistency): replicas converge over time, with
+anti-entropy jobs resolving conflicts using a last-writer-wins rule. A single
+TCP connection gives you read-your-writes semantics — see
+[Read Your Writes](/docs/redis/howto/readyourwrites). For writes that must be visible
+in many regions, [Global Databases](/docs/redis/features/globaldatabase) replicate
+across regions instead of only within one.
+
+## Concurrency Model
+
+Open-source Redis executes commands on a single thread. Upstash runs commands
+concurrently and uses **key-based locking** to keep them isolated: a command
+locks the [hash tag](/docs/redis/features/key-locking#hash-tags) of each key it
+touches, so commands on independent keys run in parallel. Reads take shared
+locks; writes take exclusive locks. `MULTI`/`EXEC` transactions lock the union
+of their keys at `EXEC` time.
+
+Lua scripts and Redis Functions default to a global lock because their key
+usage is not known in advance; add the `allow-key-locking` flag to opt into
+per-key locking. See [Key-Based Locking](/docs/redis/features/key-locking) — it also
+explains why passing every key through the `KEYS` array keeps dynamic keys
+cheap (declared keys are loaded from disk before the lock is taken).
+
+## Differences from Open-Source Redis
+
+### Protocol level
+
+* **Protocol version**: Upstash supports the Redis client protocol up to
+  version `8.4`, with later changes added gradually. See
+  [Compatibility](/docs/redis/overall/compatibility).
+* **No Redis Cluster sharding**: databases replicate but do not shard. Writes
+  to any key go to that key's leader; there is no multiple-primary cluster
+  mode. Multi-region reads come from
+  [Global Databases](/docs/redis/features/globaldatabase).
+* **Lua scripting**: scripts run server-side under the
+  [locking model](/docs/redis/features/key-locking#lua-scripts) and can be sent and
+  executed over the REST API with `EVAL`. The scripting command reference
+  [documents the REST form](/docs/redis/commands/scripting/eval#rest-api).
+
+### REST API differences
+
+Over the REST transport some commands are not available because a stateless
+HTTP request cannot express the blocking or session semantics:
+
+* Blocking list commands `BLPOP`, `BRPOP`, `BRPOPLPUSH` and blocking sorted-set
+  commands `BZPOPMAX`, `BZPOPMIN`.
+* Transaction commands `WATCH`, `UNWATCH`, `DISCARD` (use `/multi-exec`
+  instead) and cluster commands.
+* `MONITOR` and `SUBSCRIBE`/`PUBLISH` work over REST but stream via
+  [Server-Sent Events](/docs/redis/features/restapi#monitor-command).
+
+The full matrix is the [REST compatibility table](/docs/redis/features/restapi#rest-redis-api-compatibility).
+
+### Command families
+
+Beyond the open-source command set, Upstash adds command families of its own:
+
+| Family | Commands | Not to be confused with |
+| --- | --- | --- |
+| [Search](/docs/redis/commands/search/overview) | `SEARCH.*` | RediSearch (`FT.*`). Separate implementation, **not compatible** — see below. |
+| [Vector](/docs/redis/commands/vector/overview) | `VECTOR.*` | Standalone Vector Index databases. |
+| [JSON](/docs/redis/commands/json/overview) | `JSON.*` | The RedisJSON module shipped with Redis Stack; Upstash implements JSON natively. |
+| [Array](/docs/redis/commands/array/overview) | `AR.*` | Any open-source command. |
+
+[Upstash Redis Search](/docs/redis/search/introduction) is a separate full-text
+engine (Tantivy) from the open-source RediSearch module. They share no query
+syntax and no commands:
+
+| | Upstash Redis Search | RediSearch |
+| --- | --- | --- |
+| Command prefix | `SEARCH.*` | `FT.*` |
+| Query syntax | JSON-based filters | RediSearch query syntax |
+| Pagination | `LIMIT <count> OFFSET <offset>` | `LIMIT <offset> <count>` |
+
+Queries written for RediSearch must be rewritten to the JSON filter syntax. See
+[Upstash Redis Search vs RediSearch](/docs/redis/search/troubleshooting#upstash-redis-search-vs-redisearch)
+for the full comparison.
+
+### Security
+
+TLS is always enabled, ACL is available on paid databases, and each database
+comes with Standard and Read Only REST tokens (derived from its password) plus
+the optional [Credential Protection](/docs/redis/features/credential-protection)
+mode. See [Security](/docs/redis/features/security). Application-level user
+authentication is **not** part of the service — see the
+[Shared Responsibility Model](/docs/redis/help/shared-responsibility-model).
+
+## Next steps
+
+* [Compatibility](/docs/redis/overall/compatibility) — supported commands and modules.
+* [Durable Storage](/docs/redis/features/durability) — the multi-tier storage engine.
+* [Key-Based Locking](/docs/redis/features/key-locking) — how concurrency is managed.
+* [REST API](/docs/redis/features/restapi) — the HTTP transport in detail.
 
 # Pricing & Billing
 Source: https://upstash.com/docs/redis/overall/billing
@@ -95686,6 +95911,7 @@ from the list of the associated group and consumer.
 - [Next.js with Redis](https://upstash.com/docs/redis/tutorials/nextjs_with_redis.md)
 - [Building a Serverless Notification API for Your Web Application with Redis](https://upstash.com/docs/redis/tutorials/notification.md): This tutorial shows how to create a Serverless Notification API for Your Web Application with Redis.
 - [Nuxt with Redis](https://upstash.com/docs/redis/tutorials/nuxtjs_with_redis.md): This tutorial shows how to use Upstash inside your Nuxt application.
+- [Per-User Cards: Ordering, Status, and Atomic Updates](https://upstash.com/docs/redis/tutorials/per_user_cards.md): How to model and CRUD ordered, priority-based items per user on Upstash Redis — a sorted set for ordering, a hash per item for status and timestamps, and Lua for atomic transitions.
 - [Redis as a Cache for Your FastAPI App](https://upstash.com/docs/redis/tutorials/python_fastapi_caching.md)
 - [Multithreaded Web Scraping with Redis Caching](https://upstash.com/docs/redis/tutorials/python_multithreading.md)
 - [Rate Limiting for Your FastAPI App](https://upstash.com/docs/redis/tutorials/python_rate_limiting.md)
