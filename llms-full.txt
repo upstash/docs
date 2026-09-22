@@ -16896,6 +16896,47 @@ each other.
 
 Please refer to the howto [here](/docs/qstash/howto/url-group-endpoint).
 
+# Cancel Messages in Bulk
+Source: https://upstash.com/docs/qstash/howto/bulk-actions
+
+The `Logs` tab of the [Upstash Console](https://console.upstash.com/qstash) lets
+you act on many messages at once. Apply filters to narrow down the list, then
+open the **Bulk actions** menu to cancel or republish everything that matches.
+
+  <img alt="Bulk actions menu in the QStash logs" />
+
+## Cancelling matching messages
+
+Cancelling applies to every active message that satisfies the current filters,
+including messages that are waiting on a retry. Cancelled messages are removed
+without going to the [DLQ](/docs/qstash/features/dlq).
+
+When you cancel a small number of selected messages, the console performs the
+cancellation immediately. When you cancel by filter, or cancel all active
+messages, QStash processes the request in the background and the console shows
+the operation in the bulk action history.
+
+## Bulk action history
+
+The **History** button next to the Bulk actions menu opens a list of every bulk
+cancellation, with its state, the filters that were used and how many messages
+were cancelled. Operations still in progress update as they run, and the `Active`
+filter shows only those.
+
+  <img alt="Bulk action history in the QStash logs" />
+
+Each entry has an action ID. The toast shown after starting a bulk cancellation
+links directly to its entry, and you can paste an action ID into the search box
+to find an operation later.
+
+## From the API
+
+Bulk cancellation is available through the
+[bulk cancel messages](/docs/qstash/api-reference/messages/bulk-cancel-messages) endpoint.
+Pass `"async": true` to run it in the background and receive an `actionId` you
+can look up with the [bulk actions](/docs/qstash/api-reference/bulk-actions/list-bulk-actions)
+endpoints.
+
 # Debug Logs
 Source: https://upstash.com/docs/qstash/howto/debug-logs
 
@@ -17043,6 +17084,10 @@ Failed messages are automatically moved to the dead letter queue upon failure, a
 via the [REST API](/docs/qstash/api-reference/dlq/retry-a-dlq-message).
 
   <img alt="DLQ from console" />
+
+## Retrying Early
+
+A message that is waiting out its retry delay can be retried immediately from the console. See [Run a Delayed Message Now](/docs/qstash/howto/retry-now).
 
 # Local Development
 Source: https://upstash.com/docs/qstash/howto/local-development
@@ -17796,6 +17841,55 @@ the [QStash UI](https://console.upstash.com/qstash) and confirm the dialog.
 ![]()
 
 Afterwards you should immediately update your token in all your applications.
+
+# Run a Delayed Message Now
+Source: https://upstash.com/docs/qstash/howto/retry-now
+
+Messages that are waiting on a delay or on a retry backoff can be released early
+from the console. QStash then delivers the message on its next poll instead of
+waiting for the scheduled time.
+
+This works for two kinds of waiting messages:
+
+* **Delayed messages**, published with `Upstash-Delay` or `Upstash-Not-Before`.
+* **Retrying messages**, whose last delivery attempt failed and which are waiting
+  out the retry delay before the next attempt.
+
+<Note>
+  Releasing a message does not add an attempt. A retrying message uses the
+  attempt it was already scheduled for, so if it was on its last retry and fails
+  again, it goes to the [DLQ](/docs/qstash/features/dlq) as usual.
+</Note>
+
+## From the console
+
+Open the [Upstash Console](https://console.upstash.com/qstash), go to the `Logs`
+tab and select the message. Waiting messages show a **Run now** button (for
+delays) or a **Retry now** button (for retries) at the top of the details panel,
+and next to the step that is holding the message back.
+
+  <img alt="Run now button on a delayed message in the Upstash Console" />
+
+  <img alt="Retry now button on a retrying message in the Upstash Console" />
+
+The button is also available when hovering a row in the logs table. It only
+appears while the message is genuinely waiting: not while a delivery is in
+progress, not for queued messages, and not after a cancel was requested.
+
+## From the API
+
+The console calls the [retry a message now](/docs/qstash/api-reference/messages/retry-a-message-now)
+endpoint. You can call it yourself with the message ID:
+
+```bash
+curl -X POST https://qstash.upstash.io/v2/messages/<MESSAGE_ID>/retry \
+  -H "Authorization: Bearer <QSTASH_TOKEN>"
+```
+
+The endpoint returns `200` when a waiting message was released and `404` when
+the message is not waiting, for example because it is already being delivered.
+Messages in a [queue](/docs/qstash/features/queues) cannot be released this way and
+return `400`.
 
 # Roll Your Signing Keys
 Source: https://upstash.com/docs/qstash/howto/roll-signing-keys
@@ -112686,6 +112780,21 @@ In your Upstash Workflow console, find the run you'd like to cancel and press th
 
   <img alt="Cancel a workflow run in the Upstash Console" />
 
+## Cancelling in bulk
+
+To cancel many runs at once, filter the `Logs` tab down to the runs you want
+and pick **Cancel** from the **Bulk actions** menu. QStash cancels every running
+workflow that matches the filters in the background.
+
+The **History** button next to the menu lists each bulk cancellation with its
+state, the filters used and the number of runs cancelled, so you can follow an
+operation while it runs or look it up later by its action ID. The same is
+available through the [bulk cancel workflow runs](/docs/workflow/api-reference/runs/bulk-cancel-workflow-runs)
+endpoint with `"async": true`, and the
+[bulk actions](/docs/workflow/api-reference/bulk-actions/list-bulk-actions) endpoints.
+
+  <img alt="Bulk action history panel in the Upstash Console" />
+
 ## Cancelling programatically
 
 <Note>
@@ -112803,6 +112912,8 @@ If, even after all retries, your step does not succeed, we'll move the failed ru
 
 If you want to take an action (a cleanup/log), you can configure either `failureFunction` or a `failureUrl` on the `serve` method of your workflow.
 These options allow you to define custom logic or an external endpoint that will be triggered when a failure occurs.
+
+While a step is waiting for its next retry, you can retry it immediately from the console. See [Run a Step Now](/docs/workflow/howto/retry-now).
 
 ## Using a `failureFunction` (recommended)
 
@@ -114773,6 +114884,45 @@ When `body` is redacted, the step outputs in the dashboard and API will show `RE
 
 If a workflow run fails and moves to the DLQ, the redacted fields remain redacted in the DLQ.
 However, when you retry, resume or restart a workflow run from DLQ, Workflow delivers the original values to your endpoint.
+
+# Run a Step Now
+Source: https://upstash.com/docs/workflow/howto/retry-now
+
+A workflow run can be waiting for two reasons: a step is sleeping because of
+`context.sleep` or `context.sleepUntil`, or a step failed and is waiting out its
+retry delay before the next attempt. Both can be released early from the console,
+so the run continues immediately instead of at the scheduled time.
+
+## From the console
+
+Open the run in the `Logs` tab of the [Upstash Console](https://console.upstash.com/workflow).
+Every waiting step shows a button next to its label: **Run now** on a sleeping
+step and **Retry now** on a step in retry backoff. In a parallel block, each
+branch has its own button.
+
+  <img alt="Run now and Retry now buttons on workflow steps in the Upstash Console" />
+
+The buttons are only offered while the run is still running and the step is
+genuinely waiting. Once QStash picks the step up, the button disappears and the
+run continues as if the sleep or delay had ended on its own.
+
+<Note>
+  Releasing a retrying step does not add an attempt. If the step was on its
+  last retry and fails again, the run fails and the
+  [failure function](/docs/workflow/howto/failures) is called as usual.
+</Note>
+
+## From the API
+
+Under the hood, a sleeping or retrying step is a delayed QStash message. The
+console calls the [retry a step now](/docs/workflow/api-reference/runs/retry-a-step-now)
+endpoint with the step's message ID, which you can find in the run's
+[event logs](/docs/workflow/api-reference/logs/list-workflow-run-logs).
+
+```bash
+curl -X POST https://qstash.upstash.io/v2/messages/<STEP_MESSAGE_ID>/retry \
+  -H "Authorization: Bearer <QSTASH_TOKEN>"
+```
 
 # Schedule a Workflow
 Source: https://upstash.com/docs/workflow/howto/schedule
