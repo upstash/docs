@@ -9493,7 +9493,7 @@ A box retains its full state between runs (files, installed packages, git histor
 
 When you create a box, Upstash provisions a new isolated container with its own filesystem, shell, and network stack. You can start from a fresh box or restore from a snapshot. Once provisioning finishes, the box is ready to receive commands.
 
-If the box has an [init command](/docs/box/overall/init-commands), the box runs it once after the container starts, on create, on resume, and after a snapshot restore.
+If the box has an [init command](/docs/box/overall/quickstart#init-command), the box runs it once after the container starts, on create, on resume, and after a snapshot restore.
 
 ### 2. Running
 
@@ -9655,7 +9655,7 @@ box.resume()
 
 Paused boxes do not accrue active CPU charges. Pause/resume is not available when `keepAlive` is enabled.
 
-Resuming reruns the box's [init command](/docs/box/overall/init-commands), so a server started that way comes back with the box.
+Resuming reruns the box's [init command](/docs/box/overall/quickstart#init-command), so a server started that way comes back with the box.
 
 ### Snapshot and restore
 
@@ -9740,198 +9740,6 @@ Boxes are available in three sizes:
 | `large` | 8 vCPU | 16 GB | 20 GB |
 
 For exact pricing details, see the [pricing page](https://upstash.com/pricing/box). For keep-alive behavior, see [Keep Alive](/docs/box/overall/keep-alive).
-
-# Box Init Commands
-Source: https://upstash.com/docs/box/overall/init-commands
-
-An init command is a startup script stored on the box. Every box can have one, and the box runs it once each time its container starts: after create, after resume, and after a snapshot restore.
-
-Use it to bring the environment back to a working state without sending the same commands again, for example starting a web server, launching a background process, or warming a cache.
-
-***
-
-## Set an init command at creation
-
-Pass `initCommand` when creating the box:
-
-<CodeGroup>
-```typescript box.ts
-import { Box } from "@upstash/box"
-
-const box = await Box.create({
-  runtime: "node",
-  initCommand: "npm install && npm run dev",
-})
-```
-
-```python box.py
-from upstash_box import Box
-
-box = Box.create(
-    runtime="node",
-    init_command="npm install && npm run dev",
-)
-```
-</CodeGroup>
-
-This works on any box. It is not limited to [keep-alive](/docs/box/overall/keep-alive) boxes.
-
-The command runs from `/workspace/home`, so it assumes a project is already there: clone a repository with [git](/docs/box/overall/git), restore a [snapshot](/docs/box/overall/snapshots), or write the files yourself before the box starts. The end-to-end example below does the last of those.
-
-A box restored from a snapshot does not inherit the snapshot's init command, so pass it again on the restore:
-
-<CodeGroup>
-```typescript box.ts
-const box = await Box.fromSnapshot("snap_abc123", {
-  initCommand: "npm run dev",
-})
-```
-
-```python box.py
-box = Box.from_snapshot(
-    "snap_abc123",
-    init_command="npm run dev",
-)
-```
-</CodeGroup>
-
-***
-
-## Manage the init command later
-
-Get, set, and delete work on any box, including a paused one.
-
-<CodeGroup>
-```typescript box.ts
-await box.setInitCommand("npm run dev")
-
-const command = await box.getInitCommand()
-console.log(command) // "npm run dev"
-
-await box.deleteInitCommand()
-```
-
-```python box.py
-box.set_init_command("npm run dev")
-
-command = box.get_init_command()
-print(command)  # "npm run dev"
-
-box.delete_init_command()
-```
-</CodeGroup>
-
-On a paused box the change is persisted right away and applied the next time the box resumes. The box is not woken up to accept it.
-
-<CodeGroup>
-```typescript box.ts
-await box.pause()
-
-// Persisted now, applied on the next resume
-await box.setInitCommand("npm run start")
-
-await box.resume() // runs "npm run start"
-```
-
-```python box.py
-box.pause()
-
-# Persisted now, applied on the next resume
-box.set_init_command("npm run start")
-
-box.resume()  # runs "npm run start"
-```
-</CodeGroup>
-
-***
-
-## When it runs
-
-| Event | Init command runs |
-| --- | --- |
-| Box created | Yes |
-| Box resumed from paused | Yes |
-| Box restored from a snapshot | Yes |
-| `exec.command()` or an agent run | No |
-| Already running container | No, it does not run twice in one container lifetime |
-
-The init command runs once per container start. It is not re-run on every command you send, and a second trigger within the same container lifetime is a no-op. If you need the command to run again without restarting the box, run it yourself with [`box.exec`](/docs/box/overall/shell).
-
-The command runs in the background, so box creation and resume do not block on it finishing. A long install keeps running while you send other work to the box.
-
-***
-
-## Pairing with public URLs
-
-An init command is what makes a paused box useful again behind a [public URL](/docs/box/overall/preview). An incoming HTTP request resumes the paused box, the init command starts the server again, and the request is held until the port is listening.
-
-<CodeGroup>
-```typescript box.ts
-import { Box } from "@upstash/box"
-
-const box = await Box.create({ runtime: "node" })
-
-// The init command runs a file, so the file has to exist first.
-await box.files.write({
-  path: "server.js",
-  content: `require("http").createServer((_, res) => res.end("ok")).listen(3000)`,
-})
-
-await box.setInitCommand("node server.js")
-
-const publicUrl = await box.getPublicURL(3000, { bearerToken: true })
-
-await box.pause()
-
-// Resumes the box, reruns the init command, then answers.
-// Allow for the cold start: the wake wait is bounded at 30 seconds.
-const response = await fetch(publicUrl.url, {
-  headers: { Authorization: `Bearer ${publicUrl.token}` },
-  signal: AbortSignal.timeout(60_000),
-})
-```
-
-```python box.py
-import httpx
-from upstash_box import Box
-
-box = Box.create(runtime="node")
-
-# The init command runs a file, so the file has to exist first.
-box.files.write(
-    path="server.js",
-    content='require("http").createServer((_, res) => res.end("ok")).listen(3000)',
-)
-
-box.set_init_command("node server.js")
-
-public_url = box.get_public_url(3000, bearer_token=True)
-
-box.pause()
-
-# Resumes the box, reruns the init command, then answers.
-# httpx defaults to a 5 second timeout, which a cold start can outlast.
-response = httpx.get(
-    public_url.url,
-    headers={"Authorization": f"Bearer {public_url.token}"},
-    timeout=60.0,
-)
-```
-</CodeGroup>
-
-***
-
-## Console
-
-In the Upstash Console you can set an **Init Command** while creating a box, and change or remove it later from the box settings page.
-
-***
-
-## Notes
-
-* An init command is capped at 64KB.
-* Deleting the init command removes the stored script. Anything it already started keeps running until the container stops.
-* Snapshots capture the init command, but a box restored from a snapshot does not inherit it. Pass `initCommand` on the restore, or the stored script is cleared and nothing runs at startup.
 
 # Keep Alive
 Source: https://upstash.com/docs/box/overall/keep-alive
@@ -10021,7 +9829,7 @@ box = Box.create(
 ```
 </CodeGroup>
 
-Init commands are not a keep-alive feature. Every box can have one, and get, set, and delete work on any box, including a paused one. See [Init Commands](/docs/box/overall/init-commands) for the full behavior.
+Init commands are not a keep-alive feature. Every box can have one, and get, set, and delete work on any box, including a paused one. See [Create a Box](/docs/box/overall/quickstart#init-command).
 
 ***
 
@@ -10949,7 +10757,7 @@ Public URLs are removed when the box is deleted.
 
 An incoming HTTP request to a public URL resumes its box if the box is paused. The request is held while the box comes back and until the app's port is listening, so the caller gets the app's real response instead of an error. If the public URL requires authentication, the credentials are checked before the box is woken.
 
-The wait is bounded at 30 seconds. If the port is not listening by then, the request returns `503` with a `Retry-After: 5` header rather than hanging: a browser gets a page that refreshes itself, and any other client gets a plain `503` to retry. The box keeps resuming in the background, so a retry usually succeeds. Anything slower than 30 seconds to start, such as a cold `npm install`, should be built into the image or a snapshot instead of left to the [init command](/docs/box/overall/init-commands).
+The wait is bounded at 30 seconds. If the port is not listening by then, the request returns `503` with a `Retry-After: 5` header rather than hanging: a browser gets a page that refreshes itself, and any other client gets a plain `503` to retry. The box keeps resuming in the background, so a retry usually succeeds. Anything slower than 30 seconds to start, such as a cold `npm install`, should be built into the image or a snapshot instead of left to the [init command](/docs/box/overall/quickstart#init-command).
 
 Set a client timeout longer than that window. Both examples below set one explicitly, because some clients default to less than a cold start takes.
 
@@ -10978,7 +10786,7 @@ print(response.status_code)  # 200, or 503 if the app is still starting
 ```
 </CodeGroup>
 
-For the app to answer on its own after a resume, the box needs to start its server again. An [init command](/docs/box/overall/init-commands) does that: the box runs it once every time the container starts, including after a resume.
+For the app to answer on its own after a resume, the box needs to start its server again. An [init command](/docs/box/overall/quickstart#init-command) does that: the box runs it once every time the container starts, including after a resume.
 
 ### Auto-Resume
 
@@ -11357,8 +11165,30 @@ box = Box.create(runtime="node")
 Your box is ready to use! You can already use it as a standalone, secure, isolated sandbox with full shell access, git, and filesystem operations.
 
 <Tip>
-  You can also create a keep-alive box by setting `keepAlive: true`. Keep-alive boxes stay on between sessions instead of auto-pausing. See [Keep Alive](/docs/box/overall/keep-alive). Any box, keep-alive or not, can run an `initCommand` each time it starts. See [Init Commands](/docs/box/overall/init-commands).
+  You can also create a keep-alive box by setting `keepAlive: true`. Keep-alive boxes stay on between sessions instead of auto-pausing. See [Keep Alive](/docs/box/overall/keep-alive).
 </Tip>
+
+#### Init command
+
+Pass `initCommand` to run a startup script each time the box starts. It runs once per container start, on create, on resume, and after a snapshot restore, so it is the place to start a server that should come back with the box.
+
+<CodeGroup>
+```typescript box.ts
+const box = await Box.create({
+  runtime: "node",
+  initCommand: "npm install && npm run dev",
+})
+```
+
+```python box.py
+box = Box.create(
+    runtime="node",
+    init_command="npm install && npm run dev",
+)
+```
+</CodeGroup>
+
+The command runs from `/workspace/home`, so it assumes a project is already there. You can read, change, or remove it later with `getInitCommand`, `setInitCommand`, and `deleteInitCommand` (`get_init_command`, `set_init_command`, `delete_init_command` in Python), on any box including a paused one. A box restored from a snapshot does not inherit the snapshot's init command, so pass it again on the restore.
 
 ***
 
