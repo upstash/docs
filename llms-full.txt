@@ -18931,7 +18931,11 @@ Send the token as `Authorization: Bearer <MONITORING_TOKEN>`.
 
 ![monitoring-token.png]()
 
-## **Step 3: Configure Prometheus (via Grafana Data Source)**
+## **Step 3: Set Up Prometheus Connection**
+
+You can point Grafana directly at the Upstash endpoint, or federate QStash metrics into your own Prometheus server.
+
+### **Grafana Data Source Setup**
 
 1. In Grafana, add a Prometheus data source.
 2. Set the address to `https://api.upstash.com/monitoring/prometheus`.
@@ -18944,6 +18948,49 @@ Send the token as `Authorization: Bearer <MONITORING_TOKEN>`.
 Click <b>Test and Save</b>.
 
 ![datasource-final.png]()
+
+### **Prometheus Federation Setup**
+
+Federation lets your Prometheus pull QStash metrics from the Upstash API and store them in **your own** Prometheus instance, so Grafana can query your Prometheus instead of hitting the Upstash endpoint directly.
+
+#### When to use federation
+
+* You already run Prometheus and want to persist QStash metrics locally.
+* You want to control retention, recording rules, or alerts on QStash metrics.
+
+1. Add a scrape job to your Prometheus configuration file (`prometheus.yml`):
+
+```yaml
+scrape_configs:
+  # Federation job: pull QStash metrics from Upstash API
+  - job_name: "federate_upstash_qstash"
+    honor_labels: true
+    metrics_path: "/monitoring/prometheus/federate"
+    scheme: https
+    params:
+      match[]:
+        - 'qstash_public_metrics{}'
+    static_configs:
+      - targets:
+          - "api.upstash.com"
+    authorization:
+      type: Bearer
+      credentials: "<MONITORING_TOKEN>"
+```
+
+<Warning>
+QStash metrics are exposed as `qstash_public_metrics`. The `upstash_db_metrics` selector in the [Redis Prometheus guide](/docs/redis/integrations/prometheus) only matches Redis metrics, so a QStash scrape job that uses it returns no QStash metrics.
+</Warning>
+
+<Check>
+This configuration pulls all QStash metrics. You can adjust the `match[]` parameter to filter them:
+* `qstash_public_metrics{region="us-east-1"}` pulls metrics for QStash in a specific region
+* `qstash_public_metrics{metric_name="dlq_message_count"}` pulls a specific metric
+</Check>
+
+2. Verify the federation target
+* Reload (or restart) your Prometheus server to apply the new configuration.
+* Visit **Prometheus → Status → Targets** and confirm `federate_upstash_qstash` is **UP**.
 
 ## **Step 4: Import Dashboard**
 
