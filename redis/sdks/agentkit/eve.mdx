@@ -13,13 +13,14 @@ Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work to
 | Package | What it is |
 | --- | --- |
 | `@upstash/agentkit-eve-extension` | An [Eve extension](https://eve.dev/docs/extensions): one mount file adds memory, searchable chat history, and RAG. |
-| `@upstash/agentkit-eve` | Per-file building blocks, plus the two things an extension cannot contribute: rate limiting and a sandbox backend. |
+| `@upstash/agentkit-eve` | Per-file building blocks, plus the two things an extension cannot contribute: rate limiting and a sandbox provider. |
 
 Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
 Box sandbox, or control over an individual tool file.
 
-Start from an eve project (**0.43.0 or later** — the published extension is prebuilt, and its
-compatibility manifest requires eve ≥ 0.43's contribution formats). Scaffold one, which installs `eve`
+Start from an eve project (**0.65.0 or later** — the published extension is prebuilt, and its
+compatibility manifest requires eve ≥ 0.65's contribution formats; both packages declare this as their
+`eve` peer range). Scaffold one, which installs `eve`
 and an AI-SDK provider for you:
 
 ```bash
@@ -262,7 +263,7 @@ export default agentkit({
 ## The Eve package: rate limiting, sandboxes, and tool files
 
 Everything in this part comes from `@upstash/agentkit-eve`, written as individual `agent/` files.
-Rate limiting and the sandbox backend live here because an extension cannot contribute a channel or
+Rate limiting and the sandbox provider live here because an extension cannot contribute a channel or
 a sandbox.
 
 ### How to add rate limiting to Vercel Eve
@@ -316,9 +317,10 @@ export default eveChannel({
 
 ### How to add a sandbox to Vercel Eve
 
-A drop-in replacement for Eve's `vercel()` backend, powered by
-[Upstash Box](https://github.com/upstash/box). Swap the import and keep the rest of your
-[sandbox file](https://eve.dev/docs/sandbox) the same.
+An [Eve sandbox provider](https://eve.dev/docs/sandbox) powered by
+[Upstash Box](https://github.com/upstash/box). Use it exactly like Eve's built-in `VercelSandbox`:
+export an environment from your sandbox file and open it from `defineSandbox()`. For a step-by-step
+walkthrough, see [Vercel Eve Sandboxes](/box/guides/eve-setup).
 
 ```bash
 npm install @upstash/box
@@ -327,82 +329,103 @@ npm install @upstash/box
 ```ts
 // agent/sandbox.ts
 import { defineSandbox } from "eve/sandbox";
-import { upstash } from "@upstash/agentkit-eve/sandbox"; // was: eve/sandbox/vercel
+import { UpstashSandbox } from "@upstash/agentkit-eve/sandbox";
 
-export default defineSandbox({
-  backend: upstash({ runtime: "node", size: "medium" }),
-  revalidationKey: () => "repo-bootstrap-v1",
-  async bootstrap({ use }) {
-    const sandbox = await use({ networkPolicy: "allow-all" }); // open egress to install packages
-    await sandbox.run({ command: "apt-get install -y jq" });
-  },
-  async onSession({ use }) {
-    await use(); // inherits the secure deny-all default
+export const environment = UpstashSandbox.environment({
+  runtime: "node",
+  size: "medium",
+  // Setup every session inherits: runs once per environment (at `eve build`) and is captured as a
+  // Box snapshot, not re-run per session.
+  async prepare(sandbox) {
+    await sandbox.setNetworkPolicy("allow-all"); // egress is denied by default
+    const r = await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+    if (r.exitCode !== 0) throw new Error(r.stderr);
   },
 });
+
+// Runs once per session. Sessions stay deny-all unless you pass a networkPolicy.
+export default defineSandbox(() => environment.open());
 ```
 
 <AccordionGroup>
-  <Accordion title="Config: Box's BoxConfig">
-    `upstash(config)` takes the `@upstash/box` `BoxConfig` verbatim, meaning whatever you'd pass to
-    `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to `UPSTASH_BOX_API_KEY`), `keepAlive`,
-    `initCommand`, `env`, `skills`, `mcpServers`, `timeout`, and so on. It also takes an optional
-    `redis` (defaults to `Redis.fromEnv()`). `networkPolicy` is **not** a config knob (see below).
-    `@upstash/box` is an optional peer dependency, needed only when you import
-    `@upstash/agentkit-eve/sandbox`.
+  <Accordion title="Options: Box's BoxConfig, plus prepare and baseSnapshot">
+    `UpstashSandbox.environment(options)` takes the `@upstash/box` `BoxConfig` verbatim, meaning
+    whatever you'd pass to `Box.create({...})`: `runtime`, `size`, `apiKey` (defaults to
+    `UPSTASH_BOX_API_KEY`), `keepAlive`, `initCommand`, `env`, `skills`, `mcpServers`, `attachHeaders`,
+    `timeout`, and so on. It also takes `prepare(sandbox)` (setup baked into the environment's
+    snapshot) and `baseSnapshot` (a snapshot id, or a resolver, to build on instead of a bare box).
+    `networkPolicy` is **not** an environment option (see below), and neither is `name`, because every
+    session gets its own box. `environment.open({ networkPolicy })` is the only open option.
+
+    Requires eve ≥ 0.65 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
+    import `@upstash/agentkit-eve/sandbox`. The provider reads `UPSTASH_BOX_API_KEY` when Eve prepares
+    the environment (at `eve build`) and at run time.
   </Accordion>
   <Accordion title="Security: network egress is deny-all by default">
     The sandbox runs untrusted, model-generated code, so open egress would mean SSRF / data
-    exfiltration / reaching your own infrastructure from inside the box. Open it per-session, in
-    `bootstrap`'s `use(...)` or the session `use(...)`, and never as a config knob. Note that `env` passed
-    to `upstash({ env })` is readable by code running in the box; don't pass secrets you wouldn't want
-    it to see.
+    exfiltration / reaching your own infrastructure from inside the box. Open it per session with
+    `environment.open({ networkPolicy: "allow-all" })` (or a domain allow-list), or from a tool with
+    `sandbox.setNetworkPolicy(...)`. Box enforces the policy on the box itself, so it survives pause and
+    resume. Note that `env` passed to `UpstashSandbox.environment({ env })` is readable by code running
+    in the box; don't pass secrets you wouldn't want it to see.
   </Accordion>
   <Accordion title="Brokering credentials (injecting headers)">
     Box network policies are plain domain/CIDR allow-lists. Eve's per-domain firewall rules (`transform`
-    header injection, `forwardURL`) have no Box equivalent, so passing them in `use({ networkPolicy })`
-    **throws** rather than silently sending the request unauthenticated:
+    header injection, `forwardURL`, `match`) have no Box equivalent, so passing them **throws** rather
+    than silently sending the request unauthenticated:
 
     ```ts
     // ❌ throws — Box can't inject headers via a per-session policy
-    export default defineSandbox({
-      backend: upstash({ runtime: "node" }),
-      async onSession({ use }) {
-        await use({
-          networkPolicy: {
-            allow: { "api.example.com": [{ transform: [{ headers: { authorization: "Bearer …" } }] }] },
-          },
-        });
-      },
-    });
+    export default defineSandbox(() =>
+      environment.open({
+        networkPolicy: {
+          allow: { "api.example.com": [{ transform: [{ headers: { authorization: "Bearer …" } }] }] },
+        },
+      }),
+    );
     ```
 
-    Broker credentials with Box's `attachHeaders` instead (set at backend creation; a proxy on the box
-    injects them), and open the domain with a plain allow-list:
+    Broker credentials with Box's `attachHeaders` instead (set in the environment options; a proxy on
+    the box injects them), and open the domain with a plain allow-list:
 
     ```ts
     // ✅ headers injected at the firewall; the secret never enters the box
-    export default defineSandbox({
-      backend: upstash({
-        runtime: "node",
-        attachHeaders: { "api.example.com": { Authorization: "Bearer …" } },
-      }),
-      async onSession({ use }) {
-        await use({ networkPolicy: { allow: ["api.example.com"] } });
-      },
+    export const environment = UpstashSandbox.environment({
+      runtime: "node",
+      attachHeaders: { "api.example.com": { Authorization: "Bearer …" } },
     });
+
+    export default defineSandbox(() =>
+      environment.open({ networkPolicy: { allow: ["api.example.com"] } }),
+    );
     ```
   </Accordion>
-  <Accordion title="Lifecycle: one box per conversation">
-    **Reuse.** Eve re-opens a session several times per turn, and the backend reattaches to the same Box
-    instead of creating a new one each time. Boxes default to Box's pause-based idle lifecycle
-    (`keepAlive: false`): auto-paused when idle, resumed on reattach, reaped by Box. Pass
-    `keepAlive: true` only for an always-running box you manage yourself.
+  <Accordion title="Lifecycle: one box per session">
+    **Prepare.** At `eve build` (and on first sandbox access under `eve dev`), a temporary box gets
+    Eve's workspace files (`agent/sandbox/workspace/` → `/workspace`), your skills
+    (`$HOME/.agents/skills`) and your `prepare` hook, then is snapshotted and deleted. Eve stores the
+    snapshot id in the build output, so no Redis or other registry is involved. With nothing to bake,
+    no box is created. Each build that has something to prepare creates a new snapshot; delete stale
+    ones in the console or with `Box.deleteSnapshots()`.
 
-    **Template registry.** Eve builds your template (seed files + `bootstrap`) at build/startup, but
-    session creation runs per request in a different process, so the snapshot id is stored in a durable
-    Redis registry (`redis`, defaulting to `Redis.fromEnv()`). Eve roots its tools at `/workspace` while
-    a Box session lives at `/workspace/home`; the backend bridges the two automatically.
+    **Sessions.** Each session gets one box, restored from that snapshot and reused across turns,
+    restarts and redeploys. `sandbox.stop()` pauses it (the next command resumes it), server shutdown
+    pauses it too, and `sandbox.delete()` deletes it. If a session's box or the prepared snapshot no
+    longer exists, the session fails with a clear error instead of silently getting an empty box.
+    Boxes default to Box's pause-based idle lifecycle (`keepAlive: false`); pass `keepAlive: true` only
+    for an always-running box you manage yourself.
+
+    Eve roots its tools at `/workspace` while a Box session lives at `/workspace/home`; the provider
+    bridges the two automatically. Commands run over Box's streaming exec sessions: stdout and stderr
+    stay separate, and a cancelled turn kills the running command.
+  </Accordion>
+  <Accordion title="Migrating from upstash() (agentkit-eve 0.12 and earlier)">
+    Eve 0.64 replaced sandbox backends with providers, so `defineSandbox({ backend: upstash(...) })`
+    no longer exists. `bootstrap` becomes the environment's `prepare`, `onSession`'s
+    `use({ networkPolicy })` becomes `environment.open({ networkPolicy })`, and `revalidationKey` goes
+    away. The `redis`, `templatePrefix` and `enableTelemetry` options are removed, because the snapshot
+    id now lives in Eve's build output. See the
+    [migration example](/box/guides/eve-setup#migrating-from-upstash).
   </Accordion>
 </AccordionGroup>
 
@@ -438,7 +461,7 @@ export default defineCachedTool({
 
 Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
 that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
-it, two ways. Needs Eve 0.45.2 or newer.
+it, two ways. Needs Eve 0.65 or newer, like the rest of the package.
 
 `redisMemory()` is a full provider. It recalls the memories relevant to the current turn, stores the
 user's messages afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
