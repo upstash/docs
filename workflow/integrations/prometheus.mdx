@@ -34,11 +34,7 @@ Send the token as `Authorization: Bearer <MONITORING_TOKEN>`.
 
 ![monitoring-token.png](/img/prometheus/monitoring-token.png)
 
-## **Step 3: Set Up Prometheus Connection**
-
-You can point Grafana directly at the Upstash endpoint, or federate QStash metrics into your own Prometheus server.
-
-### **Grafana Data Source Setup**
+## **Step 3: Configure Prometheus (via Grafana Data Source)**
 
 1. In Grafana, add a Prometheus data source.
 2. Set the address to `https://api.upstash.com/monitoring/prometheus`.
@@ -52,51 +48,6 @@ Click <b>Test and Save</b>.
 
 ![datasource-final.png](/img/prometheus/datasource-final.png)
 
-### **Prometheus Federation Setup**
-
-Federation lets your Prometheus pull QStash metrics from the Upstash API and store them in **your own** Prometheus instance, so Grafana can query your Prometheus instead of hitting the Upstash endpoint directly.
-
-#### When to use federation
-
-- You already run Prometheus and want to persist QStash metrics locally.
-- You want to control retention, recording rules, or alerts on QStash metrics.
-
-1. Add a scrape job to your Prometheus configuration file (`prometheus.yml`):
-
-```yaml
-scrape_configs:
-  # Federation job: pull QStash metrics from Upstash API
-  - job_name: "federate_upstash_qstash"
-    honor_labels: true
-    metrics_path: "/monitoring/prometheus/federate"
-    scheme: https
-    params:
-      match[]:
-        - 'qstash_public_metrics{}'
-    static_configs:
-      - targets:
-          - "api.upstash.com"
-    authorization:
-      type: Bearer
-      credentials: "<MONITORING_TOKEN>"
-```
-
-<Warning>
-QStash metrics are exposed as `qstash_public_metrics`. The `upstash_db_metrics` selector in the [Redis Prometheus guide](/redis/integrations/prometheus) only matches Redis metrics, so a QStash scrape job that uses it returns no data.
-</Warning>
-
-<Check>
-This configuration pulls all QStash metrics. You can adjust the `match[]` parameter to filter them:
-- `qstash_public_metrics{region="us-east-1"}` pulls metrics for QStash in a specific region
-- `qstash_public_metrics{metric_name=~"dlq_message_count|daily_failed"}` pulls specific metrics
-
-The endpoint uses only the first `match[]` selector, so use a regex matcher (`=~`) to pull several metrics with one job.
-</Check>
-
-2. Verify the federation target
-- Reload (or restart) your Prometheus server to apply the new configuration.
-- Visit **Prometheus → Status → Targets** and confirm `federate_upstash_qstash` is **UP**.
-
 ## **Step 4: Import Dashboard**
 
 You can use the Upstash Grafana dashboard to visualize QStash metrics.
@@ -104,40 +55,6 @@ You can use the Upstash Grafana dashboard to visualize QStash metrics.
 Open the import dialog and use: <a href="https://grafana.com/grafana/dashboards/24206-upstash-qstash-dashboard/">Upstash QStash Dashboard</a>
 
 ![grafana-dashboard.png](/img/prometheus/grafana-qstash-dashboard.png)
-
-## **Available Metrics**
-
-All QStash metrics are exposed as a single gauge, `qstash_public_metrics`. Each series has these labels:
-
-| Label | Description |
-| --- | --- |
-| `metric_name` | Name of the metric, listed in the table below |
-| `user_id` | ID of your QStash user |
-| `region` | QStash region, such as `eu-central-1` or `us-east-1` |
-| `account_id` | Your Upstash account. The endpoint sets it automatically |
-
-For example, `qstash_public_metrics{metric_name="dlq_message_count"}` returns the number of messages in your DLQ. `daily_*` metrics reset at 00:00 UTC.
-
-| `metric_name` | Description |
-| --- | --- |
-| `daily_messages` | Messages published today, including Workflow steps |
-| `daily_delivered` | Messages delivered today |
-| `daily_canceled` | Messages canceled today |
-| `daily_error` | Delivery attempts that failed today |
-| `daily_retry` | Messages retried today |
-| `daily_failed` | Messages that exhausted their retries and moved to the DLQ today |
-| `daily_bandwidth_used` | Message body bytes published today |
-| `daily_workflow_steps` | Workflow steps executed today |
-| `daily_workflow_runs` | Workflow runs started today |
-| `daily_workflow_run_success` | Workflow runs that succeeded today |
-| `daily_workflow_run_canceled` | Workflow runs canceled today |
-| `daily_workflow_run_failed` | Workflow runs that failed today |
-| `dlq_message_count` | Messages currently in the DLQ |
-| `schedule_count` | Number of schedules |
-| `topic_count` | Number of URL groups |
-| `queue_count` | Number of queues |
-| `global_parallelism_max` | Maximum global parallelism set by [flow control](/qstash/features/flowcontrol) |
-| `global_parallelism_count` | Current number of active requests across all flow control keys |
 
 ## **Conclusion**
 
