@@ -2,42 +2,34 @@
 title: "Remote Development"
 ---
 
-A box is a Linux machine in the cloud with a filesystem, a shell, git and a runtime. This guide turns one into a development environment. Your app runs in the box, you open it in your browser, and your coding agent does the work for you.
+A box is a Linux machine in the cloud with a filesystem, a shell, git and a runtime. This guide turns one into a development environment: your app runs in the box, you open it in your browser, and your coding agent does the work.
 
-Two things set that up:
-
-| Install | What it gives your agent |
-| --- | --- |
-| [Upstash MCP server](/agent-resources/mcp) | Access to your account, so it can create the box, run commands in it, read its logs and open a public URL |
-| [Upstash Skills](/agent-resources/skills) | Knowledge of the Upstash SDKs and the `upstash` CLI, so the code it writes is correct |
-
-Next.js is the example below. Anything that listens on a port works the same way, such as Vite, Django, Rails or Express.
+Next.js is the example below. Anything that listens on a port works the same way.
 
 ---
 
 ## 1. Set Up Your Agent
 
-The fastest way is the Upstash plugin. It installs the skills and the MCP server together, in Claude Code or Codex:
+Install the Upstash plugin in Claude Code or Codex. It adds the MCP server and the skills in one step:
 
 ```
 /plugin marketplace add upstash/skills
 /plugin install upstash@upstash
 ```
 
-That is the whole setup. The first tool call opens a consent page in your browser. Pick the account or team the boxes should live in and leave the connection **read-write**, because a read-only grant cannot create boxes or run commands in them.
+The first tool call opens a consent page in your browser. Pick your account or team and keep the connection read-write.
 
-<Accordion title="Using another client, or only the MCP server?">
-  Add the remote MCP server to your client:
+<Accordion title="Other clients">
+  Add the remote MCP server to your client, then install the skills.
 
   <Tabs>
     <Tab title="Claude Code">
       ```sh
       claude mcp add --scope user --transport http upstash https://mcp.upstash.com/mcp
       ```
-      Then run `/mcp` → **Authenticate**.
     </Tab>
     <Tab title="Cursor">
-      Edit `~/.cursor/mcp.json` (or `.cursor/mcp.json` in a project):
+      Edit `~/.cursor/mcp.json`:
       ```json
       {
         "mcpServers": {
@@ -47,7 +39,7 @@ That is the whole setup. The first tool call opens a consent page in your browse
       ```
     </Tab>
     <Tab title="OpenAI Codex">
-      Add to `~/.codex/config.toml` (or `.codex/config.toml`):
+      Add to `~/.codex/config.toml`:
       ```toml
       [mcp_servers.upstash]
       url = "https://mcp.upstash.com/mcp"
@@ -55,49 +47,22 @@ That is the whole setup. The first tool call opens a consent page in your browse
     </Tab>
   </Tabs>
 
-  Then install the skills, so the code your agent writes for the Upstash SDKs is correct:
-
   ```bash
   npx skills add upstash/skills
   ```
 
-  If you only want the sandbox tools and not every Upstash product, scope the MCP URL down to the Box and Blob groups: `https://mcp.upstash.com/mcp?features=box,blob`.
-
-  For a headless setup without a browser, pass a developer API key as a header instead of OAuth. See [MCP server → Authentication](/agent-resources/mcp#authentication), and [Install by agent](/agent-resources/clients) for every other client.
+  See [Install by agent](/agent-resources/clients) for every other client.
 </Accordion>
 
 ---
 
 ## 2. Create the Box
 
-Ask for it in plain language:
+Ask your agent:
 
-> Create a node box called `web-dev`, clone `github.com/my-org/my-app` into it, and install the Upstash skills.
+> Create a node box called `web-dev` and clone `github.com/my-org/my-app` into it.
 
-Your agent calls `box_manage` with `action: "create"`. The fields worth knowing about:
-
-| Field | Why you would set it |
-| --- | --- |
-| `runtime` | The base image, such as `node` or `python` (default `node`) |
-| `size` | `small`, `medium` or `large`. Bump it for a heavy build |
-| `clone_repo` | Clones a repository on startup, so the box comes up with your project in it |
-| `env_vars` | The environment your dev server needs |
-| `skills` | Skills for the box's own agent, each as `owner/repo/skill-name` |
-| `browser` | Adds a headless Chromium, which is what makes `box_browser` usable |
-| `keep_alive` | Keeps the box running between sessions instead of idling it (paid plans) |
-| `ephemeral` + `ttl` | A throwaway box that deletes itself, good for a one-off experiment |
-
-<Note>
-  `skills` installs into the box, for the agent that lives inside it. That is the agent you drive from the console or the SDK with `box.agent.run(...)`. Your local agent already has its own copy from step 1, so you only need this when the box does work on its own, for example on a [schedule](/box/overall/schedules).
-
-  ```
-  skills: ["upstash/skills/upstash", "upstash/skills/upstash-redis-js"]
-  ```
-
-  You can also add a skill to a running box. Ask your agent to, and it calls `box_config` with `action: "add_skill"`.
-</Note>
-
-You can also create the box in the [Upstash Console](https://console.upstash.com) and let your agent pick it up by name.
+The agent creates the box and clones the repository. You can also create a box in the [Upstash Console](https://console.upstash.com) and let the agent pick it up by name.
 
 <img src="/img/box-development/create-box.png" alt="Create a Box for remote development" />
 
@@ -107,65 +72,40 @@ You can also create the box in the [Upstash Console](https://console.upstash.com
 
 > Install the dependencies in the box and start the dev server on port 3000.
 
-Your agent runs this with `box_exec`, which waits for the command to finish. A dev server never finishes, so it has to run in the background:
+The agent runs the install, starts the server in the background, and checks that the port answers. If something fails, ask it to read the logs.
 
-```bash
-sh -c "cd my-app && ( npm run dev > /tmp/dev.log 2>&1 & )"
-```
-
-Commands start in `/workspace/home`, which is also where [`box_git` clones land](/box/overall/git), so `cd my-app` is usually all the navigation you need.
-
-If the server does not come up, the log you redirected is one `box_exec` away (`tail /tmp/dev.log`), and the box's own log stream is in `box_logs`.
-
-<Tip>
-  Starting from an empty box instead of a repository? Ask your agent for the app itself. It scaffolds the project inside the box the same way it would locally:
-
-  > Run `npx create-next-app@latest my-app` in the box, then start it on port 3000.
-</Tip>
+Starting without a repository? Ask the agent to create the app in the box, for example with `npx create-next-app@latest my-app`.
 
 ---
 
 ## 4. Open It in Your Browser
 
-Ask for a public URL:
-
 > Give me a public URL for port 3000.
 
-Your agent calls `box_preview` with `action: "create"`, and the box serves the port at:
+The agent returns a URL like:
 
 ```
 https://<box-id>-3000.preview.box.upstash.com
 ```
 
-That URL works from anywhere: your phone, a teammate, or a webhook provider that needs to reach your dev server.
-
-To keep it to yourself, ask for it with authentication. `basic_auth` generates a username and password, `bearer_token` generates a token, and either one comes back exactly once, in that response.
-
-A public URL stays until the box is deleted. See [Public URLs](/box/overall/preview) for the full options.
+It works from anywhere, so you can open it on your phone or send it to a teammate. Ask for basic auth or a bearer token if it should not be public. See [Public URLs](/box/overall/preview).
 
 <img src="/img/box-development/public-url.png" alt="Public preview URL for a Box port" />
 
 ---
 
-## 5. Come Back to It Tomorrow
+## 5. Come Back Tomorrow
 
-A box pauses when you stop working and resumes where you left it, so the environment you built is still there the next morning. The files are there; a dev server you started is not, because processes do not survive a pause. Two things make the return easier:
+A box pauses when you stop working and keeps your files. Ask the agent to start the dev server again, and the same URL works.
 
-* **[Snapshots](/box/overall/snapshots)**: freeze the whole workspace once the setup is right, and start future boxes from it instead of installing everything again. Ask your agent to "snapshot this box", and later to "create a box from that snapshot".
-* **[Keep Alive](/box/overall/keep-alive)**: a keep-alive box stays on between sessions and can run an init command at startup, so `npm install && npm run dev` brings the dev server back on its own. It is a paid feature; a standard box costs nothing while it is paused.
-
-For everything else, the same prompt that started the server the first time starts it again.
+To skip the setup next time, ask the agent to snapshot the box and create new boxes from the snapshot. See [Snapshots](/box/overall/snapshots).
 
 ---
 
 ## Example Prompts
 
-Once the MCP server and the skills are in place, the whole loop is conversational:
-
 * "Spin up a box with my repo cloned, install dependencies and start the dev server on 3000"
-* "Give me a public URL for port 3000 with basic auth, and tell me the password"
+* "Give me a public URL for port 3000 with basic auth"
 * "The dev server stopped responding, check the box logs and restart it"
-* "Add the `upstash-redis-js` skill to the box and have it wire up a Redis cache for the session store"
-* "Snapshot this box now that the environment works, then create two more from the snapshot"
-* "Fork this box so I can try a risky refactor without touching the one that works"
-* "Open the preview URL in the box's browser, screenshot it, and tell me if the layout broke"
+* "Snapshot this box, then create two more from the snapshot"
+* "Open the preview URL in the box's browser, take a screenshot, and tell me if the layout broke"
