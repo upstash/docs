@@ -41,7 +41,11 @@ Total number of requests per day, over the last 5 days.
 
 ## Database Usage
 
-If you click on the "Usage" tab, you can see more detailed charts about the usage of your database.
+The "Usage" tab of a database shows detailed charts. Pick the period at the top of the tab: the past hour, 3 hours, 12 hours, day, 3 days or week. Databases on a Pro plan or with the Production Pack can also select the past month. Charts refresh every minute.
+
+### Top Commands
+
+The ten most executed commands over the period, one line each.
 
 ### Throughput
 
@@ -49,9 +53,7 @@ If you click on the "Usage" tab, you can see more detailed charts about the usag
   <img src="/img/metrics/throughput.png" alt="Redis throughput chart" width="100%" />
 </Frame>
 
-Throughput chart shows throughput values for reads, writes and commands (all
-commands including reads and writes) per second. The chart covers the last 1
-hour and it is updated every 10 seconds.
+Reads, writes and all commands per second.
 
 ### Service Time Latency
 
@@ -59,10 +61,7 @@ hour and it is updated every 10 seconds.
   <img src="/img/metrics/latency.png" alt="Redis latency chart" width="100%" />
 </Frame>
 
-This chart shows the processing time of the request between it is received by
-the server and the response is sent to the caller. It shows the times in max,
-mean, min, 99.9 percentile and 99.99 percentile. The chart covers the last 1
-hour and it is updated every 10 seconds.
+The time between a request reaching the server and its response leaving it, for reads and writes separately, as the median (p50) and the 99th percentile (p99). Every latency chart describes a sliding ten-minute window, so it reacts within minutes; an idle database shows no data rather than zero.
 
 ### Data Size
 
@@ -70,8 +69,7 @@ hour and it is updated every 10 seconds.
   <img src="/img/metrics/datasize.png" alt="Redis data size chart" width="100%" />
 </Frame>
 
-This chart shows the data size of your database. The chart covers the last 24
-hours and it is updated every 10 seconds.
+The data size of your database on disk.
 
 ### Connections
 
@@ -79,10 +77,7 @@ hours and it is updated every 10 seconds.
   <img src="/img/metrics/connections.png" alt="Redis connection count chart" width="100%" />
 </Frame>
 
-This chart shows the number of active client connections. It shows the number of
-open connections plus the number of short-lived connections that started and
-terminated in 10 seconds period. The chart covers the last 1 hour and it is
-updated every 10 seconds.
+Open TCP connections and open REST connections.
 
 ### Key Space
 
@@ -90,8 +85,7 @@ updated every 10 seconds.
   <img src="/img/metrics/keyspace.png" alt="Redis keyspace chart" width="100%" />
 </Frame>
 
-This chart shows the number of keys. The chart covers the last 24 hours and it
-is updated every 10 seconds.
+The number of keys in the database.
 
 ### Hits / Misses
 
@@ -99,5 +93,56 @@ is updated every 10 seconds.
   <img src="/img/metrics/hitsmisses.png" alt="Redis cache hits and misses chart" width="100%" />
 </Frame>
 
-This chart shows the number of hits per second and misses per second. The chart
-covers the last 1 hour and it is updated every 10 seconds.
+Key hits and misses per second.
+
+## Insights
+
+Databases with the Production Pack have an **Insights** tab next to Usage; databases on a Pro plan have it too. It has five views: Performance, Traffic, Limits, Lua and Keyspace. One period selector at the top right, from the past hour to the past month, drives every view except Keyspace, and every number on a view covers that period. Hover the info icon next to a title for what the figure measures.
+
+### Performance
+
+One chart per signal. A global database gets one line per region, always in the same color, and a dashed line with their average. Each chart shows the current value and how the latest window compares with the window before it: the whole period for the past hour and the past three hours, the last three hours for longer periods. The comparison is left out when the earlier window has no data; a change of ten times or more is shown as a multiple, and Disk size shows the difference in bytes instead of a percentage. Charts also flag up to three anomalies: stretches where the value stayed well above its typical level for the period, which is the median, by at least three times the typical spread and at least 30%. Each metric has a small floor for the typical level, so a nearly idle chart does not turn a small bump into a huge percentage; an empty stretch at the start of the period, such as before the database existed, is ignored, and a rise that lasts more than a third of the period counts as a new level rather than a spike. The largest anomaly is highlighted with its peak against the typical value. Disk size is not checked, because it grows with your data. The same anomalies are returned by the [Developer API](/devops/developer-api/redis/get_database_insights), so they can be used outside the console.
+
+- **Throughput** (commands per second): commands the engine processed per second, summed over replicas. Counts every command, including each command inside a pipeline or a script. Console and non-billable commands are excluded.
+- **Bandwidth** (bytes per second): bytes moved between clients and the database per second, in and out combined, summed over replicas. The same counters that feed the daily bandwidth on the Usage tab, as a rate.
+- **Disk size** (bytes): size of the data persisted on disk, largest replica. This is stored bytes, not memory in use.
+- **Simple service latency** (ms): server time from reading a request to writing its response, for requests where every command is a single-key read or write served by this replica, as p50, p90 or p99. Multi-key commands, scripts and cross-region requests are excluded. Blocking time is subtracted.
+- **Read service latency** and **Write service latency** (p99, ms): the same, for requests where every command is read-only, and for requests that include at least one write. All command types count.
+- **Command execution latency** (p99, ms): time spent executing the command inside the engine, measured after the key lock is held and the key is loaded. Excludes parsing, lock wait, disk loads and the response.
+- **Replication latency** (p99.9, ms): time a write was held before its response was sent because of replication: waiting for the backup to acknowledge, or backpressure applied when a replica falls behind.
+- **Lock wait latency** (p99, ms): time a command waited to acquire its key's lock before executing. Grows with contention on hot keys and with long-running writes on the same key.
+- **Lua execution latency** (p99, ms): wall time of EVAL, EVALSHA and FCALL, including the commands the script runs.
+- **Expired entries** (per minute): keys removed because their TTL passed, whether they expired in memory, on access, by the expiry scan, or were purged from disk.
+- **Replication lag** (entries): updates written on the primary that have not yet reached the replica in each region. A rising line means the replica is falling behind.
+
+The **Server** selector narrows every chart to one replica. Latencies, expired entries and replication lag combine replicas by taking the highest value; throughput and bandwidth add up. Below the charts, **Slow commands** lists the commands that took longer than 500 milliseconds today, with how often it happened and the slowest run. Only command names are recorded, not keys or arguments.
+
+### Traffic
+
+- **Request routing**: where requests entered the proxies and which replica served them, on a world map and in a table with REST requests, their share, TCP connections, bytes in and out and errors per route. The entry region is the region of the Upstash proxy a request came in through; clients connect to the nearest proxy, so it is usually close to where the client runs. The serving region is the region of the replica that executed the request, usually the nearest healthy replica; writes go to the primary region. A route is cross-region when the proxy had to connect to a replica in another region, which happens when requests enter a region where the database has no replica; writes that a read replica forwards to the primary are not visible here. A large cross-region share means a read region close to your clients would remove a network round trip from every request. The database's primary region is marked on the map and in the table. Above the table are the REST requests and TCP connections of the period and the share of bytes served cross-region, and below them the commands those REST requests carried and the commands run by Lua scripts: a REST request can carry several commands, since every command in a pipeline or transaction counts, and a Lua script counts each command it runs, whether it was called over REST or TCP.
+- **Client networks**: the networks your clients connect from, as seen by the Upstash proxies. Each address is shortened to its /24 (IPv4) or /48 (IPv6) network, so single client addresses are never stored. The cloud provider and region are shown when the network is inside an IP range that AWS, Google Cloud or Cloudflare publishes; other networks, such as office or home connections, show as Other. Each row also shows the entry region the requests came in through.
+- **Client types**: SDK, platform and runtime from the telemetry headers Upstash SDKs send with REST requests, as shares of those requests. A request sent through two SDKs, such as `@upstash/react-redis-browser` on top of `@upstash/redis`, counts once for each. TCP clients do not send telemetry and are not counted.
+
+### Limits
+
+Three meters compare the database with its plan: storage, open connections with the connections opened in the period, and the peak commands per second of the period. **Rejections** shows what a limit or a server guard refused or delayed on one stacked chart over the period, and lists each kind with its count and the time of the last hit:
+
+- **Oversize requests**: requests over the request size limit.
+- **Oversize keys**: accesses to keys over the record size limit, counted per access.
+- **Throttled writes**: writes delayed because persistence was falling behind.
+- **Undeliverable at proxy**: requests and connections the proxy could not hand to any replica. A request a replica answers with an error, such as 401 or 413, was delivered and does not count here.
+- **Auth failures**: refused credentials over TCP and REST, and commands sent before authenticating. REST requests over the rate limit are counted here as well.
+
+**Access** shows the clients currently running MONITOR, keyspace notifications sent, bandwidth in each direction, the monthly storage average and the ACL users that signed in today with their login counts.
+
+### Lua
+
+Scripts loaded and run, executions with the commands they ran, failures split into timeouts and memory-limit hits, and the current p99 next to the script timeout of the plan. The latency chart shows p50 and p99 of EVAL, EVALSHA and FCALL including the commands they run, as the highest value across replicas. The table has the ten most executed scripts of each replica since midnight UTC: executions, commands and failures are summed across replicas, while the average and slowest duration and the memory use are the highest replica's value. A script is identified by the SHA1 of its source, the same hash `EVALSHA` takes; the table shows its first 12 characters and copies the full hash. To give a script a name in the table, start its source with `#!lua script_name=<name>`.
+
+### Keyspace
+
+The latest analysis of the database's daily backup. Every daily backup is scanned offline after it completes, without touching the running database, and the view shows the most recent report: the number of keys, elements and bytes, the distribution of key sizes and element counts per type, the biggest keys overall and per type with their expiry, and an expiration profile that shows how much data is persistent, already expired but not yet removed, or about to expire. Sizes are on-disk logical bytes. Turning on the Production Pack turns on daily backups, and the latest one is included at no extra charge; a database without daily backups has no keyspace report.
+
+## Backup Insights
+
+The keyspace report of the latest daily backup is on the [Keyspace](#keyspace) view of the Insights tab. Other backups can be analyzed through the [Developer API](/devops/developer-api/redis/backup/get_backup_analysis).
