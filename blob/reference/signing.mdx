@@ -49,7 +49,7 @@ A failed mint surfaces as `unauthorized` (the token was rejected), `rate_limited
 
 Upstash does, never your server. A temporary credential cannot sign a URL safely: storage needs its session token on every request, so the URL would carry the token, and the credential's secret can be derived from it. Anyone holding such a URL would hold the credential, and with it every object in the bucket until it expires.
 
-So `signedReadUrl`, `signedUploadUrl` and the upload handler send Upstash the path, the method, the headers to pin and the lifetime, authenticated with the bucket token. Upstash checks them against the token's own bucket and signs with a key no URL reveals. The URL does the one request it names and nothing else.
+So `signedReadUrl`, `signedUploadUrl` and the upload handler send Upstash the path, the method, the headers to pin and the lifetime, authenticated with the bucket token. Upstash checks them against the token's own bucket and signs with a key no URL reveals. The URL does the one operation it names, on the one object, and nothing else, as often as it is used until it expires.
 
 <Warning>
 Do not presign with an S3 client built from [`bucket.s3()`](/blob/bucket/connecting#using-an-s3-client). Its URLs carry the temporary credential, which works on the whole bucket. Hand out URLs only from `signedReadUrl` and `signedUploadUrl`.
@@ -73,7 +73,7 @@ Paths are percent-encoded per segment, so slashes stay structural and everything
 
 A path containing a `.` or `..` segment is refused rather than normalized. Your server's credential authorizes the whole bucket, and the URL parser resolves `..` before signing, so a traversing key would sign a request against a different object than the one your code named. `uniquePath` guards the same boundary from the other side; see [Writing](/blob/bucket/writing#uniquepath).
 
-A signed URL also cannot name a path with an empty segment (`dir/`, `/a`, `a//b`) or a control character. Asking for one is `invalid_input`, and an upload is refused at `begin`, before anything is created.
+A signed URL also cannot name a path with an empty segment (`dir/`, `/a`, `a//b`) or a control character. Asking for one is `invalid_input`, and an upload is refused at `begin`, before its multipart upload is created.
 
 ---
 
@@ -86,7 +86,7 @@ const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf")
 
 A presigned URL lives at most 10 minutes. Read links default to 5 minutes, write links to 10, and a longer `expiresIn` gets 10.
 
-That ceiling is also how long a URL outlives a change to the bucket. Suspending it, making it read-only, or rotating its token stops new URLs from being signed, not ones already handed out.
+That ceiling is also how long a URL outlives a change to the bucket. Suspending it or rotating its token stops new URLs from being signed, and making it read-only stops new upload URLs, but none of them revokes a URL already handed out.
 
 Cache the link until `expiresAt` and re-sign after. See [Use expiresAt](/blob/bucket/reading#use-expiresat-not-expiresin).
 
