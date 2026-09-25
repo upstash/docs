@@ -3,7 +3,7 @@ title: "How Signing Works"
 description: "What the bucket token signs, how the direct upload handshake works, and what the browser gets to see."
 ---
 
-Your server holds a bucket token. It exchanges that token for short-lived S3 credentials from Upstash, signs individual URLs with those credentials, and hands only the URLs to the browser. Every URL a browser holds is scoped to one object, one method, one set of headers, and a few minutes.
+Your server holds a bucket token. It exchanges that token for short-lived S3 credentials for its own requests, asks Upstash to sign each URL it hands out, and hands only the URLs to the browser. Every URL a browser holds is scoped to one object, one method, one set of headers, and at most 10 minutes.
 
 This page explains what a browser holding one of these URLs can and cannot do. To upload a file, start with the [Quickstart](/blob/overall/quickstart) instead.
 
@@ -13,7 +13,7 @@ This page explains what a browser holding one of these URLs can and cannot do. T
 
 - `UPSTASH_BLOB_TOKEN`, in any form.
 - The key that signs completion tokens. It never leaves your process.
-- The temporary S3 credentials. They are only ever folded into a signature.
+- The temporary S3 credentials. They sign your server's own requests and never appear in a URL.
 - Any ability to list, read, overwrite or delete outside the one object a presigned URL names.
 - Anything `context` or `onBeforeUpload` computed, except what you explicitly return as `metadata` (visible on the object) or `state` (visible in the completion token).
 
@@ -45,9 +45,21 @@ A failed mint surfaces as `unauthorized` (the token was rejected), `rate_limited
 
 ---
 
+## Who signs a URL
+
+Upstash does, never your server. A temporary credential cannot sign a URL safely: storage needs its session token on every request, so the URL would carry the token, and the credential's secret can be derived from it. Anyone holding such a URL would hold the credential, and with it every object in the bucket until it expires.
+
+So `signedReadUrl`, `signedUploadUrl` and the upload handler send Upstash the path, the method, the headers to pin and the lifetime, authenticated with the bucket token. Upstash checks them against the token's own bucket and signs with a key no URL reveals. The URL does the one operation it names, on the one object, and nothing else, as often as it is used until it expires.
+
+<Warning>
+Do not presign with an S3 client built from [`bucket.s3()`](/blob/bucket/connecting#using-an-s3-client). Its URLs carry the temporary credential, which works on the whole bucket. Hand out URLs only from `signedReadUrl` and `signedUploadUrl`.
+</Warning>
+
+---
+
 ## Signing a request
 
-Signing is AWS Signature Version 4. Requests your server makes to storage carry the signature in an `Authorization` header. Every URL handed to a browser, and every URL from `signedReadUrl()` or `signedUploadUrl()`, carries it on the query string instead.
+Signing is AWS Signature Version 4. Requests your server makes to storage carry the signature in an `Authorization` header. Every URL handed to a browser, and every URL from `signedReadUrl()` or `signedUploadUrl()`, carries Upstash's signature on the query string instead.
 
 ### Signed headers
 
@@ -61,16 +73,20 @@ Paths are percent-encoded per segment, so slashes stay structural and everything
 
 A path containing a `.` or `..` segment is refused rather than normalized. Your server's credential authorizes the whole bucket, and the URL parser resolves `..` before signing, so a traversing key would sign a request against a different object than the one your code named. `uniquePath` guards the same boundary from the other side; see [Writing](/blob/bucket/writing#uniquepath).
 
+A signed URL also cannot name a path with an empty segment (`dir/`, `/a`, `a//b`) or a control character. Asking for one is `invalid_input`, and an upload is refused at `begin`, before its multipart upload is created.
+
 ---
 
 ## How long a presigned URL lives
 
 ```ts
 const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf")
-// expiresAt is the real answer for this link: min(what you asked for, what the signer had left)
+// expiresAt is the real answer for this link: min(what you asked for, 10 minutes)
 ```
 
-A presigned URL cannot outlive the credential that signed it, so the SDK never signs a link for longer than the credential has left. Read links default to 5 minutes, write links to an hour.
+A presigned URL lives at most 10 minutes. Read links default to 5 minutes, write links to 10, and a longer `expiresIn` gets 10.
+
+That ceiling is also how long a URL outlives a change to the bucket. Suspending it or rotating its token stops new URLs from being signed, and making it read-only stops new upload URLs, but none of them revokes a URL already handed out.
 
 Cache the link until `expiresAt` and re-sign after. See [Use expiresAt](/blob/bucket/reading#use-expiresat-not-expiresin).
 
@@ -159,7 +175,7 @@ Only the completion token, in `localStorage`, keyed by the route and the file. N
 ```ts
 const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf", {
   downloadAs: "Q3 Report.pdf",
-  expiresIn: "15m",
+  expiresIn: "10m",
 })
 
 const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
@@ -169,7 +185,7 @@ const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
 await fetch(upload.url, { method: "PUT", headers: upload.headers, body: bytes })
 ```
 
-The same machinery is available directly, for a CLI, a server-to-server job, or a link in an email.
+The same machinery is available directly, for a CLI or a server-to-server job. For a link in an email, link a route of yours that checks access and signs at click time; a signed link lives at most 10 minutes.
 
 `signedReadUrl` turns `downloadAs` into a `Content-Disposition` header, encoded so a Unicode name arrives intact and a name containing a quote or a newline cannot inject a second header. A `contentType` override is validated as a media type for the same reason.
 
