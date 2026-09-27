@@ -86320,6 +86320,380 @@ Two complete `eve` apps live in the AgentKit repo:
   </Card>
 </CardGroup>
 
+# TanStack AI Persistence, Resumable Streams & Memory with Redis
+Source: https://upstash.com/docs/redis/sdks/agentkit/tanstack-ai
+
+[TanStack AI](https://tanstack.com/ai) defines the contracts for an agent's production state — chat
+persistence, resumable streaming, locks, memory — and ships in-memory implementations that only work
+inside one process. `@upstash/agentkit-tanstack-ai` implements them on Upstash Redis, so they hold
+across serverless instances, page reloads, and devices.
+
+| Import | Plugs into | Feature |
+| --- | --- | --- |
+| `upstashPersistence` | `withPersistence()` | Transcripts, runs, human-in-the-loop interrupts, and metadata that survive restarts. |
+| `upstashStream` | `durability` on the response | Resume a stream after a reload, or open the same thread on another device. |
+| `upstashLocks` | `withLocks()` | One writer per thread across instances. |
+| `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/docs/redis/search/introduction). |
+| `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
+| `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
+
+`upstashPersistence` and `upstashMemory` pass TanStack AI's own backend conformance suites.
+
+```bash
+npm install @upstash/agentkit-tanstack-ai @tanstack/ai
+# for the features you use:
+npm install @tanstack/ai-persistence @tanstack/ai-memory
+```
+
+<Note>
+  Every helper reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by
+  default. Pass your own `@upstash/redis` client as `redis` to override.
+</Note>
+
+## How to persist TanStack AI chats in Redis
+
+```ts
+import { chat } from "@tanstack/ai";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai";
+
+const persistence = upstashPersistence();
+
+chat({ adapter, messages, threadId, middleware: [withPersistence(persistence)] });
+```
+
+This stores the `messages`, `runs`, `interrupts`, and `metadata` stores. Runs are indexed by thread, so
+reconnecting to a live run (`findActiveRun`) is a single index read. Each write is one command or one
+Lua script, so concurrent instances cannot interleave it.
+
+<Accordion title="Options">
+  ```ts
+  upstashPersistence({
+    redis, // optional: defaults to Redis.fromEnv()
+    prefix: "agentkit:tanstack", // optional: base key prefix
+    messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: expire idle transcripts (default: never)
+  });
+  ```
+
+  The `generationRuns`, `artifacts`, and `blobs` stores are not provided yet. Add them from another
+  backend with `composePersistence` if you need them.
+</Accordion>
+
+## How to resume a TanStack AI stream after a reload
+
+```ts
+import { chat, toServerSentEventsResponse } from "@tanstack/ai";
+import { upstashStream } from "@upstash/agentkit-tanstack-ai";
+
+export async function POST(request: Request) {
+  const stream = chat({ adapter, messages, threadId });
+  return toServerSentEventsResponse(stream, { durability: { adapter: upstashStream(request) } });
+}
+```
+
+Every chunk is written to a Redis Stream before it is sent. A client that reconnects with
+`Last-Event-ID` (or `?offset`) replays what it missed and keeps following the live run, whichever
+instance serves the request. Without a `Request`, use `upstashStream({ runId, offset })`.
+
+<Accordion title="Options">
+  ```ts
+  upstashStream(request, {
+    ttlSeconds: 86_400, // optional: how long a run stays resumable
+    pollIntervalMs: 150, // optional: how often a caught-up reader checks for new chunks
+    firstChunkDeadlineMs: 2_000, // optional: how long a join waits for a run that has not started
+  });
+  ```
+</Accordion>
+
+## How to lock a TanStack AI thread across instances
+
+```ts
+import { withLocks } from "@tanstack/ai/locks";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+
+chat({ adapter, messages, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
+```
+
+A lease that is renewed while the critical section runs. If the lease is lost, the section's
+`signal` aborts.
+
+<Accordion title="Options">
+  ```ts
+  upstashLocks({
+    leaseMs: 30_000, // optional: lease lifetime without renewal
+    acquireTimeoutMs: 30_000, // optional: how long to wait for a held key
+    retryDelayMs: 100, // optional: delay between attempts
+  });
+  ```
+</Accordion>
+
+## How to add long-term memory to TanStack AI
+
+```ts
+import { memoryMiddleware } from "@tanstack/ai-memory";
+import { upstashMemory } from "@upstash/agentkit-tanstack-ai";
+
+chat({
+  adapter,
+  messages,
+  middleware: [
+    memoryMiddleware({
+      adapter: upstashMemory(),
+      // derive these server-side from the session, never from the request body
+      scope: (ctx) => ({ threadId: ctx.threadId, userId: session.userId }),
+    }),
+  ],
+});
+```
+
+Before each turn, the most relevant memories for the user's message are added to the system prompt,
+labelled by where they came from. The model gets a `save_memory` tool for durable facts, and each
+turn's user message is captured too. Memory is per user across threads by default.
+
+<Accordion title="Options">
+  ```ts
+  upstashMemory({
+    topK: 5, // optional: memories injected per turn
+    scopeBy: "user", // optional: "user" (across threads) or "thread"
+    captureUserMessages: true, // optional: store each turn's user message
+    saveTool: true, // optional: offer the save_memory tool
+    waitForIndexing: true, // optional: make a save recallable on the very next turn
+  });
+  ```
+</Accordion>
+
+## How to cache tools and rate limit with TanStack AI
+
+```ts
+import { rateLimit, Ratelimit, toolCache } from "@upstash/agentkit-tanstack-ai";
+
+chat({
+  adapter,
+  messages,
+  tools: [getWeather, sendEmail],
+  middleware: [
+    rateLimit({ limiter: Ratelimit.slidingWindow(10, "60 s"), identifier: userId }),
+    toolCache({ tools: ["get_weather"], userId, ttlSeconds: 600 }),
+  ],
+});
+```
+
+`toolCache` only caches the tools you list — list deterministic, side-effect-free tools only.
+`rateLimit` fails the run with `RateLimitExceededError` before the model is called. For an HTTP 429
+instead, call `createRateLimit({ limiter }).limit(userId)` in your route before `chat()`.
+
+## How to add RAG with TanStack AI
+
+```ts
+import { s } from "@upstash/redis";
+import { createSearchTools } from "@upstash/agentkit-tanstack-ai";
+
+const tools = createSearchTools({
+  indexName: "products",
+  schema: s.object({ name: s.string(), price: s.number(), category: s.string().noTokenize() }),
+});
+
+chat({ adapter, messages, tools });
+```
+
+The tool descriptions are generated from the schema, and the index is created on first use.
+
+<CardGroup cols={2}>
+  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit/tree/main/packages/tanstack-ai">
+    Source and README for the package.
+  </Card>
+  <Card title="TanStack AI" icon="up-right-from-square" href="https://tanstack.com/ai">
+    The framework these backends plug into.
+  </Card>
+</CardGroup>
+
+# TanStack AI Persistence, Resumable Streams & Memory with Redis
+Source: https://upstash.com/docs/redis/sdks/agentkit/tanstack-ai
+
+[TanStack AI](https://tanstack.com/ai) defines the contracts for an agent's production state — chat
+persistence, resumable streaming, locks, memory — and ships in-memory implementations that only work
+inside one process. `@upstash/agentkit-tanstack-ai` implements them on Upstash Redis, so they hold
+across serverless instances, page reloads, and devices.
+
+| Import | Plugs into | Feature |
+| --- | --- | --- |
+| `upstashPersistence` | `withPersistence()` | Transcripts, runs, human-in-the-loop interrupts, and metadata that survive restarts. |
+| `upstashStream` | `durability` on the response | Resume a stream after a reload, or open the same thread on another device. |
+| `upstashLocks` | `withLocks()` | One writer per thread across instances. |
+| `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/docs/redis/search/introduction). |
+| `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
+| `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
+
+`upstashPersistence` and `upstashMemory` pass TanStack AI's own backend conformance suites.
+
+```bash
+npm install @upstash/agentkit-tanstack-ai @tanstack/ai
+# for the features you use:
+npm install @tanstack/ai-persistence @tanstack/ai-memory
+```
+
+<Note>
+  Every helper reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by
+  default. Pass your own `@upstash/redis` client as `redis` to override.
+</Note>
+
+## How to persist TanStack AI chats in Redis
+
+```ts
+import { chat } from "@tanstack/ai";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai";
+
+const persistence = upstashPersistence();
+
+chat({ adapter, messages, threadId, middleware: [withPersistence(persistence)] });
+```
+
+This stores the `messages`, `runs`, `interrupts`, and `metadata` stores. Runs are indexed by thread, so
+reconnecting to a live run (`findActiveRun`) is a single index read. Each write is one command or one
+Lua script, so concurrent instances cannot interleave it.
+
+<Accordion title="Options">
+  ```ts
+  upstashPersistence({
+    redis, // optional: defaults to Redis.fromEnv()
+    prefix: "agentkit:tanstack", // optional: base key prefix
+    messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: expire idle transcripts (default: never)
+  });
+  ```
+
+  The `generationRuns`, `artifacts`, and `blobs` stores are not provided yet. Add them from another
+  backend with `composePersistence` if you need them.
+</Accordion>
+
+## How to resume a TanStack AI stream after a reload
+
+```ts
+import { chat, toServerSentEventsResponse } from "@tanstack/ai";
+import { upstashStream } from "@upstash/agentkit-tanstack-ai";
+
+export async function POST(request: Request) {
+  const stream = chat({ adapter, messages, threadId });
+  return toServerSentEventsResponse(stream, { durability: { adapter: upstashStream(request) } });
+}
+```
+
+Every chunk is written to a Redis Stream before it is sent. A client that reconnects with
+`Last-Event-ID` (or `?offset`) replays what it missed and keeps following the live run, whichever
+instance serves the request. Without a `Request`, use `upstashStream({ runId, offset })`.
+
+<Accordion title="Options">
+  ```ts
+  upstashStream(request, {
+    ttlSeconds: 86_400, // optional: how long a run stays resumable
+    pollIntervalMs: 150, // optional: how often a caught-up reader checks for new chunks
+    firstChunkDeadlineMs: 2_000, // optional: how long a join waits for a run that has not started
+  });
+  ```
+</Accordion>
+
+## How to lock a TanStack AI thread across instances
+
+```ts
+import { withLocks } from "@tanstack/ai/locks";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+
+chat({ adapter, messages, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
+```
+
+A lease that is renewed while the critical section runs. If the lease is lost, the section's
+`signal` aborts.
+
+<Accordion title="Options">
+  ```ts
+  upstashLocks({
+    leaseMs: 30_000, // optional: lease lifetime without renewal
+    acquireTimeoutMs: 30_000, // optional: how long to wait for a held key
+    retryDelayMs: 100, // optional: delay between attempts
+  });
+  ```
+</Accordion>
+
+## How to add long-term memory to TanStack AI
+
+```ts
+import { memoryMiddleware } from "@tanstack/ai-memory";
+import { upstashMemory } from "@upstash/agentkit-tanstack-ai";
+
+chat({
+  adapter,
+  messages,
+  middleware: [
+    memoryMiddleware({
+      adapter: upstashMemory(),
+      // derive these server-side from the session, never from the request body
+      scope: (ctx) => ({ threadId: ctx.threadId, userId: session.userId }),
+    }),
+  ],
+});
+```
+
+Before each turn, the most relevant memories for the user's message are added to the system prompt,
+labelled by where they came from. The model gets a `save_memory` tool for durable facts, and each
+turn's user message is captured too. Memory is per user across threads by default.
+
+<Accordion title="Options">
+  ```ts
+  upstashMemory({
+    topK: 5, // optional: memories injected per turn
+    scopeBy: "user", // optional: "user" (across threads) or "thread"
+    captureUserMessages: true, // optional: store each turn's user message
+    saveTool: true, // optional: offer the save_memory tool
+    waitForIndexing: true, // optional: make a save recallable on the very next turn
+  });
+  ```
+</Accordion>
+
+## How to cache tools and rate limit with TanStack AI
+
+```ts
+import { rateLimit, Ratelimit, toolCache } from "@upstash/agentkit-tanstack-ai";
+
+chat({
+  adapter,
+  messages,
+  tools: [getWeather, sendEmail],
+  middleware: [
+    rateLimit({ limiter: Ratelimit.slidingWindow(10, "60 s"), identifier: userId }),
+    toolCache({ tools: ["get_weather"], userId, ttlSeconds: 600 }),
+  ],
+});
+```
+
+`toolCache` only caches the tools you list — list deterministic, side-effect-free tools only.
+`rateLimit` fails the run with `RateLimitExceededError` before the model is called. For an HTTP 429
+instead, call `createRateLimit({ limiter }).limit(userId)` in your route before `chat()`.
+
+## How to add RAG with TanStack AI
+
+```ts
+import { s } from "@upstash/redis";
+import { createSearchTools } from "@upstash/agentkit-tanstack-ai";
+
+const tools = createSearchTools({
+  indexName: "products",
+  schema: s.object({ name: s.string(), price: s.number(), category: s.string().noTokenize() }),
+});
+
+chat({ adapter, messages, tools });
+```
+
+The tool descriptions are generated from the schema, and the index is created on first use.
+
+<CardGroup cols={2}>
+  <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit/tree/main/packages/tanstack-ai">
+    Source and README for the package.
+  </Card>
+  <Card title="TanStack AI" icon="up-right-from-square" href="https://tanstack.com/ai">
+    The framework these backends plug into.
+  </Card>
+</CardGroup>
+
 # Upstash Redis MCP
 Source: https://upstash.com/docs/redis/sdks/mcp
 
