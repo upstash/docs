@@ -1,0 +1,203 @@
+---
+title: "Claude Managed Agents"
+---
+
+Run [Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview) sessions in Upstash Box. Claude runs on Anthropic's side, and each session gets its own box where its bash commands and file edits run. Web search and web fetch still run on Anthropic's side.
+
+---
+
+## 1. Set up
+
+- A **Box API key** from the [Upstash Console](https://console.upstash.com/box).
+- An **Anthropic API key** from [API keys](https://platform.claude.com/settings/keys), created inside a workspace.
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxx
+```
+
+```bash
+npm install @upstash/box @anthropic-ai/sdk tsx
+```
+
+Create a self-hosted environment:
+
+```typescript title="setup.ts"
+import Anthropic from "@anthropic-ai/sdk";
+import { appendFileSync } from "node:fs";
+
+const environment = await new Anthropic().beta.environments.create({
+  name: "upstash-box",
+  config: { type: "self_hosted" },
+});
+
+appendFileSync(".env", `ANTHROPIC_ENVIRONMENT_ID=${environment.id}\n`);
+```
+
+```bash
+npx tsx --env-file=.env setup.ts
+```
+
+Then open **Managed Agents → Environments → upstash-box** in the Claude Console, click **Generate environment key**, and add it to `.env`:
+
+```bash title=".env"
+ANTHROPIC_ENVIRONMENT_KEY=sk-ant-oat01-xxxxxxxxxxxx
+```
+
+---
+
+## 2. Run the dispatcher
+
+The dispatcher picks up sessions and runs each one in its own box.
+
+```typescript title="dispatcher.ts"
+import Anthropic from "@anthropic-ai/sdk";
+import { Box } from "@upstash/box";
+
+const environmentId = process.env.ANTHROPIC_ENVIRONMENT_ID!;
+const environmentKey = process.env.ANTHROPIC_ENVIRONMENT_KEY!;
+
+const anthropic = new Anthropic({ authToken: environmentKey });
+
+const worker = `
+import Anthropic from "@anthropic-ai/sdk";
+import { EnvironmentWorker } from "@anthropic-ai/sdk/helpers/beta/environments";
+
+// Authenticates with ANTHROPIC_WORK_SECRET, a short-lived credential for this session only.
+// The environment key never enters the box.
+const client = new Anthropic({ authToken: "unused" });
+await new EnvironmentWorker({ client, workdir: "/workspace/home" }).handleItem();
+`;
+
+const isWorkerRunning = async (box: Box) =>
+  (await box.exec.command("pgrep -f '[w]orker.mjs' || true")).result.trim() !== "";
+
+async function getBox(sessionId: string) {
+  const boxes = await Box.list({ label: "claude-agent" });
+  const existing = boxes.find((b) => b.name === sessionId);
+  if (existing) return Box.get(existing.id);
+
+  const box = await Box.create({ runtime: "node", name: sessionId, labels: ["claude-agent"] });
+  await box.exec.command("npm install @anthropic-ai/sdk");
+  await box.files.write({ path: "worker.mjs", content: worker });
+  return box;
+}
+
+// The worker in the box completes each work item, so the poller must not stop it.
+const queue = anthropic.beta.environments.work.poller({
+  environmentId,
+  environmentKey,
+  autoStop: false,
+  reclaimOlderThanMs: 30_000,
+});
+
+for await (const work of queue) {
+  if (work.data.type !== "session") continue;
+
+  const sessionId = work.data.id;
+  const box = await getBox(sessionId);
+
+  const env = {
+    ANTHROPIC_ENVIRONMENT_ID: environmentId,
+    ANTHROPIC_SESSION_ID: sessionId,
+    ANTHROPIC_WORK_ID: work.id,
+    ANTHROPIC_WORK_SECRET: work.secret ?? "",
+  };
+
+  const run = await box.exec.session({
+    argv: ["bash", "-c", "setsid nohup node worker.mjs >> worker.log 2>&1 < /dev/null &"],
+    env: Object.entries(env).map(([key, value]) => `${key}=${value}`),
+  });
+  await run.wait();
+  run.close();
+
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  if (!(await isWorkerRunning(box))) console.error(`${sessionId}: worker exited, see worker.log`);
+  else console.log(`${sessionId} -> ${box.id}`);
+}
+```
+
+```bash
+npx tsx --env-file=.env dispatcher.ts
+```
+
+---
+
+## 3. Start a session
+
+Start a session on the `upstash-box` environment from the Claude Console, or from code:
+
+```typescript title="session.ts"
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic();
+
+const agent = await client.beta.agents.create({
+  name: "Coding Assistant",
+  model: "claude-opus-5-5",
+  system: "You work in /workspace/home.",
+  tools: [{ type: "agent_toolset_20260401" }],
+});
+
+const session = await client.beta.sessions.create({
+  agent: agent.id,
+  environment_id: process.env.ANTHROPIC_ENVIRONMENT_ID!,
+});
+
+const stream = await client.beta.sessions.events.stream(session.id);
+
+await client.beta.sessions.events.send(session.id, {
+  events: [
+    {
+      type: "user.message",
+      content: [{ type: "text", text: "Write a Node script that prints the first 20 primes and run it." }],
+    },
+  ],
+});
+
+for await (const event of stream) {
+  if (event.type === "agent.message") {
+    for (const block of event.content) if (block.type === "text") console.log(block.text);
+  }
+  if (event.type === "session.status_idle" && event.stop_reason.type === "end_turn") break;
+}
+```
+
+```bash
+npx tsx --env-file=.env session.ts
+```
+
+Claude's commands and file edits run in the session's box. Send another message to the same session and it continues in the same box, with the same files.
+
+---
+
+## Customize the box
+
+Pass any `Box.create` option in `getBox`:
+
+```typescript
+Box.create({
+  runtime: "node",
+  name: sessionId,
+  labels: ["claude-agent"],
+  // Added to matching requests by the network proxy, never visible inside the box
+  attachHeaders: {
+    "api.github.com": { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
+  },
+  // Only these domains are reachable
+  networkPolicy: {
+    mode: "custom",
+    allowedDomains: ["api.anthropic.com", "registry.npmjs.org", "api.github.com"],
+  },
+});
+```
+
+Values you pass in `env` are readable by the agent; use `attachHeaders` for credentials. Open a server the agent started with `box.getPublicURL(3000)`, and delete a session's box with `box.delete()` when you are done. Pause or delete a box only when `isWorkerRunning(box)` is `false`. The worker exits about a minute after each turn.
+
+---
+
+## Troubleshooting
+
+- **Session stays queued**: the dispatcher is not running, or its environment ID and key don't match the session's environment.
+- **`This API key is not scoped to a workspace`**: create the API key inside a workspace.
+- **Commands never run**: check `/workspace/home/worker.log` in the session's box.
