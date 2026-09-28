@@ -1,0 +1,172 @@
+---
+title: "OpenAI Agents API"
+---
+
+Run the commands of the [OpenAI Agents API](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted) in Upstash Box. The agent runs on OpenAI's side, and each session gets its own box where its commands run. Every box includes the Codex CLI, so there is nothing to install.
+
+---
+
+## 1. Get your keys
+
+- A **Box API key** from the [Upstash Console](https://console.upstash.com/box).
+- An **OpenAI API key** from [API keys](https://platform.openai.com/api-keys).
+- An **environment key** from [Agents → Environments → Keys](https://platform.openai.com/agents?tab=environments&environment_view=keys), in the same project. It's the only OpenAI key that goes into the box.
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+OPENAI_API_KEY=sk-proj-xxxxxxxxxxxx
+OPENAI_EXECUTOR_KEY=sk-proj-xxxxxxxxxxxx
+```
+
+```bash
+npm install @upstash/box openai tsx
+```
+
+---
+
+## 2. Run a session
+
+```typescript title="session.ts"
+import OpenAI from "openai";
+import { Box } from "@upstash/box";
+
+const openai = new OpenAI();
+
+const session = await openai.beta.agents.sessions.create({
+  agent: { model: "gpt-6-astra", instructions: "You work in /workspace/home." },
+  environment: { type: "self_hosted", workspace_directory: "/workspace/home" },
+});
+
+if (session.environment.type !== "self_hosted") throw new Error("Expected a self-hosted environment");
+const { id, remote_url } = session.environment;
+
+const box = await Box.create({
+  runtime: "node",
+  name: session.id,
+  env: { CODEX_API_KEY: process.env.OPENAI_EXECUTOR_KEY! },
+});
+
+const startExecutor =
+  `setsid nohup flock -n /tmp/codex.lock codex exec-server --remote '${remote_url}' ` +
+  `--environment-id '${id}' >> executor.log 2>&1 < /dev/null &`;
+
+await box.exec.command(startExecutor);
+
+const events = await openai.beta.agents.sessions.events.stream(session.id);
+
+await openai.beta.agents.sessions.events.create(session.id, {
+  events: [
+    {
+      type: "agent.session.input.message",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Write a Node script that prints the first 20 primes and run it." }],
+        },
+      ],
+    },
+  ],
+});
+
+for await (const event of events) {
+  if (event.type === "agent.session.environment.failed") throw new Error("Executor failed, see executor.log");
+  if (event.type === "agent.session.turn.output_text.delta") process.stdout.write(event.delta);
+  if (event.type === "agent.session.turn.completed" && !event.turn.subagent_id) break;
+}
+
+await box.pause();
+console.log(`\nSESSION_ID=${session.id} BOX_ID=${box.id}`);
+```
+
+```bash
+npx tsx --env-file=.env session.ts
+```
+
+The agent's commands run in the box. When the turn is done, the box is paused and keeps its files.
+
+---
+
+## 3. Continue later
+
+Pass the printed IDs to continue the same session in the same box:
+
+```typescript title="resume.ts"
+import OpenAI from "openai";
+import { Box } from "@upstash/box";
+
+const [sessionId, boxId] = process.argv.slice(2);
+const openai = new OpenAI();
+
+const session = await openai.beta.agents.sessions.retrieve(sessionId);
+if (session.environment.type !== "self_hosted") throw new Error("Expected a self-hosted environment");
+const { id, remote_url } = session.environment;
+
+// Resumes the box and starts the executor again. flock skips it if one is already running.
+const box = await Box.get(boxId);
+await box.exec.command(
+  `setsid nohup flock -n /tmp/codex.lock codex exec-server --remote '${remote_url}' ` +
+    `--environment-id '${id}' >> executor.log 2>&1 < /dev/null &`,
+);
+
+const events = await openai.beta.agents.sessions.events.stream(sessionId);
+
+await openai.beta.agents.sessions.events.create(sessionId, {
+  events: [
+    {
+      type: "agent.session.input.message",
+      input: [{ role: "user", content: [{ type: "input_text", text: "Run the script you wrote again." }] }],
+    },
+  ],
+});
+
+for await (const event of events) {
+  if (event.type === "agent.session.environment.failed") throw new Error("Executor failed, see executor.log");
+  if (event.type === "agent.session.turn.output_text.delta") process.stdout.write(event.delta);
+  if (event.type === "agent.session.turn.completed" && !event.turn.subagent_id) break;
+}
+
+await box.pause();
+```
+
+```bash
+npx tsx --env-file=.env resume.ts <SESSION_ID> <BOX_ID>
+```
+
+When you are done, delete the session, then the box:
+
+```typescript
+await openai.beta.agents.sessions.delete(sessionId);
+await box.delete();
+```
+
+---
+
+## Customize the box
+
+Pass any `Box.create` option when you create the box:
+
+```typescript
+Box.create({
+  runtime: "node",
+  name: session.id,
+  env: { CODEX_API_KEY: process.env.OPENAI_EXECUTOR_KEY! },
+  // Added to matching requests by the network proxy, never visible inside the box
+  attachHeaders: {
+    "api.github.com": { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` },
+  },
+  // Only these domains are reachable
+  networkPolicy: {
+    mode: "custom",
+    allowedDomains: ["api.openai.com", "codex-cloud-environments.chatgpt.com", "api.github.com"],
+  },
+});
+```
+
+`CODEX_API_KEY` is readable inside the box, which is why it must be the environment key. Open a server the agent started with `box.getPublicURL(3000)`. To start every box with your own tools or repo, create it with `Box.fromSnapshot` instead.
+
+---
+
+## Troubleshooting
+
+- **Script waits and prints nothing**: the executor didn't connect. Check `/workspace/home/executor.log` in the box.
+- **`missing required scope api.agents.environments.connect`**: `OPENAI_EXECUTOR_KEY` must be an environment key, not a regular API key.
