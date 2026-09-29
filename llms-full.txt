@@ -1934,7 +1934,7 @@ An [upload handler](/docs/blob/uploads/upload-handler#the-bucket) on Workers nee
 
 ## Telemetry
 
-The SDK sends its version, runtime and platform as headers on credential requests to Upstash. Turn it off with `UPSTASH_DISABLE_TELEMETRY` in the environment (any value), or `enableTelemetry: false` on the `Bucket`.
+The SDK sends its version, runtime and platform as headers on credential and signing requests to Upstash. Turn it off with `UPSTASH_DISABLE_TELEMETRY` in the environment (any value), or `enableTelemetry: false` on the `Bucket`.
 
 ***
 
@@ -1955,6 +1955,10 @@ await s3.send(
 Buckets are backed by Cloudflare R2 and are S3-compatible. `bucket.s3()` returns a config for `@aws-sdk/client-s3`, for anything the SDK does not wrap: byte ranges, conditional GETs, delimiters and common prefixes, object tagging.
 
 `endpoint` and `credentials` are async providers rather than values. Pass them through as they come, so the aws-sdk can pick up a fresh credential when the old one expires.
+
+<Warning>
+Do not presign URLs with this client. A presigned URL carries the credential, which reads and writes the whole bucket until it expires. Use [`signedReadUrl`](/docs/blob/bucket/reading#signedreadurl) and [`signedUploadUrl`](/docs/blob/bucket/writing#signed-upload-urls), which Upstash signs for one object; see [Who signs a URL](/docs/blob/reference/signing#who-signs-a-url).
+</Warning>
 
 An error message that mentions R2 is talking about the storage layer.
 
@@ -2301,7 +2305,7 @@ All three are optional.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `expiresIn` | `Duration` | `'5m'` | How long to ask for. `'15m'`, `'2h'`, or a bare number of seconds. |
+| `expiresIn` | `Duration` | `'5m'` | How long to ask for, at most `'10m'`. `'2m'`, `'10m'`, or a bare number of seconds. A longer ask gets 10 minutes. |
 | `downloadAs` | `string` | none, displayed inline | Save as this filename instead of displaying inline. |
 | `contentType` | `string` | the stored type | What storage answers with as `Content-Type`, overriding what was stored. |
 
@@ -2315,7 +2319,7 @@ if (!cached || cached.expiresAt < new Date()) {
 }
 ```
 
-`expiresIn` is what you asked for. `expiresAt` is what you got, and it can be sooner, because a link cannot outlive the credential that signed it. Cache the link until `expiresAt`, never until a deadline you compute yourself. This applies to `signedUploadUrl` too. The reason is on [How signing works](/docs/blob/reference/signing#how-long-a-presigned-url-lives).
+`expiresIn` is what you asked for. `expiresAt` is what you got, and it can be sooner, because no link lives longer than 10 minutes. Cache the link until `expiresAt`, never until a deadline you compute yourself. This applies to `signedUploadUrl` too. The reason is on [How signing works](/docs/blob/reference/signing#how-long-a-presigned-url-lives).
 
 ### downloadAs
 
@@ -2479,6 +2483,8 @@ await bucket.put("uploads/../secrets/key.pem", body)
 ```
 
 A path is any non-empty string, with `/` as structure. It is percent-encoded for you, so spaces and unicode are fine. `.` and `..` segments are rejected, not normalized, by every method that takes a path.
+
+Avoid empty segments (`dir/`, `/a`, `a//b`). `put` stores them, but no [signed URL](/docs/blob/reference/signing#path-encoding) can name one, so a private object at such a path can only be read with `get`, and an upload handler refuses the path at `begin`.
 
 ### uniquePath
 
@@ -2650,7 +2656,7 @@ A body over the [multipart threshold](/docs/blob/uploads/large-files#the-multipa
 const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
   contentType: "application/pdf",
   size: pdf.size,
-  expiresIn: "15m",
+  expiresIn: "10m",
 })
 
 await fetch(upload.url, { method: "PUT", headers: upload.headers, body: pdf })
@@ -2662,7 +2668,7 @@ Every option is optional.
 
 | Option | Type | Default | What it does |
 | --- | --- | --- | --- |
-| `expiresIn` | `Duration` | `'1h'` | How long the link should live. |
+| `expiresIn` | `Duration` | `'10m'` | How long the link should live, at most 10 minutes. |
 | `contentType` | `string` | `application/octet-stream` | The `Content-Type` the upload must send, and what the object is stored as. |
 | `cache` | `CacheOption` | the bucket default | The `Cache-Control` the object is stored with. |
 | `metadata` | `Record<string, string>` | none | Written as `x-amz-meta-*`, under the same rules as `put`. |
@@ -2947,14 +2953,14 @@ if (BlobError.is(e)) {
 | `already_exists` | 409 | `already exists` | `put` with `allowOverwrite: false` against a path that already has an object. Carries `etag` and `size`. |
 | `conflict` | 409 | `the object changed since it was read` | `ifUnchanged` did not match, or storage answered `PreconditionFailed`. Also `updateJson` giving up after `maxAttempts` rounds, six by default. |
 | `content_type_not_allowed` | 400 | `content type not allowed` | The declared type is not in `contentTypes`, or the file's leading bytes contradict the declaration. |
-| `invalid_input` | 400 | `invalid input` | Arguments the SDK will not accept: metadata outside printable ASCII, a malformed upload request body, `input` that fails the route's schema, a `del` target that is none of the three shapes. |
+| `invalid_input` | 400 | `invalid input` | Arguments the SDK will not accept: metadata outside printable ASCII, a malformed upload request body, `input` that fails the route's schema, a `del` target that is none of the three shapes, a signed URL for a path with an empty segment. |
 | `too_large` | 413 | `too large` | Over `maxSize`, over the route's `constraints`, or over what a single PUT can carry when `multipart: false` forbids the parts the body needs. Also a 413 from storage or from your platform. |
 | `empty_body` | 400 | `empty body` | A zero-byte file at `begin`, or a `put` from a `Request` with no body left to read. |
 | `length_required` | 411 | `length required` | `put` of an unknown-length stream with neither `size` nor `maxSize`. |
 | `signature_mismatch` | 403 | `signature mismatch` | A 403 from storage that is not a credential problem: the body length or type does not match what was signed. Also a completion where the stored size is not the declared size. |
 | `unauthorized` | 401 | `unauthorized` | The bucket token was rejected, or your own auth check refused the upload. |
-| `forbidden` | 403 | `forbidden` | A completion token that is not valid for this route, or has expired. |
-| `rate_limited` | 429 | `rate limited` | Storage answered `SlowDown` or `TooManyRequests`, or credential requests are being rate limited. |
+| `forbidden` | 403 | `forbidden` | A completion token that is not valid for this route, or has expired. Also a signed URL Upstash refused for the bucket, such as an upload URL on a read-only bucket; `e.cause` says why. |
+| `rate_limited` | 429 | `rate limited` | Storage answered `SlowDown` or `TooManyRequests`, or credential or signing requests are being rate limited. |
 | `mint_backoff` | 429 | `the credential service asked for a backoff longer than a request can wait` | The credential service asked for more than 10 seconds of backoff. `retryAfter` says how long. |
 | `not_ready` | 503 | `bucket is not ready` | The bucket is not ready to serve requests yet. |
 | `partial_delete` | 500 | `some paths were not deleted` | An array or prefix `del` where some objects survived. `failed` lists them. |
@@ -3002,7 +3008,7 @@ new BlobError("too_large", "cat.png is 3.1 MB, over the 2 MB limit").message
 
 Messages are sentence-cased, so an app can print `e.message` directly. A message that opens with an identifier, like a MIME type or a file name, keeps that identifier's case.
 
-`e.message` never carries a credential, a token, or an internal path. Every message is assembled from a code, a caller-supplied string, or an HTTP status.
+`e.message` never carries a credential, a token, or an internal path. Every message is assembled from a code, a caller-supplied string, an HTTP status, or the reason Upstash's signing service gave. A suspended or read-only bucket is the exception: that notice is meant for you, not your users, so it is on `e.cause` instead.
 
 ### Hints fold into the message
 
@@ -3174,7 +3180,7 @@ Three codes come from the credential service rather than from storage or from yo
 
 | Code | Status | Meaning | What to do |
 | ---- | ------ | ------- | ---------- |
-| `unauthorized` | 401 | The bucket token was rejected. | Check `UPSTASH_BLOB_TOKEN`. Nothing retries this. |
+| `unauthorized` | 401 | The bucket token was rejected, or the bucket is suspended. | Check `UPSTASH_BLOB_TOKEN`. When a signed URL was refused, `e.cause` says why. Nothing retries this. |
 | `not_ready` | 503 | The bucket is not ready yet. | Retry the request. |
 | `mint_backoff` | 429 | The service asked for a backoff longer than a request can wait, over 10 seconds. `retryAfter` says how long. | Retry the request later rather than blocking on it. |
 
@@ -3185,7 +3191,7 @@ Credentials are short-lived and re-minted before they expire. One that expires m
 # How Signing Works
 Source: https://upstash.com/docs/blob/reference/signing
 
-Your server holds a bucket token. It exchanges that token for short-lived S3 credentials from Upstash, signs individual URLs with those credentials, and hands only the URLs to the browser. Every URL a browser holds is scoped to one object, one method, one set of headers, and a few minutes.
+Your server holds a bucket token. It exchanges that token for short-lived S3 credentials for its own requests, asks Upstash to sign each URL it hands out, and hands only the URLs to the browser. Every URL a browser holds is scoped to one object, one method, one set of headers, and at most 10 minutes.
 
 This page explains what a browser holding one of these URLs can and cannot do. To upload a file, start with the [Quickstart](/docs/blob/overall/quickstart) instead.
 
@@ -3195,7 +3201,7 @@ This page explains what a browser holding one of these URLs can and cannot do. T
 
 * `UPSTASH_BLOB_TOKEN`, in any form.
 * The key that signs completion tokens. It never leaves your process.
-* The temporary S3 credentials. They are only ever folded into a signature.
+* The temporary S3 credentials. They sign your server's own requests and never appear in a URL.
 * Any ability to list, read, overwrite or delete outside the one object a presigned URL names.
 * Anything `context` or `onBeforeUpload` computed, except what you explicitly return as `metadata` (visible on the object) or `state` (visible in the completion token).
 
@@ -3227,9 +3233,21 @@ A failed mint surfaces as `unauthorized` (the token was rejected), `rate_limited
 
 ***
 
+## Who signs a URL
+
+Upstash does, never your server. A temporary credential cannot sign a URL safely: storage needs its session token on every request, so the URL would carry the token, and the credential's secret can be derived from it. Anyone holding such a URL would hold the credential, and with it every object in the bucket until it expires.
+
+So `signedReadUrl`, `signedUploadUrl` and the upload handler send Upstash the path, the method, the headers to pin and the lifetime, authenticated with the bucket token. Upstash checks them against the token's own bucket and signs with a key no URL reveals. The URL does the one operation it names, on the one object, and nothing else, as often as it is used until it expires.
+
+<Warning>
+Do not presign with an S3 client built from [`bucket.s3()`](/docs/blob/bucket/connecting#using-an-s3-client). Its URLs carry the temporary credential, which works on the whole bucket. Hand out URLs only from `signedReadUrl` and `signedUploadUrl`.
+</Warning>
+
+***
+
 ## Signing a request
 
-Signing is AWS Signature Version 4. Requests your server makes to storage carry the signature in an `Authorization` header. Every URL handed to a browser, and every URL from `signedReadUrl()` or `signedUploadUrl()`, carries it on the query string instead.
+Signing is AWS Signature Version 4. Requests your server makes to storage carry the signature in an `Authorization` header. Every URL handed to a browser, and every URL from `signedReadUrl()` or `signedUploadUrl()`, carries Upstash's signature on the query string instead.
 
 ### Signed headers
 
@@ -3243,16 +3261,20 @@ Paths are percent-encoded per segment, so slashes stay structural and everything
 
 A path containing a `.` or `..` segment is refused rather than normalized. Your server's credential authorizes the whole bucket, and the URL parser resolves `..` before signing, so a traversing key would sign a request against a different object than the one your code named. `uniquePath` guards the same boundary from the other side; see [Writing](/docs/blob/bucket/writing#uniquepath).
 
+A signed URL also cannot name a path with an empty segment (`dir/`, `/a`, `a//b`) or a control character. Asking for one is `invalid_input`, and an upload is refused at `begin`, before its multipart upload is created.
+
 ***
 
 ## How long a presigned URL lives
 
 ```ts
 const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf")
-// expiresAt is the real answer for this link: min(what you asked for, what the signer had left)
+// expiresAt is the real answer for this link: min(what you asked for, 10 minutes)
 ```
 
-A presigned URL cannot outlive the credential that signed it, so the SDK never signs a link for longer than the credential has left. Read links default to 5 minutes, write links to an hour.
+A presigned URL lives at most 10 minutes. Read links default to 5 minutes, write links to 10, and a longer `expiresIn` gets 10.
+
+That ceiling is also how long a URL outlives a change to the bucket. Suspending it or rotating its token stops new URLs from being signed, and making it read-only stops new upload URLs, but none of them revokes a URL already handed out.
 
 Cache the link until `expiresAt` and re-sign after. See [Use expiresAt](/docs/blob/bucket/reading#use-expiresat-not-expiresin).
 
@@ -3339,7 +3361,7 @@ Only the completion token, in `localStorage`, keyed by the route and the file. N
 ```ts
 const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf", {
   downloadAs: "Q3 Report.pdf",
-  expiresIn: "15m",
+  expiresIn: "10m",
 })
 
 const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
@@ -3349,7 +3371,7 @@ const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
 await fetch(upload.url, { method: "PUT", headers: upload.headers, body: bytes })
 ```
 
-The same machinery is available directly, for a CLI, a server-to-server job, or a link in an email.
+The same machinery is available directly, for a CLI or a server-to-server job. For a link in an email, link a route of yours that checks access and signs at click time; a signed link lives at most 10 minutes.
 
 `signedReadUrl` turns `downloadAs` into a `Content-Disposition` header, encoded so a Unicode name arrives intact and a name containing a quote or a newline cannot inject a second header. A `contentType` override is validated as a media type for the same reason.
 
@@ -3385,8 +3407,8 @@ A limit you write by hand takes a `Size`: `maxSize`, `multipart`. A measurement 
 ## Duration
 
 ```ts
-expiresIn: 900       // 15 minutes
-expiresIn: "15m"
+expiresIn: 300       // 5 minutes
+expiresIn: "5m"
 olderThan: "7d"
 cache: "1h"
 ```
