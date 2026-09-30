@@ -58,13 +58,15 @@ const PREAMBLE = `<Tip>
 </Tip>`;
 
 /**
- * The Context7 Ask search endpoint for upstash.com, in the same words as the
- * `context7-ask` meta tag in docs.json. Agents read llms.txt first and rarely
- * read the HTML head, so it is repeated here in both files.
+ * The two search endpoints agents can call, in both files: the Context7 Ask
+ * endpoint (same words as the `context7-ask` meta tag in docs.json) and the
+ * Docs7 search that every Docs7 site serves (same words as the llms.txt Docs7
+ * generates, which this custom file replaces).
  */
 const SEARCH_SECTION = `## Search
 
-This site has a search endpoint: https://context7.com/api/v2/ask?siteKey=ask_4cf2adc7846aa874f833b068&query=<URL-encoded question>. It returns documentation that answers the question, with a source link for each part. No API key is needed. If nothing matches, it says so.`;
+- This site has a search endpoint: https://context7.com/api/v2/ask?siteKey=ask_4cf2adc7846aa874f833b068&query=<URL-encoded question>. It returns documentation that answers the question, with a source link for each part. No API key is needed. If nothing matches, it says so.
+- Search these docs: GET ${SITE_URL}/search?q=<query> returns JSON { results: [{ href, title, heading, snippet, tab }] }. Append .md to any page href for its markdown.`;
 
 interface Entry {
   title: string;
