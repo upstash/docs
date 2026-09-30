@@ -5421,8 +5421,14 @@ export class BoxAgent extends AbstractAgent {
     super();
   }
 
+  private stop?: () => void;
+
   clone() {
     return new BoxAgent(this.getBox) as this;
+  }
+
+  abortRun() {
+    this.stop?.();
   }
 
   run(input: RunAgentInput) {
@@ -5434,6 +5440,7 @@ export class BoxAgent extends AbstractAgent {
       const emit = (event: object) => subscriber.next(event as BaseEvent);
       let stream: Awaited<ReturnType<Box["agent"]["stream"]>> | undefined;
       let cancelled = false;
+      let stopped = false;
       let messageId: string | undefined;
 
       const endMessage = () => {
@@ -5447,6 +5454,10 @@ export class BoxAgent extends AbstractAgent {
         const box = await this.getBox();
         stream = await box.agent.stream({ prompt });
         if (cancelled) return stream.cancel();
+        this.stop = () => {
+          stopped = true;
+          stream?.cancel();
+        };
 
         for await (const chunk of stream) {
           if (chunk.type === "text-delta") {
@@ -5481,7 +5492,11 @@ export class BoxAgent extends AbstractAgent {
       };
 
       forward()
-        .catch((error) => emit({ type: EventType.RUN_ERROR, message: String(error) }))
+        .catch((error) => {
+          endMessage();
+          if (stopped) emit({ type: EventType.RUN_FINISHED, threadId, runId });
+          else emit({ type: EventType.RUN_ERROR, message: String(error) });
+        })
         .finally(() => subscriber.complete());
 
       return () => {
@@ -5585,6 +5600,24 @@ The chat is empty after the reload, but the agent finds the script and edits it.
 
 ***
 
+## Customize
+
+Change the harness and model in `getBox`; see [Agent](/docs/box/overall/agent) for the options.
+
+To cap a run or give the agent standing instructions, pass options with the prompt:
+
+```typescript title="lib/box-agent.ts"
+stream = await box.agent.stream({
+  prompt,
+  timeout: 5 * 60 * 1000,
+  options: { maxBudgetUsd: 1, systemPrompt: "Keep replies short." },
+});
+```
+
+The system prompt is set when the conversation starts and stays for the rest of it.
+
+***
+
 ## Before production
 
 * **Identify users from your auth session.** Replace `getUserId`, and never read the user from the request body: the box name decides whose files the agent can reach.
@@ -5599,6 +5632,8 @@ The chat is empty after the reload, but the agent finds the script and edits it.
 * **`BoxAgent` is not assignable to `AbstractAgent`**: your `@ag-ui/client` version differs from the one `@copilotkit/runtime` uses.
 * **Permission denied writing files**: the agent can only write under `/workspace/home`.
 * **The chat is empty after a reload**: this example keeps visible messages in memory. The agent in the box still has the earlier conversation and files.
+* **`Box cannot start a run in its current state`**: a box runs one prompt at a time. The user sent a message, for example from a second tab, while the agent was still working.
+* **No tool cards with OpenCode**: the OpenCode harness streams only text, so the chat shows the reply without the tool calls.
 * **Box limit reached**: the error comes from `Box.create`. Delete unused boxes in the console or upgrade your plan.
 
 # Vercel Eve Sandboxes
