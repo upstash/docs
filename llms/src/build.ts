@@ -57,6 +57,15 @@ const PREAMBLE = `<Tip>
   Upstash also provides an MCP server (/docs/agent-resources/mcp) to manage and debug your Upstash resources directly from an agent, and an agent-friendly CLI (/docs/agent-resources/cli) for your terminal or CI/CD pipelines.
 </Tip>`;
 
+/**
+ * The Docs7 search every Docs7 site serves, in the same words as the llms.txt
+ * Docs7 generates. This custom file replaces that one, so it lists the search
+ * itself.
+ */
+const SEARCH_SECTION = `## Search
+
+Search these docs: GET ${SITE_URL}/search?q=<query> returns JSON { results: [{ href, title, heading, snippet, tab }] }. Append .md to any page href for its markdown.`;
+
 interface Entry {
   title: string;
   /** Site-relative path without leading slash, e.g. `agent-resources/cli`. */
@@ -167,6 +176,7 @@ function addOrphanMdxFiles(): void {
 function writeLlmsTxt(): void {
   const lines: string[] = ["# Upstash Documentation", ""];
   lines.push(PREAMBLE, "");
+  lines.push(SEARCH_SECTION, "");
   lines.push("## Docs", "");
   for (const e of entries) {
     const url = `${SITE_URL}/${e.path}.md`;
@@ -207,6 +217,7 @@ function writeLlmsFullTxt(): void {
   // visually separated from neighbours.
   const chunks: string[] = [];
   chunks.push(`${PREAMBLE}\n\n`);
+  chunks.push(`${SEARCH_SECTION}\n\n`);
   for (const e of entries) {
     if (isExcludedFromFullTxt(e.path)) {
       const url = `${SITE_URL}/${e.path}.md`;
