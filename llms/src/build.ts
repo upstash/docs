@@ -57,6 +57,15 @@ const PREAMBLE = `<Tip>
   Upstash also provides an MCP server (/docs/agent-resources/mcp) to manage and debug your Upstash resources directly from an agent, and an agent-friendly CLI (/docs/agent-resources/cli) for your terminal or CI/CD pipelines.
 </Tip>`;
 
+/**
+ * The Context7 Ask search endpoint for upstash.com, in the same words as the
+ * `context7-ask` meta tag in docs.json. Agents read llms.txt first and rarely
+ * read the HTML head, so it is repeated here in both files.
+ */
+const SEARCH_SECTION = `## Search
+
+This site has a search endpoint for its pages: https://context7.com/api/v2/ask?siteKey=ask_4cf2adc7846aa874f833b068&query=<URL-encoded question>. It returns the excerpts that match the question, each with its page URL. It needs no API key, and the request holds only the question. If nothing matches, the response says so.`;
+
 interface Entry {
   title: string;
   /** Site-relative path without leading slash, e.g. `agent-resources/cli`. */
@@ -167,6 +176,7 @@ function addOrphanMdxFiles(): void {
 function writeLlmsTxt(): void {
   const lines: string[] = ["# Upstash Documentation", ""];
   lines.push(PREAMBLE, "");
+  lines.push(SEARCH_SECTION, "");
   lines.push("## Docs", "");
   for (const e of entries) {
     const url = `${SITE_URL}/${e.path}.md`;
@@ -207,6 +217,7 @@ function writeLlmsFullTxt(): void {
   // visually separated from neighbours.
   const chunks: string[] = [];
   chunks.push(`${PREAMBLE}\n\n`);
+  chunks.push(`${SEARCH_SECTION}\n\n`);
   for (const e of entries) {
     if (isExcludedFromFullTxt(e.path)) {
       const url = `${SITE_URL}/${e.path}.md`;
