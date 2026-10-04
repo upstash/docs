@@ -1,0 +1,166 @@
+---
+title: "Scheduled Browser Use Agent"
+---
+
+Run a [Browser Use](https://browser-use.com) agent inside Upstash Box. The agent, the browser, and the files it writes all live in one box, and a schedule runs it again on a cron.
+
+This guide builds an agent that reads Hacker News every morning and saves a report to the box.
+
+---
+
+## 1. Set up
+
+- A **Box API key** from the [Upstash Console](https://console.upstash.com/box).
+- An **Anthropic API key** from [API keys](https://platform.claude.com/settings/keys).
+
+```bash
+export UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+export ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxx
+```
+
+```bash
+pip install upstash-box
+```
+
+---
+
+## 2. Write the agent
+
+This file runs inside the box. It starts the box's Chromium, runs the task, and writes the result to `reports/`.
+
+```python title="agent.py"
+import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
+
+from browser_use import Agent, Browser, ChatAnthropic
+
+TASK = """
+Go to news.ycombinator.com and find the first 3 stories about AI on the front page.
+Return a markdown list with the title, link, and points of each.
+Open only the first one and add a two-sentence summary of it.
+"""
+
+
+async def main():
+    agent = Agent(
+        task=TASK,
+        llm=ChatAnthropic(model="claude-sonnet-4-5"),
+        browser=Browser(
+            executable_path="/usr/bin/chromium",
+            headless=True,
+            chromium_sandbox=False,
+        ),
+    )
+    history = await agent.run(max_steps=15)
+    if not history.is_successful():
+        raise SystemExit("The agent did not finish the task")
+
+    name = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M")
+    report = Path("/workspace/home/reports") / f"{name}.md"
+    report.parent.mkdir(exist_ok=True)
+    report.write_text(history.final_result())
+
+
+asyncio.run(main())
+```
+
+---
+
+## 3. Set up the box
+
+This script runs on your machine. It creates a box with a browser, installs Browser Use, runs the agent once, and schedules it.
+
+```python title="setup.py"
+import os
+
+from upstash_box import Box
+
+box = Box.create(
+    runtime="python",
+    browser=True,
+    env={"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]},
+)
+print(box.id)
+
+
+def run(command):
+    result = box.exec.command(command)
+    if result.status != "completed":
+        raise RuntimeError(result.result)
+
+
+# Install Browser Use and copy the agent in
+run("pip install browser-use")
+box.files.write(path="agent.py", content=open("agent.py").read())
+
+# Run it once and print the report
+run("python3 agent.py")
+for file in box.files.list("reports"):
+    print(box.files.read(f"reports/{file.name}"))
+
+# Run it every day at 08:00 UTC
+box.schedule.exec(
+    cron="0 8 * * *",
+    command=["python3", "/workspace/home/agent.py"],
+)
+```
+
+```bash
+python setup.py
+```
+
+Example output after the box id. Stories and scores will vary:
+
+```md
+## Top 3 AI Stories from Hacker News
+
+1. **AI companies leak data to advertisers [pdf]** - 179 points
+   - Link: https://jorgegarciaherrero.com/wp-content/interactivos/20260916-Prompt-like-a-butterfly-sting-like-a-tracker-(clean).pdf
+   - Summary: The paper analyzes privacy practices of conversational AI services, finding that 6 out of 9 web services and 3 out of 8 Android apps leak conversation data to third parties. This includes sensitive information such as URLs, titles, prompts, and screenshots being shared alongside persistent user identifiers.
+
+2. **Jeeves. Reasoning improves Jev-like decision models** - 54 points
+   - Link: https://github.com/PostHog/jeeves
+
+3. **Nvidia wants to put a watchdog chip next to every AI agent** - 197 points
+   - Link: https://www.cnbc.com/2026/09/28/nvidia-releases.html
+```
+
+The box pauses when idle. Each scheduled run wakes it, and the reports stay on the box.
+
+<Note>
+  Run `setup.py` once. Each run creates a new box with its own daily schedule.
+</Note>
+
+---
+
+## 4. Read the reports
+
+Re-attach with the box id that `setup.py` printed:
+
+```python title="reports.py"
+from upstash_box import Box
+
+box = Box.get("your-box-id")
+
+for file in box.files.list("reports"):
+    print(box.files.read(f"reports/{file.name}"))
+```
+
+```bash
+python reports.py
+```
+
+Delete the box when you no longer need it:
+
+```python
+box.delete()
+```
+
+---
+
+## Next steps
+
+- [Schedules](/box/overall/schedules) to pause a schedule or get a webhook when a run finishes.
+- [Connect over CDP](/box/overall/browser/connect) to drive the box browser with Browser Use from your own machine.
+- [Browser](/box/overall/browser/overview) for the SDK's own `observe`, `act`, and `extract`.
