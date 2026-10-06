@@ -1,47 +1,20 @@
-// The first action copies `npx upstash`, which (run in a terminal) connects the
-// reader's coding agents to Upstash. The setup prompt passed as children is the
-// second option, for pasting into an agent instead.
-export const Hero = ({ children }) => {
-  const command = "npx upstash";
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard?.writeText(command).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
-
-  return (
-    <div className="u-hero">
-      <h1>Build with Upstash</h1>
-      <p>
-        Serverless data, messaging, and AI infrastructure for developers. Scale to
-        zero, pay per request.
-      </p>
-      <div className="u-actions">
-        <button
-          type="button"
-          className="u-action u-action--primary u-command"
-          onClick={copy}
-          aria-label={copied ? "Copied" : `Copy setup command: ${command}`}
-        >
-          <code>{command}</code>
-          {copied ? (
-            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-          ) : (
-            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect width="14" height="14" x="8" y="8" rx="2" />
-              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-            </svg>
-          )}
-        </button>
-        {children}
-      </div>
-    </div>
-  );
-};
+// Hero for the docs home. The actions passed as children are the `npx upstash`
+// command box (a real code block, so the renderer's own copy button handles the
+// click) and the setup prompt; the hint under them says what the command does.
+export const Hero = ({ children }) => (
+  <div className="u-hero">
+    <h1>Build with Upstash</h1>
+    <p>
+      Serverless data, messaging, and AI infrastructure for developers. Scale to
+      zero, pay per request.
+    </p>
+    <div className="u-actions">{children}</div>
+    <p className="u-hero__hint">
+      Run it in your terminal to add the Upstash MCP server and skills to Claude Code, Codex, Cursor, and
+      other agents.
+    </p>
+  </div>
+);
 
 export const PromptToolIcons = () => (
   <span className="u-prompt-tools" aria-hidden="true">
