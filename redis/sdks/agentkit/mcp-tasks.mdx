@@ -7,7 +7,7 @@ description: "Durable long-running tools for MCP servers: a tool answers with a 
 An MCP tool call is a request that waits for its response. When the work takes minutes, something
 gives up first: the client's tool timeout, your serverless function's limit, or the model.
 
-`@upstash/mcp-tasks` turns a slow tool into a task. The tool answers immediately with a task id. The
+`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task id. The
 work runs on [QStash](/qstash/overall/getstarted) or [Upstash Workflow](/workflow/getstarted) so it
 survives restarts and time limits, and the task record lives in Upstash Redis. The model checks on it
 with a shared `task_status` tool and can stop it with `task_cancel`.
@@ -16,7 +16,7 @@ These are ordinary MCP tools, so they work in every client today: Claude Code, C
 OpenCode and ChatGPT. No client capability is required.
 
 ```bash
-npm install @upstash/mcp-tasks @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
 ```
 
 ## Quickstart
@@ -27,8 +27,8 @@ Three files in a Next.js app.
 
 ```ts lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer } from "@upstash/mcp-tasks";
-import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-tasks/upstash";
+import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
 import * as z from "zod";
 
 // Where the task record lives, and how the work is delivered.
@@ -209,7 +209,7 @@ For longer work, use `WorkflowDispatcher`. Each step runs as its own invocation,
 are replayed from a journal instead of re-run, so a task can run for as long as it needs:
 
 ```ts lib/tasks.ts
-import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-tasks/upstash";
+import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/tasks/upstash";
 import type { WorkflowContext } from "@upstash/workflow";
 
 export const tasks = createTaskLayer<WorkflowContext>({
@@ -249,9 +249,24 @@ Put side effects inside `task.run`. Code outside a step runs again on every invo
 | `defaults.pollIntervalMs` | 2 seconds | Poll interval suggested to the model |
 | `principal` | none | `(auth) => string \| undefined`. Scopes tasks to their caller. |
 | `toolNames` | `task_status`, `task_cancel` | Rename the two shared tools |
+| `onSettle` | none | `(task) => void`. Called once when a task completes, fails or is cancelled. |
 
 **`registerTask` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
 `pollIntervalMs`, `queuedMessage`, `completedMessage` and `idempotencyKey`.
+
+## Push instead of poll
+
+Hosts that support MCP Events, ChatGPT today, can get a webhook when a task finishes instead of
+polling. Wire the `task.finished` event from [MCP Events](/redis/sdks/agentkit/mcp-events) into
+`onSettle`:
+
+```ts
+import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
+
+const taskFinished = taskFinishedEvent(events);
+
+export const tasks = createTaskLayer({ store, dispatcher, onSettle: taskFinished.onSettle });
+```
 
 ## Why tools, not the Tasks extension?
 
@@ -265,5 +280,5 @@ once clients support it.
 
 ## Example
 
-The [MCP Tasks demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-tasks-demo) is a
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo) is a
 Next.js app that runs the same tool on QStash and on Workflow, with a live log of every MCP request.

@@ -21747,6 +21747,13 @@ const client = new Client({
 });
 ```
 
+# MCP Events with QStash
+Source: https://upstash.com/docs/qstash/sdks/ts/mcp-events
+
+<Card title="MCP Events" icon="bell" href="/redis/sdks/agentkit/mcp-events" horizontal>
+  MCP Events for your server: subscriptions in Upstash Redis, signed webhook deliveries retried by QStash.
+</Card>
+
 # Long-Running MCP Tools with QStash
 Source: https://upstash.com/docs/qstash/sdks/ts/mcp-tasks
 
@@ -87173,13 +87180,449 @@ Two complete `eve` apps live in the AgentKit repo:
   </Card>
 </CardGroup>
 
+# MCP Events with Redis and QStash
+Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-events
+
+Most agents only act when someone messages them. [MCP Events](https://github.com/modelcontextprotocol/experimental-ext-triggers-events)
+lets an agent wait for something instead: the host subscribes to an event on your MCP server, and
+when it happens your server POSTs a signed webhook that wakes the agent up.
+
+`@upstash/mcp-toolkit/events` implements the server side. You define events with typed payloads and
+call `emit` when something happens. The toolkit handles subscriptions, callback verification,
+signing and retries: subscriptions live in Upstash Redis, and every delivery goes through
+[QStash](/docs/qstash/overall/getstarted), which retries failed webhooks with backoff.
+
+<Note>
+  MCP Events is a draft. As of October 2026, ChatGPT is the host that subscribes to it (webhook
+  delivery, in Work chats), following [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-events).
+  Claude Code, Cursor and OpenCode don't subscribe yet.
+</Note>
+
+```bash
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
+```
+
+## Quickstart
+
+Three files in a Next.js app.
+
+### 1. Define the event layer and your events
+
+```ts lib/events.ts
+import { createEventLayer } from "@upstash/mcp-toolkit/events";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events/upstash";
+import * as z from "zod";
+
+export const events = createEventLayer({
+  store: new RedisSubscriptionStore(),
+  delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
+  // Receives the AuthInfo your auth middleware attached to the request.
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+});
+
+export const commentCreated = events.define("comment.created", {
+  description: "A new review comment was added to a document.",
+  // What a subscriber filters on.
+  input: z.object({ documentId: z.string() }),
+  // What every delivery carries.
+  payload: z.object({ documentId: z.string(), commentId: z.string(), text: z.string() }),
+  // Optional: who may subscribe with these arguments.
+  authorize: (args, { principal }) => canRead(principal, args.documentId),
+});
+```
+
+### 2. Register the events on your MCP server
+
+```ts lib/server.ts
+import { McpServer } from "@modelcontextprotocol/server";
+import { events } from "./events";
+
+export function createServer() {
+  const server = new McpServer({ name: "docs", version: "1.0.0" });
+  // Adds events/list, events/subscribe and events/unsubscribe next to your tools.
+  events.register(server);
+  return server;
+}
+```
+
+Serve it with `createMcpHandler(() => createServer())` as usual. Nothing else changes on the MCP
+endpoint.
+
+### 3. Add the delivery endpoint
+
+```ts app/api/events/route.ts
+import { events } from "../../../lib/events";
+
+export const POST = events.createDeliveryHandler();
+```
+
+QStash delivers each event here. The handler verifies the QStash signature, signs the envelope
+with the subscriber's secret, POSTs it to the host, and answers `500` when the host's callback
+failed so QStash retries.
+
+### Emit
+
+Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
+
+```ts
+await commentCreated.emit({ documentId: "doc_123", commentId: "c_9", text: "Ship it?" });
+```
+
+`emit` is typed by the `payload` schema and validates against it. It returns the event id and how
+many subscriptions matched.
+
+### Environment variables
+
+```bash .env
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+QSTASH_TOKEN=...
+QSTASH_CURRENT_SIGNING_KEY=...
+QSTASH_NEXT_SIGNING_KEY=...
+# Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+MCP_EVENTS_SECRET_KEY=...
+# Where QStash delivers events. Must be publicly reachable.
+APP_URL=https://your-app.vercel.app
+```
+
+## What happens on the wire
+
+1. The host calls `events/subscribe` with the event name, arguments, its callback URL and a
+   `whsec_` signing secret.
+2. Your server POSTs a signed verification challenge to the callback and requires it echoed back,
+   then stores the subscription and answers with its `id` and a `refreshBefore` time.
+3. When you `emit`, every matching subscription gets a POST with the event envelope and
+   [Standard Webhooks](https://www.standardwebhooks.com/) headers:
+
+```json
+{
+  "eventId": "evt_7c1…",
+  "name": "comment.created",
+  "timestamp": "2026-10-07T12:05:00Z",
+  "data": { "documentId": "doc_123", "commentId": "c_9", "text": "Ship it?" },
+  "cursor": null
+}
+```
+
+The event id stays the same across retries, so the host can drop duplicates. The signature is
+computed fresh on every attempt.
+
+## Matching
+
+A subscription matches when every argument it gave equals the emitted value. Emitting
+`{ repo: "a", branch: "main" }` reaches subscribers of `{ repo: "a" }`, of
+`{ repo: "a", branch: "main" }`, and of `{}`.
+
+By default the values come from the payload fields named in the input schema. Pass options to
+control it:
+
+```ts
+await commentCreated.emit(payload, {
+  args: { documentId }, // match on these values instead
+  owner: userId, // only this user's subscriptions
+  eventId: comment.id, // emitting the same id twice is deduplicated
+});
+```
+
+For conditions that exact matching can't express, add `match: (args, payload) => boolean` to the
+event definition.
+
+## Task finished events
+
+If you use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), a `task.finished` event lets an
+event-capable host stop polling `task_status`:
+
+```ts
+import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
+
+const taskFinished = taskFinishedEvent(events);
+
+export const tasks = createTaskLayer({ store, dispatcher, principal, onSettle: taskFinished.onSettle });
+```
+
+It fires once when a task completes, fails or is cancelled, and only to subscriptions created by
+the task's owner. A host subscribes with no arguments for every task, or with `taskId` for one. The
+payload includes the result when it fits in the 256 KiB envelope.
+
+## Security
+
+* **Callback URLs** must be `https` on a public host. `localhost`, `.internal` names, private and
+  link-local IPs, and credentials in the URL are refused, and redirects are never followed.
+* **Verification:** a subscription is stored only after the callback echoes a signed challenge.
+  Failures return error `-32015` with a `reason` such as `challenge_failed` or `timeout`.
+* **Secrets** are stored encrypted with `MCP_EVENTS_SECRET_KEY`. A refresh with the same secret
+  skips the challenge; a new secret verifies again.
+* **Authorization:** `authorize` runs on every subscribe and refresh.
+
+<Warning>
+  `allowInsecureCallbacks: true` accepts `http://` and private addresses. Use it only for local
+  development, never in production.
+</Warning>
+
+## Host responses
+
+| Callback answers | What happens |
+| --- | --- |
+| `2xx` | Delivered. |
+| `410 Gone` | The subscription is deleted. |
+| `413` | The event is dropped, not retried. |
+| Anything else, or no answer | QStash retries with backoff. |
+
+## Options
+
+**`createEventLayer`**
+
+| Option | Default | |
+| --- | --- | --- |
+| `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
+| `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
+| `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required. |
+| `principal` | none | `(auth) => string \| undefined`. Part of the subscription id, passed to `authorize`. |
+| `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
+| `defaults.maxTtlMs` | 30 days | The most the server grants |
+| `allowInsecureCallbacks` | `false` | Local development only |
+| `timeoutMs` | 10 seconds | Timeout for each POST to a callback |
+
+**`define` config:** `description` and `payload`, plus optional `title`, `input`, `authorize` and
+`match`.
+
+**`QStashDelivery`:** `url` (required), `retries` (default 3), `retryDelay`, `headers`, `qstash`,
+`receiver`.
+
+**`RedisSubscriptionStore`:** `redis`, `prefix` (default `mcp-events:`).
+
+Poll and stream delivery modes and replay cursors from the draft aren't implemented.
+
+## Example
+
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo)
+emits `task.finished` and includes a local receiver that verifies each signed delivery.
+
+# MCP Events with Redis and QStash
+Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-events
+
+Most agents only act when someone messages them. [MCP Events](https://github.com/modelcontextprotocol/experimental-ext-triggers-events)
+lets an agent wait for something instead: the host subscribes to an event on your MCP server, and
+when it happens your server POSTs a signed webhook that wakes the agent up.
+
+`@upstash/mcp-toolkit/events` implements the server side. You define events with typed payloads and
+call `emit` when something happens. The toolkit handles subscriptions, callback verification,
+signing and retries: subscriptions live in Upstash Redis, and every delivery goes through
+[QStash](/docs/qstash/overall/getstarted), which retries failed webhooks with backoff.
+
+<Note>
+  MCP Events is a draft. As of October 2026, ChatGPT is the host that subscribes to it (webhook
+  delivery, in Work chats), following [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-events).
+  Claude Code, Cursor and OpenCode don't subscribe yet.
+</Note>
+
+```bash
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
+```
+
+## Quickstart
+
+Three files in a Next.js app.
+
+### 1. Define the event layer and your events
+
+```ts lib/events.ts
+import { createEventLayer } from "@upstash/mcp-toolkit/events";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events/upstash";
+import * as z from "zod";
+
+export const events = createEventLayer({
+  store: new RedisSubscriptionStore(),
+  delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
+  // Receives the AuthInfo your auth middleware attached to the request.
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+});
+
+export const commentCreated = events.define("comment.created", {
+  description: "A new review comment was added to a document.",
+  // What a subscriber filters on.
+  input: z.object({ documentId: z.string() }),
+  // What every delivery carries.
+  payload: z.object({ documentId: z.string(), commentId: z.string(), text: z.string() }),
+  // Optional: who may subscribe with these arguments.
+  authorize: (args, { principal }) => canRead(principal, args.documentId),
+});
+```
+
+### 2. Register the events on your MCP server
+
+```ts lib/server.ts
+import { McpServer } from "@modelcontextprotocol/server";
+import { events } from "./events";
+
+export function createServer() {
+  const server = new McpServer({ name: "docs", version: "1.0.0" });
+  // Adds events/list, events/subscribe and events/unsubscribe next to your tools.
+  events.register(server);
+  return server;
+}
+```
+
+Serve it with `createMcpHandler(() => createServer())` as usual. Nothing else changes on the MCP
+endpoint.
+
+### 3. Add the delivery endpoint
+
+```ts app/api/events/route.ts
+import { events } from "../../../lib/events";
+
+export const POST = events.createDeliveryHandler();
+```
+
+QStash delivers each event here. The handler verifies the QStash signature, signs the envelope
+with the subscriber's secret, POSTs it to the host, and answers `500` when the host's callback
+failed so QStash retries.
+
+### Emit
+
+Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
+
+```ts
+await commentCreated.emit({ documentId: "doc_123", commentId: "c_9", text: "Ship it?" });
+```
+
+`emit` is typed by the `payload` schema and validates against it. It returns the event id and how
+many subscriptions matched.
+
+### Environment variables
+
+```bash .env
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+QSTASH_TOKEN=...
+QSTASH_CURRENT_SIGNING_KEY=...
+QSTASH_NEXT_SIGNING_KEY=...
+# Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+MCP_EVENTS_SECRET_KEY=...
+# Where QStash delivers events. Must be publicly reachable.
+APP_URL=https://your-app.vercel.app
+```
+
+## What happens on the wire
+
+1. The host calls `events/subscribe` with the event name, arguments, its callback URL and a
+   `whsec_` signing secret.
+2. Your server POSTs a signed verification challenge to the callback and requires it echoed back,
+   then stores the subscription and answers with its `id` and a `refreshBefore` time.
+3. When you `emit`, every matching subscription gets a POST with the event envelope and
+   [Standard Webhooks](https://www.standardwebhooks.com/) headers:
+
+```json
+{
+  "eventId": "evt_7c1…",
+  "name": "comment.created",
+  "timestamp": "2026-10-07T12:05:00Z",
+  "data": { "documentId": "doc_123", "commentId": "c_9", "text": "Ship it?" },
+  "cursor": null
+}
+```
+
+The event id stays the same across retries, so the host can drop duplicates. The signature is
+computed fresh on every attempt.
+
+## Matching
+
+A subscription matches when every argument it gave equals the emitted value. Emitting
+`{ repo: "a", branch: "main" }` reaches subscribers of `{ repo: "a" }`, of
+`{ repo: "a", branch: "main" }`, and of `{}`.
+
+By default the values come from the payload fields named in the input schema. Pass options to
+control it:
+
+```ts
+await commentCreated.emit(payload, {
+  args: { documentId }, // match on these values instead
+  owner: userId, // only this user's subscriptions
+  eventId: comment.id, // emitting the same id twice is deduplicated
+});
+```
+
+For conditions that exact matching can't express, add `match: (args, payload) => boolean` to the
+event definition.
+
+## Task finished events
+
+If you use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), a `task.finished` event lets an
+event-capable host stop polling `task_status`:
+
+```ts
+import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
+
+const taskFinished = taskFinishedEvent(events);
+
+export const tasks = createTaskLayer({ store, dispatcher, principal, onSettle: taskFinished.onSettle });
+```
+
+It fires once when a task completes, fails or is cancelled, and only to subscriptions created by
+the task's owner. A host subscribes with no arguments for every task, or with `taskId` for one. The
+payload includes the result when it fits in the 256 KiB envelope.
+
+## Security
+
+* **Callback URLs** must be `https` on a public host. `localhost`, `.internal` names, private and
+  link-local IPs, and credentials in the URL are refused, and redirects are never followed.
+* **Verification:** a subscription is stored only after the callback echoes a signed challenge.
+  Failures return error `-32015` with a `reason` such as `challenge_failed` or `timeout`.
+* **Secrets** are stored encrypted with `MCP_EVENTS_SECRET_KEY`. A refresh with the same secret
+  skips the challenge; a new secret verifies again.
+* **Authorization:** `authorize` runs on every subscribe and refresh.
+
+<Warning>
+  `allowInsecureCallbacks: true` accepts `http://` and private addresses. Use it only for local
+  development, never in production.
+</Warning>
+
+## Host responses
+
+| Callback answers | What happens |
+| --- | --- |
+| `2xx` | Delivered. |
+| `410 Gone` | The subscription is deleted. |
+| `413` | The event is dropped, not retried. |
+| Anything else, or no answer | QStash retries with backoff. |
+
+## Options
+
+**`createEventLayer`**
+
+| Option | Default | |
+| --- | --- | --- |
+| `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
+| `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
+| `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required. |
+| `principal` | none | `(auth) => string \| undefined`. Part of the subscription id, passed to `authorize`. |
+| `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
+| `defaults.maxTtlMs` | 30 days | The most the server grants |
+| `allowInsecureCallbacks` | `false` | Local development only |
+| `timeoutMs` | 10 seconds | Timeout for each POST to a callback |
+
+**`define` config:** `description` and `payload`, plus optional `title`, `input`, `authorize` and
+`match`.
+
+**`QStashDelivery`:** `url` (required), `retries` (default 3), `retryDelay`, `headers`, `qstash`,
+`receiver`.
+
+**`RedisSubscriptionStore`:** `redis`, `prefix` (default `mcp-events:`).
+
+Poll and stream delivery modes and replay cursors from the draft aren't implemented.
+
+## Example
+
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo)
+emits `task.finished` and includes a local receiver that verifies each signed delivery.
+
 # Long-Running MCP Tools with Redis and QStash
 Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-tasks
 
 An MCP tool call is a request that waits for its response. When the work takes minutes, something
 gives up first: the client's tool timeout, your serverless function's limit, or the model.
 
-`@upstash/mcp-tasks` turns a slow tool into a task. The tool answers immediately with a task id, the
+`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task id, the
 work runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted) so it
 survives restarts and time limits, and the task record lives in Upstash Redis. The model checks on it
 with a shared `task_status` tool and can stop it with `task_cancel`.
@@ -87188,7 +87631,7 @@ These are ordinary MCP tools, so they work in every client today: Claude Code, C
 OpenCode and ChatGPT. No client capability is required.
 
 ```bash
-npm install @upstash/mcp-tasks @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
 ```
 
 ## Quickstart
@@ -87199,8 +87642,8 @@ Three files in a Next.js app.
 
 ```ts lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer } from "@upstash/mcp-tasks";
-import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-tasks/upstash";
+import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
 import * as z from "zod";
 
 // Where the task record lives, and how the work is delivered.
@@ -87381,7 +87824,7 @@ For longer work, use `WorkflowDispatcher`. Each step runs as its own invocation,
 are replayed from a journal instead of re-run, so a task can run for as long as it needs:
 
 ```ts lib/tasks.ts
-import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-tasks/upstash";
+import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/tasks/upstash";
 import type { WorkflowContext } from "@upstash/workflow";
 
 export const tasks = createTaskLayer<WorkflowContext>({
@@ -87421,9 +87864,24 @@ Put side effects inside `task.run`. Code outside a step runs again on every invo
 | `defaults.pollIntervalMs` | 2 seconds | Poll interval suggested to the model |
 | `principal` | none | `(auth) => string \| undefined`. Scopes tasks to their caller. |
 | `toolNames` | `task_status`, `task_cancel` | Rename the two shared tools |
+| `onSettle` | none | `(task) => void`. Called once when a task completes, fails or is cancelled. |
 
 **`registerTask` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
 `pollIntervalMs`, `queuedMessage`, `completedMessage` and `idempotencyKey`.
+
+## Push instead of poll
+
+Hosts that support MCP Events, ChatGPT today, can get a webhook when a task finishes instead of
+polling. Wire the `task.finished` event from [MCP Events](/docs/redis/sdks/agentkit/mcp-events) into
+`onSettle`:
+
+```ts
+import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
+
+const taskFinished = taskFinishedEvent(events);
+
+export const tasks = createTaskLayer({ store, dispatcher, onSettle: taskFinished.onSettle });
+```
 
 ## Why tools, not the Tasks extension?
 
@@ -87437,7 +87895,7 @@ once clients support it.
 
 ## Example
 
-The [MCP Tasks demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-tasks-demo) is a
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo) is a
 Next.js app that runs the same tool on QStash and on Workflow, with a live log of every MCP request.
 
 # Long-Running MCP Tools with Redis and QStash
@@ -87446,7 +87904,7 @@ Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-tasks
 An MCP tool call is a request that waits for its response. When the work takes minutes, something
 gives up first: the client's tool timeout, your serverless function's limit, or the model.
 
-`@upstash/mcp-tasks` turns a slow tool into a task. The tool answers immediately with a task id, the
+`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task id, the
 work runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted) so it
 survives restarts and time limits, and the task record lives in Upstash Redis. The model checks on it
 with a shared `task_status` tool and can stop it with `task_cancel`.
@@ -87455,7 +87913,7 @@ These are ordinary MCP tools, so they work in every client today: Claude Code, C
 OpenCode and ChatGPT. No client capability is required.
 
 ```bash
-npm install @upstash/mcp-tasks @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
 ```
 
 ## Quickstart
@@ -87466,8 +87924,8 @@ Three files in a Next.js app.
 
 ```ts lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer } from "@upstash/mcp-tasks";
-import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-tasks/upstash";
+import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
 import * as z from "zod";
 
 // Where the task record lives, and how the work is delivered.
@@ -87648,7 +88106,7 @@ For longer work, use `WorkflowDispatcher`. Each step runs as its own invocation,
 are replayed from a journal instead of re-run, so a task can run for as long as it needs:
 
 ```ts lib/tasks.ts
-import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-tasks/upstash";
+import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/tasks/upstash";
 import type { WorkflowContext } from "@upstash/workflow";
 
 export const tasks = createTaskLayer<WorkflowContext>({
@@ -87688,9 +88146,24 @@ Put side effects inside `task.run`. Code outside a step runs again on every invo
 | `defaults.pollIntervalMs` | 2 seconds | Poll interval suggested to the model |
 | `principal` | none | `(auth) => string \| undefined`. Scopes tasks to their caller. |
 | `toolNames` | `task_status`, `task_cancel` | Rename the two shared tools |
+| `onSettle` | none | `(task) => void`. Called once when a task completes, fails or is cancelled. |
 
 **`registerTask` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
 `pollIntervalMs`, `queuedMessage`, `completedMessage` and `idempotencyKey`.
+
+## Push instead of poll
+
+Hosts that support MCP Events, ChatGPT today, can get a webhook when a task finishes instead of
+polling. Wire the `task.finished` event from [MCP Events](/docs/redis/sdks/agentkit/mcp-events) into
+`onSettle`:
+
+```ts
+import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
+
+const taskFinished = taskFinishedEvent(events);
+
+export const tasks = createTaskLayer({ store, dispatcher, onSettle: taskFinished.onSettle });
+```
 
 ## Why tools, not the Tasks extension?
 
@@ -87704,7 +88177,7 @@ once clients support it.
 
 ## Example
 
-The [MCP Tasks demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-tasks-demo) is a
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo) is a
 Next.js app that runs the same tool on QStash and on Workflow, with a live log of every MCP request.
 
 # TanStack AI Persistence, Resumable Streams & Memory with Redis
