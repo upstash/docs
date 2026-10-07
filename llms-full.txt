@@ -113101,18 +113101,52 @@ If no slots are available, new steps enter the **waitlist** until resources free
 
   <img alt="Workflow parallelism waitlist" />
 
+## Step-level Flow Control
+
+The flow control configuration of a run applies to all of its steps. To limit a single `context.run` step more
+strictly, pass a flow control configuration as the third argument of `context.run`:
+
+```typescript
+export const { POST } = serve(async (context) => {
+  await context.run("prepare", () => { ... });
+
+  await context.run(
+    "charge customer",
+    () => chargeCustomer(),
+    {
+      flowControl: { key: "payment-provider", parallelism: 3 },
+    }
+  );
+
+  await context.run("notify", () => { ... });
+});
+```
+
+Only the `charge customer` step is bound by the `payment-provider` key. The other steps keep the configuration
+the run was triggered with. Since the key is shared, at most 3 `charge customer` steps run at the same time
+across all runs using that key, no matter how many runs are active.
+
+Following the analogy above, this lets you enforce a parallelism limit on the "green" steps only.
+
+The step-level configuration replaces the run's flow control for that step as a whole: a step with its own
+flow control configuration does not also count against the run's flow control key.
+
 <Note>
-Upstash Workflow does not support per-step level configuration. Meaning that you can attach a flow-control configuration
-to the workflow run and all the steps will inherit to the same limits.
-Following the analogy above, you cannot enforce parallelism limit on "green" steps natively.
+When the step with flow control is reached right after a `context.run`, `context.sleep` or
+`context.sleepUntil` step, its configuration is attached to the request which delivers it, at no extra cost.
+In other cases (for example, when it is the first step of a run or comes after a `context.call`),
+the SDK publishes an additional hidden request to apply the configuration. This request is not shown in the
+workflow logs.
 
-The context.call and context.invoke steps are exception this to this rule and accept their own flow control configuration:
-
-* [context.call](/docs/workflow/basics/context/call) – lets you run external HTTP requests under a separate key, so you can throttle third‑party API calls independently of your workflow logic.
-* [context.invoke](/docs/workflow/basics/context/invoke) – starts a new workflow run with its own flow control configuration. This allows the invoked workflow to run under different limits than the parent workflow, giving you more precise control.
-
-If you want to throttle a specific `context.run` step, the recommended approach is to **extract it into a separate workflow** and call it using `context.invoke()` with its own flow control configuration with a stricter limits.
+Steps in a parallel group carry their own configuration and never need the extra request.
 </Note>
+
+`context.call` and `context.invoke` accept their own flow control configuration too:
+
+* [context.call](/docs/workflow/steps/call) – lets you run external HTTP requests under a separate key, so you can throttle third‑party API calls independently of your workflow logic.
+* [context.invoke](/docs/workflow/steps/invoke) – starts a new workflow run with its own flow control configuration.
+
+Inside a step, `context.flowControl` returns the flow control configuration applied to the current delivery.
 
 ## Configuration
 
@@ -113617,6 +113651,27 @@ const { workflowRunId } = await client.trigger({
   retryDelay: "(1 + retried) * 1000"
 })
 ```
+
+### Configure Retries for a Single Step
+
+The retry configuration of a run applies to all of its steps. You can override it for a single `context.run`
+step by passing `retries` and `retryDelay` as the third argument:
+
+```typescript Configure Retries for a Single Step
+export const { POST } = serve(async (context) => {
+  await context.run(
+    "call flaky service",
+    () => callFlakyService(),
+    {
+      retries: 5,
+      retryDelay: "1000",
+    }
+  );
+});
+```
+
+Any field left unset falls back to the configuration the run was triggered with.
+The step-level options can be combined with [step-level flow control](/docs/workflow/features/flow-control#step-level-flow-control).
 
 # Prevent Retries
 Source: https://upstash.com/docs/workflow/features/retries/prevent-retries
@@ -114326,13 +114381,13 @@ These steps accept their own configuration options, allowing fine-grained contro
 If not specified, they fall back to their default values.
 
 For details, see:
-* [context.call](/docs/workflow/basics/context/run)
-* [context.invoke](/docs/workflow/basics/context/run)
+* [context.call](/docs/workflow/steps/call)
+* [context.invoke](/docs/workflow/steps/invoke)
 
 <Tip>
-Upstash Workflow does not support step level configuration. The configuration applies to all steps executed by a workflow run.
-
-If you want to specifically throttle a step, there is a workaround by splitting step to another workflow and using `context.invoke()`.
+A single `context.run` step can override the run's flow control and retry configuration by passing
+`flowControl`, `retries` or `retryDelay` as its third argument. See
+[step-level flow control](/docs/workflow/features/flow-control#step-level-flow-control).
 </Tip>
 
 # Handle Failed Runs
@@ -117693,6 +117748,19 @@ The context object provides:
   Defaults to an empty array when no label was set.
 </ParamField>
 
+<ParamField path="flowControl" type="object | undefined">
+  The flow control configuration QStash applied to the current request: `key`, `parallelism`, `rate` and `period`.
+  Reflects [step-level flow control](/docs/workflow/features/flow-control#step-level-flow-control) when the step sets its own.
+</ParamField>
+
+<ParamField path="retries" type="number | undefined">
+  The retry limit QStash applied to the current request.
+</ParamField>
+
+<ParamField path="retryDelay" type="string | undefined">
+  The retry delay expression QStash applied to the current request.
+</ParamField>
+
 <ParamField path="label" type="string | undefined" deprecated>
   Deprecated. Use `labels` instead. When a run has multiple labels, this only
   returns the first one.
@@ -118263,6 +118331,29 @@ It returns a `Promise`, so you can decide how steps execute:
 
 <ParamField body="stepFunction" type="function">
     The business logic to run inside this step.
+</ParamField>
+
+<ParamField body="options" type="object" optional>
+    Flow control and retry configuration for this step only. Fields left unset fall back to the
+    configuration the run was triggered with.
+
+    See [step-level flow control](/docs/workflow/features/flow-control#step-level-flow-control) and
+    [retries](/docs/workflow/features/retries#configure-retries-for-a-single-step) for details.
+
+    <Expandable title="properties">
+        <ParamField body="flowControl" type="object">
+            Flow control configuration with `key`, `rate`, `parallelism` and `period`, the same shape as in
+            [client.trigger](/docs/workflow/basics/client/trigger). Replaces the run's flow control for this step.
+        </ParamField>
+
+        <ParamField body="retries" type="number">
+            How many times the step is retried when it fails.
+        </ParamField>
+
+        <ParamField body="retryDelay" type="string">
+            Delay between retries in milliseconds. Can use expressions like `"1000 * (1 + retried)"`.
+        </ParamField>
+    </Expandable>
 </ParamField>
 
 ## Response
