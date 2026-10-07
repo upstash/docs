@@ -36,6 +36,7 @@ still in progress, `client.trigger` throws and no new run is started.
 
 ```ts
 import { Client } from "@upstash/workflow";
+import { QstashError } from "@upstash/qstash";
 
 const client = new Client({ token: "<QSTASH_TOKEN>" });
 
@@ -47,11 +48,18 @@ try {
   });
   console.log(`started ${workflowRunId}`); // started wfr_nightly-sync
 } catch (error) {
-  if (error instanceof Error && error.message.includes("a workflow already exists")) {
-    console.log("nightly-sync is already running, skipping");
-  } else {
+  if (!(error instanceof QstashError) || error.status !== 400) {
     throw error;
   }
+
+  // a 400 can also mean an invalid request, so check that a run is in progress
+  const { runs } = await client.logs({
+    filter: { workflowRunId: "wfr_nightly-sync", state: "RUN_STARTED" },
+  });
+  if (runs.length === 0) {
+    throw error;
+  }
+  console.log("nightly-sync is already running, skipping");
 }
 ```
 
@@ -60,9 +68,21 @@ What `client.trigger` returns:
 - **No run in progress:** a new run starts and the call resolves to
   `{ workflowRunId: "wfr_nightly-sync" }`.
 - **A run is in progress:** the call throws a `QstashError` with `status: 400`.
-  Its message contains
-  `a workflow already exists, can not initialize a new one with same id`.
   The running run is not affected.
+
+QStash returns `400` for other invalid trigger requests too, such as a malformed
+URL, so `status` alone doesn't tell you that the ID is taken. The example checks
+with [`client.logs`](/workflow/basics/client/logs) that a run with the ID is in
+progress before skipping. If that run ends between the two calls, `runs` is
+empty and the error is rethrown, so you can retry the trigger.
+
+<Note>
+  `QstashError` comes from `@upstash/qstash`, which `@upstash/workflow` depends
+  on. If your package manager doesn't let you import a dependency of a
+  dependency, add `@upstash/qstash` to your own dependencies. Keep it on the
+  version `@upstash/workflow` uses: with two copies of the package,
+  `instanceof QstashError` doesn't match.
+</Note>
 
 <Tip>
   The ID you pass is prefixed with `wfr_`. `nightly-sync` becomes
@@ -109,7 +129,7 @@ never added to the new run, even though both runs share the same ID.
 <Warning>
   If two callers cancel and trigger the same ID at the same time, both cancels
   can complete before either trigger. Then the first trigger starts a run, and
-  the second one throws the `a workflow already exists` error described in
+  the second one throws the `400` error described in
   [Keep the running one](#keep-the-running-one). Catch it and retry the cancel
   and trigger if the latest request must win.
 </Warning>
