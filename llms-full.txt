@@ -87209,13 +87209,14 @@ Three files in a Next.js app.
 ### 1. Define the event layer and your events
 
 ```ts lib/events.ts
-import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
+import { createEventLayer, QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
 import * as z from "zod";
 
 export const events = createEventLayer({
   store: new RedisSubscriptionStore(),
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
+  // Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+  secretKey: process.env.MCP_EVENTS_SECRET_KEY,
   // Receives the AuthInfo your auth middleware attached to the request.
   principal: (auth) => auth?.extra?.userId as string | undefined,
 });
@@ -87258,18 +87259,22 @@ export const POST = events.createDeliveryHandler();
 
 QStash delivers each event here. The handler verifies the QStash signature, signs the envelope
 with the subscriber's secret, POSTs it to the host, and answers `500` when the host's callback
-failed so QStash retries.
+failed so QStash retries. A bad signature or body gets `489` with `Upstash-NonRetryable-Error: true`.
 
 ### Emit
 
 Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
+Every `emit` names who may receive it, `owner` for one user or `owners` for several:
 
 ```ts
-await commentCreated.emit({ documentId: "doc_123", commentId: "c_9", text: "Ship it?" });
+await commentCreated.emit(
+  { documentId: "doc_123", commentId: "c_9", text: "Ship it?" },
+  { owners: await membersOf("doc_123") },
+);
 ```
 
-`emit` is typed by the `payload` schema and validates against it. It returns the event id and how
-many subscriptions matched.
+`emit` is typed by the `payload` schema and validates against it. It reaches only the named users'
+matching subscriptions, and returns the event id and how many subscriptions matched.
 
 ### Environment variables
 
@@ -87289,9 +87294,9 @@ APP_URL=https://your-app.vercel.app
 
 1. The host calls `events/subscribe` with the event name, arguments, its callback URL and a
    `whsec_` signing secret.
-2. Your server POSTs a signed verification challenge to the callback and requires it echoed back,
-   then stores the subscription and answers with its `id` and a `refreshBefore` time.
-3. When you `emit`, every matching subscription gets a POST with the event envelope and
+2. For a new callback or secret, your server POSTs a signed verification challenge and requires it
+   echoed back, then stores the subscription and answers with its `id` and a `refreshBefore` time.
+3. When you `emit`, every matching subscription of the named owners gets a POST with the event envelope and
    [Standard Webhooks](https://www.standardwebhooks.com/) headers:
 
 ```json
@@ -87318,8 +87323,8 @@ control it:
 
 ```ts
 await commentCreated.emit(payload, {
+  owner: userId, // or owners: [...]; required
   args: { documentId }, // match on these values instead
-  owner: userId, // only this user's subscriptions
   eventId: comment.id, // emitting the same id twice is deduplicated
 });
 ```
@@ -87338,7 +87343,7 @@ the host generated for it. ChatGPT, for example, sends a unique
 reaches the right user's agent, so your server never needs to know who the host user is. Two users
 subscribing to the same event produce two subscriptions and two deliveries.
 
-**Your server decides who may subscribe.** `events/subscribe` arrives with the same auth as any
+**Your server decides who receives what.** `events/subscribe` arrives with the same auth as any
 other MCP request. `principal(auth)` turns it into an owner id, which is stored on the
 subscription and becomes part of its id:
 
@@ -87358,16 +87363,18 @@ const deployFinished = events.define("deploy.finished", {
 });
 ```
 
-* `emit(payload)` reaches every matching subscription. Use it for shared events, like deploys.
-* `emit(payload, { owner: userId })` reaches only that user's subscriptions. Use it for personal
-  events, like "your export finished".
+* Every `emit` names its recipients. `emit(payload, { owner: userId })` reaches one user's
+  subscriptions, for personal events like "your export finished". `emit(payload, { owners })`
+  reaches several, for shared ones like a deploy everyone on the team may see.
+* So a subscription with no arguments still only hears about its own user's events. `authorize`
+  adds a per-argument check on top.
 * Unsubscribing recomputes the id from the caller's principal, so only the owner can remove a
   subscription.
 
 <Note>
-  Without `principal`, every subscription is anonymous: anyone who can reach the server can
-  subscribe to any event. Deliveries still reach the right host user, but nothing limits what
-  they watch.
+  `principal` is required, and there are no anonymous subscriptions: when it returns `undefined`,
+  subscribe and unsubscribe are refused with reason `not_authenticated`, before any challenge is
+  sent. A server with no users of its own passes `principal: () => "local"`.
 </Note>
 
 ## Task finished events
@@ -87384,18 +87391,24 @@ export const tasks = createTaskLayer({ store, dispatcher, principal, onSettle: t
 ```
 
 It fires once when a task completes, fails or is cancelled, and only to subscriptions created by
-the task's owner. A host subscribes with no arguments for every task, or with `taskId` for one. The
+the task's owner. We haven't tested it with ChatGPT yet. A host subscribes with no arguments for every task, or with `taskId` for one. The
 payload includes the result when it fits in the 256 KiB envelope.
 
 ## Security
 
-* **Callback URLs** must be `https` on a public host. `localhost`, `.internal` names, private and
-  link-local IPs, and credentials in the URL are refused, and redirects are never followed.
+* **Callback URLs** must be `https` on a public host. `localhost`, `.local` and `.internal` names
+  (trailing dots included), private, link-local, reserved and documentation IPs (also when embedded
+  in IPv6), and credentials in the URL are refused, and redirects are never followed. The checks don't
+  resolve DNS, so add egress filtering in production.
 * **Verification:** a subscription is stored only after the callback echoes a signed challenge.
-  Failures return error `-32015` with a `reason` such as `challenge_failed` or `timeout`.
+  Every failure returns the same error `-32015`, so a subscriber can't probe your network; the
+  detail goes to your server logs.
 * **Secrets** are stored encrypted with `MCP_EVENTS_SECRET_KEY`. A refresh with the same secret
   skips the challenge; a new secret verifies again.
 * **Authorization:** `authorize` runs on every subscribe and refresh.
+* **Delivery endpoint:** verifies QStash's signature with the `QSTASH_*_SIGNING_KEY` variables (or
+  a `receiver` you pass). Without them it throws on the first request; it never sends unverified
+  deliveries.
 
 <Warning>
   `allowInsecureCallbacks: true` accepts `http://` and private addresses. Use it only for local
@@ -87408,7 +87421,7 @@ payload includes the result when it fits in the 256 KiB envelope.
 | --- | --- |
 | `2xx` | Delivered. |
 | `410 Gone` | The subscription is deleted. |
-| `413` | The event is dropped, not retried. |
+| `413`, or a redirect | The event is dropped, not retried. |
 | Anything else, or no answer | QStash retries with backoff. |
 
 ## Options
@@ -87419,8 +87432,8 @@ payload includes the result when it fits in the 256 KiB envelope.
 | --- | --- | --- |
 | `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
 | `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
-| `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required. |
-| `principal` | none | `(auth) => string \| undefined`. Part of the subscription id, passed to `authorize`. |
+| `principal` | required | `(auth) => string \| undefined`. Owns each subscription; `undefined` refuses. |
+| `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required, with no built-in default. |
 | `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
 | `defaults.maxTtlMs` | 30 days | The most the server grants |
 | `allowInsecureCallbacks` | `false` | Local development only |
@@ -87441,7 +87454,8 @@ Poll and stream delivery modes and replay cursors from the draft aren't implemen
 The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo)
 includes Deploy Watch, an events-only server with a `deploy.finished` event filtered by
 environment, plus a local receiver that verifies each signed delivery. We tested it end to end with
-ChatGPT monitors.
+ChatGPT monitors. It needs `MCP_EVENTS_SECRET_KEY` set, and its deploy-report route is
+unauthenticated so the demo is easy to drive; a real server must authenticate the code that emits.
 
 # MCP Events with Redis and QStash
 Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-events
@@ -87472,13 +87486,14 @@ Three files in a Next.js app.
 ### 1. Define the event layer and your events
 
 ```ts lib/events.ts
-import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
+import { createEventLayer, QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
 import * as z from "zod";
 
 export const events = createEventLayer({
   store: new RedisSubscriptionStore(),
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
+  // Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+  secretKey: process.env.MCP_EVENTS_SECRET_KEY,
   // Receives the AuthInfo your auth middleware attached to the request.
   principal: (auth) => auth?.extra?.userId as string | undefined,
 });
@@ -87521,18 +87536,22 @@ export const POST = events.createDeliveryHandler();
 
 QStash delivers each event here. The handler verifies the QStash signature, signs the envelope
 with the subscriber's secret, POSTs it to the host, and answers `500` when the host's callback
-failed so QStash retries.
+failed so QStash retries. A bad signature or body gets `489` with `Upstash-NonRetryable-Error: true`.
 
 ### Emit
 
 Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
+Every `emit` names who may receive it, `owner` for one user or `owners` for several:
 
 ```ts
-await commentCreated.emit({ documentId: "doc_123", commentId: "c_9", text: "Ship it?" });
+await commentCreated.emit(
+  { documentId: "doc_123", commentId: "c_9", text: "Ship it?" },
+  { owners: await membersOf("doc_123") },
+);
 ```
 
-`emit` is typed by the `payload` schema and validates against it. It returns the event id and how
-many subscriptions matched.
+`emit` is typed by the `payload` schema and validates against it. It reaches only the named users'
+matching subscriptions, and returns the event id and how many subscriptions matched.
 
 ### Environment variables
 
@@ -87552,9 +87571,9 @@ APP_URL=https://your-app.vercel.app
 
 1. The host calls `events/subscribe` with the event name, arguments, its callback URL and a
    `whsec_` signing secret.
-2. Your server POSTs a signed verification challenge to the callback and requires it echoed back,
-   then stores the subscription and answers with its `id` and a `refreshBefore` time.
-3. When you `emit`, every matching subscription gets a POST with the event envelope and
+2. For a new callback or secret, your server POSTs a signed verification challenge and requires it
+   echoed back, then stores the subscription and answers with its `id` and a `refreshBefore` time.
+3. When you `emit`, every matching subscription of the named owners gets a POST with the event envelope and
    [Standard Webhooks](https://www.standardwebhooks.com/) headers:
 
 ```json
@@ -87581,8 +87600,8 @@ control it:
 
 ```ts
 await commentCreated.emit(payload, {
+  owner: userId, // or owners: [...]; required
   args: { documentId }, // match on these values instead
-  owner: userId, // only this user's subscriptions
   eventId: comment.id, // emitting the same id twice is deduplicated
 });
 ```
@@ -87601,7 +87620,7 @@ the host generated for it. ChatGPT, for example, sends a unique
 reaches the right user's agent, so your server never needs to know who the host user is. Two users
 subscribing to the same event produce two subscriptions and two deliveries.
 
-**Your server decides who may subscribe.** `events/subscribe` arrives with the same auth as any
+**Your server decides who receives what.** `events/subscribe` arrives with the same auth as any
 other MCP request. `principal(auth)` turns it into an owner id, which is stored on the
 subscription and becomes part of its id:
 
@@ -87621,16 +87640,18 @@ const deployFinished = events.define("deploy.finished", {
 });
 ```
 
-* `emit(payload)` reaches every matching subscription. Use it for shared events, like deploys.
-* `emit(payload, { owner: userId })` reaches only that user's subscriptions. Use it for personal
-  events, like "your export finished".
+* Every `emit` names its recipients. `emit(payload, { owner: userId })` reaches one user's
+  subscriptions, for personal events like "your export finished". `emit(payload, { owners })`
+  reaches several, for shared ones like a deploy everyone on the team may see.
+* So a subscription with no arguments still only hears about its own user's events. `authorize`
+  adds a per-argument check on top.
 * Unsubscribing recomputes the id from the caller's principal, so only the owner can remove a
   subscription.
 
 <Note>
-  Without `principal`, every subscription is anonymous: anyone who can reach the server can
-  subscribe to any event. Deliveries still reach the right host user, but nothing limits what
-  they watch.
+  `principal` is required, and there are no anonymous subscriptions: when it returns `undefined`,
+  subscribe and unsubscribe are refused with reason `not_authenticated`, before any challenge is
+  sent. A server with no users of its own passes `principal: () => "local"`.
 </Note>
 
 ## Task finished events
@@ -87647,18 +87668,24 @@ export const tasks = createTaskLayer({ store, dispatcher, principal, onSettle: t
 ```
 
 It fires once when a task completes, fails or is cancelled, and only to subscriptions created by
-the task's owner. A host subscribes with no arguments for every task, or with `taskId` for one. The
+the task's owner. We haven't tested it with ChatGPT yet. A host subscribes with no arguments for every task, or with `taskId` for one. The
 payload includes the result when it fits in the 256 KiB envelope.
 
 ## Security
 
-* **Callback URLs** must be `https` on a public host. `localhost`, `.internal` names, private and
-  link-local IPs, and credentials in the URL are refused, and redirects are never followed.
+* **Callback URLs** must be `https` on a public host. `localhost`, `.local` and `.internal` names
+  (trailing dots included), private, link-local, reserved and documentation IPs (also when embedded
+  in IPv6), and credentials in the URL are refused, and redirects are never followed. The checks don't
+  resolve DNS, so add egress filtering in production.
 * **Verification:** a subscription is stored only after the callback echoes a signed challenge.
-  Failures return error `-32015` with a `reason` such as `challenge_failed` or `timeout`.
+  Every failure returns the same error `-32015`, so a subscriber can't probe your network; the
+  detail goes to your server logs.
 * **Secrets** are stored encrypted with `MCP_EVENTS_SECRET_KEY`. A refresh with the same secret
   skips the challenge; a new secret verifies again.
 * **Authorization:** `authorize` runs on every subscribe and refresh.
+* **Delivery endpoint:** verifies QStash's signature with the `QSTASH_*_SIGNING_KEY` variables (or
+  a `receiver` you pass). Without them it throws on the first request; it never sends unverified
+  deliveries.
 
 <Warning>
   `allowInsecureCallbacks: true` accepts `http://` and private addresses. Use it only for local
@@ -87671,7 +87698,7 @@ payload includes the result when it fits in the 256 KiB envelope.
 | --- | --- |
 | `2xx` | Delivered. |
 | `410 Gone` | The subscription is deleted. |
-| `413` | The event is dropped, not retried. |
+| `413`, or a redirect | The event is dropped, not retried. |
 | Anything else, or no answer | QStash retries with backoff. |
 
 ## Options
@@ -87682,8 +87709,8 @@ payload includes the result when it fits in the 256 KiB envelope.
 | --- | --- | --- |
 | `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
 | `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
-| `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required. |
-| `principal` | none | `(auth) => string \| undefined`. Part of the subscription id, passed to `authorize`. |
+| `principal` | required | `(auth) => string \| undefined`. Owns each subscription; `undefined` refuses. |
+| `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required, with no built-in default. |
 | `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
 | `defaults.maxTtlMs` | 30 days | The most the server grants |
 | `allowInsecureCallbacks` | `false` | Local development only |
@@ -87704,7 +87731,8 @@ Poll and stream delivery modes and replay cursors from the draft aren't implemen
 The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo)
 includes Deploy Watch, an events-only server with a `deploy.finished` event filtered by
 environment, plus a local receiver that verifies each signed delivery. We tested it end to end with
-ChatGPT monitors.
+ChatGPT monitors. It needs `MCP_EVENTS_SECRET_KEY` set, and its deploy-report route is
+unauthenticated so the demo is easy to drive; a real server must authenticate the code that emits.
 
 # Long-Running MCP Tools with Redis and QStash
 Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-tasks
@@ -87714,11 +87742,12 @@ gives up first: the client's tool timeout, your serverless function's limit, or 
 
 `@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task id, the
 work runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted) so it
-survives restarts and time limits, and the task record lives in Upstash Redis. The model checks on it
+survives restarts and the client's tool timeout, and the task record lives in Upstash Redis. The model checks on it
 with a shared `task_status` tool and can stop it with `task_cancel`.
 
 These are ordinary MCP tools, so they work in every client today: Claude Code, Codex, Cursor,
-OpenCode and ChatGPT. No client capability is required.
+OpenCode and ChatGPT. No client capability is required. The toolkit sits on top of the official MCP
+TypeScript SDK and uses WebCrypto only, so it runs on Node and edge runtimes.
 
 ```bash
 npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
@@ -87728,7 +87757,7 @@ npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @up
 
 Three files in a Next.js app.
 
-### 1. Define the task layer and the server
+### 1. Define the task layer, the task and the server
 
 ```ts lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
@@ -87736,41 +87765,40 @@ import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
 import * as z from "zod";
 
-// Where the task record lives, and how the work is delivered.
+// Where the task record lives, how the work is delivered, and who is calling.
 export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal: (auth) => auth?.extra?.userId as string | undefined,
 });
 
+// Defined at module scope, so every instance knows the handler, including
+// an /api/execute instance that never serves an MCP request.
+tasks.define(
+  "generate_report",
+  {
+    description: "Generates a report on a topic.",
+    inputSchema: z.object({ topic: z.string() }),
+  },
+  // The handler: your long-running work. It runs later, in /api/execute,
+  // when QStash delivers the task — not inside the tool call.
+  async ({ topic }, task) => {
+    await task.update("Researching sources");
+    const report = await writeReport(topic);
+    return { content: [{ type: "text", text: report }] };
+  },
+);
+
+// Called per request. Adds generate_report, task_status and task_cancel.
 export function createServer() {
   const server = new McpServer({ name: "reports", version: "1.0.0" });
-
-  // Adds three tools to the server: generate_report, task_status and task_cancel.
-  tasks.registerTask(
-    server,
-    "generate_report",
-    {
-      description: "Generates a report on a topic.",
-      inputSchema: z.object({ topic: z.string() }),
-    },
-    // The handler: your long-running work. It runs later, in /api/execute,
-    // when QStash delivers the task — not inside the tool call.
-    async ({ topic }, task) => {
-      await task.update("Researching sources");
-      const report = await writeReport(topic);
-      return { content: [{ type: "text", text: report }] };
-    },
-  );
-
+  tasks.register(server);
   return server;
 }
-
-// Registers the handler in every process, including an /api/execute
-// instance that never serves an MCP request.
-createServer();
 ```
 
-`topic` is typed from `inputSchema`: Zod, Valibot and ArkType schemas all work.
+`topic` is typed from `inputSchema`: Zod, Valibot and ArkType schemas all work. `principal` is
+required; see [Users](#users).
 
 ### 2. Serve the MCP endpoint
 
@@ -87796,7 +87824,12 @@ export const POST = tasks.createExecuteHandler();
 
 This is where QStash delivers each task. The handler it returns verifies the QStash signature, finds
 the task's handler, runs it and stores the result. It answers `200` when done and `500` to ask QStash
-for a retry.
+for a retry. A bad signature or body gets `489` with `Upstash-NonRetryable-Error: true`, since QStash
+retries every other non-2xx.
+
+The signing keys are required. Without `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`
+(or a `receiver` you pass), the endpoint throws on its first request instead of running unverified
+deliveries. The same applies to `WorkflowDispatcher`.
 
 ### Environment variables
 
@@ -87822,8 +87855,8 @@ APP_URL=https://your-app.vercel.app
    telling it to call `task_status` in about two seconds.
 2. `task_status({ taskId })` returns progress while the task runs, for example
    `"Researching sources"`.
-3. Once the task completes, `task_status` returns your handler's `content`, exactly as if the tool
-   had run synchronously.
+3. Once the task completes, `task_status` returns a one-line status followed by your handler's
+   `content`.
 
 `task_cancel({ taskId })` marks the task `cancelled` and stops any pending delivery. Each response
 also carries the task object in `structuredContent`:
@@ -87867,23 +87900,22 @@ async ({ sources }, task) => {
   strings. Keep task schemas to plain values, or parse them again inside the handler.
 </Warning>
 
-## Multi-user servers
+## Users
 
-Without `principal`, anyone holding a task id can read and cancel that task. With it, each task
-records who started it, and `task_status` / `task_cancel` only answer for that caller. Another user's
-task id reads like an unknown one.
+`principal` is required. It receives the `AuthInfo` your auth middleware attached to the request and
+returns the caller's id. Each task records who started it, and `task_status` / `task_cancel` only
+answer for that caller. Another user's task id reads like an unknown one.
 
-```ts
-export const tasks = createTaskLayer({
-  store: new RedisTaskStore(),
-  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  // Receives the AuthInfo your auth middleware attached to the request.
-  principal: (auth) => auth?.extra?.userId as string | undefined,
-});
-```
+There is no anonymous mode: when `principal` returns `undefined`, the tool call is refused with "Not
+authenticated". A server with no users of its own passes `principal: () => "local"`.
 
 Key on the user, not `auth.clientId`: the client id identifies the OAuth app, which can be one id
 shared by every user of a host like ChatGPT.
+
+<Note>
+  Task arguments and results are stored in Redis as plain JSON for the task's `ttlMs`, which is
+  forever with `ttlMs: null`. Keep secrets out of them, or use a short TTL.
+</Note>
 
 ## Retries without duplicates
 
@@ -87891,8 +87923,7 @@ Agents retry tool calls, especially ones that seemed to time out. With `idempote
 from the same caller with the same key returns the existing task instead of starting another:
 
 ```ts
-tasks.registerTask(
-  server,
+tasks.define(
   "generate_report",
   {
     description: "Generates a report on a topic.",
@@ -87911,20 +87942,24 @@ A QStash delivery is one serverless invocation, so the handler has to finish wit
 function limit. If it is killed, QStash redelivers and the handler starts over.
 
 For longer work, use `WorkflowDispatcher`. Each step runs as its own invocation, and finished steps
-are replayed from a journal instead of re-run, so a task can run for as long as it needs:
+are replayed from a journal instead of re-run. Three things change:
 
 ```ts lib/tasks.ts
 import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/tasks/upstash";
 import type { WorkflowContext } from "@upstash/workflow";
 
-export const tasks = createTaskLayer<WorkflowContext>({
+export const tasks = createTaskLayer<WorkflowContext>({ // 1. the type argument
   store: new RedisTaskStore(),
   dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+  // 3. a TTL longer than the work. It runs from creation and is never extended; once it passes,
+  // the record is gone and isCancelled() returns true.
+  defaults: { ttlMs: 60 * 60 * 1000 },
 });
 ```
 
-The handler's `task` then also has the Workflow API, such as `task.run`, `task.sleep` and
-`task.call`:
+2. The work goes inside `task.run(...)` steps. The handler's `task` has the Workflow API, such as
+`task.run`, `task.sleep` and `task.call`:
 
 ```ts
 async ({ topic }, task) => {
@@ -87934,7 +87969,8 @@ async ({ topic }, task) => {
 };
 ```
 
-Put side effects inside `task.run`. Code outside a step runs again on every invocation.
+Put side effects inside `task.run`. Code outside a step runs again on every invocation, and each
+step is still one invocation, so keep every step within your function limit.
 
 | | `QStashDispatcher` | `WorkflowDispatcher` |
 | --- | --- | --- |
@@ -87950,27 +87986,33 @@ Put side effects inside `task.run`. Code outside a step runs again on every invo
 | --- | --- | --- |
 | `store` | required | `RedisTaskStore`, or your own `TaskStore` |
 | `dispatcher` | required | `QStashDispatcher`, `WorkflowDispatcher`, or your own `TaskDispatcher` |
+| `principal` | required | `(auth) => string \| undefined`. The caller's id; `undefined` refuses the call. |
 | `defaults.ttlMs` | 5 minutes | How long a task is kept. `null` keeps it forever. |
 | `defaults.pollIntervalMs` | 2 seconds | Poll interval suggested to the model |
-| `principal` | none | `(auth) => string \| undefined`. Scopes tasks to their caller. |
 | `toolNames` | `task_status`, `task_cancel` | Rename the two shared tools |
 | `onSettle` | none | `(task) => void`. Called once when a task completes, fails or is cancelled. |
 
-**`registerTask` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
+**`tasks.define(name, config, handler)` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
 `pollIntervalMs`, `queuedMessage`, `completedMessage` and `idempotencyKey`.
 
 ## Push instead of poll
 
-Hosts that support MCP Events, ChatGPT today, can get a webhook when a task finishes instead of
-polling. Wire the `task.finished` event from [MCP Events](/docs/redis/sdks/agentkit/mcp-events) into
-`onSettle`:
+A host that supports MCP Events can get a webhook when a task finishes instead of polling. Wire the
+`task.finished` event from [MCP Events](/docs/redis/sdks/agentkit/mcp-events) into `onSettle`; it fires to
+the task's owner only:
 
-```ts
+```ts lib/tasks.ts
 import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
+import { events } from "./events"; // your event layer
 
 const taskFinished = taskFinishedEvent(events);
 
-export const tasks = createTaskLayer({ store, dispatcher, onSettle: taskFinished.onSettle });
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+  onSettle: taskFinished.onSettle,
+});
 ```
 
 ## Why tools, not the Tasks extension?
@@ -87996,11 +88038,12 @@ gives up first: the client's tool timeout, your serverless function's limit, or 
 
 `@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task id, the
 work runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted) so it
-survives restarts and time limits, and the task record lives in Upstash Redis. The model checks on it
+survives restarts and the client's tool timeout, and the task record lives in Upstash Redis. The model checks on it
 with a shared `task_status` tool and can stop it with `task_cancel`.
 
 These are ordinary MCP tools, so they work in every client today: Claude Code, Codex, Cursor,
-OpenCode and ChatGPT. No client capability is required.
+OpenCode and ChatGPT. No client capability is required. The toolkit sits on top of the official MCP
+TypeScript SDK and uses WebCrypto only, so it runs on Node and edge runtimes.
 
 ```bash
 npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
@@ -88010,7 +88053,7 @@ npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @up
 
 Three files in a Next.js app.
 
-### 1. Define the task layer and the server
+### 1. Define the task layer, the task and the server
 
 ```ts lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
@@ -88018,41 +88061,40 @@ import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
 import * as z from "zod";
 
-// Where the task record lives, and how the work is delivered.
+// Where the task record lives, how the work is delivered, and who is calling.
 export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal: (auth) => auth?.extra?.userId as string | undefined,
 });
 
+// Defined at module scope, so every instance knows the handler, including
+// an /api/execute instance that never serves an MCP request.
+tasks.define(
+  "generate_report",
+  {
+    description: "Generates a report on a topic.",
+    inputSchema: z.object({ topic: z.string() }),
+  },
+  // The handler: your long-running work. It runs later, in /api/execute,
+  // when QStash delivers the task — not inside the tool call.
+  async ({ topic }, task) => {
+    await task.update("Researching sources");
+    const report = await writeReport(topic);
+    return { content: [{ type: "text", text: report }] };
+  },
+);
+
+// Called per request. Adds generate_report, task_status and task_cancel.
 export function createServer() {
   const server = new McpServer({ name: "reports", version: "1.0.0" });
-
-  // Adds three tools to the server: generate_report, task_status and task_cancel.
-  tasks.registerTask(
-    server,
-    "generate_report",
-    {
-      description: "Generates a report on a topic.",
-      inputSchema: z.object({ topic: z.string() }),
-    },
-    // The handler: your long-running work. It runs later, in /api/execute,
-    // when QStash delivers the task — not inside the tool call.
-    async ({ topic }, task) => {
-      await task.update("Researching sources");
-      const report = await writeReport(topic);
-      return { content: [{ type: "text", text: report }] };
-    },
-  );
-
+  tasks.register(server);
   return server;
 }
-
-// Registers the handler in every process, including an /api/execute
-// instance that never serves an MCP request.
-createServer();
 ```
 
-`topic` is typed from `inputSchema`: Zod, Valibot and ArkType schemas all work.
+`topic` is typed from `inputSchema`: Zod, Valibot and ArkType schemas all work. `principal` is
+required; see [Users](#users).
 
 ### 2. Serve the MCP endpoint
 
@@ -88078,7 +88120,12 @@ export const POST = tasks.createExecuteHandler();
 
 This is where QStash delivers each task. The handler it returns verifies the QStash signature, finds
 the task's handler, runs it and stores the result. It answers `200` when done and `500` to ask QStash
-for a retry.
+for a retry. A bad signature or body gets `489` with `Upstash-NonRetryable-Error: true`, since QStash
+retries every other non-2xx.
+
+The signing keys are required. Without `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`
+(or a `receiver` you pass), the endpoint throws on its first request instead of running unverified
+deliveries. The same applies to `WorkflowDispatcher`.
 
 ### Environment variables
 
@@ -88104,8 +88151,8 @@ APP_URL=https://your-app.vercel.app
    telling it to call `task_status` in about two seconds.
 2. `task_status({ taskId })` returns progress while the task runs, for example
    `"Researching sources"`.
-3. Once the task completes, `task_status` returns your handler's `content`, exactly as if the tool
-   had run synchronously.
+3. Once the task completes, `task_status` returns a one-line status followed by your handler's
+   `content`.
 
 `task_cancel({ taskId })` marks the task `cancelled` and stops any pending delivery. Each response
 also carries the task object in `structuredContent`:
@@ -88149,23 +88196,22 @@ async ({ sources }, task) => {
   strings. Keep task schemas to plain values, or parse them again inside the handler.
 </Warning>
 
-## Multi-user servers
+## Users
 
-Without `principal`, anyone holding a task id can read and cancel that task. With it, each task
-records who started it, and `task_status` / `task_cancel` only answer for that caller. Another user's
-task id reads like an unknown one.
+`principal` is required. It receives the `AuthInfo` your auth middleware attached to the request and
+returns the caller's id. Each task records who started it, and `task_status` / `task_cancel` only
+answer for that caller. Another user's task id reads like an unknown one.
 
-```ts
-export const tasks = createTaskLayer({
-  store: new RedisTaskStore(),
-  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  // Receives the AuthInfo your auth middleware attached to the request.
-  principal: (auth) => auth?.extra?.userId as string | undefined,
-});
-```
+There is no anonymous mode: when `principal` returns `undefined`, the tool call is refused with "Not
+authenticated". A server with no users of its own passes `principal: () => "local"`.
 
 Key on the user, not `auth.clientId`: the client id identifies the OAuth app, which can be one id
 shared by every user of a host like ChatGPT.
+
+<Note>
+  Task arguments and results are stored in Redis as plain JSON for the task's `ttlMs`, which is
+  forever with `ttlMs: null`. Keep secrets out of them, or use a short TTL.
+</Note>
 
 ## Retries without duplicates
 
@@ -88173,8 +88219,7 @@ Agents retry tool calls, especially ones that seemed to time out. With `idempote
 from the same caller with the same key returns the existing task instead of starting another:
 
 ```ts
-tasks.registerTask(
-  server,
+tasks.define(
   "generate_report",
   {
     description: "Generates a report on a topic.",
@@ -88193,20 +88238,24 @@ A QStash delivery is one serverless invocation, so the handler has to finish wit
 function limit. If it is killed, QStash redelivers and the handler starts over.
 
 For longer work, use `WorkflowDispatcher`. Each step runs as its own invocation, and finished steps
-are replayed from a journal instead of re-run, so a task can run for as long as it needs:
+are replayed from a journal instead of re-run. Three things change:
 
 ```ts lib/tasks.ts
 import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/tasks/upstash";
 import type { WorkflowContext } from "@upstash/workflow";
 
-export const tasks = createTaskLayer<WorkflowContext>({
+export const tasks = createTaskLayer<WorkflowContext>({ // 1. the type argument
   store: new RedisTaskStore(),
   dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+  // 3. a TTL longer than the work. It runs from creation and is never extended; once it passes,
+  // the record is gone and isCancelled() returns true.
+  defaults: { ttlMs: 60 * 60 * 1000 },
 });
 ```
 
-The handler's `task` then also has the Workflow API, such as `task.run`, `task.sleep` and
-`task.call`:
+2. The work goes inside `task.run(...)` steps. The handler's `task` has the Workflow API, such as
+`task.run`, `task.sleep` and `task.call`:
 
 ```ts
 async ({ topic }, task) => {
@@ -88216,7 +88265,8 @@ async ({ topic }, task) => {
 };
 ```
 
-Put side effects inside `task.run`. Code outside a step runs again on every invocation.
+Put side effects inside `task.run`. Code outside a step runs again on every invocation, and each
+step is still one invocation, so keep every step within your function limit.
 
 | | `QStashDispatcher` | `WorkflowDispatcher` |
 | --- | --- | --- |
@@ -88232,27 +88282,33 @@ Put side effects inside `task.run`. Code outside a step runs again on every invo
 | --- | --- | --- |
 | `store` | required | `RedisTaskStore`, or your own `TaskStore` |
 | `dispatcher` | required | `QStashDispatcher`, `WorkflowDispatcher`, or your own `TaskDispatcher` |
+| `principal` | required | `(auth) => string \| undefined`. The caller's id; `undefined` refuses the call. |
 | `defaults.ttlMs` | 5 minutes | How long a task is kept. `null` keeps it forever. |
 | `defaults.pollIntervalMs` | 2 seconds | Poll interval suggested to the model |
-| `principal` | none | `(auth) => string \| undefined`. Scopes tasks to their caller. |
 | `toolNames` | `task_status`, `task_cancel` | Rename the two shared tools |
 | `onSettle` | none | `(task) => void`. Called once when a task completes, fails or is cancelled. |
 
-**`registerTask` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
+**`tasks.define(name, config, handler)` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
 `pollIntervalMs`, `queuedMessage`, `completedMessage` and `idempotencyKey`.
 
 ## Push instead of poll
 
-Hosts that support MCP Events, ChatGPT today, can get a webhook when a task finishes instead of
-polling. Wire the `task.finished` event from [MCP Events](/docs/redis/sdks/agentkit/mcp-events) into
-`onSettle`:
+A host that supports MCP Events can get a webhook when a task finishes instead of polling. Wire the
+`task.finished` event from [MCP Events](/docs/redis/sdks/agentkit/mcp-events) into `onSettle`; it fires to
+the task's owner only:
 
-```ts
+```ts lib/tasks.ts
 import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
+import { events } from "./events"; // your event layer
 
 const taskFinished = taskFinishedEvent(events);
 
-export const tasks = createTaskLayer({ store, dispatcher, onSettle: taskFinished.onSettle });
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+  onSettle: taskFinished.onSettle,
+});
 ```
 
 ## Why tools, not the Tasks extension?
