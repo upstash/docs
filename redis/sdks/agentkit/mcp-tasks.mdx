@@ -17,7 +17,7 @@ OpenCode and ChatGPT. No client capability is required. The toolkit sits on top 
 TypeScript SDK and uses WebCrypto only, so it runs on Node and edge runtimes.
 
 ```bash
-npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
 ```
 
 ## Quickstart
@@ -26,13 +26,27 @@ Four files in a Next.js app.
 
 ### 1. Identify the caller
 
-Every task belongs to the user who started it. `principal` returns that user's id, read from the
-token your MCP route has verified, and throws when there is none:
+Every task belongs to the user who started it. Two functions, kept in one file so the path is easy
+to follow:
+
+- `verifyToken` runs on every MCP request. It verifies the bearer token and returns the SDK's
+  `AuthInfo`, with your user id in `extra`. Step 3 wires it up with `withMcpAuth`.
+- `principal` is what the toolkit calls. It gets that `AuthInfo` and returns the user id, or throws.
 
 ```ts lib/auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
 
-// `auth` is the AuthInfo your MCP route verified and passed to the SDK (see below).
+// 1. Runs on every MCP request. Returning undefined answers 401.
+export async function verifyToken(
+  req: Request,
+  bearerToken?: string,
+): Promise<AuthInfo | undefined> {
+  if (!bearerToken) return undefined;
+  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
+  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+}
+
+// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
 export function principal({ auth }: { auth?: AuthInfo }): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -40,12 +54,9 @@ export function principal({ auth }: { auth?: AuthInfo }): string {
 }
 ```
 
-See [Users](#users) for where `auth` comes from.
-
-### 2. Define the task layer, the task and the server
+### 2. Define the task layer and the task
 
 ```ts lib/tasks.ts
-import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
@@ -66,12 +77,6 @@ tasks.define(
     return { content: [{ type: "text", text: await writeReport(topic) }] };
   },
 );
-
-export function createServer() {
-  const server = new McpServer({ name: "reports", version: "1.0.0" });
-  tasks.register(server); // adds generate_report, task_status and task_cancel
-  return server;
-}
 ```
 
 The handler runs later, in `/api/execute`, when QStash delivers the task, not inside the tool call.
@@ -80,20 +85,21 @@ The handler runs later, in `/api/execute`, when QStash delivers the task, not in
 ### 3. Serve the MCP endpoint
 
 ```ts app/api/mcp/route.ts
-import { createMcpHandler, type AuthInfo } from "@modelcontextprotocol/server";
-import { createServer } from "../../../lib/tasks";
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import { verifyToken } from "../../../lib/auth";
+import { tasks } from "../../../lib/tasks";
 
-const handler = createMcpHandler(() => createServer());
+const handler = createMcpHandler((server) => {
+  tasks.register(server); // adds generate_report, task_status and task_cancel
+});
 
-export async function POST(request: Request) {
-  // Clerk, WorkOS, Auth0, your own. `principal` reads the user id from `authInfo.extra`.
-  const authInfo: AuthInfo | undefined = await verifyToken(request);
-  if (!authInfo) return new Response("Unauthorized", { status: 401 });
-  return handler.fetch(request, { authInfo });
-}
+// Runs verifyToken before any tool sees the request; no AuthInfo means 401.
+const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+export { authHandler as GET, authHandler as POST };
 ```
 
-The task layer only registers tools, so this is the SDK's own handler, unchanged.
+`withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
+to `principal`. The task layer only registers tools, so nothing else changes in your route.
 
 ### 4. Add the execute endpoint
 
@@ -215,10 +221,10 @@ knows who it is working for.
 
 ### Where principal comes from
 
-`principal` receives `{ auth, request }` and may be async. `auth` is the MCP SDK's `AuthInfo`. The SDK
-never fills it in from request headers: your MCP route does, after verifying the bearer token, by
-passing it to `handler.fetch(request, { authInfo })` as in step 3. Put the user id in `extra` when you
-build `authInfo`, and read it back in `principal`.
+`principal` receives `{ auth, request }` and may be async. `auth` is exactly what `verifyToken`
+returned in [step 1](#1-identify-the-caller): `withMcpAuth` runs it, and the toolkit hands the result
+to `principal`. Nothing is read from request headers on its own. Without `mcp-handler`, pass the
+`AuthInfo` yourself with the SDK's `createMcpHandler`: `handler.fetch(request, { authInfo })`.
 
 <Accordion title="More on principal">
   - **A throw refuses the call.** There is no anonymous mode: if `principal` throws, rejects, or

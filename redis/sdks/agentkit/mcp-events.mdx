@@ -21,7 +21,7 @@ signing and retries: subscriptions live in Upstash Redis, and every delivery goe
 </Note>
 
 ```bash
-npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
 ```
 
 ## Quickstart
@@ -30,14 +30,25 @@ Four files in a Next.js app.
 
 ### 1. Identify the caller
 
-Every subscription belongs to the user who subscribed. `principal` returns that user's id, read from
-the token your MCP route has verified, and throws when there is none. If you also use
-[MCP Tasks](/redis/sdks/agentkit/mcp-tasks), both layers share this function:
+Every subscription belongs to the user who subscribed. `verifyToken` turns the request's bearer token
+into the SDK's `AuthInfo`, with your user id in `extra`, and `principal` reads that id back for the
+toolkit. If you also use [MCP Tasks](/redis/sdks/agentkit/mcp-tasks), both layers share this file:
 
 ```ts lib/auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
 
-// `auth` is the AuthInfo your MCP route verified and passed to the SDK (see below).
+// 1. Runs on every MCP request (wired up with withMcpAuth in step 3).
+//    Returning undefined answers 401.
+export async function verifyToken(
+  req: Request,
+  bearerToken?: string,
+): Promise<AuthInfo | undefined> {
+  if (!bearerToken) return undefined;
+  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
+  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+}
+
+// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
 export function principal({ auth }: { auth?: AuthInfo }): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -70,35 +81,25 @@ export const commentCreated = events.define("comment.created", {
 
 `authorize` is required. See [Matching and authorize](#matching-and-authorize) for when it runs.
 
-### 3. Register the events on your MCP server
-
-```ts lib/server.ts
-import { McpServer } from "@modelcontextprotocol/server";
-import { events } from "./events";
-
-export function createServer() {
-  const server = new McpServer({ name: "docs", version: "1.0.0" });
-  events.register(server); // adds events/list, events/subscribe and events/unsubscribe
-  return server;
-}
-```
-
-Serve it from your MCP route with the verified token, as in the
-[MCP Tasks quickstart](/redis/sdks/agentkit/mcp-tasks#quickstart):
+### 3. Serve the MCP endpoint
 
 ```ts app/api/mcp/route.ts
-import { createMcpHandler, type AuthInfo } from "@modelcontextprotocol/server";
-import { createServer } from "../../../lib/server";
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import { verifyToken } from "../../../lib/auth";
+import { events } from "../../../lib/events";
 
-const handler = createMcpHandler(() => createServer());
+const handler = createMcpHandler((server) => {
+  events.register(server); // adds events/list, events/subscribe and events/unsubscribe
+});
 
-export async function POST(request: Request) {
-  // Clerk, WorkOS, Auth0, your own. `principal` reads the user id from `authInfo.extra`.
-  const authInfo: AuthInfo | undefined = await verifyToken(request);
-  if (!authInfo) return new Response("Unauthorized", { status: 401 });
-  return handler.fetch(request, { authInfo });
-}
+// Runs verifyToken before any request is handled; no AuthInfo means 401.
+const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+export { authHandler as GET, authHandler as POST };
 ```
+
+`withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
+to `principal` on every subscribe. With [MCP Tasks](/redis/sdks/agentkit/mcp-tasks) too, call
+`tasks.register(server)` in the same callback.
 
 ### 4. Add the delivery endpoint
 
