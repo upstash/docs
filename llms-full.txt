@@ -82562,6 +82562,7 @@ Prod Pack includes comprehensive monitoring:
 * Prometheus integration
 * Datadog integration
 * Extended console metrics (up to one month)
+* [Insights](/docs/redis/howto/insights): request routing, latency, limits, Lua and keyspace analysis
 
 ## High Availability & Backup
 
@@ -83224,6 +83225,98 @@ Once the export completes, you'll see a `Download` button in the backups table:
   Not all Redis data structures are included in RDB exports. Notably, Redis Functions data will not be available in the export.
 </Info>
 
+# Insights
+Source: https://upstash.com/docs/redis/howto/insights
+
+The **Insights** tab on the database page of the [Upstash Console](https://console.upstash.com) shows what is going on inside your database. It has five views: Traffic, Performance, Limits, Lua and Keyspace.
+
+<Note>
+  Insights is a [Prod Pack](/docs/redis/overall/enterprise#prod-pack-features) feature, also included in Enterprise plans. Databases without Prod Pack see the tab with sample data, so you can explore it before you enable Prod Pack. Insights is not available for databases created through Fly.io, Heroku or DigitalOcean.
+</Note>
+
+Every view except Keyspace has a period picker in its top-right corner. You can look at the past hour, 3 hours, 12 hours, day, 3 days, week or month.
+
+## Traffic
+
+### Request routing
+
+Upstash serves requests from the region closest to the client. This section shows where each request entered and which region of your database answered it.
+
+  <img alt="Request routing in the Traffic view of the Insights tab" width="100%" />
+
+* **Requests**: total requests in the period, how many were served in the region where they entered, how many were served in another region, and how many failed.
+* **Routes on the map**: each route from an entry region to the database region that served it. Dashed arrows are cross-region requests.
+* **All routes**: each route with its request count, share of requests, active and total connections, ingress and egress traffic, and errors.
+
+Cross-region requests are expected. Writes always go to the primary region, and reads go to the nearest replica. If many reads cross regions, adding a [read region](/docs/redis/features/globaldatabase) close to those clients reduces their latency.
+
+### Where clients connect from
+
+The IP ranges your requests came from, busiest first, with the cloud and region each range belongs to. Ranges are matched against the IP ranges that AWS, Google Cloud and Cloudflare publish. Serverless platforms show up as the cloud they run on, for example Vercel functions as AWS.
+
+  <img alt="The IP ranges clients connect from" width="100%" />
+
+Client addresses are shortened to their /24 range, the first three parts of the IP, so individual addresses are not stored.
+
+### Client types
+
+The SDKs, platforms and runtimes your clients use, from the telemetry headers that Upstash SDKs send. For TCP clients, the SDK is the library name they declare with `CLIENT SETINFO`.
+
+  <img alt="SDKs, platforms and runtimes of the clients" width="100%" />
+
+## Performance
+
+Charts of throughput, bandwidth, disk size and latency. Pick a replica in the top-left corner to see a single replica instead of all of them. The Simple service latency chart has its own picker for the p50, p90 and p99 percentiles.
+
+  <img alt="Throughput and bandwidth charts in the Performance view" width="100%" />
+
+| Chart | What it shows |
+| --- | --- |
+| Throughput | Commands processed per second, including each command inside a pipeline or script. Console and non-billable commands are excluded. |
+| Bandwidth | Bytes transferred between clients and the database per second, in and out combined. |
+| Disk size | Size of the data persisted on disk on a single replica. This is stored bytes, not memory in use. |
+| Simple service latency | Time from reading a request to writing its response, for requests where every command is a single-key read or write. |
+| Read service latency | The same, for requests where every command is read-only. |
+| Write service latency | The same, for requests that include at least one write. |
+| Command execution latency | Time spent executing the command itself, without parsing, lock waits, disk loads and writing the response. |
+| Replication latency | Time a write waited for replication before its response was sent. |
+| Lock wait latency | Time a command waited for its key locks. Grows with contention on hot keys. |
+| Lua execution latency | Time spent executing `EVAL`, `EVALSHA` and `FCALL`, including the commands the script runs. |
+| Expired entries | Keys removed per minute because their TTL passed. |
+| Replication lag | Updates written on the primary that have not been sent yet to the replica in each region. |
+
+## Limits
+
+How close the database is to the limits of its plan, and the requests a limit refused or delayed.
+
+  <img alt="Usage against plan limits and command rejections" width="100%" />
+
+* **Storage**, **Connections** and **Peak commands / sec**: current usage against the limit of the plan.
+* **Command rejections**: requests refused or delayed because of a limit, such as oversize requests, oversize keys, throttled writes, requests that could not reach any replica, and authentication failures. Each row shows when the rejections happened, how many there were, and when the last one was.
+
+If you keep running into a limit, see [upgrading your database](/docs/redis/howto/upgrade-database).
+
+## Lua
+
+Script counters, Lua latency, and the scripts that run most often.
+
+  <img alt="Lua script counters, latency and the most executed scripts" width="100%" />
+
+The **Scripts** table lists the ten most executed scripts of the day, with their executions, the commands they ran, failures, and their average and maximum duration and memory. It counts from the daily UTC reset, whatever period is selected. Failures include timeouts and memory limit hits.
+
+## Keyspace
+
+An analysis of what your keys hold, made from an offline scan of the latest daily backup. It does not run any command on your database.
+
+  <img alt="Keyspace summary, key types and biggest keys" width="100%" />
+
+* **Summary**: number of keys and elements, logical size, keys without a TTL, and keys that had already expired.
+* **Key types**: for each Redis data type, the number of keys, their total size, key size and element count percentiles, and the largest key.
+* **Biggest keys**: the ten largest keys, with their type, element count and remaining TTL.
+* **Expiration profile**: keys grouped by remaining TTL.
+
+The keyspace is analyzed after every daily backup, so [daily backups](/docs/redis/features/backup) must be turned on. The analysis is not available for HIPAA-compliant databases.
+
 # Use IP Allowlist
 Source: https://upstash.com/docs/redis/howto/ipallowlist
 
@@ -83384,6 +83477,8 @@ redis-cli --tls -u $UPSTASH_REDIS_CLI_URL config get notify-keyspace-events
 Source: https://upstash.com/docs/redis/howto/metrics-and-charts
 
 The Upstash Console exposes metrics in two places: the database list, and the detail page of a single database. This page explains what each chart shows.
+
+Databases with [Prod Pack](/docs/redis/overall/enterprise#prod-pack-features) also have an [Insights](/docs/redis/howto/insights) tab, with request routing, latency, limits and keyspace details.
 
 ## Database List
 
@@ -85005,6 +85100,10 @@ support larger data sizes and custom limits — [contact us](/docs/common/help/s
 # Changelog
 Source: https://upstash.com/docs/redis/overall/changelog
 
+<Update label="October 2026">
+* Added the [Insights](/docs/redis/howto/insights) tab to the console for databases with Prod Pack: request routing between regions, client IP ranges and SDKs, latency and throughput charts, usage against plan limits, Lua script statistics and a keyspace analysis.
+</Update>
+
 <Update label="September 2026">
 * Added [Vector](/docs/redis/commands/vector/overview) feature for storing embeddings and running nearest-neighbor queries directly in Redis.
 * Added [Array commands](/docs/redis/commands/array/overview) for sparse, index-addressed data, including range operations, scans, and fixed-size rings.
@@ -85071,7 +85170,7 @@ commands introduced in Redis 7.
 <Update label="July 2024">
 * Added REST API support for [`MONITOR`](/docs/redis/commands/server/monitor) and [`SUBSCRIBE`](/docs/redis/commands/pub-sub/subscribe)
 commands using [SSE](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events).
-See [Monitor](../features/restapi#monitor-command) and [Subscribe](../features/restapi#subscribe-command) docs.
+See [Monitor](../features/restapi#monitor-command) and [Subscribe](../features/restapi#subscribe-and-publish-commands) docs.
 * Added [`JSON.MSET`](/docs/redis/commands/json/json-mset) and [`JSON.MERGE`](/docs/redis/commands/json/json-merge) commands.
 * Introduced the `IP Allowlist` feature for enhanced security on newly created databases. By default, all IP addresses will be allowed.
 However, access can be restricted by specifying permitted IP addresses or CIDR ranges.
@@ -85339,6 +85438,10 @@ Upstash Prod Pack and Enterprise plans offer Prometheus metrics collection, enab
 ### Datadog Integration
 
 Upstash Prod Pack and Enterprise plans include integration with Datadog, allowing you to monitor your Redis databases with Datadog in addition to console metrics. Learn more about [Datadog integration](/docs/redis/howto/datadog).
+
+### Insights
+
+The Insights tab on the database page shows request routing between regions, the IP ranges and SDKs your clients use, latency and throughput charts, usage against plan limits, Lua script statistics and a keyspace analysis. Databases without Prod Pack see the tab with sample data. Learn more about [Insights](/docs/redis/howto/insights).
 
 ### More metrics on the Console
 
