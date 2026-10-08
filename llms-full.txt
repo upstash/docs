@@ -110311,23 +110311,69 @@ Source: https://upstash.com/docs/workflow/api-reference/signing-keys/rotate-sign
 /workflow/openapi.yaml post /v2/keys/rotate
 Rotate your signing keys
 
-# Caveats
-Source: https://upstash.com/docs/workflow/basics/caveats
+# Include At Least One Step in Workflow
+Source: https://upstash.com/docs/workflow/basics/best-practices/at-least-one-step
 
-## Introduction
+Every workflow must include at least one step execution with `context.run`. If no steps are defined, the workflow will throw a `Failed to authenticate Workflow request.` error.
 
-In this guide, we'll look at best practices and caveats for using Upstash Workflow.
+<CodeGroup>
 
-## Core Principles
+```typescript ❌ Missing steps - TypeScript
+export const { POST } = serve<string>(async (context) => {
+  const input = context.requestPayload
 
-### Execute business logic in `context.run`
+  // 👇 Problem: No context.run call
+  console.log("Processing input:", input)
+
+  // This workflow will fail with "Failed to authenticate Workflow request."
+})
+```
+
+```typescript ✅ Correct - TypeScript
+export const { POST } = serve<string>(async (context) => {
+  const input = context.requestPayload
+
+  // 👇 At least one step is required
+  await context.run("dummy-step", async () => {
+    return
+  })
+})
+```
+
+```python ❌ Missing steps - Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    # 👇 Problem: No context.run call
+    print("Processing input:", input)
+
+    # This workflow will fail with "Failed to authenticate Workflow request."
+```
+
+```python ✅ Correct - Python
+@serve.post("/api/example")
+async def example(context: AsyncWorkflowContext[str]) -> None:
+    input = context.request_payload
+
+    # 👇 At least one step is required
+    async def _dummy_step():
+        return
+
+    await context.run("dummy-step", _dummy_step)
+```
+
+</CodeGroup>
+
+Even for the placeholder implementations, you must include one dummy step for the Workflow authentication mechanism to function properly.
+
+# Execute Business Logic in context.run
+Source: https://upstash.com/docs/workflow/basics/best-practices/business-logic-in-steps
 
 Your workflow endpoint will be called multiple times during a workflow run. Therefore:
 
 * Place your business logic code inside the `context.run` function for each step
 * Code outside `context.run` only serves to connect steps
-
-Example:
 
 <CodeGroup>
 
@@ -110370,87 +110416,10 @@ async def example(context: AsyncWorkflowContext[str]) -> None:
 
 </CodeGroup>
 
-### Return Results from context.run for Later Use
-
-Always return step results if needed in subsequent steps.
-
-<CodeGroup>
-
-```typescript ❌ Incorrect - TypeScript
-export const { POST } = serve<string>(async (context) => {
-  const input = context.requestPayload
-
-  let result
-
-  await context.run("step-1", async () => {
-    result = await someWork(input)
-  })
-  await context.run("step-2", async () => {
-    await someOtherWork(result)
-  })
-})
-```
-
-```typescript ✅ Correct - TypeScript
-export const { POST } = serve<string>(async (context) => {
-  const input = context.requestPayload
-
-  const result = await context.run("step-1", async () => {
-    return await someWork(input)
-  })
-
-  await context.run("step-2", async () => {
-    someOtherWork(result)
-  })
-})
-```
-
-```python ❌ Incorrect - Python
-@serve.post("/api/example")
-async def example(context: AsyncWorkflowContext[str]) -> None:
-    input = context.request_payload
-
-    result = None
-
-    async def _step_1() -> Dict:
-        nonlocal result
-        result = await some_work(input)
-
-    await context.run("step-1", _step_1)
-
-    async def _step_2() -> None:
-        await some_other_work(result)
-
-    await context.run("step-2", _step_2)
-
-```
-
-```python ✅ Correct - Python
-@serve.post("/api/example")
-async def example(context: AsyncWorkflowContext[str]) -> None:
-    input = context.request_payload
-
-    async def _step_1() -> Dict:
-        return await some_work(input)
-
-    result = await context.run("step-1", _step_1)
-
-    async def _step_2() -> None:
-        await some_other_work(result)
-
-    await context.run("step-2", _step_2)
-
-```
-
-</CodeGroup>
-
-Because your workflow endpoint is called multiple times, `result` will be unitialized when the endpoint is called again to run `step-2`.
-
 If you are curious about why an endpoint is called multiple times, see [how Workflow works](/docs/workflow/basics/how).
 
-## Avoiding Common Pitfalls
-
-### Avoid Non-deterministic Code Outside `context.run`
+# Avoid Non-deterministic Code Outside context.run
+Source: https://upstash.com/docs/workflow/basics/best-practices/deterministic-code
 
 A workflow endpoint should always produce the same results, even if it's called multiple times. Avoid:
 
@@ -110559,8 +110528,8 @@ To prevent this, ensure that the non-idempotent code (such as `getResultFromDb` 
 <CodeGroup>
 
 ```typescript TypeScript
-const result = await context.run(async () => {
-  await getResultFromDb(entryId)
+const result = await context.run("get-result-from-db", async () => {
+  return await getResultFromDb(entryId)
 });
 if (result.return) {
   return;
@@ -110580,7 +110549,8 @@ if result.should_return:
 
 </CodeGroup>
 
-### Ensure Idempotency in `context.run`
+# Ensure Idempotency in context.run
+Source: https://upstash.com/docs/workflow/basics/best-practices/idempotency
 
 Business logic should be idempotent due to potential retries in distributed systems. In other words, **when a workflow runs twice with the same input, the end result should be the same as if the workflow only ran once**.
 
@@ -110616,7 +110586,8 @@ Imagine that `someWork` executes once and makes a change to a database. However,
 
 If `someWork` is not idempotent, this could lead to unintended consequences. For example duplicated records or corrupted data. Idempotency is crucial to maintaining the integrity and reliability of your workflow.
 
-### Don't Nest Context Methods
+# Don't Nest Context Methods
+Source: https://upstash.com/docs/workflow/basics/best-practices/nested-context-methods
 
 Avoid calling `context.call`, `context.sleep`, `context.sleepFor`, or `context.run` within another `context.run`.
 
@@ -110652,20 +110623,68 @@ async def example(context: AsyncWorkflowContext[str]) -> None:
 
 </CodeGroup>
 
-### Include At Least One Step in Workflow
+# Best practices
+Source: https://upstash.com/docs/workflow/basics/best-practices/overview
 
-Every workflow must include at least one step execution with `context.run`. If no steps are defined, the workflow will throw a `Failed to authenticate Workflow request.` error.
+Keep the rules below in mind to avoid unexpected behavior and failures.
+
+To learn more about how the internal of Upstash Workflow works, see [how Workflow works](/docs/workflow/basics/how).
+
+<Columns cols={1}>
+  <Card title="Execute business logic in context.run" href="/workflow/basics/best-practices/business-logic-in-steps" arrow>
+    Your endpoint runs many times per workflow run. Only code inside a step runs exactly once.
+  </Card>
+  <Card title="Return results from context.run" href="/workflow/basics/best-practices/return-step-results" arrow>
+    Variables assigned inside a step are lost on the next call. Return the value instead.
+  </Card>
+  <Card title="Avoid non-deterministic code outside context.run" href="/workflow/basics/best-practices/deterministic-code" arrow>
+    Database reads, time checks, and randomness must produce the same result on every call.
+  </Card>
+  <Card title="Ensure idempotency in context.run" href="/workflow/basics/best-practices/idempotency" arrow>
+    Steps can be retried. Running one twice must have the same effect as running it once.
+  </Card>
+  <Card title="Keep workflows within hard limits" href="/workflow/basics/best-practices/workflow-limits" arrow>
+    A workflow run can have at most 1,000 steps and a 100 MB context.
+  </Card>
+  <Card title="Don't nest context methods" href="/workflow/basics/best-practices/nested-context-methods" arrow>
+    Never call `context.run`, `context.sleep`, or `context.call` inside another `context.run`.
+  </Card>
+  <Card title="Include at least one step" href="/workflow/basics/best-practices/at-least-one-step" arrow>
+    A workflow without any `context.run` fails with `Failed to authenticate Workflow request.`
+  </Card>
+  <Card title="Avoid Promise.any" href="/workflow/basics/best-practices/promise-any" arrow>
+    `Promise.all` works for parallel steps, but `Promise.any` isn't supported.
+  </Card>
+</Columns>
+
+# Avoid Promise.any
+Source: https://upstash.com/docs/workflow/basics/best-practices/promise-any
+
+In workflow-js, you can use [`Promise.all` to run steps in parallel](/docs/workflow/howto/parallel-runs). However, a similar method, [`Promise.any`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/any), is not supported for workflow steps.
+
+While `Promise.all` works seamlessly, `Promise.any` does not currently function with workflow steps. We are exploring the possibility of adding support for `Promise.any` in the future.
+
+If you have a specific use case that requires `Promise.any`, don't hesitate to reach out to Upstash support.
+
+# Return Results from context.run
+Source: https://upstash.com/docs/workflow/basics/best-practices/return-step-results
+
+Always return step results if needed in subsequent steps.
 
 <CodeGroup>
 
-```typescript ❌ Missing steps - TypeScript
+```typescript ❌ Incorrect - TypeScript
 export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
 
-  // 👇 Problem: No context.run call
-  console.log("Processing input:", input)
+  let result
 
-  // This workflow will fail with "Failed to authenticate Workflow request."
+  await context.run("step-1", async () => {
+    result = await someWork(input)
+  })
+  await context.run("step-2", async () => {
+    await someOtherWork(result)
+  })
 })
 ```
 
@@ -110673,22 +110692,34 @@ export const { POST } = serve<string>(async (context) => {
 export const { POST } = serve<string>(async (context) => {
   const input = context.requestPayload
 
-  // 👇 At least one step is required
-  await context.run("dummy-step", async () => {
-    return
+  const result = await context.run("step-1", async () => {
+    return await someWork(input)
+  })
+
+  await context.run("step-2", async () => {
+    someOtherWork(result)
   })
 })
 ```
 
-```python ❌ Missing steps - Python
+```python ❌ Incorrect - Python
 @serve.post("/api/example")
 async def example(context: AsyncWorkflowContext[str]) -> None:
     input = context.request_payload
 
-    # 👇 Problem: No context.run call
-    print("Processing input:", input)
+    result = None
 
-    # This workflow will fail with "Failed to authenticate Workflow request."
+    async def _step_1() -> Dict:
+        nonlocal result
+        result = await some_work(input)
+
+    await context.run("step-1", _step_1)
+
+    async def _step_2() -> None:
+        await some_other_work(result)
+
+    await context.run("step-2", _step_2)
+
 ```
 
 ```python ✅ Correct - Python
@@ -110696,24 +110727,84 @@ async def example(context: AsyncWorkflowContext[str]) -> None:
 async def example(context: AsyncWorkflowContext[str]) -> None:
     input = context.request_payload
 
-    # 👇 At least one step is required
-    async def _dummy_step():
-        return
+    async def _step_1() -> Dict:
+        return await some_work(input)
 
-    await context.run("dummy-step", _dummy_step)
+    result = await context.run("step-1", _step_1)
+
+    async def _step_2() -> None:
+        await some_other_work(result)
+
+    await context.run("step-2", _step_2)
+
 ```
 
 </CodeGroup>
 
-Even for the placeholder implementations, you must include one dummy step for the Workflow authentication mechanism to function properly.
+Because your workflow endpoint is called multiple times, `result` will be uninitialized when the endpoint is called again to run `step-2`.
 
-### Avoid Promise.any
+If you are curious about why an endpoint is called multiple times, see [how Workflow works](/docs/workflow/basics/how).
 
-In workflow-js, you can use [`Promise.all` to run steps in parallel](/docs/workflow/howto/parallel-runs). However, a similar method, [`Promise.any`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/any), is not supported for workflow steps.
+# Avoid Context and Step Limits
+Source: https://upstash.com/docs/workflow/basics/best-practices/workflow-limits
 
-While `Promise.all` works seamlessly, `Promise.any` does not currently function with workflow steps. We are exploring the possibility of adding support for `Promise.any` in the future.
+A single workflow run has the following hard limits:
 
-If you have a specific use case that requires `Promise.any`, don't hesitate to reach out to Upstash support.
+* **Maximum step count:** 1,000 steps
+* **Maximum context size:** 100 MB
+
+These limits are hard limits and do not vary by plan. Avoid putting all of your application logic into one large workflow that could reach either limit.
+
+The context size is the combined size of the workflow input and the results of all completed steps. Each new step result is added to that context, so the context grows as the workflow completes more steps. Workflows with many steps, large step results, or both can reach the context size limit.
+
+Instead, separate the logic into multiple workflows and connect them with [`context.invoke`](/docs/workflow/features/invoke). Each invoked workflow has its own context containing its input and step results. When the invoked workflow finishes, only its final output is transferred to the parent workflow as the result of a single `context.invoke` step. Its intermediate step results are not added to the parent's context.
+
+```typescript app/workflows/[...path]/route.ts
+import type { WorkflowContext } from "@upstash/workflow"
+import { createWorkflow, serveMany } from "@upstash/workflow/nextjs"
+
+type BatchInput = { itemIds: string[] }
+
+const processBatch = createWorkflow(
+  async (context: WorkflowContext<BatchInput>) => {
+    const validatedItems = await context.run("validate items", () => {
+      return context.requestPayload.itemIds.filter((itemId) => itemId.length > 0)
+    })
+
+    const processedItems = await context.run("process items", () => {
+      return validatedItems.map((itemId) => ({ itemId, processed: true }))
+    })
+
+    // Only this final output is transferred to the parent workflow.
+    return { processedCount: processedItems.length }
+  }
+)
+
+const parentWorkflow = createWorkflow(
+  async (context: WorkflowContext<BatchInput>) => {
+    const { body, isFailed, isCanceled } = await context.invoke(
+      "process batch",
+      {
+        workflow: processBatch,
+        body: context.requestPayload,
+      }
+    )
+
+    if (isFailed || isCanceled) {
+      throw new Error("The batch workflow did not complete successfully")
+    }
+
+    return body
+  }
+)
+
+export const { POST } = serveMany({
+  parent: parentWorkflow,
+  "process-batch": processBatch,
+})
+```
+
+In this example, `validatedItems` and `processedItems` are stored only in the invoked workflow's context. The parent context receives `{ processedCount }` as one step result. This keeps each workflow focused and prevents intermediate results from accumulating in a single context.
 
 # Overview
 Source: https://upstash.com/docs/workflow/basics/client
@@ -119356,7 +119447,7 @@ This error indicates that the workflow URL has localhost. Publish requests will 
 * Explicitly pass the full [url](/docs/workflow/basics/serve/advanced#path-url)
 
 ### Deduplication Log
-Since QStash has at least once delivery guarantee, there is a very small chance that a step will run twice. This is why we suggest [idempotancy](/docs/workflow/basics/caveats#ensure-idempotency-in-context-run). When this happens, the duplicate step should print the following log and terminate:
+Since QStash has at least once delivery guarantee, there is a very small chance that a step will run twice. This is why we suggest [idempotancy](/docs/workflow/basics/best-practices/idempotency). When this happens, the duplicate step should print the following log and terminate:
 
 ```
 Upstash Workflow: The step 'some-step' with id 'step-index' has run twice during workflow execution. Rest of the workflow will continue running as usual.
