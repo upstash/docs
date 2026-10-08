@@ -38,8 +38,9 @@ export const events = createEventLayer({
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
   // Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
   secretKey: process.env.MCP_EVENTS_SECRET_KEY,
-  // Receives the AuthInfo your auth middleware attached to the request.
-  principal: (auth) => auth?.extra?.userId as string | undefined,
+  // Who is calling. `auth` is the verified token your MCP route passes to the SDK; see
+  // "Users" in the MCP Tasks docs for how it's populated.
+  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
 });
 
 export const commentCreated = events.define("comment.created", {
@@ -165,14 +166,16 @@ reaches the right user's agent, so your server never needs to know who the host 
 subscribing to the same event produce two subscriptions and two deliveries.
 
 **Your server decides who receives what.** `events/subscribe` arrives with the same auth as any
-other MCP request. `principal(auth)` turns it into an owner id, which is stored on the
+other MCP request: the `AuthInfo` your route verified and passed to `handler.fetch(request, {
+authInfo })` (see [Users](/redis/sdks/agentkit/mcp-tasks#users)). `principal({ auth, request })`
+turns it into an owner id, which is stored on the
 subscription and becomes part of its id:
 
 ```ts
 const events = createEventLayer({
   store,
   delivery,
-  principal: (auth) => auth?.extra?.userId as string | undefined,
+  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
 });
 
 const deployFinished = events.define("deploy.finished", {
@@ -226,7 +229,7 @@ payload includes the result when it fits in the 256 KiB envelope.
   detail goes to your server logs.
 - **Secrets** are stored encrypted with `MCP_EVENTS_SECRET_KEY`. A refresh with the same secret
   skips the challenge; a new secret verifies again.
-- **Authorization:** `authorize` runs on every subscribe and refresh.
+- **Authorization:** `authorize(args, { principal, auth, request })` runs on every subscribe and refresh.
 - **Delivery endpoint:** verifies QStash's signature with the `QSTASH_*_SIGNING_KEY` variables (or
   a `receiver` you pass). Without them it throws on the first request; it never sends unverified
   deliveries.
@@ -253,7 +256,7 @@ payload includes the result when it fits in the 256 KiB envelope.
 | --- | --- | --- |
 | `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
 | `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
-| `principal` | required | `(auth) => string \| undefined`. Owns each subscription; `undefined` refuses. |
+| `principal` | required | `({ auth, request }) => string \| undefined`, may be async. Owns each subscription; `undefined` refuses. |
 | `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required, with no built-in default. |
 | `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
 | `defaults.maxTtlMs` | 30 days | The most the server grants |
