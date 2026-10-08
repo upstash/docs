@@ -87210,7 +87210,7 @@ Three files in a Next.js app.
 
 ```ts lib/events.ts
 import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events/upstash";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
 import * as z from "zod";
 
 export const events = createEventLayer({
@@ -87327,6 +87327,49 @@ await commentCreated.emit(payload, {
 For conditions that exact matching can't express, add `match: (args, payload) => boolean` to the
 event definition.
 
+## Users and subscriptions
+
+Two things decide who gets an event: the callback URL says **where** it goes, and the principal
+says **who** may receive it.
+
+**The host routes to its user.** Every subscription carries a callback URL and signing secret that
+the host generated for it. ChatGPT, for example, sends a unique
+`https://connectors.api.openai.com/webhook/mcp-events/<id>` per monitor. Posting to that URL
+reaches the right user's agent, so your server never needs to know who the host user is. Two users
+subscribing to the same event produce two subscriptions and two deliveries.
+
+**Your server decides who may subscribe.** `events/subscribe` arrives with the same auth as any
+other MCP request. `principal(auth)` turns it into an owner id, which is stored on the
+subscription and becomes part of its id:
+
+```ts
+const events = createEventLayer({
+  store,
+  delivery,
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+});
+
+const deployFinished = events.define("deploy.finished", {
+  description: "A deploy finished.",
+  input: z.object({ service: z.string().optional() }),
+  payload: Deploy,
+  // Runs on every subscribe and refresh.
+  authorize: (args, { principal }) => canSeeService(principal, args.service),
+});
+```
+
+* `emit(payload)` reaches every matching subscription. Use it for shared events, like deploys.
+* `emit(payload, { owner: userId })` reaches only that user's subscriptions. Use it for personal
+  events, like "your export finished".
+* Unsubscribing recomputes the id from the caller's principal, so only the owner can remove a
+  subscription.
+
+<Note>
+  Without `principal`, every subscription is anonymous: anyone who can reach the server can
+  subscribe to any event. Deliveries still reach the right host user, but nothing limits what
+  they watch.
+</Note>
+
 ## Task finished events
 
 If you use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), a `task.finished` event lets an
@@ -87396,7 +87439,9 @@ Poll and stream delivery modes and replay cursors from the draft aren't implemen
 ## Example
 
 The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo)
-emits `task.finished` and includes a local receiver that verifies each signed delivery.
+includes Deploy Watch, an events-only server with a `deploy.finished` event filtered by
+environment, plus a local receiver that verifies each signed delivery. We tested it end to end with
+ChatGPT monitors.
 
 # MCP Events with Redis and QStash
 Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-events
@@ -87428,7 +87473,7 @@ Three files in a Next.js app.
 
 ```ts lib/events.ts
 import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events/upstash";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
 import * as z from "zod";
 
 export const events = createEventLayer({
@@ -87545,6 +87590,49 @@ await commentCreated.emit(payload, {
 For conditions that exact matching can't express, add `match: (args, payload) => boolean` to the
 event definition.
 
+## Users and subscriptions
+
+Two things decide who gets an event: the callback URL says **where** it goes, and the principal
+says **who** may receive it.
+
+**The host routes to its user.** Every subscription carries a callback URL and signing secret that
+the host generated for it. ChatGPT, for example, sends a unique
+`https://connectors.api.openai.com/webhook/mcp-events/<id>` per monitor. Posting to that URL
+reaches the right user's agent, so your server never needs to know who the host user is. Two users
+subscribing to the same event produce two subscriptions and two deliveries.
+
+**Your server decides who may subscribe.** `events/subscribe` arrives with the same auth as any
+other MCP request. `principal(auth)` turns it into an owner id, which is stored on the
+subscription and becomes part of its id:
+
+```ts
+const events = createEventLayer({
+  store,
+  delivery,
+  principal: (auth) => auth?.extra?.userId as string | undefined,
+});
+
+const deployFinished = events.define("deploy.finished", {
+  description: "A deploy finished.",
+  input: z.object({ service: z.string().optional() }),
+  payload: Deploy,
+  // Runs on every subscribe and refresh.
+  authorize: (args, { principal }) => canSeeService(principal, args.service),
+});
+```
+
+* `emit(payload)` reaches every matching subscription. Use it for shared events, like deploys.
+* `emit(payload, { owner: userId })` reaches only that user's subscriptions. Use it for personal
+  events, like "your export finished".
+* Unsubscribing recomputes the id from the caller's principal, so only the owner can remove a
+  subscription.
+
+<Note>
+  Without `principal`, every subscription is anonymous: anyone who can reach the server can
+  subscribe to any event. Deliveries still reach the right host user, but nothing limits what
+  they watch.
+</Note>
+
 ## Task finished events
 
 If you use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), a `task.finished` event lets an
@@ -87614,7 +87702,9 @@ Poll and stream delivery modes and replay cursors from the draft aren't implemen
 ## Example
 
 The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo)
-emits `task.finished` and includes a local receiver that verifies each signed delivery.
+includes Deploy Watch, an events-only server with a `deploy.finished` event filtered by
+environment, plus a local receiver that verifies each signed delivery. We tested it end to end with
+ChatGPT monitors.
 
 # Long-Running MCP Tools with Redis and QStash
 Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-tasks
