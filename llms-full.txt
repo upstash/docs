@@ -87228,7 +87228,8 @@ export const commentCreated = events.define("comment.created", {
   input: z.object({ documentId: z.string() }),
   // What every delivery carries.
   payload: z.object({ documentId: z.string(), commentId: z.string(), text: z.string() }),
-  // Optional: who may subscribe with these arguments.
+  // Required: who may subscribe with these arguments and receive what they match.
+  // Runs on every subscribe and refresh, and again before every delivery.
   authorize: (args, { principal }) => canRead(principal, args.documentId),
 });
 ```
@@ -87265,17 +87266,14 @@ failed so QStash retries. A bad signature or body gets `489` with `Upstash-NonRe
 ### Emit
 
 Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
-Every `emit` names who may receive it, `owner` for one user or `owners` for several:
 
 ```ts
-await commentCreated.emit(
-  { documentId: "doc_123", commentId: "c_9", text: "Ship it?" },
-  { owners: await membersOf("doc_123") },
-);
+await commentCreated.emit({ documentId: "doc_123", commentId: "c_9", text: "Ship it?" });
 ```
 
-`emit` is typed by the `payload` schema and validates against it. It reaches only the named users'
-matching subscriptions, and returns the event id and how many subscriptions matched.
+`emit` is typed by the `payload` schema and validates against it. It reaches every subscription
+whose arguments match (everyone watching `doc_123`), checks `authorize` again for each subscriber
+before delivering, and returns the event id and how many subscriptions matched.
 
 ### Environment variables
 
@@ -87297,7 +87295,7 @@ APP_URL=https://your-app.vercel.app
    `whsec_` signing secret.
 2. For a new callback or secret, your server POSTs a signed verification challenge and requires it
    echoed back, then stores the subscription and answers with its `id` and a `refreshBefore` time.
-3. When you `emit`, every matching subscription of the named owners gets a POST with the event envelope and
+3. When you `emit`, every matching subscription that `authorize` still allows gets a POST with the event envelope and
    [Standard Webhooks](https://www.standardwebhooks.com/) headers:
 
 ```json
@@ -87319,13 +87317,27 @@ A subscription matches when every argument it gave equals the emitted value. Emi
 `{ repo: "a", branch: "main" }` reaches subscribers of `{ repo: "a" }`, of
 `{ repo: "a", branch: "main" }`, and of `{}`.
 
-By default the values come from the payload fields named in the input schema. Pass options to
-control it:
+The values come from the payload fields named in the input schema, so when the payload carries
+every input field, `emit(payload)` needs nothing else. When it doesn't, the type of `emit` makes
+`args` required, and an emit with no value for a required input field throws, so a filter can never
+silently match nothing:
+
+```ts
+const replyPosted = events.define("reply.posted", {
+  description: "A reply was posted in a thread.",
+  input: z.object({ threadId: z.string() }),
+  payload: z.object({ text: z.string() }), // no threadId here
+  authorize: (args, { principal }) => canReadThread(principal, args.threadId),
+});
+
+await replyPosted.emit({ text: "Agreed" }, { args: { threadId } }); // `args` is required
+```
+
+Other options:
 
 ```ts
 await commentCreated.emit(payload, {
-  owner: userId, // or owners: [...]; required
-  args: { documentId }, // match on these values instead
+  to: ["alice", "carol"], // only these users' subscriptions; optional
   eventId: comment.id, // emitting the same id twice is deduplicated
 });
 ```
@@ -87335,8 +87347,8 @@ event definition.
 
 ## Users and subscriptions
 
-Two things decide who gets an event: the callback URL says **where** it goes, and the principal
-says **who** may receive it.
+Three things decide who gets an event: the callback URL says **where** it goes, the subscription's
+arguments say **what**, and `authorize` says **who may**.
 
 **The host routes to its user.** Every subscription carries a callback URL and signing secret that
 the host generated for it. ChatGPT, for example, sends a unique
@@ -87344,35 +87356,64 @@ the host generated for it. ChatGPT, for example, sends a unique
 reaches the right user's agent, so your server never needs to know who the host user is. Two users
 subscribing to the same event produce two subscriptions and two deliveries.
 
-**Your server decides who receives what.** `events/subscribe` arrives with the same auth as any
-other MCP request: the `AuthInfo` your route verified and passed to `handler.fetch(request, {
-authInfo })` (see [Users](/docs/redis/sdks/agentkit/mcp-tasks#users)). `principal({ auth, request })`
-turns it into an owner id, which is stored on the
-subscription and becomes part of its id:
+**Your server knows who subscribed.** `events/subscribe` arrives with the same auth as any other MCP
+request: the `AuthInfo` your route verified and passed to `handler.fetch(request, { authInfo })`
+(see [Users](/docs/redis/sdks/agentkit/mcp-tasks#users)). `principal({ auth, request })` turns it into
+the subscriber's id, which is stored on the subscription and becomes part of its id.
+
+**`authorize` decides who may, and keeps deciding.** It is required, and runs twice:
+
+| When | What it gets |
+| --- | --- |
+| Every subscribe and refresh | `args`, `{ principal, context, phase: "subscribe", auth, request }` |
+| Before every delivery | `args`, `{ principal, context, phase: "deliver" }` |
+
+The token is never stored, so there is no `auth` or `request` behind a delivery. The second check is
+what stops events when someone loses access after subscribing; a delivery it refuses is dropped, not
+retried. An event any authenticated caller may hear says so with `authorize: () => true`.
+
+**Context for the delivery check.** Return `{ id, context }` from `principal` instead of a string
+to store small, non-secret data (an org id, a role) with the subscription. `authorize` gets it back
+as `context`:
 
 ```ts
 const events = createEventLayer({
   store,
   delivery,
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+  principal: ({ auth }) => ({
+    id: auth?.extra?.userId as string,
+    context: { orgId: auth?.extra?.orgId }, // never the token
+  }),
 });
 
-const deployFinished = events.define("deploy.finished", {
-  description: "A deploy finished.",
-  input: z.object({ service: z.string().optional() }),
-  payload: Deploy,
-  // Runs on every subscribe and refresh.
-  authorize: (args, { principal }) => canSeeService(principal, args.service),
+const memoPosted = events.define("memo.posted", {
+  description: "A memo was posted to your org.",
+  input: z.object({ orgId: z.string() }),
+  payload: z.object({ orgId: z.string(), text: z.string() }),
+  authorize: (args, { context }) => context.orgId === args.orgId,
 });
 ```
 
-* Every `emit` names its recipients. `emit(payload, { owner: userId })` reaches one user's
-  subscriptions, for personal events like "your export finished". `emit(payload, { owners })`
-  reaches several, for shared ones like a deploy everyone on the team may see.
-* So a subscription with no arguments still only hears about its own user's events. `authorize`
-  adds a per-argument check on top.
-* Unsubscribing recomputes the id from the caller's principal, so only the owner can remove a
-  subscription.
+`context` is a snapshot from subscribe time, capped at 4 KB. For revocation, check your own data
+with `principal` rather than trusting the snapshot.
+
+**Personal events use `to`.** Some events belong to one user, like "your export finished". Mark them
+`personal: true`, and every `emit` must name the user with `to`; the type requires it, and so does
+a runtime check. A subscription with no arguments then only hears about its own user's events:
+
+```ts
+const exportFinished = events.define("export.finished", {
+  description: "Your export finished.",
+  payload: z.object({ exportId: z.string(), url: z.string() }),
+  personal: true,
+  authorize: () => true, // `to` already limits it to the export's owner
+});
+
+await exportFinished.emit({ exportId, url }, { to: userId });
+```
+
+Unsubscribing recomputes the id from the caller's principal, so only the subscriber can remove a
+subscription.
 
 <Note>
   `principal` is required, and there are no anonymous subscriptions: when it returns `undefined`,
@@ -87393,8 +87434,8 @@ const taskFinished = taskFinishedEvent(events);
 export const tasks = createTaskLayer({ store, dispatcher, principal, onSettle: taskFinished.onSettle });
 ```
 
-It fires once when a task completes, fails or is cancelled, and only to subscriptions created by
-the task's owner. We haven't tested it with ChatGPT yet. A host subscribes with no arguments for every task, or with `taskId` for one. The
+It fires once when a task completes, fails or is cancelled. It is a personal event, emitted `to` the
+task's owner, so only their subscriptions get it. We haven't tested it with ChatGPT yet. A host subscribes with no arguments for every task, or with `taskId` for one. The
 payload includes the result when it fits in the 256 KiB envelope.
 
 ## Security
@@ -87408,7 +87449,8 @@ payload includes the result when it fits in the 256 KiB envelope.
   detail goes to your server logs.
 * **Secrets** are stored encrypted with `MCP_EVENTS_SECRET_KEY`. A refresh with the same secret
   skips the challenge; a new secret verifies again.
-* **Authorization:** `authorize(args, { principal, auth, request })` runs on every subscribe and refresh.
+* **Authorization:** `authorize` runs on every subscribe and refresh, and again before every
+  delivery.
 * **Delivery endpoint:** verifies QStash's signature with the `QSTASH_*_SIGNING_KEY` variables (or
   a `receiver` you pass). Without them it throws on the first request; it never sends unverified
   deliveries.
@@ -87435,15 +87477,15 @@ payload includes the result when it fits in the 256 KiB envelope.
 | --- | --- | --- |
 | `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
 | `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
-| `principal` | required | `({ auth, request }) => string \| undefined`, may be async. Owns each subscription; `undefined` refuses. |
+| `principal` | required | `({ auth, request }) => id \| { id, context } \| undefined`, may be async. The subscriber; `undefined` refuses. |
 | `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required, with no built-in default. |
 | `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
 | `defaults.maxTtlMs` | 30 days | The most the server grants |
 | `allowInsecureCallbacks` | `false` | Local development only |
 | `timeoutMs` | 10 seconds | Timeout for each POST to a callback |
 
-**`define` config:** `description` and `payload`, plus optional `title`, `input`, `authorize` and
-`match`.
+**`define` config:** `description`, `payload` and `authorize` (required), plus optional `title`,
+`input`, `personal` and `match`.
 
 **`QStashDelivery`:** `url` (required), `retries` (default 3), `retryDelay`, `headers`, `qstash`,
 `receiver`.
@@ -87508,7 +87550,8 @@ export const commentCreated = events.define("comment.created", {
   input: z.object({ documentId: z.string() }),
   // What every delivery carries.
   payload: z.object({ documentId: z.string(), commentId: z.string(), text: z.string() }),
-  // Optional: who may subscribe with these arguments.
+  // Required: who may subscribe with these arguments and receive what they match.
+  // Runs on every subscribe and refresh, and again before every delivery.
   authorize: (args, { principal }) => canRead(principal, args.documentId),
 });
 ```
@@ -87545,17 +87588,14 @@ failed so QStash retries. A bad signature or body gets `489` with `Upstash-NonRe
 ### Emit
 
 Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
-Every `emit` names who may receive it, `owner` for one user or `owners` for several:
 
 ```ts
-await commentCreated.emit(
-  { documentId: "doc_123", commentId: "c_9", text: "Ship it?" },
-  { owners: await membersOf("doc_123") },
-);
+await commentCreated.emit({ documentId: "doc_123", commentId: "c_9", text: "Ship it?" });
 ```
 
-`emit` is typed by the `payload` schema and validates against it. It reaches only the named users'
-matching subscriptions, and returns the event id and how many subscriptions matched.
+`emit` is typed by the `payload` schema and validates against it. It reaches every subscription
+whose arguments match (everyone watching `doc_123`), checks `authorize` again for each subscriber
+before delivering, and returns the event id and how many subscriptions matched.
 
 ### Environment variables
 
@@ -87577,7 +87617,7 @@ APP_URL=https://your-app.vercel.app
    `whsec_` signing secret.
 2. For a new callback or secret, your server POSTs a signed verification challenge and requires it
    echoed back, then stores the subscription and answers with its `id` and a `refreshBefore` time.
-3. When you `emit`, every matching subscription of the named owners gets a POST with the event envelope and
+3. When you `emit`, every matching subscription that `authorize` still allows gets a POST with the event envelope and
    [Standard Webhooks](https://www.standardwebhooks.com/) headers:
 
 ```json
@@ -87599,13 +87639,27 @@ A subscription matches when every argument it gave equals the emitted value. Emi
 `{ repo: "a", branch: "main" }` reaches subscribers of `{ repo: "a" }`, of
 `{ repo: "a", branch: "main" }`, and of `{}`.
 
-By default the values come from the payload fields named in the input schema. Pass options to
-control it:
+The values come from the payload fields named in the input schema, so when the payload carries
+every input field, `emit(payload)` needs nothing else. When it doesn't, the type of `emit` makes
+`args` required, and an emit with no value for a required input field throws, so a filter can never
+silently match nothing:
+
+```ts
+const replyPosted = events.define("reply.posted", {
+  description: "A reply was posted in a thread.",
+  input: z.object({ threadId: z.string() }),
+  payload: z.object({ text: z.string() }), // no threadId here
+  authorize: (args, { principal }) => canReadThread(principal, args.threadId),
+});
+
+await replyPosted.emit({ text: "Agreed" }, { args: { threadId } }); // `args` is required
+```
+
+Other options:
 
 ```ts
 await commentCreated.emit(payload, {
-  owner: userId, // or owners: [...]; required
-  args: { documentId }, // match on these values instead
+  to: ["alice", "carol"], // only these users' subscriptions; optional
   eventId: comment.id, // emitting the same id twice is deduplicated
 });
 ```
@@ -87615,8 +87669,8 @@ event definition.
 
 ## Users and subscriptions
 
-Two things decide who gets an event: the callback URL says **where** it goes, and the principal
-says **who** may receive it.
+Three things decide who gets an event: the callback URL says **where** it goes, the subscription's
+arguments say **what**, and `authorize` says **who may**.
 
 **The host routes to its user.** Every subscription carries a callback URL and signing secret that
 the host generated for it. ChatGPT, for example, sends a unique
@@ -87624,35 +87678,64 @@ the host generated for it. ChatGPT, for example, sends a unique
 reaches the right user's agent, so your server never needs to know who the host user is. Two users
 subscribing to the same event produce two subscriptions and two deliveries.
 
-**Your server decides who receives what.** `events/subscribe` arrives with the same auth as any
-other MCP request: the `AuthInfo` your route verified and passed to `handler.fetch(request, {
-authInfo })` (see [Users](/docs/redis/sdks/agentkit/mcp-tasks#users)). `principal({ auth, request })`
-turns it into an owner id, which is stored on the
-subscription and becomes part of its id:
+**Your server knows who subscribed.** `events/subscribe` arrives with the same auth as any other MCP
+request: the `AuthInfo` your route verified and passed to `handler.fetch(request, { authInfo })`
+(see [Users](/docs/redis/sdks/agentkit/mcp-tasks#users)). `principal({ auth, request })` turns it into
+the subscriber's id, which is stored on the subscription and becomes part of its id.
+
+**`authorize` decides who may, and keeps deciding.** It is required, and runs twice:
+
+| When | What it gets |
+| --- | --- |
+| Every subscribe and refresh | `args`, `{ principal, context, phase: "subscribe", auth, request }` |
+| Before every delivery | `args`, `{ principal, context, phase: "deliver" }` |
+
+The token is never stored, so there is no `auth` or `request` behind a delivery. The second check is
+what stops events when someone loses access after subscribing; a delivery it refuses is dropped, not
+retried. An event any authenticated caller may hear says so with `authorize: () => true`.
+
+**Context for the delivery check.** Return `{ id, context }` from `principal` instead of a string
+to store small, non-secret data (an org id, a role) with the subscription. `authorize` gets it back
+as `context`:
 
 ```ts
 const events = createEventLayer({
   store,
   delivery,
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+  principal: ({ auth }) => ({
+    id: auth?.extra?.userId as string,
+    context: { orgId: auth?.extra?.orgId }, // never the token
+  }),
 });
 
-const deployFinished = events.define("deploy.finished", {
-  description: "A deploy finished.",
-  input: z.object({ service: z.string().optional() }),
-  payload: Deploy,
-  // Runs on every subscribe and refresh.
-  authorize: (args, { principal }) => canSeeService(principal, args.service),
+const memoPosted = events.define("memo.posted", {
+  description: "A memo was posted to your org.",
+  input: z.object({ orgId: z.string() }),
+  payload: z.object({ orgId: z.string(), text: z.string() }),
+  authorize: (args, { context }) => context.orgId === args.orgId,
 });
 ```
 
-* Every `emit` names its recipients. `emit(payload, { owner: userId })` reaches one user's
-  subscriptions, for personal events like "your export finished". `emit(payload, { owners })`
-  reaches several, for shared ones like a deploy everyone on the team may see.
-* So a subscription with no arguments still only hears about its own user's events. `authorize`
-  adds a per-argument check on top.
-* Unsubscribing recomputes the id from the caller's principal, so only the owner can remove a
-  subscription.
+`context` is a snapshot from subscribe time, capped at 4 KB. For revocation, check your own data
+with `principal` rather than trusting the snapshot.
+
+**Personal events use `to`.** Some events belong to one user, like "your export finished". Mark them
+`personal: true`, and every `emit` must name the user with `to`; the type requires it, and so does
+a runtime check. A subscription with no arguments then only hears about its own user's events:
+
+```ts
+const exportFinished = events.define("export.finished", {
+  description: "Your export finished.",
+  payload: z.object({ exportId: z.string(), url: z.string() }),
+  personal: true,
+  authorize: () => true, // `to` already limits it to the export's owner
+});
+
+await exportFinished.emit({ exportId, url }, { to: userId });
+```
+
+Unsubscribing recomputes the id from the caller's principal, so only the subscriber can remove a
+subscription.
 
 <Note>
   `principal` is required, and there are no anonymous subscriptions: when it returns `undefined`,
@@ -87673,8 +87756,8 @@ const taskFinished = taskFinishedEvent(events);
 export const tasks = createTaskLayer({ store, dispatcher, principal, onSettle: taskFinished.onSettle });
 ```
 
-It fires once when a task completes, fails or is cancelled, and only to subscriptions created by
-the task's owner. We haven't tested it with ChatGPT yet. A host subscribes with no arguments for every task, or with `taskId` for one. The
+It fires once when a task completes, fails or is cancelled. It is a personal event, emitted `to` the
+task's owner, so only their subscriptions get it. We haven't tested it with ChatGPT yet. A host subscribes with no arguments for every task, or with `taskId` for one. The
 payload includes the result when it fits in the 256 KiB envelope.
 
 ## Security
@@ -87688,7 +87771,8 @@ payload includes the result when it fits in the 256 KiB envelope.
   detail goes to your server logs.
 * **Secrets** are stored encrypted with `MCP_EVENTS_SECRET_KEY`. A refresh with the same secret
   skips the challenge; a new secret verifies again.
-* **Authorization:** `authorize(args, { principal, auth, request })` runs on every subscribe and refresh.
+* **Authorization:** `authorize` runs on every subscribe and refresh, and again before every
+  delivery.
 * **Delivery endpoint:** verifies QStash's signature with the `QSTASH_*_SIGNING_KEY` variables (or
   a `receiver` you pass). Without them it throws on the first request; it never sends unverified
   deliveries.
@@ -87715,15 +87799,15 @@ payload includes the result when it fits in the 256 KiB envelope.
 | --- | --- | --- |
 | `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
 | `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
-| `principal` | required | `({ auth, request }) => string \| undefined`, may be async. Owns each subscription; `undefined` refuses. |
+| `principal` | required | `({ auth, request }) => id \| { id, context } \| undefined`, may be async. The subscriber; `undefined` refuses. |
 | `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required, with no built-in default. |
 | `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
 | `defaults.maxTtlMs` | 30 days | The most the server grants |
 | `allowInsecureCallbacks` | `false` | Local development only |
 | `timeoutMs` | 10 seconds | Timeout for each POST to a callback |
 
-**`define` config:** `description` and `payload`, plus optional `title`, `input`, `authorize` and
-`match`.
+**`define` config:** `description`, `payload` and `authorize` (required), plus optional `title`,
+`input`, `personal` and `match`.
 
 **`QStashDelivery`:** `url` (required), `retries` (default 3), `retryDelay`, `headers`, `qstash`,
 `receiver`.
