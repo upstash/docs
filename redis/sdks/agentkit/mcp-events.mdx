@@ -20,7 +20,7 @@ signing and retries: subscriptions live in Upstash Redis, and every delivery goe
 </Note>
 
 ```bash
-npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
 ```
 
 ## Quickstart
@@ -30,7 +30,8 @@ Three files in a Next.js app.
 ### 1. Define the event layer and your events
 
 ```ts lib/events.ts
-import { createEventLayer, QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/events";
+import { createEventLayer } from "@upstash/mcp-toolkit/events";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 
 export const events = createEventLayer({
@@ -40,7 +41,11 @@ export const events = createEventLayer({
   secretKey: process.env.MCP_EVENTS_SECRET_KEY,
   // Who is calling. `auth` is the verified token your MCP route passes to the SDK; see
   // "Users" in the MCP Tasks docs for how it's populated.
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+  principal: ({ auth }) => {
+    const userId = auth?.extra?.userId;
+    if (typeof userId !== "string") throw new Error("Not authenticated");
+    return userId;
+  },
 });
 
 export const commentCreated = events.define("comment.created", {
@@ -201,10 +206,11 @@ as `context`:
 const events = createEventLayer({
   store,
   delivery,
-  principal: ({ auth }) => ({
-    id: auth?.extra?.userId as string,
-    context: { orgId: auth?.extra?.orgId }, // never the token
-  }),
+  principal: ({ auth }) => {
+    const userId = auth?.extra?.userId;
+    if (typeof userId !== "string") throw new Error("Not authenticated");
+    return { id: userId, context: { orgId: auth?.extra?.orgId } }; // never the token
+  },
 });
 
 const memoPosted = events.define("memo.posted", {
@@ -237,7 +243,7 @@ Unsubscribing recomputes the id from the caller's principal, so only the subscri
 subscription.
 
 <Note>
-  `principal` is required, and there are no anonymous subscriptions: when it returns `undefined`,
+  `principal` is required, and there are no anonymous subscriptions: when it throws,
   subscribe and unsubscribe are refused with reason `not_authenticated`, before any challenge is
   sent. A server with no users of its own passes `principal: () => "local"`.
 </Note>
@@ -298,7 +304,7 @@ payload includes the result when it fits in the 256 KiB envelope.
 | --- | --- | --- |
 | `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
 | `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
-| `principal` | required | `({ auth, request }) => id \| { id, context } \| undefined`, may be async. The subscriber; `undefined` refuses. |
+| `principal` | required | `({ auth, request }) => id \| { id, context }`, may be async. The subscriber; throw to refuse. |
 | `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required, with no built-in default. |
 | `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
 | `defaults.maxTtlMs` | 30 days | The most the server grants |

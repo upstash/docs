@@ -17,7 +17,7 @@ OpenCode and ChatGPT. No client capability is required. The toolkit sits on top 
 TypeScript SDK and uses WebCrypto only, so it runs on Node and edge runtimes.
 
 ```bash
-npm install @upstash/mcp-toolkit @modelcontextprotocol/server @upstash/redis @upstash/qstash zod
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
 ```
 
 ## Quickstart
@@ -29,14 +29,18 @@ Three files in a Next.js app.
 ```ts lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
-import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/tasks/upstash";
+import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 
 // Where the task record lives, how the work is delivered, and who is calling.
 export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+  principal: ({ auth }) => {
+    const userId = auth?.extra?.userId;
+    if (typeof userId !== "string") throw new Error("Not authenticated");
+    return userId;
+  },
 });
 
 // Defined at module scope, so every instance knows the handler, including
@@ -206,10 +210,15 @@ export async function POST(request: Request) {
 }
 ```
 
-Put the user id in `extra` when you build `authInfo`, and read it back in `principal`:
+Put the user id in `extra` when you build `authInfo`, and read it back in `principal`, as in the
+quickstart:
 
 ```ts
-principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+principal: ({ auth }) => {
+  const userId = auth?.extra?.userId;
+  if (typeof userId !== "string") throw new Error("Not authenticated");
+  return userId;
+},
 ```
 
 Because the token was already checked, this is the path to prefer. Key on the user, not
@@ -222,7 +231,11 @@ Apps that authenticate with a cookie or a session, rather than building an `Auth
 request instead:
 
 ```ts
-principal: async ({ request }) => (await getSession(request))?.userId,
+principal: async ({ request }) => {
+  const session = await getSession(request);
+  if (!session) throw new Error("Not authenticated");
+  return session.userId;
+},
 ```
 
 The request is unverified. Check the session yourself, and never trust a header like `x-user-id`
@@ -230,7 +243,9 @@ that the caller can set.
 
 ### No anonymous mode
 
-When `principal` returns `undefined`, the tool call is refused with "Not authenticated". A server
+`principal` must return an id; its type doesn't allow `undefined`. When it can't identify the
+caller, it throws, and the tool call is refused with "Not authenticated". The toolkit fails closed
+even if the types are bypassed: an answer without a non-empty string id is refused too. A server
 with no users of its own passes `principal: () => "local"`.
 
 <Note>
@@ -238,56 +253,47 @@ with no users of its own passes `principal: () => "local"`.
   forever with `ttlMs: null`. Keep secrets out of them, or use a short TTL.
 </Note>
 
-## Retries without duplicates
-
-Agents retry tool calls, especially ones that seemed to time out. With `idempotencyKey`, a second call
-from the same caller with the same key returns the existing task instead of starting another:
-
-```ts
-tasks.define(
-  "generate_report",
-  {
-    description: "Generates a report on a topic.",
-    inputSchema: z.object({ topic: z.string() }),
-    idempotencyKey: ({ topic }) => topic,
-  },
-  handler,
-);
-```
-
-Keys are scoped by caller and tool, and last as long as the task is kept (`ttlMs`).
-
 ## Work longer than one function invocation
 
 A QStash delivery is one serverless invocation, so the handler has to finish within your platform's
 function limit. If it is killed, QStash redelivers and the handler starts over.
 
 For longer work, use `WorkflowDispatcher`. Each step runs as its own invocation, and finished steps
-are replayed from a journal instead of re-run. Three things change:
+are replayed from a journal instead of re-run. The handler's `task` then also has the Workflow API
+(`task.run`, `task.sleep`, `task.call`), inferred from the dispatcher with no extra typing:
 
 ```ts lib/tasks.ts
-import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/tasks/upstash";
-import type { WorkflowContext } from "@upstash/workflow";
+import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
+import * as z from "zod";
 
-export const tasks = createTaskLayer<WorkflowContext>({ // 1. the type argument
+export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
-  // 3. a TTL longer than the work. It runs from creation and is never extended; once it passes,
-  // the record is gone and isCancelled() returns true.
+  principal, // the same function as in the quickstart
+  // A TTL longer than the work. It runs from creation and is never extended; once it passes,
+  // the record is gone and isCancelled() returns true. The default is 5 minutes.
   defaults: { ttlMs: 60 * 60 * 1000 },
 });
-```
 
-2. The work goes inside `task.run(...)` steps. The handler's `task` has the Workflow API, such as
-`task.run`, `task.sleep` and `task.call`:
-
-```ts
-async ({ topic }, task) => {
-  const sources = await task.run("fetch", () => fetchSources(topic));
-  const report = await task.run("write", () => writeReport(sources));
-  return { content: [{ type: "text", text: report }] };
-};
+tasks.define(
+  "migrate_workspace",
+  {
+    description: "Copies a workspace's documents to the new storage, one batch at a time.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+  },
+  async ({ workspaceId }, task) => {
+    const batches = await task.run("plan", () => listBatches(workspaceId));
+    for (const [i, batch] of batches.entries()) {
+      if (await task.isCancelled()) return {};
+      await task.update(`Copying batch ${i + 1}/${batches.length}`);
+      await task.run(`copy-${i}`, () => copyBatch(batch));
+    }
+    await task.sleep("settle", 30); // waits without holding a function open
+    const report = await task.run("verify", () => verifyCopy(workspaceId));
+    return { content: [{ type: "text", text: report }] };
+  },
+);
 ```
 
 Put side effects inside `task.run`. Code outside a step runs again on every invocation, and each
@@ -307,14 +313,14 @@ step is still one invocation, so keep every step within your function limit.
 | --- | --- | --- |
 | `store` | required | `RedisTaskStore`, or your own `TaskStore` |
 | `dispatcher` | required | `QStashDispatcher`, `WorkflowDispatcher`, or your own `TaskDispatcher` |
-| `principal` | required | `({ auth, request }) => string \| undefined`, may be async. The caller's id; `undefined` refuses the call. |
+| `principal` | required | `({ auth, request }) => string`, may be async. The caller's id; throw to refuse the call. |
 | `defaults.ttlMs` | 5 minutes | How long a task is kept. `null` keeps it forever. |
 | `defaults.pollIntervalMs` | 2 seconds | Poll interval suggested to the model |
 | `toolNames` | `task_status`, `task_cancel` | Rename the two shared tools |
 | `onSettle` | none | `(task) => void`. Called once when a task completes, fails or is cancelled. |
 
 **`tasks.define(name, config, handler)` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
-`pollIntervalMs`, `queuedMessage`, `completedMessage` and `idempotencyKey`.
+`pollIntervalMs`, `queuedMessage` and `completedMessage`.
 
 ## Push instead of poll
 
@@ -331,7 +337,7 @@ const taskFinished = taskFinishedEvent(events);
 export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  principal: ({ auth }) => auth?.extra?.userId as string | undefined,
+  principal,
   onSettle: taskFinished.onSettle,
 });
 ```
