@@ -182,6 +182,39 @@ async ({ sources }, task) => {
 Each task records who started it, and `task_status` / `task_cancel` only answer for that caller.
 Another user's task id reads exactly like an unknown one, so nobody can tell it exists.
 
+### Check what the arguments point at
+
+Owning the task is not the same as being allowed to touch what it works on. The model fills in the
+tool arguments, so a `workspaceId` in them is whatever it was told. If Alice starts a task with Bob's
+`workspaceId`, the task is hers, she can read its result, and the handler acted on Bob's workspace.
+
+Give the task an `authorize`, which runs when the tool is called, before anything is stored or
+queued, and use `task.principal` (the user who started the task) inside the handler. Never take a
+user id from the arguments:
+
+```ts lib/tasks.ts
+tasks.define(
+  "export_workspace",
+  {
+    description: "Exports a workspace to CSV.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    // May this user export this workspace? `false` refuses the call.
+    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+  },
+  async ({ workspaceId }, task) => {
+    const csv = await exportWorkspace(workspaceId, { as: task.principal });
+    return { content: [{ type: "text", text: csv }] };
+  },
+);
+```
+
+`authorize(args, { principal, auth, request })` gets the validated arguments, the caller's id and the
+same `auth` and `request` as `principal`. It is the only place a task sees the caller's token: the
+handler runs later, in a delivery request that carries no user auth, so `task.principal` is how it
+knows who it is working for.
+
+### Where principal comes from
+
 `principal` receives `{ auth, request }` and may be async. `auth` is the MCP SDK's `AuthInfo`. The SDK
 never fills it in from request headers: your MCP route does, after verifying the bearer token, by
 passing it to `handler.fetch(request, { authInfo })` as in step 3. Put the user id in `extra` when you
@@ -228,9 +261,13 @@ export const tasks = createTaskLayer({
 
 tasks.define(
   "migrate_workspace",
-  { description: "Copies a workspace to new storage.", inputSchema: z.object({ workspaceId: z.string() }) },
+  {
+    description: "Copies a workspace to new storage.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+  },
   async ({ workspaceId }, task) => {
-    const batches = await task.run("plan", () => listBatches(workspaceId));
+    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
     for (const [i, batch] of batches.entries()) {
       if (await task.isCancelled()) return {};
       await task.update(`Copying batch ${i + 1}/${batches.length}`);
@@ -283,7 +320,9 @@ tasks.define(
 ## Security and storage
 
 <Accordion title="Who can see what">
-  The server sets a task's owner from `principal`, and no tool argument can set it. `task_status` and
+  The server sets a task's owner from `principal`, and no tool argument can set it. Whether a caller
+  may start a task with given arguments is your `authorize`; the handler gets the owner as
+  `task.principal`. `task_status` and
   `task_cancel` only accept UUID task ids, and compare the stored owner with the caller. Task ids are
   random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash deliveries and
   never returns a task.
@@ -314,10 +353,10 @@ tasks.define(
 
 <Accordion title="All options">
   **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
-  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds).
+  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
   **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
-  `title`, `completedMessage` (defaults to `"Completed"`).
+  `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
 
   **`RedisTaskStore`**: `redis` (defaults to one from env), `prefix` (`mcp:task:`), `enableTelemetry`.
 
@@ -345,7 +384,7 @@ tasks.define(
   }
 
   interface TaskDispatcher<TContext = unknown> {
-    dispatch(task: Task): Promise<void>; // idempotent per task id
+    dispatch(task: Task): Promise<void>; // called once per task
     cancel(taskId: string): Promise<void>;
     createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
   }
