@@ -7,10 +7,10 @@ description: "Durable long-running tools for MCP servers: a tool answers with a 
 An MCP tool call is a request that waits for its response. When the work takes minutes, something
 gives up first: the client's tool timeout, your serverless function's limit, or the model.
 
-`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task id, the
-work runs on [QStash](/qstash/overall/getstarted) or [Upstash Workflow](/workflow/getstarted) so it
-survives restarts and the client's tool timeout, and the task record lives in Upstash Redis. The model checks on it
-with a shared `task_status` tool and can stop it with `task_cancel`.
+`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task
+id, the work runs on [QStash](/qstash/overall/getstarted) or [Upstash Workflow](/workflow/getstarted)
+so it survives restarts and the client's tool timeout, and the task record lives in Upstash Redis.
+The model checks on it with a shared `task_status` tool and can stop it with `task_cancel`.
 
 These are ordinary MCP tools, so they work in every client today: Claude Code, Codex, Cursor,
 OpenCode and ChatGPT. No client capability is required. The toolkit sits on top of the official MCP
@@ -22,70 +22,80 @@ npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
 
 ## Quickstart
 
-Three files in a Next.js app.
+Four files in a Next.js app.
 
-### 1. Define the task layer, the task and the server
+### 1. Identify the caller
+
+Every task belongs to the user who started it. `principal` returns that user's id, read from the
+token your MCP route has verified, and throws when there is none:
+
+```ts lib/auth.ts
+import type { AuthInfo } from "@modelcontextprotocol/server";
+
+// `auth` is the AuthInfo your MCP route verified and passed to the SDK (see below).
+export function principal({ auth }: { auth?: AuthInfo }): string {
+  const userId = auth?.extra?.userId;
+  if (typeof userId !== "string") throw new Error("Not authenticated");
+  return userId;
+}
+```
+
+See [Users](#users) for where `auth` comes from.
+
+### 2. Define the task layer, the task and the server
 
 ```ts lib/tasks.ts
 import { McpServer } from "@modelcontextprotocol/server";
 import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
+import { principal } from "./auth";
 
-// Where the task record lives, how the work is delivered, and who is calling.
 export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  principal: ({ auth }) => {
-    const userId = auth?.extra?.userId;
-    if (typeof userId !== "string") throw new Error("Not authenticated");
-    return userId;
-  },
+  principal,
 });
 
-// Defined at module scope, so every instance knows the handler, including
-// an /api/execute instance that never serves an MCP request.
+// Define at module scope, so the /api/execute instance knows the handler too.
 tasks.define(
   "generate_report",
-  {
-    description: "Generates a report on a topic.",
-    inputSchema: z.object({ topic: z.string() }),
-  },
-  // The handler: your long-running work. It runs later, in /api/execute,
-  // when QStash delivers the task — not inside the tool call.
+  { description: "Generates a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
   async ({ topic }, task) => {
-    await task.update("Researching sources");
-    const report = await writeReport(topic);
-    return { content: [{ type: "text", text: report }] };
+    await task.update("Reading sources"); // the model sees this when it polls
+    return { content: [{ type: "text", text: await writeReport(topic) }] };
   },
 );
 
-// Called per request. Adds generate_report, task_status and task_cancel.
 export function createServer() {
   const server = new McpServer({ name: "reports", version: "1.0.0" });
-  tasks.register(server);
+  tasks.register(server); // adds generate_report, task_status and task_cancel
   return server;
 }
 ```
 
-`topic` is typed from `inputSchema`: Zod, Valibot and ArkType schemas all work. `principal` is
-required, and `auth` is the verified token your route passes in; see [Users](#users).
+The handler runs later, in `/api/execute`, when QStash delivers the task, not inside the tool call.
+`topic` is typed from `inputSchema`: Zod, Valibot and ArkType schemas all work.
 
-### 2. Serve the MCP endpoint
+### 3. Serve the MCP endpoint
 
 ```ts app/api/mcp/route.ts
-import { createMcpHandler } from "@modelcontextprotocol/server";
+import { createMcpHandler, type AuthInfo } from "@modelcontextprotocol/server";
 import { createServer } from "../../../lib/tasks";
 
-const mcp = createMcpHandler(() => createServer());
+const handler = createMcpHandler(() => createServer());
 
-export const POST = (request: Request) => mcp.fetch(request);
+export async function POST(request: Request) {
+  // Clerk, WorkOS, Auth0, your own. `principal` reads the user id from `authInfo.extra`.
+  const authInfo: AuthInfo | undefined = await verifyToken(request);
+  if (!authInfo) return new Response("Unauthorized", { status: 401 });
+  return handler.fetch(request, { authInfo });
+}
 ```
 
-The task layer only registers tools, so this is the SDK's own handler, unchanged. It works the same
-with [`mcp-handler`](https://www.npmjs.com/package/mcp-handler) or any transport.
+The task layer only registers tools, so this is the SDK's own handler, unchanged.
 
-### 3. Add the execute endpoint
+### 4. Add the execute endpoint
 
 ```ts app/api/execute/route.ts
 import { tasks } from "../../../lib/tasks";
@@ -93,14 +103,8 @@ import { tasks } from "../../../lib/tasks";
 export const POST = tasks.createExecuteHandler();
 ```
 
-This is where QStash delivers each task. The handler it returns verifies the QStash signature, finds
-the task's handler, runs it and stores the result. It answers `200` when done and `500` to ask QStash
-for a retry. A bad signature or body gets `489` with `Upstash-NonRetryable-Error: true`, since QStash
-retries every other non-2xx.
-
-The signing keys are required. Without `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`
-(or a `receiver` you pass), the endpoint throws on its first request instead of running unverified
-deliveries. The same applies to `WorkflowDispatcher`.
+This is where QStash delivers each task. The handler verifies the QStash signature, runs the task's
+handler and stores the result.
 
 ### Environment variables
 
@@ -108,6 +112,7 @@ deliveries. The same applies to `WorkflowDispatcher`.
 UPSTASH_REDIS_REST_URL=...
 UPSTASH_REDIS_REST_TOKEN=...
 QSTASH_TOKEN=...
+# Required: the execute endpoint refuses to run without them.
 QSTASH_CURRENT_SIGNING_KEY=...
 QSTASH_NEXT_SIGNING_KEY=...
 # Where QStash delivers tasks. Must be publicly reachable.
@@ -122,37 +127,36 @@ APP_URL=https://your-app.vercel.app
 
 ## What the model sees
 
-1. It calls `generate_report({ topic })` and gets back a `taskId`, `status: "working"`, and a line
-   telling it to call `task_status` in about two seconds.
-2. `task_status({ taskId })` returns progress while the task runs, for example
-   `"Researching sources"`.
-3. Once the task completes, `task_status` returns a one-line status followed by your handler's
-   `content`.
+`tools/list` now has `generate_report` (starts the task and returns its id), `task_status` (shows
+progress, then the handler's result) and `task_cancel`.
 
-`task_cancel({ taskId })` marks the task `cancelled` and stops any pending delivery. Each response
-also carries the task object in `structuredContent`:
+<Accordion title="Example responses">
+  ```jsonc
+  // generate_report: a handle, right away
+  { "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
+    "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 300000, "pollIntervalMs": 2000 } }
 
-```json
-{
-  "taskId": "0e30…",
-  "status": "working",
-  "statusMessage": "Researching sources",
-  "pollIntervalMs": 2000,
-  "ttlMs": 300000
-}
-```
+  // task_status: progress…
+  { "content": [{ "type": "text", "text": "Task 0e30… is working: Reading sources. Check again in about 2s." }],
+    "structuredContent": { "taskId": "0e30…", "status": "working", "statusMessage": "Reading sources" } }
 
-A task is `working`, `completed`, `failed` or `cancelled`. The last three are final.
+  // …then the handler's own content, as if the tool had run synchronously
+  { "content": [{ "type": "text", "text": "Task 0e30… is completed: Completed" },
+                { "type": "text", "text": "Report on coffee" }],
+    "structuredContent": { "taskId": "0e30…", "status": "completed", "result": { "content": [ … ] } } }
+  ```
 
-## The handler's `task` argument
+  The states are `working`, `completed`, `failed` and `cancelled`; the last three are final. The
+  task object has the same shape as the one in the MCP Tasks extension.
 
-| Member | What it does |
-| --- | --- |
-| `task.taskId` | The id of the running task. |
-| `task.update(message)` | Writes a progress line. The model sees it on its next `task_status`. |
-| `task.isCancelled()` | `true` once `task_cancel` was called, or the task expired. |
+  If the model stops polling, nothing is lost: the work finishes anyway, and the result can be read
+  until the task expires (5 minutes by default; set `defaults: { ttlMs }` on the layer).
+</Accordion>
 
-Cancellation is cooperative: your code keeps running until it checks. Check between steps:
+## Cancellation
+
+`task_cancel` marks the task `cancelled` and stops any pending delivery. Cancelling is cooperative,
+so running code only stops where it checks `task.isCancelled()`:
 
 ```ts
 async ({ sources }, task) => {
@@ -165,6 +169,8 @@ async ({ sources }, task) => {
 };
 ```
 
+`isCancelled()` also returns `true` once the task has expired.
+
 <Warning>
   Arguments are validated when the tool is called, then stored as JSON and handed to the handler
   later. Values that don't survive JSON, such as a `Date` produced by `z.coerce.date()`, arrive as
@@ -173,115 +179,57 @@ async ({ sources }, task) => {
 
 ## Users
 
-`principal` is required. It maps each call to a stable caller id, usually your user id. Each task
-records who started it, and `task_status` / `task_cancel` only answer for that caller. Another
-user's task id reads like an unknown one.
+Each task records who started it, and `task_status` / `task_cancel` only answer for that caller.
+Another user's task id reads exactly like an unknown one, so nobody can tell it exists.
 
-`principal` receives `{ auth, request }` and may be async.
+`principal` receives `{ auth, request }` and may be async. `auth` is the MCP SDK's `AuthInfo`. The SDK
+never fills it in from request headers: your MCP route does, after verifying the bearer token, by
+passing it to `handler.fetch(request, { authInfo })` as in step 3. Put the user id in `extra` when you
+build `authInfo`, and read it back in `principal`.
 
-### `auth`: the verified token
+<Accordion title="More on principal">
+  - **A throw refuses the call.** There is no anonymous mode: if `principal` throws, rejects, or
+    returns anything but a non-empty string, the tool call is refused as not authenticated.
+  - **Use the user id, not `auth.clientId`.** The client id identifies the OAuth app, and every
+    ChatGPT user shares the same one.
+  - `principal` also receives `request`, for cookie or session apps. It is unverified, so check the
+    session yourself, and never trust a header like `x-user-id`:
 
-`auth` is the MCP SDK's `AuthInfo`:
+    ```ts
+    import type { Caller } from "@upstash/mcp-toolkit/tasks";
 
-```ts
-interface AuthInfo {
-  token: string;
-  clientId: string; // the OAuth app, e.g. one id for every ChatGPT user
-  scopes: string[];
-  expiresAt?: number;
-  extra?: Record<string, unknown>; // free-form, filled by your verifier
-}
-```
+    export async function principal({ request }: Caller): Promise<string> {
+      const session = await getSession(request);
+      if (!session) throw new Error("Not authenticated");
+      return session.userId;
+    }
+    ```
 
-The SDK never fills it in from request headers. Your MCP route does, after verifying the bearer
-token with your OAuth provider, by passing it to the handler:
-
-```ts app/api/mcp/route.ts
-import { createMcpHandler } from "@modelcontextprotocol/server";
-import { createServer } from "../../../lib/tasks";
-
-const mcp = createMcpHandler(() => createServer());
-
-export async function POST(request: Request) {
-  // Verify the bearer token with Clerk, WorkOS, Auth0 or your own auth server.
-  const authInfo = await verifyToken(request);
-  if (!authInfo) return new Response("Unauthorized", { status: 401 });
-  return mcp.fetch(request, { authInfo });
-}
-```
-
-Put the user id in `extra` when you build `authInfo`, and read it back in `principal`, as in the
-quickstart:
-
-```ts
-principal: ({ auth }) => {
-  const userId = auth?.extra?.userId;
-  if (typeof userId !== "string") throw new Error("Not authenticated");
-  return userId;
-},
-```
-
-Because the token was already checked, this is the path to prefer. Key on the user, not
-`auth.clientId`: the client id identifies the OAuth app, which can be one id shared by every user of
-a host like ChatGPT.
-
-### `request`: the raw HTTP request
-
-Apps that authenticate with a cookie or a session, rather than building an `AuthInfo`, can read the
-request instead:
-
-```ts
-principal: async ({ request }) => {
-  const session = await getSession(request);
-  if (!session) throw new Error("Not authenticated");
-  return session.userId;
-},
-```
-
-The request is unverified. Check the session yourself, and never trust a header like `x-user-id`
-that the caller can set.
-
-### No anonymous mode
-
-`principal` must return an id; its type doesn't allow `undefined`. When it can't identify the
-caller, it throws, and the tool call is refused with "Not authenticated". The toolkit fails closed
-even if the types are bypassed: an answer without a non-empty string id is refused too. A server
-with no users of its own passes `principal: () => "local"`.
-
-<Note>
-  Task arguments and results are stored in Redis as plain JSON for the task's `ttlMs`, which is
-  forever with `ttlMs: null`. Keep secrets out of them, or use a short TTL.
-</Note>
+  - A server with no users of its own passes `principal: () => "local"`.
+</Accordion>
 
 ## Work longer than one function invocation
 
-A QStash delivery is one serverless invocation, so the handler has to finish within your platform's
-function limit. If it is killed, QStash redelivers and the handler starts over.
+With `QStashDispatcher`, the whole handler runs in one serverless invocation. If it goes past your
+platform's time limit, it is killed, and the retry starts the handler from the beginning.
 
-For longer work, use `WorkflowDispatcher`. Each step runs as its own invocation, and finished steps
-are replayed from a journal instead of re-run. The handler's `task` then also has the Workflow API
-(`task.run`, `task.sleep`, `task.call`), inferred from the dispatcher with no extra typing:
+`WorkflowDispatcher` runs each step in its own invocation and replays finished steps from a journal,
+so a task has no overall time limit. Only the dispatcher changes; the routes stay the same. The
+handler's `task` then also has `run`, `sleep` and `call`, inferred from the dispatcher:
 
 ```ts lib/tasks.ts
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
 import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
-import * as z from "zod";
 
 export const tasks = createTaskLayer({
   store: new RedisTaskStore(),
   dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  principal, // the same function as in the quickstart
-  // A TTL longer than the work. It runs from creation and is never extended; once it passes,
-  // the record is gone and isCancelled() returns true. The default is 5 minutes.
-  defaults: { ttlMs: 60 * 60 * 1000 },
+  principal,
+  defaults: { ttlMs: 60 * 60 * 1000 }, // keep the record longer than the work takes
 });
 
 tasks.define(
   "migrate_workspace",
-  {
-    description: "Copies a workspace's documents to the new storage, one batch at a time.",
-    inputSchema: z.object({ workspaceId: z.string() }),
-  },
+  { description: "Copies a workspace to new storage.", inputSchema: z.object({ workspaceId: z.string() }) },
   async ({ workspaceId }, task) => {
     const batches = await task.run("plan", () => listBatches(workspaceId));
     for (const [i, batch] of batches.entries()) {
@@ -289,68 +237,132 @@ tasks.define(
       await task.update(`Copying batch ${i + 1}/${batches.length}`);
       await task.run(`copy-${i}`, () => copyBatch(batch));
     }
-    await task.sleep("settle", 30); // waits without holding a function open
-    const report = await task.run("verify", () => verifyCopy(workspaceId));
-    return { content: [{ type: "text", text: report }] };
+    return { content: [{ type: "text", text: "Done" }] };
   },
 );
 ```
 
-Put side effects inside `task.run`. Code outside a step runs again on every invocation, and each
-step is still one invocation, so keep every step within your function limit.
+<Accordion title="Rules for Workflow handlers">
+  The handler runs again from the top on every step, and finished steps are replayed from the
+  journal:
 
-| | `QStashDispatcher` | `WorkflowDispatcher` |
-| --- | --- | --- |
-| Survives a crash | Yes, redelivered | Yes, replayed |
-| Outlives one invocation | No | Yes, one invocation per step |
-| On retry | Starts the handler over | Resumes from the last finished step |
+  - Put the work inside `task.run`. That makes it run once and survive a crash.
+  - `task.update(...)` does not need wrapping.
+  - Keep `task.isCancelled()` outside steps. It has to run again each time, or a later cancel is
+    never seen.
+  - Don't nest `task.run` calls.
+  - Each step must still fit within your function's time limit.
+
+  The task's TTL starts when the task is created and is never extended. When it runs out, the record
+  is deleted and `isCancelled()` returns true, so set `ttlMs` longer than the work takes.
+
+  | | `QStashDispatcher` | `WorkflowDispatcher` |
+  | --- | --- | --- |
+  | Survives the process dying | yes (QStash redelivers) | yes (replayed from the journal) |
+  | Can run longer than one invocation | no | yes, one invocation per step |
+  | On a retry | the whole task starts over | only the failed step runs again |
+  | Cancel stops a running task | at its next `isCancelled` | the run itself is cancelled |
+</Accordion>
+
+## Retries and failures
+
+<Accordion title="How deliveries are verified and retried">
+  - The execute route answers **200** when the task ran (or had already finished), **500** when your
+    handler threw, so QStash tries again, and **489** with `Upstash-NonRetryable-Error: true` when the
+    signature or body is bad.
+  - Every delivery's QStash signature is checked against the URL you gave the dispatcher, not
+    `request.url`, so it works behind a proxy and a signature issued for another endpoint is refused.
+    This holds for `WorkflowDispatcher` too. Without signing keys (or a `receiver` you pass), the
+    route throws on its first request instead of running anything unverified.
+  - When your handler throws, the task is not marked failed. Only the dispatcher marks it `failed`,
+    and only after QStash has stopped retrying. The failed message stays in the QStash DLQ.
+  - By default QStash tries 5 times with backoff `min(pow(3, retried) * 1000, 300000)`, about two
+    minutes in total, so a task survives a server restart. The free tier and the local dev server
+    allow at most 5 retries.
+</Accordion>
+
+## Security and storage
+
+<Accordion title="Who can see what">
+  The server sets a task's owner from `principal`, and no tool argument can set it. `task_status` and
+  `task_cancel` only accept UUID task ids, and compare the stored owner with the caller. Task ids are
+  random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash deliveries and
+  never returns a task.
+
+  Anyone with write access to your Redis can change an owner, so treat the Redis credentials like any
+  other production secret.
+</Accordion>
+
+<Accordion title="What is stored in Redis">
+  **`mcp:task:<taskId>`** is a hash with one JSON-encoded field per property: `taskId`, `name`,
+  `args`, `owner`, `status`, `statusMessage`, `result` / `error`, `createdAt`, `lastUpdatedAt`,
+  `ttlMs`, `pollIntervalMs`.
+
+  - `args` and `result` are **plain JSON**. Keep secrets out of tool arguments and results, or use a
+    short `ttlMs`.
+  - The task is written with its TTL before the tool replies, because the model's next poll may reach
+    another instance. The TTL counts from creation and is never extended.
+  - Status changes go through one guarded Lua script, and the first final status wins, so a completion
+    can't overwrite a cancel. Each property is its own field, so a progress update and a cancel never
+    overwrite each other.
+  - A Redis client built with `automaticDeserialization: false` is not supported.
+
+  A task message in QStash carries only `{ taskId }`. The toolkit never stores the caller's token or
+  the request.
+</Accordion>
 
 ## Options
 
-**`createTaskLayer`**
+<Accordion title="All options">
+  **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
+  `defaults.ttlMs` (5 minutes) and `defaults.pollIntervalMs` (2 seconds).
 
-| Option | Default | |
-| --- | --- | --- |
-| `store` | required | `RedisTaskStore`, or your own `TaskStore` |
-| `dispatcher` | required | `QStashDispatcher`, `WorkflowDispatcher`, or your own `TaskDispatcher` |
-| `principal` | required | `({ auth, request }) => string`, may be async. The caller's id; throw to refuse the call. |
-| `defaults.ttlMs` | 5 minutes | How long a task is kept. `null` keeps it forever. |
-| `defaults.pollIntervalMs` | 2 seconds | Poll interval suggested to the model |
-| `toolNames` | `task_status`, `task_cancel` | Rename the two shared tools |
-| `onSettle` | none | `(task) => void`. Called once when a task completes, fails or is cancelled. |
+  **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
+  `title`, `completedMessage` (defaults to `"Completed"`).
 
-**`tasks.define(name, config, handler)` config:** `description` and `inputSchema`, plus optional `title`, `ttlMs`,
-`pollIntervalMs`, `queuedMessage` and `completedMessage`.
+  **`RedisTaskStore`**: `redis` (defaults to one from env), `prefix` (`mcp:task:`), `enableTelemetry`.
 
-## Push instead of poll
+  **`QStashDispatcher`**: `url` is required. Optional: `qstash`, `receiver`, `retries` (5),
+  `retryDelay`, `enableTelemetry`.
 
-A host that supports MCP Events can get a webhook when a task finishes instead of polling. Wire the
-`task.finished` event from [MCP Events](/redis/sdks/agentkit/mcp-events) into `onSettle`; it fires to
-the task's owner only:
+  **`WorkflowDispatcher`**: `url` is required. Optional: `client`, `qstash`, `receiver`, `retries`,
+  `enableTelemetry`.
 
-```ts lib/tasks.ts
-import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
-import { events } from "./events"; // your event layer
+  `receiver` defaults to one built from the `QSTASH_*_SIGNING_KEY` variables. The Redis and QStash
+  clients get `@upstash/mcp-toolkit@<version>` added to their `Upstash-Telemetry-Sdk` header; turn it
+  off with `enableTelemetry: false` or `UPSTASH_DISABLE_TELEMETRY`.
+</Accordion>
 
-const taskFinished = taskFinishedEvent(events);
+<Accordion title="Custom backends">
+  `@upstash/mcp-toolkit/tasks` doesn't import anything from Upstash. A backend implements one of these
+  interfaces (types exported from the same entry point):
 
-export const tasks = createTaskLayer({
-  store: new RedisTaskStore(),
-  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
-  principal,
-  onSettle: taskFinished.onSettle,
-});
-```
+  ```ts
+  interface TaskStore {
+    create(task: Task): Promise<void>; // with its TTL
+    get(taskId: string): Promise<Task | null>;
+    update(taskId: string, patch: TaskPatch): Promise<void>; // ignored once the task is final
+    settle(taskId: string, patch: TaskPatch & { status: TerminalTaskStatus }): Promise<Task | null>; // first final status wins
+  }
+
+  interface TaskDispatcher<TContext = unknown> {
+    dispatch(task: Task): Promise<void>; // idempotent per task id
+    cancel(taskId: string): Promise<void>;
+    createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
+  }
+  ```
+</Accordion>
 
 ## Why tools, not the Tasks extension?
 
 The 2026-07-28 MCP specification defines a [Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)
-where the *client* polls `tasks/get`, so the model spends no turns waiting. It is the right long-term
-shape, but a server may only return a task to a client that declares the extension, and the clients
-people use don't yet. Plain tools work everywhere today.
+where the *client* polls, so the model spends no turns waiting. But a server may only return a task
+to a client that declared the extension, and as of October 2026 Claude Code, Codex, Cursor and
+OpenCode don't. Plain tools cost the model a few polling calls but work everywhere today.
 
-The task record already has the extension's shape, so a native adapter can serve the same records
-once clients support it.
+The store and dispatcher don't depend on the tools, so an adapter for the extension can serve the
+same records once clients support it. Also not implemented yet: `input_required` (a handler asking
+the user something partway through a task) and listing tasks.
 
 ## Example
 

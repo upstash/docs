@@ -14,9 +14,10 @@ signing and retries: subscriptions live in Upstash Redis, and every delivery goe
 [QStash](/qstash/overall/getstarted), which retries failed webhooks with backoff.
 
 <Note>
-  MCP Events is a draft. As of October 2026, ChatGPT is the host that subscribes to it (webhook
-  delivery, in Work chats), following [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-events).
-  Claude Code, Cursor and OpenCode don't subscribe yet.
+  MCP Events is a draft. As of October 2026, ChatGPT is the only widely used host that subscribes to
+  it (webhook delivery, in Work chats), following [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-events).
+  Codex supports events only for OpenAI's own connectors. Claude Code, Cursor and OpenCode don't
+  subscribe yet.
 </Note>
 
 ```bash
@@ -25,42 +26,51 @@ npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
 
 ## Quickstart
 
-Three files in a Next.js app.
+Four files in a Next.js app.
 
-### 1. Define the event layer and your events
+### 1. Identify the caller
+
+Every subscription belongs to the user who subscribed. `principal` returns that user's id, read from
+the token your MCP route has verified, and throws when there is none. If you also use
+[MCP Tasks](/redis/sdks/agentkit/mcp-tasks), both layers share this function:
+
+```ts lib/auth.ts
+import type { AuthInfo } from "@modelcontextprotocol/server";
+
+// `auth` is the AuthInfo your MCP route verified and passed to the SDK (see below).
+export function principal({ auth }: { auth?: AuthInfo }): string {
+  const userId = auth?.extra?.userId;
+  if (typeof userId !== "string") throw new Error("Not authenticated");
+  return userId;
+}
+```
+
+### 2. Define the event layer and your events
 
 ```ts lib/events.ts
 import { createEventLayer } from "@upstash/mcp-toolkit/events";
 import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
+import { principal } from "./auth";
 
 export const events = createEventLayer({
   store: new RedisSubscriptionStore(),
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
-  // Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
-  secretKey: process.env.MCP_EVENTS_SECRET_KEY,
-  // Who is calling. `auth` is the verified token your MCP route passes to the SDK; see
-  // "Users" in the MCP Tasks docs for how it's populated.
-  principal: ({ auth }) => {
-    const userId = auth?.extra?.userId;
-    if (typeof userId !== "string") throw new Error("Not authenticated");
-    return userId;
-  },
+  principal,
 });
 
 export const commentCreated = events.define("comment.created", {
-  description: "A new review comment was added to a document.",
-  // What a subscriber filters on.
-  input: z.object({ documentId: z.string() }),
-  // What every delivery carries.
-  payload: z.object({ documentId: z.string(), commentId: z.string(), text: z.string() }),
-  // Required: who may subscribe with these arguments and receive what they match.
-  // Runs on every subscribe and refresh, and again before every delivery.
+  description: "A new comment was added to a document.",
+  input: z.object({ documentId: z.string().optional() }), // what a subscriber may filter on
+  payload: z.object({ documentId: z.string(), text: z.string() }),
+  // May this user see comments on this document?
   authorize: (args, { principal }) => canRead(principal, args.documentId),
 });
 ```
 
-### 2. Register the events on your MCP server
+`authorize` is required. See [Matching and authorize](#matching-and-authorize) for when it runs.
+
+### 3. Register the events on your MCP server
 
 ```ts lib/server.ts
 import { McpServer } from "@modelcontextprotocol/server";
@@ -68,16 +78,29 @@ import { events } from "./events";
 
 export function createServer() {
   const server = new McpServer({ name: "docs", version: "1.0.0" });
-  // Adds events/list, events/subscribe and events/unsubscribe next to your tools.
-  events.register(server);
+  events.register(server); // adds events/list, events/subscribe and events/unsubscribe
   return server;
 }
 ```
 
-Serve it with `createMcpHandler(() => createServer())` as usual. Nothing else changes on the MCP
-endpoint.
+Serve it from your MCP route with the verified token, as in the
+[MCP Tasks quickstart](/redis/sdks/agentkit/mcp-tasks#quickstart):
 
-### 3. Add the delivery endpoint
+```ts app/api/mcp/route.ts
+import { createMcpHandler, type AuthInfo } from "@modelcontextprotocol/server";
+import { createServer } from "../../../lib/server";
+
+const handler = createMcpHandler(() => createServer());
+
+export async function POST(request: Request) {
+  // Clerk, WorkOS, Auth0, your own. `principal` reads the user id from `authInfo.extra`.
+  const authInfo: AuthInfo | undefined = await verifyToken(request);
+  if (!authInfo) return new Response("Unauthorized", { status: 401 });
+  return handler.fetch(request, { authInfo });
+}
+```
+
+### 4. Add the delivery endpoint
 
 ```ts app/api/events/route.ts
 import { events } from "../../../lib/events";
@@ -85,21 +108,20 @@ import { events } from "../../../lib/events";
 export const POST = events.createDeliveryHandler();
 ```
 
-QStash delivers each event here. The handler verifies the QStash signature, signs the envelope
-with the subscriber's secret, POSTs it to the host, and answers `500` when the host's callback
-failed so QStash retries. A bad signature or body gets `489` with `Upstash-NonRetryable-Error: true`.
+QStash delivers each event here. The handler verifies the QStash signature, signs the envelope with
+the subscriber's secret and POSTs it to the host.
 
 ### Emit
 
 Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
 
 ```ts
-await commentCreated.emit({ documentId: "doc_123", commentId: "c_9", text: "Ship it?" });
+await commentCreated.emit({ documentId: "doc_123", text: "Ship it?" });
 ```
 
-`emit` is typed by the `payload` schema and validates against it. It reaches every subscription
-whose arguments match (everyone watching `doc_123`), checks `authorize` again for each subscriber
-before delivering, and returns the event id and how many subscriptions matched.
+`emit` is typed by the `payload` schema and validates against it. Every subscription that matches
+the payload, and that `authorize` still allows for `documentId: "doc_123"`, gets a signed webhook.
+It returns `{ eventId }`.
 
 ### Environment variables
 
@@ -107,6 +129,7 @@ before delivering, and returns the event id and how many subscriptions matched.
 UPSTASH_REDIS_REST_URL=...
 UPSTASH_REDIS_REST_TOKEN=...
 QSTASH_TOKEN=...
+# Required: the delivery endpoint refuses to run without them.
 QSTASH_CURRENT_SIGNING_KEY=...
 QSTASH_NEXT_SIGNING_KEY=...
 # Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
@@ -121,205 +144,152 @@ APP_URL=https://your-app.vercel.app
    `whsec_` signing secret.
 2. For a new callback or secret, your server POSTs a signed verification challenge and requires it
    echoed back, then stores the subscription and answers with its `id` and a `refreshBefore` time.
-3. When you `emit`, every matching subscription that `authorize` still allows gets a POST with the event envelope and
-   [Standard Webhooks](https://www.standardwebhooks.com/) headers:
+3. When you `emit`, every matching subscription that `authorize` still allows gets a POST with the
+   event envelope and [Standard Webhooks](https://www.standardwebhooks.com/) headers:
 
 ```json
 {
   "eventId": "evt_7c1…",
   "name": "comment.created",
   "timestamp": "2026-10-07T12:05:00Z",
-  "data": { "documentId": "doc_123", "commentId": "c_9", "text": "Ship it?" },
+  "data": { "documentId": "doc_123", "text": "Ship it?" },
   "cursor": null
 }
 ```
 
-The event id stays the same across retries, so the host can drop duplicates. The signature is
-computed fresh on every attempt.
+QStash retries failed deliveries with backoff. The event id stays the same across retries, so the
+host can drop duplicates, and the signature is computed fresh on every attempt.
 
-## Matching
+## Matching and authorize
 
-A subscription matches when every argument it gave equals the emitted value. Emitting
-`{ repo: "a", branch: "main" }` reaches subscribers of `{ repo: "a" }`, of
-`{ repo: "a", branch: "main" }`, and of `{}`.
+Every `input` field must also be a `payload` field: the payload is the one place an event's values
+come from, and the same values are used to route it and to authorize it. A subscription matches when
+each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
+subscribers of `{ documentId: "doc_123" }` and of `{}`.
 
-The values come from the payload fields named in the input schema, so when the payload carries
-every input field, `emit(payload)` needs nothing else. When it doesn't, the type of `emit` makes
-`args` required, and an emit with no value for a required input field throws, so a filter can never
-silently match nothing:
+`authorize(args, caller)` runs twice:
 
-```ts
-const replyPosted = events.define("reply.posted", {
-  description: "A reply was posted in a thread.",
-  input: z.object({ threadId: z.string() }),
-  payload: z.object({ text: z.string() }), // no threadId here
-  authorize: (args, { principal }) => canReadThread(principal, args.threadId),
-});
+- **On every subscribe and refresh**, with the subscription's arguments and
+  `{ principal, phase: "subscribe", auth, request }`, before the callback is challenged or anything
+  is stored. A refusal is an error to the host.
+- **Before every delivery**, with the _event's_ values for the input fields and
+  `{ principal, phase: "deliver" }`. So a subscriber who filtered on nothing is still checked against
+  each event's `documentId`, and revoked access stops the events. A refusal drops that delivery; a
+  throw (your database is down, say) makes QStash retry it.
 
-await replyPosted.emit({ text: "Agreed" }, { args: { threadId } }); // `args` is required
-```
+The token is never stored, so the delivery-time check gets no `auth` or `request`.
+`authorize: () => true` lets every authenticated subscriber hear every matching event.
 
-Other options:
+<Accordion title="Deduplicating an emit">
+  Pass `{ eventId }` as the second argument to `emit`. Emitting the same id twice delivers once:
 
-```ts
-await commentCreated.emit(payload, {
-  to: ["alice", "carol"], // only these users' subscriptions; optional
-  eventId: comment.id, // emitting the same id twice is deduplicated
-});
-```
+  ```ts
+  await commentCreated.emit({ documentId, text }, { eventId: comment.id });
+  ```
+</Accordion>
 
-For conditions that exact matching can't express, add `match: (args, payload) => boolean` to the
-event definition.
+<Accordion title="Users and subscriptions">
+  **The host routes to its user.** Every subscription carries a callback URL and signing secret that
+  the host generated for it. ChatGPT, for example, sends a unique
+  `https://connectors.api.openai.com/webhook/mcp-events/<id>` per monitor. Posting to that URL
+  reaches the right user's agent, so your server never needs to know who the host user is. Two users
+  subscribing to the same event produce two subscriptions and two deliveries.
 
-## Users and subscriptions
+  **Your server knows who subscribed.** `events/subscribe` arrives with the same auth as any other
+  MCP request, and `principal` turns it into the subscriber's id. `events/subscribe` and
+  `events/unsubscribe` resolve `principal` before anything else, so an unidentified caller learns
+  nothing about your events and is refused with reason `not_authenticated`. A subscription's id is a
+  hash of subscriber, callback URL, event and arguments, so a user can only refresh or remove their
+  own. A server with no users of its own passes `principal: () => "local"`.
 
-Three things decide who gets an event: the callback URL says **where** it goes, the subscription's
-arguments say **what**, and `authorize` says **who may**.
-
-**The host routes to its user.** Every subscription carries a callback URL and signing secret that
-the host generated for it. ChatGPT, for example, sends a unique
-`https://connectors.api.openai.com/webhook/mcp-events/<id>` per monitor. Posting to that URL
-reaches the right user's agent, so your server never needs to know who the host user is. Two users
-subscribing to the same event produce two subscriptions and two deliveries.
-
-**Your server knows who subscribed.** `events/subscribe` arrives with the same auth as any other MCP
-request: the `AuthInfo` your route verified and passed to `handler.fetch(request, { authInfo })`
-(see [Users](/redis/sdks/agentkit/mcp-tasks#users)). `principal({ auth, request })` turns it into
-the subscriber's id, which is stored on the subscription and becomes part of its id.
-
-**`authorize` decides who may, and keeps deciding.** It is required, and runs twice:
-
-| When | What it gets |
-| --- | --- |
-| Every subscribe and refresh | `args`, `{ principal, context, phase: "subscribe", auth, request }` |
-| Before every delivery | `args`, `{ principal, context, phase: "deliver" }` |
-
-The token is never stored, so there is no `auth` or `request` behind a delivery. The second check is
-what stops events when someone loses access after subscribing; a delivery it refuses is dropped, not
-retried. An event any authenticated caller may hear says so with `authorize: () => true`.
-
-**Context for the delivery check.** Return `{ id, context }` from `principal` instead of a string
-to store small, non-secret data (an org id, a role) with the subscription. `authorize` gets it back
-as `context`:
-
-```ts
-const events = createEventLayer({
-  store,
-  delivery,
-  principal: ({ auth }) => {
-    const userId = auth?.extra?.userId;
-    if (typeof userId !== "string") throw new Error("Not authenticated");
-    return { id: userId, context: { orgId: auth?.extra?.orgId } }; // never the token
-  },
-});
-
-const memoPosted = events.define("memo.posted", {
-  description: "A memo was posted to your org.",
-  input: z.object({ orgId: z.string() }),
-  payload: z.object({ orgId: z.string(), text: z.string() }),
-  authorize: (args, { context }) => context.orgId === args.orgId,
-});
-```
-
-`context` is a snapshot from subscribe time, capped at 4 KB. For revocation, check your own data
-with `principal` rather than trusting the snapshot.
-
-**Personal events use `to`.** Some events belong to one user, like "your export finished". Mark them
-`personal: true`, and every `emit` must name the user with `to`; the type requires it, and so does
-a runtime check. A subscription with no arguments then only hears about its own user's events:
-
-```ts
-const exportFinished = events.define("export.finished", {
-  description: "Your export finished.",
-  payload: z.object({ exportId: z.string(), url: z.string() }),
-  personal: true,
-  authorize: () => true, // `to` already limits it to the export's owner
-});
-
-await exportFinished.emit({ exportId, url }, { to: userId });
-```
-
-Unsubscribing recomputes the id from the caller's principal, so only the subscriber can remove a
-subscription.
-
-<Note>
-  `principal` is required, and there are no anonymous subscriptions: when it throws,
-  subscribe and unsubscribe are refused with reason `not_authenticated`, before any challenge is
-  sent. A server with no users of its own passes `principal: () => "local"`.
-</Note>
-
-## Task finished events
-
-If you use [MCP Tasks](/redis/sdks/agentkit/mcp-tasks), a `task.finished` event lets an
-event-capable host stop polling `task_status`:
-
-```ts
-import { taskFinishedEvent } from "@upstash/mcp-toolkit/events";
-
-const taskFinished = taskFinishedEvent(events);
-
-export const tasks = createTaskLayer({ store, dispatcher, principal, onSettle: taskFinished.onSettle });
-```
-
-It fires once when a task completes, fails or is cancelled. It is a personal event, emitted `to` the
-task's owner, so only their subscriptions get it. We haven't tested it with ChatGPT yet. A host subscribes with no arguments for every task, or with `taskId` for one. The
-payload includes the result when it fits in the 256 KiB envelope.
+  Every recipient of an emit gets the same payload, so don't put data in it that only some matching
+  subscribers may see.
+</Accordion>
 
 ## Security
 
-- **Callback URLs** must be `https` on a public host. `localhost`, `.local` and `.internal` names
-  (trailing dots included), private, link-local, reserved and documentation IPs (also when embedded
-  in IPv6), and credentials in the URL are refused, and redirects are never followed. The checks don't
-  resolve DNS, so add egress filtering in production.
-- **Verification:** a subscription is stored only after the callback echoes a signed challenge.
-  Every failure returns the same error `-32015`, so a subscriber can't probe your network; the
-  detail goes to your server logs.
-- **Secrets** are stored encrypted with `MCP_EVENTS_SECRET_KEY`. A refresh with the same secret
-  skips the challenge; a new secret verifies again.
-- **Authorization:** `authorize` runs on every subscribe and refresh, and again before every
-  delivery.
-- **Delivery endpoint:** verifies QStash's signature with the `QSTASH_*_SIGNING_KEY` variables (or
-  a `receiver` you pass). Without them it throws on the first request; it never sends unverified
-  deliveries.
+<Accordion title="What the layer checks for you">
+  - **The callback URL.** It must be `https` on a public host name. Refused: every IP literal,
+    `localhost`, single-label, `.local` and `.internal` names, and credentials in the URL. Redirects
+    are never followed. Before a subscription is stored, the server POSTs a signed challenge and
+    requires the host to echo it back. Every failure returns the same `-32015` error, so a subscriber
+    can't use it to probe your network (the details go to your logs). DNS is not resolved, so use
+    egress filtering in production.
+  - **The signing secret.** It must be `whsec_` followed by 24 to 64 base64 bytes, and it is stored
+    encrypted with AES-256-GCM under `MCP_EVENTS_SECRET_KEY`, which must be base64 of at least 32
+    random bytes. A refresh with the same secret skips the challenge. If you rotate the key, stored
+    subscriptions stop receiving events until the host refreshes them.
+  - **The delivery endpoint.** It verifies QStash's signature with the `QSTASH_*_SIGNING_KEY`
+    variables (or a `receiver` you pass). Without them it throws on the first request instead of
+    sending unverified deliveries. A bad signature or body gets `489` with
+    `Upstash-NonRetryable-Error: true`.
+  - **Lifetime.** A subscription lasts 7 days by default and 30 days at most.
+</Accordion>
 
 <Warning>
-  `allowInsecureCallbacks: true` accepts `http://` and private addresses. Use it only for local
+  `allowInsecureCallbacks: true` turns the callback URL checks off. Use it only for local
   development, never in production.
 </Warning>
 
-## Host responses
+<Accordion title="Host responses">
+  | Callback answers | What happens |
+  | --- | --- |
+  | `2xx` | Delivered. |
+  | `410 Gone` | The subscription is deleted. |
+  | `413`, or a redirect | The event is dropped, not retried. |
+  | Anything else, or no answer | QStash retries with backoff. |
+</Accordion>
 
-| Callback answers | What happens |
-| --- | --- |
-| `2xx` | Delivered. |
-| `410 Gone` | The subscription is deleted. |
-| `413`, or a redirect | The event is dropped, not retried. |
-| Anything else, or no answer | QStash retries with backoff. |
+<Accordion title="What is stored in Redis">
+  **`mcp-events:sub:<id>`** is the subscription (`event`, `args`, `url`, `encryptedSecret`,
+  `subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`** is a sorted
+  set of the event's subscription ids, scored by expiry.
+
+  An event message carries the full payload, which stays in QStash (and in its DLQ, if every retry
+  fails) until it is delivered. The toolkit never stores the caller's token, the request, the
+  plaintext webhook secret or `MCP_EVENTS_SECRET_KEY`. Anyone with write access to your Redis can
+  change a callback URL, so treat the Redis credentials like any other production secret.
+</Accordion>
 
 ## Options
 
-**`createEventLayer`**
+<Accordion title="All options">
+  **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
+  unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `allowInsecureCallbacks`.
 
-| Option | Default | |
-| --- | --- | --- |
-| `store` | required | `RedisSubscriptionStore`, or your own `SubscriptionStore` |
-| `delivery` | required | `QStashDelivery`, or your own `EventDelivery` |
-| `principal` | required | `({ auth, request }) => id \| { id, context }`, may be async. The subscriber; throw to refuse. |
-| `secretKey` | `MCP_EVENTS_SECRET_KEY` | Encrypts stored signing secrets. Required, with no built-in default. |
-| `defaults.ttlMs` | 7 days | Lifetime granted when the host doesn't ask for one |
-| `defaults.maxTtlMs` | 30 days | The most the server grants |
-| `allowInsecureCallbacks` | `false` | Local development only |
-| `timeoutMs` | 10 seconds | Timeout for each POST to a callback |
+  **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
+  Optional: `title`, `input`.
 
-**`define` config:** `description`, `payload` and `authorize` (required), plus optional `title`,
-`input`, `personal` and `match`.
+  **`RedisSubscriptionStore`**: `redis` (defaults to one from env), `prefix` (`mcp-events:`),
+  `enableTelemetry`.
 
-**`QStashDelivery`:** `url` (required), `retries` (default 3), `retryDelay`, `headers`, `qstash`,
-`receiver`.
+  **`QStashDelivery`**: `url` is required. Optional: `qstash`, `receiver`, `enableTelemetry`.
+  Deliveries are retried 3 times with QStash's backoff.
+</Accordion>
 
-**`RedisSubscriptionStore`:** `redis`, `prefix` (default `mcp-events:`).
+<Accordion title="Custom backends and receivers">
+  `@upstash/mcp-toolkit/events` doesn't import anything from Upstash. A backend implements one of
+  these interfaces (types exported from the same entry point):
 
-Poll and stream delivery modes and replay cursors from the draft aren't implemented.
+  ```ts
+  interface SubscriptionStore {
+    put(subscription: Subscription): Promise<void>;
+    get(id: string): Promise<Subscription | null>;
+    delete(subscription: { id: string; event: string }): Promise<void>;
+    find(event: string): Promise<Subscription[]>; // every live subscription to the event
+  }
+
+  interface EventDelivery {
+    enqueue(jobs: DeliveryJob[]): Promise<void>;
+    createDeliveryHandler(send: SendJob): (request: Request) => Promise<Response>;
+  }
+  ```
+
+  The entry point also exports `verifyWebhook` (Standard Webhooks) for writing a receiver.
+</Accordion>
+
+Not implemented: the draft's poll and stream delivery modes (`events/subscribe` refuses them) and
+event replay (`cursor` is always `null`).
 
 ## Example
 
