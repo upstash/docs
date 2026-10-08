@@ -87342,8 +87342,10 @@ host can drop duplicates, and the signature is computed fresh on every attempt.
 ## Matching and authorize
 
 Every `input` field must also be a `payload` field: the payload is the one place an event's values
-come from, and the same values are used to route it and to authorize it. A subscription matches when
-each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
+come from, and the same values are used to route it and to authorize it. The payload's values for the
+input fields are parsed with the `input` schema, so its transforms (`.toLowerCase()`, say) apply on
+both sides and `authorize` gets the types it declares; a payload whose values don't fit `input` makes
+`emit` throw. A subscription matches when each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
 subscribers of `{ documentId: "doc_123" }` and of `{}`.
 
 `authorize(args, caller)` runs twice:
@@ -87360,7 +87362,8 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 `authorize: () => true` lets every authenticated subscriber hear every matching event.
 
 <Accordion title="Deduplicating an emit">
-  Pass `{ eventId }` as the second argument to `emit`. Emitting the same id twice delivers once:
+  Pass `{ eventId }` as the second argument to `emit`. It is sent as `webhook-id`, so the host drops a
+  second emit with the same id as a duplicate:
 
   ```ts
   await commentCreated.emit({ documentId, text }, { eventId: comment.id });
@@ -87403,6 +87406,11 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
     sending unverified deliveries. A bad signature or body gets `489` with
     `Upstash-NonRetryable-Error: true`.
   * **Lifetime.** A subscription lasts 7 days by default and 30 days at most.
+  * **How many.** A subscriber holds at most 8 live subscriptions across all events. Past that, a new
+    subscribe is refused with reason `subscription_limit`, before the callback is challenged;
+    refreshing an existing one still works. Each subscription is a webhook per matching emit, so this
+    bounds what one user can make your server send. Set `maxSubscriptions` to change it, or
+    `Infinity` to turn it off.
 </Accordion>
 
 <Warning>
@@ -87421,8 +87429,9 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
 <Accordion title="What is stored in Redis">
   **`mcp-events:sub:<id>`** is the subscription (`event`, `args`, `url`, `encryptedSecret`,
-  `subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`** is a sorted
-  set of the event's subscription ids, scored by expiry.
+  `subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`** and
+  **`mcp-events:by:<subscriber>`** are sorted sets of the event's and the subscriber's subscription
+  ids, scored by expiry. The second one enforces the per-subscriber limit.
 
   An event message carries the full payload, which stays in QStash (and in its DLQ, if every retry
   fails) until it is delivered. The toolkit never stores the caller's token, the request, the
@@ -87434,7 +87443,8 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
 <Accordion title="All options">
   **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
-  unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `allowInsecureCallbacks`.
+  unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8 per subscriber),
+  `allowInsecureCallbacks`.
 
   **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
   Optional: `title`, `input`.
@@ -87452,9 +87462,11 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
   ```ts
   interface SubscriptionStore {
-    put(subscription: Subscription): Promise<void>;
+    // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+    put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
     get(id: string): Promise<Subscription | null>;
-    delete(subscription: { id: string; event: string }): Promise<void>;
+    count(subscriber: string): Promise<number>; // live subscriptions, across all events
+    delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
     find(event: string): Promise<Subscription[]>; // every live subscription to the event
   }
 
@@ -87640,8 +87652,10 @@ host can drop duplicates, and the signature is computed fresh on every attempt.
 ## Matching and authorize
 
 Every `input` field must also be a `payload` field: the payload is the one place an event's values
-come from, and the same values are used to route it and to authorize it. A subscription matches when
-each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
+come from, and the same values are used to route it and to authorize it. The payload's values for the
+input fields are parsed with the `input` schema, so its transforms (`.toLowerCase()`, say) apply on
+both sides and `authorize` gets the types it declares; a payload whose values don't fit `input` makes
+`emit` throw. A subscription matches when each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
 subscribers of `{ documentId: "doc_123" }` and of `{}`.
 
 `authorize(args, caller)` runs twice:
@@ -87658,7 +87672,8 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 `authorize: () => true` lets every authenticated subscriber hear every matching event.
 
 <Accordion title="Deduplicating an emit">
-  Pass `{ eventId }` as the second argument to `emit`. Emitting the same id twice delivers once:
+  Pass `{ eventId }` as the second argument to `emit`. It is sent as `webhook-id`, so the host drops a
+  second emit with the same id as a duplicate:
 
   ```ts
   await commentCreated.emit({ documentId, text }, { eventId: comment.id });
@@ -87701,6 +87716,11 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
     sending unverified deliveries. A bad signature or body gets `489` with
     `Upstash-NonRetryable-Error: true`.
   * **Lifetime.** A subscription lasts 7 days by default and 30 days at most.
+  * **How many.** A subscriber holds at most 8 live subscriptions across all events. Past that, a new
+    subscribe is refused with reason `subscription_limit`, before the callback is challenged;
+    refreshing an existing one still works. Each subscription is a webhook per matching emit, so this
+    bounds what one user can make your server send. Set `maxSubscriptions` to change it, or
+    `Infinity` to turn it off.
 </Accordion>
 
 <Warning>
@@ -87719,8 +87739,9 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
 <Accordion title="What is stored in Redis">
   **`mcp-events:sub:<id>`** is the subscription (`event`, `args`, `url`, `encryptedSecret`,
-  `subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`** is a sorted
-  set of the event's subscription ids, scored by expiry.
+  `subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`** and
+  **`mcp-events:by:<subscriber>`** are sorted sets of the event's and the subscriber's subscription
+  ids, scored by expiry. The second one enforces the per-subscriber limit.
 
   An event message carries the full payload, which stays in QStash (and in its DLQ, if every retry
   fails) until it is delivered. The toolkit never stores the caller's token, the request, the
@@ -87732,7 +87753,8 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
 <Accordion title="All options">
   **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
-  unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `allowInsecureCallbacks`.
+  unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8 per subscriber),
+  `allowInsecureCallbacks`.
 
   **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
   Optional: `title`, `input`.
@@ -87750,9 +87772,11 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
   ```ts
   interface SubscriptionStore {
-    put(subscription: Subscription): Promise<void>;
+    // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+    put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
     get(id: string): Promise<Subscription | null>;
-    delete(subscription: { id: string; event: string }): Promise<void>;
+    count(subscriber: string): Promise<number>; // live subscriptions, across all events
+    delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
     find(event: string): Promise<Subscription[]>; // every live subscription to the event
   }
 
@@ -87957,6 +87981,39 @@ async ({ sources }, task) => {
 Each task records who started it, and `task_status` / `task_cancel` only answer for that caller.
 Another user's task id reads exactly like an unknown one, so nobody can tell it exists.
 
+### Check what the arguments point at
+
+Owning the task is not the same as being allowed to touch what it works on. The model fills in the
+tool arguments, so a `workspaceId` in them is whatever it was told. If Alice starts a task with Bob's
+`workspaceId`, the task is hers, she can read its result, and the handler acted on Bob's workspace.
+
+Give the task an `authorize`, which runs when the tool is called, before anything is stored or
+queued, and use `task.principal` (the user who started the task) inside the handler. Never take a
+user id from the arguments:
+
+```ts lib/tasks.ts
+tasks.define(
+  "export_workspace",
+  {
+    description: "Exports a workspace to CSV.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    // May this user export this workspace? `false` refuses the call.
+    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+  },
+  async ({ workspaceId }, task) => {
+    const csv = await exportWorkspace(workspaceId, { as: task.principal });
+    return { content: [{ type: "text", text: csv }] };
+  },
+);
+```
+
+`authorize(args, { principal, auth, request })` gets the validated arguments, the caller's id and the
+same `auth` and `request` as `principal`. It is the only place a task sees the caller's token: the
+handler runs later, in a delivery request that carries no user auth, so `task.principal` is how it
+knows who it is working for.
+
+### Where principal comes from
+
 `principal` receives `{ auth, request }` and may be async. `auth` is the MCP SDK's `AuthInfo`. The SDK
 never fills it in from request headers: your MCP route does, after verifying the bearer token, by
 passing it to `handler.fetch(request, { authInfo })` as in step 3. Put the user id in `extra` when you
@@ -88003,9 +88060,13 @@ export const tasks = createTaskLayer({
 
 tasks.define(
   "migrate_workspace",
-  { description: "Copies a workspace to new storage.", inputSchema: z.object({ workspaceId: z.string() }) },
+  {
+    description: "Copies a workspace to new storage.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+  },
   async ({ workspaceId }, task) => {
-    const batches = await task.run("plan", () => listBatches(workspaceId));
+    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
     for (const [i, batch] of batches.entries()) {
       if (await task.isCancelled()) return {};
       await task.update(`Copying batch ${i + 1}/${batches.length}`);
@@ -88058,7 +88119,9 @@ tasks.define(
 ## Security and storage
 
 <Accordion title="Who can see what">
-  The server sets a task's owner from `principal`, and no tool argument can set it. `task_status` and
+  The server sets a task's owner from `principal`, and no tool argument can set it. Whether a caller
+  may start a task with given arguments is your `authorize`; the handler gets the owner as
+  `task.principal`. `task_status` and
   `task_cancel` only accept UUID task ids, and compare the stored owner with the caller. Task ids are
   random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash deliveries and
   never returns a task.
@@ -88089,10 +88152,10 @@ tasks.define(
 
 <Accordion title="All options">
   **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
-  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds).
+  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
   **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
-  `title`, `completedMessage` (defaults to `"Completed"`).
+  `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
 
   **`RedisTaskStore`**: `redis` (defaults to one from env), `prefix` (`mcp:task:`), `enableTelemetry`.
 
@@ -88120,7 +88183,7 @@ tasks.define(
   }
 
   interface TaskDispatcher<TContext = unknown> {
-    dispatch(task: Task): Promise<void>; // idempotent per task id
+    dispatch(task: Task): Promise<void>; // called once per task
     cancel(taskId: string): Promise<void>;
     createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
   }
@@ -88324,6 +88387,39 @@ async ({ sources }, task) => {
 Each task records who started it, and `task_status` / `task_cancel` only answer for that caller.
 Another user's task id reads exactly like an unknown one, so nobody can tell it exists.
 
+### Check what the arguments point at
+
+Owning the task is not the same as being allowed to touch what it works on. The model fills in the
+tool arguments, so a `workspaceId` in them is whatever it was told. If Alice starts a task with Bob's
+`workspaceId`, the task is hers, she can read its result, and the handler acted on Bob's workspace.
+
+Give the task an `authorize`, which runs when the tool is called, before anything is stored or
+queued, and use `task.principal` (the user who started the task) inside the handler. Never take a
+user id from the arguments:
+
+```ts lib/tasks.ts
+tasks.define(
+  "export_workspace",
+  {
+    description: "Exports a workspace to CSV.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    // May this user export this workspace? `false` refuses the call.
+    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+  },
+  async ({ workspaceId }, task) => {
+    const csv = await exportWorkspace(workspaceId, { as: task.principal });
+    return { content: [{ type: "text", text: csv }] };
+  },
+);
+```
+
+`authorize(args, { principal, auth, request })` gets the validated arguments, the caller's id and the
+same `auth` and `request` as `principal`. It is the only place a task sees the caller's token: the
+handler runs later, in a delivery request that carries no user auth, so `task.principal` is how it
+knows who it is working for.
+
+### Where principal comes from
+
 `principal` receives `{ auth, request }` and may be async. `auth` is the MCP SDK's `AuthInfo`. The SDK
 never fills it in from request headers: your MCP route does, after verifying the bearer token, by
 passing it to `handler.fetch(request, { authInfo })` as in step 3. Put the user id in `extra` when you
@@ -88370,9 +88466,13 @@ export const tasks = createTaskLayer({
 
 tasks.define(
   "migrate_workspace",
-  { description: "Copies a workspace to new storage.", inputSchema: z.object({ workspaceId: z.string() }) },
+  {
+    description: "Copies a workspace to new storage.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+  },
   async ({ workspaceId }, task) => {
-    const batches = await task.run("plan", () => listBatches(workspaceId));
+    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
     for (const [i, batch] of batches.entries()) {
       if (await task.isCancelled()) return {};
       await task.update(`Copying batch ${i + 1}/${batches.length}`);
@@ -88425,7 +88525,9 @@ tasks.define(
 ## Security and storage
 
 <Accordion title="Who can see what">
-  The server sets a task's owner from `principal`, and no tool argument can set it. `task_status` and
+  The server sets a task's owner from `principal`, and no tool argument can set it. Whether a caller
+  may start a task with given arguments is your `authorize`; the handler gets the owner as
+  `task.principal`. `task_status` and
   `task_cancel` only accept UUID task ids, and compare the stored owner with the caller. Task ids are
   random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash deliveries and
   never returns a task.
@@ -88456,10 +88558,10 @@ tasks.define(
 
 <Accordion title="All options">
   **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
-  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds).
+  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
   **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
-  `title`, `completedMessage` (defaults to `"Completed"`).
+  `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
 
   **`RedisTaskStore`**: `redis` (defaults to one from env), `prefix` (`mcp:task:`), `enableTelemetry`.
 
@@ -88487,7 +88589,7 @@ tasks.define(
   }
 
   interface TaskDispatcher<TContext = unknown> {
-    dispatch(task: Task): Promise<void>; // idempotent per task id
+    dispatch(task: Task): Promise<void>; // called once per task
     cancel(taskId: string): Promise<void>;
     createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
   }
