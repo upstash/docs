@@ -1,0 +1,137 @@
+---
+title: "Singleton Workflows"
+description: "Make sure only one run of a workflow is in progress at a time by reusing the same workflowRunId."
+---
+
+A singleton workflow has at most one run in progress at a time. A nightly sync,
+a per-user onboarding flow or a cache rebuild are typical examples: starting a
+second copy while the first one is still running would do the same work twice.
+
+You get this behavior by starting every run with the **same `workflowRunId`**.
+A run ID is reserved while its run is in progress, and released once the run
+finishes, fails or is cancelled.
+
+<Note>
+  Singleton workflows require `@upstash/workflow` **1.4.0** or later.
+
+  With older versions, a run started again with the same `workflowRunId` and the
+  same body within 10 minutes of the previous one is deduplicated by QStash: it
+  either doesn't start or gets stuck on its first step.
+</Note>
+
+There are two ways to handle a new trigger while a run is in progress:
+
+| Pattern | When a run is already in progress |
+| --- | --- |
+| [Keep the running one](#keep-the-running-one) | The new trigger is rejected. The existing run continues. |
+| [Replace the running one](#replace-the-running-one) | The running run is cancelled and a new one starts. |
+
+In both patterns, a trigger after the previous run has ended starts a new run,
+even with exactly the same body.
+
+## Keep the running one
+
+Trigger the workflow with a fixed `workflowRunId`. If a run with that ID is
+still in progress, `client.trigger` throws and no new run is started.
+
+```ts
+import { Client } from "@upstash/workflow";
+import { QstashError } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+try {
+  const { workflowRunId } = await client.trigger({
+    url: "https://<YOUR_WORKFLOW_ENDPOINT>/nightly-sync",
+    workflowRunId: "nightly-sync",
+    body: { source: "crm" },
+  });
+  console.log(`started ${workflowRunId}`); // started wfr_nightly-sync
+} catch (error) {
+  if (!(error instanceof QstashError) || error.status !== 400) {
+    throw error;
+  }
+
+  // a 400 can also mean an invalid request, so check that a run is in progress
+  const { runs } = await client.logs({
+    filter: { workflowRunId: "wfr_nightly-sync", state: "RUN_STARTED" },
+  });
+  if (runs.length === 0) {
+    throw error;
+  }
+  console.log("nightly-sync is already running, skipping");
+}
+```
+
+What `client.trigger` returns:
+
+- **No run in progress:** a new run starts and the call resolves to
+  `{ workflowRunId: "wfr_nightly-sync" }`.
+- **A run is in progress:** the call throws a `QstashError` with `status: 400`.
+  The running run is not affected.
+
+QStash returns `400` for other invalid trigger requests too, such as a malformed
+URL, so `status` alone doesn't tell you that the ID is taken. The example checks
+with [`client.logs`](/workflow/basics/client/logs) that a run with the ID is in
+progress before skipping. If that run ends between the two calls, `runs` is
+empty and the error is rethrown, so you can retry the trigger.
+
+<Note>
+  `QstashError` comes from `@upstash/qstash`, which `@upstash/workflow` depends
+  on. If your package manager doesn't let you import a dependency of a
+  dependency, add `@upstash/qstash` to your own dependencies. Keep it on the
+  version `@upstash/workflow` uses: with two copies of the package,
+  `instanceof QstashError` doesn't match.
+</Note>
+
+<Tip>
+  The ID you pass is prefixed with `wfr_`. `nightly-sync` becomes
+  `wfr_nightly-sync`, which is the ID you see in the logs and pass to
+  `client.cancel`.
+</Tip>
+
+## Replace the running one
+
+To always run the latest request, first cancel the existing run by its
+prefixed run ID (for example, `wfr_rebuild-cache`), then start a new one with
+the unprefixed `workflowRunId` (for example, `rebuild-cache`). If the previous
+run hasn't finished yet, it is stopped and the new run takes its place.
+
+```ts
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+const { cancelled } = await client.cancel("wfr_rebuild-cache");
+console.log(`cancelled ${cancelled} run(s)`);
+
+const { workflowRunId } = await client.trigger({
+  url: "https://<YOUR_WORKFLOW_ENDPOINT>/rebuild-cache",
+  workflowRunId: "rebuild-cache",
+  body: { reason: "settings changed" },
+});
+console.log(`started ${workflowRunId}`); // started wfr_rebuild-cache
+```
+
+What each call returns:
+
+- `client.cancel` resolves to `{ cancelled: 1 }` when a run was in progress and
+  got cancelled, and to `{ cancelled: 0 }` when there was nothing to cancel. It
+  doesn't throw in either case, so you can call it unconditionally.
+- `client.trigger` resolves to `{ workflowRunId: "wfr_rebuild-cache" }`. The
+  cancel is completed before `client.cancel` returns, so the ID is free when you
+  trigger the new run.
+
+The cancelled run stops right away. If one of its steps is executing on your
+endpoint at that moment, that code runs to the end, but its result is
+discarded. Steps, waits and `context.call` results of the cancelled run are
+never added to the new run, even though both runs share the same ID.
+
+<Warning>
+  If two callers cancel and trigger the same ID at the same time, both cancels
+  can complete before either trigger. Then the first trigger starts a run, and
+  the second one throws the `400` error described in
+  [Keep the running one](#keep-the-running-one). Catch it and retry the cancel
+  and trigger if the latest request must win.
+</Warning>
+

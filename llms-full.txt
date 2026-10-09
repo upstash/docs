@@ -56,14 +56,35 @@ You can find the Github Repository [here](https://github.com/upstash/cli).
 # Installation
 
 ```bash
-npm i -g @upstash/cli
+npm i -g upstash
 ```
+
+Or run any command without installing, for example `npx upstash redis list`.
 
 For agents, install the [Upstash Skill](/docs/agent-resources/skills) instead. It bundles Upstash docs with the `upstash` CLI so your agent can implement and debug against your resources without filling up its context window:
 
 ```bash
 npx skills add upstash/skills
 ```
+
+# Connect your AI agent
+
+One command wires Upstash into the coding agents on your machine:
+
+```bash
+npx upstash
+```
+
+Run with no arguments in a terminal, `upstash` starts `upstash setup`. From an agent or a script, call `upstash setup` explicitly; a bare `upstash` only prints the help there. In a terminal it asks where to install (all projects or just this one) and which agents to set up, with detected agents pre-selected, then shows the plan before changing anything. Claude Code, Codex, Cursor, and Gemini CLI get the Upstash plugin (skills plus the remote MCP server). VS Code, GitHub Copilot CLI, and OpenCode get the remote MCP server in their config plus the Upstash skill. The MCP server signs in with OAuth on first use; setup never writes an API key into an agent's config.
+
+```bash
+upstash setup --claude --cursor -y   # pick agents, no prompts
+upstash setup --project              # this repo instead of your user config
+upstash setup --mode mcp             # MCP + skill everywhere, no plugins
+upstash setup --dry-run              # show what would change
+```
+
+Rerunning `setup` updates what it installed.
 
 # Free Redis without an account
 
@@ -1332,7 +1353,17 @@ Source: https://upstash.com/docs/agent-resources/overview
 
 import { AgentGrid } from "/snippets/agent-tools.jsx";
 
-Upstash ships Skills, a CLI, an MCP server, and llms.txt so your agent can build on and manage Redis, QStash, Workflow, Vector, Search, and Box. Pick your agent to get set up in a minute.
+Upstash ships Skills, a CLI, an MCP server, and llms.txt so your agent can build on and manage Redis, QStash, Workflow, Vector, Search, and Box. Set them all up with one command, or pick your agent for step-by-step instructions.
+
+# Set up with one command
+
+Run this in your terminal:
+
+```bash
+npx upstash
+```
+
+It detects Claude Code, Codex, Cursor, Gemini CLI, VS Code, GitHub Copilot CLI, and OpenCode, and lets you pick which to set up. Each one gets the Upstash [MCP server](/docs/agent-resources/mcp) and [skills](/docs/agent-resources/skills): as the Upstash plugin where the agent supports plugins, otherwise written into its config. The MCP server signs in with OAuth on first use. See the [CLI page](/docs/agent-resources/cli#connect-your-ai-agent) for flags.
 
 # Pick your agent
 
@@ -1357,7 +1388,7 @@ Don't see your agent? See the [full list of agents](/docs/agent-resources/client
   </Card>
 </CardGroup>
 
-# Quick start
+# Set up by hand
 
 Install the Upstash skill. It includes the `upstash` CLI reference, so this one step is enough for most workflows:
 
@@ -1547,7 +1578,7 @@ Add `--global` (`-g`) to make the skills available in every project instead of j
 
 # Managing resources
 
-The combined `upstash` skill includes the full `@upstash/cli` command reference, so your agent can create databases, publish QStash messages, query Vector indexes, and more straight from the shell. See the [CLI page](/docs/agent-resources/cli) for credentials and command details.
+The combined `upstash` skill includes the full `upstash` CLI command reference, so your agent can create databases, publish QStash messages, query Vector indexes, and more straight from the shell. See the [CLI page](/docs/agent-resources/cli) for credentials and command details.
 
 # Disable Production Pack
 Source: https://upstash.com/docs/api-reference/qstash/disable-production-pack
@@ -1963,8 +1994,6 @@ Buckets are backed by Cloudflare R2 and are S3-compatible. `bucket.s3()` returns
 <Warning>
 Do not presign URLs with this client. A presigned URL carries the credential, which reads and writes the whole bucket until it expires. Use [`signedReadUrl`](/docs/blob/bucket/reading#signedreadurl) and [`signedUploadUrl`](/docs/blob/bucket/writing#signed-upload-urls), which Upstash signs for one object; see [Who signs a URL](/docs/blob/reference/signing#who-signs-a-url).
 </Warning>
-
-An error message that mentions R2 is talking about the storage layer.
 
 ***
 
@@ -3025,7 +3054,7 @@ A hint is appended to the message in parentheses, so printing `message` alone is
 
 | Code | Built-in hint |
 | ---- | ------------- |
-| `signature_mismatch` | a 403 from R2 usually means the body length or type differs from the signature |
+| `signature_mismatch` | the upload did not match what was authorized, usually a different size or content type |
 | `length_required` | pass `{ size }` or `{ maxSize }` so the length is known before the first byte |
 
 ***
@@ -3104,10 +3133,10 @@ Storage is Cloudflare R2. Its errors are normalized before they leave the SDK, f
 | 401 | `unauthorized` |
 | 403 with `ExpiredToken`, `InvalidAccessKeyId` or `TokenRefreshRequired` | `unauthorized`, "storage refused the temporary credential", hinting that it expired mid-request and the SDK re-mints and retries once |
 | any other 403 | `signature_mismatch` |
-| 429, or `SlowDown` / `TooManyRequests` | `rate_limited`, "R2 rate limited the request" |
+| 429, or `SlowDown` / `TooManyRequests` | `rate_limited`, "storage rate limited the request" |
 | 503 | `not_ready` |
 | 413, or `EntityTooLarge` | `too_large` |
-| anything else | `request_failed`, message `R2 responded <status> <Code>: <Message>` |
+| anything else | `request_failed`, message `storage responded <status> <Code>`, with storage's own `<Message>` on `e.cause` |
 
 For that last row the status is passed through, except that a 5xx becomes 502, since the failure is upstream of your app rather than in it.
 
@@ -5557,6 +5586,277 @@ if (result.verdict === "changes_requested") {
 
 This gives you an automated gate similar to CodeRabbit or Greptile, running inside an isolated, durable Box.
 
+# In-App Coding Agent with CopilotKit
+Source: https://upstash.com/docs/box/guides/copilotkit
+
+Put a [CopilotKit](https://www.copilotkit.ai) chat in your Next.js app where each user talks to a coding agent running in their own Upstash Box.
+
+Upstash Box combines the agent and its sandbox: the agent runs inside the box, next to the shell and files it works on. CopilotKit is the UI. A small adapter in your app connects the two.
+
+```mermaid
+flowchart LR
+  UI["CopilotKit chat<br/>in the browser"]
+  APP["BoxAgent adapter<br/>in your Next.js app"]
+  BOX["Upstash Box<br/>agent + sandbox<br/>one per user"]
+  UI <-->|"AG-UI events"| APP
+  APP <-->|"prompt and stream"| BOX
+```
+
+Each user gets one box and one continuing conversation with the agent. The box keeps the agent's files and memory between visits.
+
+***
+
+## 1. Set up
+
+* A **Box API key** from the [Upstash Console](https://console.upstash.com/box).
+* An **Anthropic API key** from [API keys](https://platform.claude.com/settings/keys).
+
+```bash title=".env.local"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
+```
+
+In a Next.js app:
+
+```bash
+npm install @upstash/box@0.7.7 @copilotkit/react-core@1.75.1 @copilotkit/runtime@1.75.1 @ag-ui/client@0.0.59 rxjs@7.8.1
+```
+
+<Note>
+  These versions were tested together. If you upgrade CopilotKit, match `@ag-ui/client` to the version it depends on: `npm ls @ag-ui/client`.
+</Note>
+
+***
+
+## 2. Add the agent
+
+CopilotKit talks to agents over [AG-UI](https://docs.ag-ui.com). This class sends the user's message to the agent in the box and turns the box's stream into AG-UI events.
+
+```typescript title="lib/box-agent.ts"
+import { AbstractAgent, EventType, type BaseEvent, type RunAgentInput } from "@ag-ui/client";
+import type { Box } from "@upstash/box";
+import { Observable } from "rxjs";
+
+export class BoxAgent extends AbstractAgent {
+  constructor(private getBox: () => Promise<Box>) {
+    super();
+  }
+
+  private stop?: () => void;
+
+  clone() {
+    return new BoxAgent(this.getBox) as this;
+  }
+
+  abortRun() {
+    this.stop?.();
+  }
+
+  run(input: RunAgentInput) {
+    const { threadId, runId } = input;
+    const content = input.messages.findLast((m) => m.role === "user")?.content;
+    const prompt = typeof content === "string" ? content : "";
+
+    return new Observable<BaseEvent>((subscriber) => {
+      const emit = (event: object) => subscriber.next(event as BaseEvent);
+      let stream: Awaited<ReturnType<Box["agent"]["stream"]>> | undefined;
+      let cancelled = false;
+      let stopped = false;
+      let messageId: string | undefined;
+
+      const endMessage = () => {
+        if (messageId) emit({ type: EventType.TEXT_MESSAGE_END, messageId });
+        messageId = undefined;
+      };
+
+      const forward = async () => {
+        emit({ type: EventType.RUN_STARTED, threadId, runId });
+        if (!prompt) throw new Error("Send a text message.");
+        const box = await this.getBox();
+        stream = await box.agent.stream({ prompt });
+        if (cancelled) return stream.cancel();
+        this.stop = () => {
+          stopped = true;
+          stream?.cancel();
+        };
+
+        for await (const chunk of stream) {
+          if (chunk.type === "text-delta") {
+            if (!messageId) {
+              messageId = crypto.randomUUID();
+              emit({ type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant" });
+            }
+            emit({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: chunk.text });
+          }
+          if (chunk.type === "tool-call") {
+            endMessage();
+            const toolCallId = chunk.toolCallId;
+            const args = JSON.stringify(chunk.input);
+            emit({ type: EventType.TOOL_CALL_START, toolCallId, toolCallName: chunk.toolName });
+            emit({ type: EventType.TOOL_CALL_ARGS, toolCallId, delta: args });
+            emit({ type: EventType.TOOL_CALL_END, toolCallId });
+          }
+          if (chunk.type === "tool-result") {
+            const output = chunk.output;
+            const content = typeof output === "string" ? output : JSON.stringify(output);
+            emit({
+              type: EventType.TOOL_CALL_RESULT,
+              messageId: crypto.randomUUID(),
+              toolCallId: chunk.toolCallId,
+              content,
+            });
+          }
+        }
+
+        endMessage();
+        emit({ type: EventType.RUN_FINISHED, threadId, runId });
+      };
+
+      forward()
+        .catch((error) => {
+          endMessage();
+          if (stopped) emit({ type: EventType.RUN_FINISHED, threadId, runId });
+          else emit({ type: EventType.RUN_ERROR, message: String(error) });
+        })
+        .finally(() => subscriber.complete());
+
+      return () => {
+        cancelled = true;
+        stream?.cancel();
+      };
+    });
+  }
+}
+```
+
+***
+
+## 3. Add the runtime route
+
+Each user gets one box, found by name or created on the first message.
+
+```typescript title="app/api/copilotkit/[[...slug]]/route.ts"
+import { CopilotRuntime, InMemoryAgentRunner, createCopilotRuntimeHandler } from "@copilotkit/runtime/v2";
+import { Agent, Box, BoxError } from "@upstash/box";
+import { BoxAgent } from "@/lib/box-agent";
+
+const getUserId = async (request: Request) => "demo-user";
+
+const isNotFound = (error: unknown) => error instanceof BoxError && error.statusCode === 404;
+const isNameTaken = (error: unknown) => error instanceof BoxError && /already in use/.test(error.message);
+
+async function getBox(userId: string) {
+  const name = `copilot-${userId}`;
+  try {
+    return await Box.getByName(name);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+  try {
+    return await Box.create({
+      name,
+      agent: {
+        harness: Agent.ClaudeCode,
+        model: "anthropic/claude-sonnet-5",
+        apiKey: process.env.ANTHROPIC_API_KEY,
+      },
+    });
+  } catch (error) {
+    if (isNameTaken(error)) return Box.getByName(name);
+    throw error;
+  }
+}
+
+const runtime = new CopilotRuntime({
+  agents: async ({ request }) => {
+    const userId = await getUserId(request);
+    return { default: new BoxAgent(() => getBox(userId)) };
+  },
+  runner: new InMemoryAgentRunner(),
+});
+
+const handler = createCopilotRuntimeHandler({ runtime, basePath: "/api/copilotkit" });
+
+export { handler as GET, handler as POST };
+```
+
+***
+
+## 4. Add the chat
+
+`useDefaultRenderTool` shows each tool call the agent makes, such as `Bash` and `Write`, as a card in the chat.
+
+```tsx title="app/page.tsx"
+"use client";
+
+import { CopilotChat, CopilotKitProvider, useDefaultRenderTool } from "@copilotkit/react-core/v2";
+import "@copilotkit/react-core/v2/styles.css";
+
+function Chat() {
+  useDefaultRenderTool();
+  return <CopilotChat />;
+}
+
+export default function Page() {
+  return (
+    <CopilotKitProvider runtimeUrl="/api/copilotkit" enableInspector={false}>
+      <main style={{ height: "100vh", padding: 24, boxSizing: "border-box" }}>
+        <Chat />
+      </main>
+    </CopilotKitProvider>
+  );
+}
+```
+
+```bash
+npm run dev
+```
+
+Open `http://localhost:3000` and try:
+
+1. `Create squares.py that prints the first 10 squares, then run it.`
+2. Reload the page, then: `Change it to print cubes instead and run it again.`
+
+The chat is empty after the reload, but the agent finds the script and edits it.
+
+***
+
+## Customize
+
+Change the harness and model in `getBox`; see [Agent](/docs/box/overall/agent) for the options.
+
+To cap a run or give the agent standing instructions, pass options with the prompt:
+
+```typescript title="lib/box-agent.ts"
+stream = await box.agent.stream({
+  prompt,
+  timeout: 5 * 60 * 1000,
+  options: { maxBudgetUsd: 1, systemPrompt: "Keep replies short." },
+});
+```
+
+The system prompt is set when the conversation starts and stays for the rest of it.
+
+***
+
+## Before production
+
+* **Identify users from your auth session.** Replace `getUserId`, and never read the user from the request body: the box name decides whose files the agent can reach.
+* **Protect the thread routes.** `InMemoryAgentRunner` records no owner for a thread, so `/api/copilotkit/threads` lists every user's threads. Require authentication, scope thread listings to the signed-in user, and verify that a requested thread belongs to them.
+* **Persist chat history.** Store messages outside the server's memory and restore the returning user's thread ID. [Realtime history](/docs/realtime/features/history) and [durable LLM streams](https://upstash.com/blog/resumable-llm-streams) show how to keep messages in Redis Streams and replay them after a reload.
+* **One conversation per user.** The thread ID is not sent to the box, so every chat from a user continues the same agent session.
+
+***
+
+## Troubleshooting
+
+* **`BoxAgent` is not assignable to `AbstractAgent`**: your `@ag-ui/client` version differs from the one `@copilotkit/runtime` uses.
+* **Permission denied writing files**: the agent can only write under `/workspace/home`.
+* **The chat is empty after a reload**: this example keeps visible messages in memory. The agent in the box still has the earlier conversation and files.
+* **`Box cannot start a run in its current state`**: a box runs one prompt at a time. The user sent a message, for example from a second tab, while the agent was still working.
+* **No tool cards with OpenCode**: the OpenCode harness streams only text, so the chat shows the reply without the tool calls.
+* **Box limit reached**: the error comes from `Box.create`. Delete unused boxes in the console or upgrade your plan.
+
 # Vercel Eve Sandboxes
 Source: https://upstash.com/docs/box/guides/eve-setup
 
@@ -6696,6 +6996,130 @@ To skip the setup next time, ask the agent to snapshot the box and create new bo
 * "The dev server stopped responding, check the box logs and restart it"
 * "Snapshot this box, then create two more from the snapshot"
 * "Open the preview URL in the box's browser, take a screenshot, and tell me if the layout broke"
+
+# Host T3 Code in a Remote Sandbox
+Source: https://upstash.com/docs/box/guides/t3-code-setup
+
+This guide walks you through running [T3 Code](https://t3.codes) inside an Upstash Box and opening it from any browser or phone. The agent works in the box, the box sleeps when you are away, and it wakes when you open the URL again.
+
+***
+
+## 1. Create a Box
+
+Create a box with the Node.js runtime and default settings. See the [quickstart](/docs/box/overall/quickstart) if you haven't created one before.
+
+***
+
+## 2. Connect via SSH
+
+Connect to the box from your terminal, using your [Box API key](/docs/box/overall/quickstart#1-get-your-api-key) as the password when prompted:
+
+```bash
+ssh <box-id>@us-east-1.box.upstash.com
+```
+
+The `box-id` is the name of your box (e.g. `right-flamingo-14486`). The next three steps run in this terminal.
+
+***
+
+## 3. Install T3 Code
+
+```bash
+sudo npm install -g t3
+```
+
+***
+
+## 4. Sign In Your Agent
+
+The agent runs inside the box, so sign in here:
+
+```bash
+claude auth login      # or: codex login
+```
+
+It prints a link and a code. Open the link in your browser, approve, and you are signed in. The login is saved in the box, so you only do this once.
+
+T3 Code uses Codex to name threads, so either sign in to Codex too or switch the title provider to Claude. See the T3 Code docs for [Claude](https://github.com/pingdotgg/t3code/blob/main/docs/user/providers-claude.md) and [Codex](https://github.com/pingdotgg/t3code/blob/main/docs/user/providers-codex.md) for provider settings.
+
+***
+
+## 5. Start T3 Code
+
+Start the server on all interfaces so the public URL can reach it, with its data under `/workspace`, the box's persistent storage. Then print the pairing link it writes on startup:
+
+```bash
+setsid nohup t3 serve --host 0.0.0.0 --port 3773 --base-dir /workspace/home/.t3 > /tmp/t3.log 2>&1 < /dev/null &
+sleep 5 && grep "Pairing URL" /tmp/t3.log
+```
+
+```
+Pairing URL: http://172.18.0.11:3773/pair#token=LTTPGQ8SAX39
+```
+
+The shell reports the job as `Done` right away. That is the launcher handing the server off to its own session; the server keeps running.
+
+The pairing link works once and expires after 5 minutes, so create the public URL next and pair right after. To pair another browser later, or if it expired, mint a new one from the SSH terminal:
+
+```bash
+t3 pair --base-dir /workspace/home/.t3
+```
+
+***
+
+## 6. Create a Public URL
+
+Open the box in the console and create a public URL for port `3773`.
+
+<img alt="Create a public URL for port 3773" />
+
+Your URL will look like:
+
+```
+https://<box-id>-3773.preview.box.upstash.com
+```
+
+***
+
+## 7. Pair Your Browser
+
+Take the pairing link from step 5, replace the address with your public URL from step 6, keep the token, and open it in your browser:
+
+```
+https://<box-id>-3773.preview.box.upstash.com/pair#token=LTTPGQ8SAX39
+```
+
+Your browser stays signed in for 30 days. Anyone with a valid pairing link can sign in the same way, so treat the link as a password.
+
+***
+
+## 8. Start Coding
+
+Add a project and start a thread. Projects you create by name are stored under the server's data directory on persistent storage, so they survive restarts and are captured by snapshots.
+
+<img alt="A thread running in T3 Code on an Upstash Box" />
+
+Close the browser, and the agent keeps working in the box. Open the URL from your phone later and your threads are still there.
+
+***
+
+## 9. Set Init Command for Auto-Restart
+
+When the box has been idle it pauses, and opening the URL wakes it. To bring T3 Code back automatically on every start, open the box in the Upstash Console, go to Settings, then Init Command, and save the start command from step 5:
+
+```bash
+setsid nohup t3 serve --host 0.0.0.0 --port 3773 --base-dir /workspace/home/.t3 > /tmp/t3.log 2>&1 < /dev/null &
+```
+
+<img alt="T3 Code init command in the Upstash Console" />
+
+***
+
+## Good to Know
+
+* Everything T3 Code keeps, including projects, threads and your browser pairing, lives under `/workspace/home/.t3` on persistent storage. If you point a project at an existing folder, keep that under `/workspace` too.
+* After a reset, install T3 Code again (step 3). A snapshot restore brings your projects and pairing back as they were.
+* If a thread says "Claude could not authenticate", the sign-in from step 4 is missing. Sign in and start a new thread.
 
 # TanStack AI Coding Agents
 Source: https://upstash.com/docs/box/guides/tanstack-setup
@@ -8943,12 +9367,14 @@ This only works for boxes created with `agent.harness: Agent.Custom`.
 
 ## Custom Harness Examples
 
-Ready-to-run examples for popular open-source agents:
+Ready-to-run examples for popular agents:
 
 * [Pi](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-pi-agent.ts) — multi-provider coding agent
-* [Gemini](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-gemini-agent.ts) — Google Gemini via `@google/genai`
+* [Gemini](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-gemini-agent.ts) — Google's Gemini CLI coding agent
+* [Copilot CLI](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-copilot-agent.ts) — GitHub Copilot's coding agent CLI, with a Copilot subscription or your own model key
 * [Aider](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-aider-agent.ts) — git-aware code editor
 * [Goose](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-goose-agent.ts) — autonomous coding agent
+* [Amp](https://github.com/upstash/box/blob/main/packages/sdk/examples/custom-amp-agent.ts) — Amp coding agent, sessions map to Amp threads
 * [CrewAI](https://github.com/upstash/box/blob/main/packages/python-sdk/examples/custom_crewai_agent.py) — multi-agent orchestration framework
 * [Pydantic AI](https://github.com/upstash/box/blob/main/packages/python-sdk/examples/custom_pydantic_ai_agent.py) — type-safe agent framework
 
@@ -8961,6 +9387,12 @@ Ready-to-run examples for popular open-source agents:
 
 # Aider
 Source: https://upstash.com/docs/box/overall/custom-harness/aider
+
+# Amp
+Source: https://upstash.com/docs/box/overall/custom-harness/amp
+
+# Copilot CLI
+Source: https://upstash.com/docs/box/overall/custom-harness/copilot
 
 # CrewAI
 Source: https://upstash.com/docs/box/overall/custom-harness/crewai
@@ -10240,6 +10672,8 @@ A box retains its full state between runs (files, installed packages, git histor
 
 When you create a box, Upstash provisions a new isolated container with its own filesystem, shell, and network stack. You can start from a fresh box or restore from a snapshot. Once provisioning finishes, the box is ready to receive commands.
 
+If the box has an [init command](/docs/box/overall/quickstart#init-command), the box runs it once after the container starts, on create, on resume, and after a snapshot restore.
+
 ### 2. Running
 
 The box automatically enters Running state after creation. Your agent can run bash commands, read and write files, interact with git, and make outbound network requests. `stdout` and `stderr` stream back in real-time.
@@ -10400,6 +10834,8 @@ box.resume()
 
 Paused boxes do not accrue active CPU charges. Pause/resume is not available when `keepAlive` is enabled.
 
+Resuming reruns the box's [init command](/docs/box/overall/quickstart#init-command), so a server started that way comes back with the box.
+
 ### Snapshot and restore
 
 Snapshots are the best way to turn a prepared environment into a reusable starting point, especially installing dependencies.
@@ -10552,7 +10988,7 @@ If you do not need the box to remain continuously available, keep `keepAlive` di
 
 ## Init command
 
-Boxes with `keepAlive` enabled can run a startup command whenever the box starts.
+A keep-alive box can run an init command, a startup script the box runs once each time its container starts.
 
 <CodeGroup>
 ```typescript box.ts
@@ -10572,36 +11008,7 @@ box = Box.create(
 ```
 </CodeGroup>
 
-This is useful for:
-
-* starting a web server
-* launching a background process
-* preparing a long-running agent environment
-* restoring a development workflow automatically after the box starts
-
-You can also manage the init command after creation:
-
-<CodeGroup>
-```typescript box.ts
-await box.setInitCommand("npm run dev")
-
-const command = await box.getInitCommand()
-await box.deleteInitCommand()
-
-console.log(box.keepAlive) // true
-```
-
-```python box.py
-box.set_init_command("npm run dev")
-
-command = box.get_init_command()
-box.delete_init_command()
-
-print(box.keep_alive)  # True
-```
-</CodeGroup>
-
-Init command management is only available when `keepAlive` is enabled.
+Init commands are not a keep-alive feature. Every box can have one, and get, set, and delete work on any box, including a paused one. See [Create a Box](/docs/box/overall/quickstart#init-command).
 
 ***
 
@@ -10611,7 +11018,7 @@ In the Upstash Console you can:
 
 * enable **Keep alive** while creating a box
 * choose the box **Size**
-* manage the **Init Command** later from the box settings page
+* manage the **Init Command** later from the box settings page (available on every box, not only keep-alive ones)
 
 ***
 
@@ -11455,8 +11862,10 @@ const { publicURLs } = await box.listPublicURLs()
 
 console.log(publicURLs)
 // [
-//   { url: "https://{BOX_ID}-3000.preview.box.upstash.com", port: 3000 },
-//   { url: "https://{BOX_ID}-8080.preview.box.upstash.com", port: 8080 },
+//   { id: "{BOX_ID}-3000", port: 3000, url: "https://{BOX_ID}-3000.preview.box.upstash.com",
+//     created_at: 1789990404, basic_auth: false, bearer_token: false },
+//   { id: "{BOX_ID}-8080", port: 8080, url: "https://{BOX_ID}-8080.preview.box.upstash.com",
+//     created_at: 1789990512, basic_auth: false, bearer_token: true },
 // ]
 ```
 
@@ -11519,9 +11928,44 @@ public_url2 = box.get_public_url(3000, bearer_token=True)
 
 ### Public URL Lifecycle
 
-Public URLs expire automatically when:
-* The box is paused
-* The box is deleted
+A public URL outlives a pause. While the box is paused, a request to the URL resumes it. See [Waking a Paused Box](#waking-a-paused-box).
+
+Public URLs are removed when the box is deleted.
+
+### Waking a Paused Box
+
+An incoming HTTP request to a public URL resumes its box if the box is paused. The request is held while the box comes back and until the app's port is listening, so the caller gets the app's real response instead of an error. If the public URL requires authentication, the credentials are checked before the box is woken.
+
+After container resume and configuration finish, the proxy waits up to 30 additional seconds for the app to become ready. The total HTTP request can take longer than 30 seconds. If the app is still not ready when that wait expires, the request returns `503` with a `Retry-After: 5` header: a browser gets a page that refreshes itself, and any other client gets a plain `503` to retry. The box is already resumed, and the app can continue starting in the background. Move slow dependency installation, such as a cold `npm install`, into the image or a snapshot so the [init command](/docs/box/overall/quickstart#init-command) only needs to start the app.
+
+Set a client timeout that allows for both container resume and the app readiness wait. Both examples below use 90 seconds; increase it if your environment needs more time. Some clients, including httpx, default to a shorter timeout than a cold start takes.
+
+<CodeGroup>
+```typescript box.ts
+const publicUrl = await box.getPublicURL(3000)
+
+await box.pause()
+
+// This request resumes the box and returns the app's response
+const response = await fetch(publicUrl.url, { signal: AbortSignal.timeout(90_000) })
+console.log(response.status) // 200, or 503 if the app is still starting
+```
+
+```python box.py
+import httpx
+
+public_url = box.get_public_url(3000)
+
+box.pause()
+
+# This request resumes the box and returns the app's response.
+# httpx defaults to a 5 second timeout, which a cold start can outlast.
+response = httpx.get(public_url.url, timeout=90.0)
+print(response.status_code)  # 200, or 503 if the app is still starting
+```
+</CodeGroup>
+
+For the app to answer on its own after a resume, the box needs to start its server again. An [init command](/docs/box/overall/quickstart#init-command) does that: the box runs it once every time the container starts, including after a resume.
 
 ### Auto-Resume
 
@@ -11903,8 +12347,32 @@ box = Box.create(runtime="node")
 Your box is ready to use! You can already use it as a standalone, secure, isolated sandbox with full shell access, git, and filesystem operations.
 
 <Tip>
-  You can also create a keep-alive box by setting `keepAlive: true`. Keep-alive boxes stay on between sessions and can run an `initCommand` at startup. See [Keep Alive](/docs/box/overall/keep-alive).
+  You can also create a keep-alive box by setting `keepAlive: true`. Keep-alive boxes stay on between sessions instead of auto-pausing. See [Keep Alive](/docs/box/overall/keep-alive).
 </Tip>
+
+#### Init command
+
+Pass `initCommand` to run a startup script each time the box starts. It runs once per container start, on create, on resume, and after a snapshot restore, so it is the place to start a server that should come back with the box.
+
+<CodeGroup>
+```typescript box.ts
+const box = await Box.create({
+  runtime: "node",
+  initCommand: `node -e 'require("http").createServer((_, res) => res.end("Hello from Box!")).listen(3000)'`,
+})
+```
+
+```python box.py
+box = Box.create(
+    runtime="node",
+    init_command="""node -e 'require("http").createServer((_, res) => res.end("Hello from Box!")).listen(3000)'""",
+)
+```
+</CodeGroup>
+
+This example uses Node.js's built-in HTTP server, so it works in a fresh box without installing packages. The command runs from `/workspace/home`. For an existing app, prepare its project files and dependencies before setting its startup command.
+
+You can read, change, or remove the command later with `getInitCommand`, `setInitCommand`, and `deleteInitCommand` (`get_init_command`, `set_init_command`, `delete_init_command` in Python), on any box including a paused one. A box restored from a snapshot does not inherit the snapshot's init command, so pass it again on the restore.
 
 ***
 
@@ -15221,10 +15689,21 @@ import { Hero, PromptToolIcons, SectionHead, ProductGrid, UtilityGrid, Community
 
 <div className="u-wrap">
   <Hero>
+    <div className="u-command">
+      <span className="u-command__text"><span className="u-command__dollar">$</span> npx upstash</span>
+      <div className="u-command__copy">
+
+```bash
+npx upstash
+```
+
+      </div>
+      <a className="u-command__link" href="/agent-resources/overview">Agent Setup</a>
+    </div>
     <div className="u-prompt-action">
       <PromptToolIcons />
       <Prompt actions={["copy"]}>
-        Set up Upstash in my coding agent using the official Upstash instructions, and run the commands yourself instead of asking me to. If you are Claude Code, install the Upstash plugin — it bundles the Upstash skills (https://upstash.com/docs/agent-resources/skills) and the remote MCP server over OAuth — by running `claude plugin marketplace add upstash/skills` then `claude plugin install upstash@upstash`, and tell me to run `/reload-plugins`. If you are OpenAI Codex, install the same plugin with `codex plugin marketplace add upstash/skills` then `codex plugin add upstash@upstash`. For any other agent, install the skills with `npx -y skills add upstash/skills --global`, then add the remote MCP server https://mcp.upstash.com/mcp to your MCP config (it authenticates over OAuth on first use); see https://upstash.com/docs/agent-resources/clients for the exact location. When done, verify the skills and MCP server are installed and tell me whether a restart is needed.
+        Set up Upstash in my coding agent using the official Upstash instructions, and run the commands yourself instead of asking me to. Run `npx -y upstash setup --yes` with the flag for the agent you are (`--claude`, `--codex`, `--cursor`, `--gemini`, `--vscode`, `--copilot` or `--opencode`). It installs the Upstash plugin where your agent supports plugins, and otherwise adds the remote MCP server https://mcp.upstash.com/mcp plus the Upstash skills (https://upstash.com/docs/agent-resources/skills); the MCP server authenticates over OAuth on first use. If you are not one of those agents, install the skills with `npx -y skills add upstash/skills --global` and add the remote MCP server to your MCP config; see https://upstash.com/docs/agent-resources/clients for the exact location. When done, tell me what was installed and whether I need to restart or reload (in Claude Code, `/reload-plugins`).
       </Prompt>
     </div>
   </Hero>
@@ -15381,7 +15860,7 @@ Publish a message to the specified destination
 Source: https://upstash.com/docs/qstash/api-reference/messages/retry-a-message-now
 
 /qstash/openapi.yaml post /v2/messages/{messageId}/retry
-Deliver a message that is waiting for its next retry immediately
+Deliver a delayed message, or a message waiting for its next retry, immediately
 
 # Delete a queue
 Source: https://upstash.com/docs/qstash/api-reference/queues/delete-a-queue
@@ -18620,6 +19099,37 @@ The button is also available when hovering a row in the logs table. It only
 appears while the message is genuinely waiting: not while a delivery is in
 progress, not for queued messages, and not after a cancel was requested.
 
+## From the TypeScript SDK
+
+Use `client.messages.runNow` with the message ID:
+
+```typescript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+await client.messages.runNow("<MESSAGE_ID>");
+```
+
+If the message is not waiting anymore, for example because it is already being
+delivered or has finished, `runNow` throws a `QstashError` with status `404`:
+
+```typescript
+import { Client, QstashError } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+try {
+  await client.messages.runNow("<MESSAGE_ID>");
+} catch (error) {
+  if (error instanceof QstashError && error.status === 404) {
+    // the message is no longer waiting, nothing to release
+  } else {
+    throw error;
+  }
+}
+```
+
 ## From the API
 
 The console calls the [retry a message now](/docs/qstash/api-reference/messages/retry-a-message-now)
@@ -21507,6 +22017,20 @@ const client = new Client({
   enableTelemetry: false,
 });
 ```
+
+# MCP Events with QStash
+Source: https://upstash.com/docs/qstash/sdks/ts/mcp-events
+
+<Card title="MCP Events" icon="bell" href="/redis/sdks/agentkit/mcp-events" horizontal>
+  MCP Events for your server: subscriptions in Upstash Redis, signed webhook deliveries retried by QStash.
+</Card>
+
+# Long-Running MCP Tools with QStash
+Source: https://upstash.com/docs/qstash/sdks/ts/mcp-tasks
+
+<Card title="MCP Tasks" icon="list-check" href="/redis/sdks/agentkit/mcp-tasks" horizontal>
+  Durable long-running MCP tools on QStash or Upstash Workflow, with the task record in Upstash Redis.
+</Card>
 
 # Overview
 Source: https://upstash.com/docs/qstash/sdks/ts/overview
@@ -82052,6 +82576,7 @@ Prod Pack includes comprehensive monitoring:
 * Prometheus integration
 * Datadog integration
 * Extended console metrics (up to one month)
+* [Insights](/docs/redis/howto/insights): request routing, latency, limits, Lua and keyspace analysis
 
 ## High Availability & Backup
 
@@ -82714,6 +83239,98 @@ Once the export completes, you'll see a `Download` button in the backups table:
   Not all Redis data structures are included in RDB exports. Notably, Redis Functions data will not be available in the export.
 </Info>
 
+# Insights
+Source: https://upstash.com/docs/redis/howto/insights
+
+The **Insights** tab on the database page of the [Upstash Console](https://console.upstash.com) shows what is going on inside your database. It has five views: Traffic, Performance, Limits, Lua and Keyspace.
+
+<Note>
+  Insights is a [Prod Pack](/docs/redis/overall/enterprise#prod-pack-features) feature, also included in Enterprise plans. Databases without Prod Pack see the tab with sample data, so you can explore it before you enable Prod Pack. Insights is not available for databases created through Fly.io, Heroku or DigitalOcean.
+</Note>
+
+Every view except Keyspace has a period picker in its top-right corner. You can look at the past hour, 3 hours, 12 hours, day, 3 days, week or month.
+
+## Traffic
+
+### Request routing
+
+Upstash serves requests from the region closest to the client. This section shows where each request entered and which region of your database answered it.
+
+  <img alt="Request routing in the Traffic view of the Insights tab" width="100%" />
+
+* **Requests**: total requests in the period, how many were served in the region where they entered, how many were served in another region, and how many failed.
+* **Routes on the map**: each route from an entry region to the database region that served it. Dashed arrows are cross-region requests.
+* **All routes**: each route with its request count, share of requests, active and total connections, ingress and egress traffic, and errors.
+
+Cross-region requests are expected. Writes always go to the primary region, and reads go to the nearest replica. If many reads cross regions, adding a [read region](/docs/redis/features/globaldatabase) close to those clients reduces their latency.
+
+### Where clients connect from
+
+The IP ranges your requests came from, busiest first, with the cloud and region each range belongs to. Ranges are matched against the IP ranges that AWS, Google Cloud and Cloudflare publish. Serverless platforms show up as the cloud they run on, for example Vercel functions as AWS.
+
+  <img alt="The IP ranges clients connect from" width="100%" />
+
+Client addresses are shortened to their /24 range, the first three parts of the IP, so individual addresses are not stored.
+
+### Client types
+
+The SDKs, platforms and runtimes your clients use, from the telemetry headers that Upstash SDKs send. For TCP clients, the SDK is the library name they declare with `CLIENT SETINFO`.
+
+  <img alt="SDKs, platforms and runtimes of the clients" width="100%" />
+
+## Performance
+
+Charts of throughput, bandwidth, disk size and latency. Pick a replica in the top-left corner to see a single replica instead of all of them. The Simple service latency chart has its own picker for the p50, p90 and p99 percentiles.
+
+  <img alt="Throughput and bandwidth charts in the Performance view" width="100%" />
+
+| Chart | What it shows |
+| --- | --- |
+| Throughput | Commands processed per second, including each command inside a pipeline or script. Console and non-billable commands are excluded. |
+| Bandwidth | Bytes transferred between clients and the database per second, in and out combined. |
+| Disk size | Size of the data persisted on disk on a single replica. This is stored bytes, not memory in use. |
+| Simple service latency | Time from reading a request to writing its response, for requests where every command is a single-key read or write. |
+| Read service latency | The same, for requests where every command is read-only. |
+| Write service latency | The same, for requests that include at least one write. |
+| Command execution latency | Time spent executing the command itself, without parsing, lock waits, disk loads and writing the response. |
+| Replication latency | Time a write waited for replication before its response was sent. |
+| Lock wait latency | Time a command waited for its key locks. Grows with contention on hot keys. |
+| Lua execution latency | Time spent executing `EVAL`, `EVALSHA` and `FCALL`, including the commands the script runs. |
+| Expired entries | Keys removed per minute because their TTL passed. |
+| Replication lag | Updates written on the primary that have not been sent yet to the replica in each region. |
+
+## Limits
+
+How close the database is to the limits of its plan, and the requests a limit refused or delayed.
+
+  <img alt="Usage against plan limits and command rejections" width="100%" />
+
+* **Storage**, **Connections** and **Peak commands / sec**: current usage against the limit of the plan.
+* **Command rejections**: requests refused or delayed because of a limit, such as oversize requests, oversize keys, throttled writes, requests that could not reach any replica, and authentication failures. Each row shows when the rejections happened, how many there were, and when the last one was.
+
+If you keep running into a limit, see [upgrading your database](/docs/redis/howto/upgrade-database).
+
+## Lua
+
+Script counters, Lua latency, and the scripts that run most often.
+
+  <img alt="Lua script counters, latency and the most executed scripts" width="100%" />
+
+The **Scripts** table lists the ten most executed scripts of the day, with their executions, the commands they ran, failures, and their average and maximum duration and memory. It counts from the daily UTC reset, whatever period is selected. Failures include timeouts and memory limit hits.
+
+## Keyspace
+
+An analysis of what your keys hold, made from an offline scan of the latest daily backup. It does not run any command on your database.
+
+  <img alt="Keyspace summary, key types and biggest keys" width="100%" />
+
+* **Summary**: number of keys and elements, logical size, keys without a TTL, and keys that had already expired.
+* **Key types**: for each Redis data type, the number of keys, their total size, key size and element count percentiles, and the largest key.
+* **Biggest keys**: the ten largest keys, with their type, element count and remaining TTL.
+* **Expiration profile**: keys grouped by remaining TTL.
+
+The keyspace is analyzed after every daily backup, so [daily backups](/docs/redis/features/backup) must be turned on. The analysis is not available for HIPAA-compliant databases.
+
 # Use IP Allowlist
 Source: https://upstash.com/docs/redis/howto/ipallowlist
 
@@ -82874,6 +83491,8 @@ redis-cli --tls -u $UPSTASH_REDIS_CLI_URL config get notify-keyspace-events
 Source: https://upstash.com/docs/redis/howto/metrics-and-charts
 
 The Upstash Console exposes metrics in two places: the database list, and the detail page of a single database. This page explains what each chart shows.
+
+Databases with [Prod Pack](/docs/redis/overall/enterprise#prod-pack-features) also have an [Insights](/docs/redis/howto/insights) tab, with request routing, latency, limits and keyspace details.
 
 ## Database List
 
@@ -84415,7 +85034,7 @@ Every account starts with a free database. No credit card required.
 | Limit              | Free            |
 | ------------------ | --------------- |
 | Price              | **$0 / month**  |
-| Data size          | 256 MB          |
+| Data size          | 250 MB          |
 | Monthly commands   | 500K            |
 | Monthly bandwidth  | 10 GB           |
 | Max commands / sec | 10,000          |
@@ -84454,7 +85073,7 @@ You can start on PAYG and switch to a Fixed plan later, or vice versa.
 
 | Plan   | Price / month | Data size | Bandwidth | Commands / sec | Max request | Max record |
 | ------ | ------------- | --------- | --------- | -------------- | ----------- | ---------- |
-| Free   | $0            | 256 MB    | 10 GB     | 10,000         | 10 MB       | 100 MB     |
+| Free   | $0            | 250 MB    | 10 GB     | 10,000         | 10 MB       | 100 MB     |
 | PAYG   | Per request   | 100 GB    | 200 GB*   | 10,000         | 10 MB       | 100 MB     |
 | 250 MB | $10           | 250 MB    | 50 GB     | 10,000         | 10 MB       | 100 MB     |
 | 1 GB   | $20           | 1 GB      | 100 GB    | 10,000         | 10 MB       | 200 MB     |
@@ -84494,6 +85113,10 @@ support larger data sizes and custom limits — [contact us](/docs/common/help/s
 
 # Changelog
 Source: https://upstash.com/docs/redis/overall/changelog
+
+<Update label="October 2026">
+* Added the [Insights](/docs/redis/howto/insights) tab to the console for databases with Prod Pack: request routing between regions, client IP ranges and SDKs, latency and throughput charts, usage against plan limits, Lua script statistics and a keyspace analysis.
+</Update>
 
 <Update label="September 2026">
 * Added [Vector](/docs/redis/commands/vector/overview) feature for storing embeddings and running nearest-neighbor queries directly in Redis.
@@ -84561,7 +85184,7 @@ commands introduced in Redis 7.
 <Update label="July 2024">
 * Added REST API support for [`MONITOR`](/docs/redis/commands/server/monitor) and [`SUBSCRIBE`](/docs/redis/commands/pub-sub/subscribe)
 commands using [SSE](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events).
-See [Monitor](../features/restapi#monitor-command) and [Subscribe](../features/restapi#subscribe-command) docs.
+See [Monitor](../features/restapi#monitor-command) and [Subscribe](../features/restapi#subscribe-and-publish-commands) docs.
 * Added [`JSON.MSET`](/docs/redis/commands/json/json-mset) and [`JSON.MERGE`](/docs/redis/commands/json/json-merge) commands.
 * Introduced the `IP Allowlist` feature for enhanced security on newly created databases. By default, all IP addresses will be allowed.
 However, access can be restricted by specifying permitted IP addresses or CIDR ranges.
@@ -84829,6 +85452,10 @@ Upstash Prod Pack and Enterprise plans offer Prometheus metrics collection, enab
 ### Datadog Integration
 
 Upstash Prod Pack and Enterprise plans include integration with Datadog, allowing you to monitor your Redis databases with Datadog in addition to console metrics. Learn more about [Datadog integration](/docs/redis/howto/datadog).
+
+### Insights
+
+The Insights tab on the database page shows request routing between regions, the IP ranges and SDKs your clients use, latency and throughput charts, usage against plan limits, Lua script statistics and a keyspace analysis. Databases without Prod Pack see the tab with sample data. Learn more about [Insights](/docs/redis/howto/insights).
 
 ### More metrics on the Console
 
@@ -86926,6 +87553,1470 @@ Two complete `eve` apps live in the AgentKit repo:
     The Vercel agent framework this adapter targets.
   </Card>
 </CardGroup>
+
+# MCP Events with Redis and QStash
+Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-events
+
+Most agents only act when someone messages them. [MCP Events](https://github.com/modelcontextprotocol/experimental-ext-triggers-events)
+lets an agent wait for something instead: the host subscribes to an event on your MCP server, and
+when it happens your server POSTs a signed webhook that wakes the agent up.
+
+`@upstash/mcp-toolkit/events` implements the server side. You define events with typed payloads and
+call `emit` when something happens. The toolkit handles subscriptions, callback verification,
+signing and retries: subscriptions live in Upstash Redis, and every delivery goes through
+[QStash](/docs/qstash/overall/getstarted), which retries failed webhooks with backoff.
+
+<Note>
+  MCP Events is a draft. As of October 2026, ChatGPT is the only widely used host that subscribes to
+  it (webhook delivery, in Work chats), following [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-events).
+  Codex supports events only for OpenAI's own connectors. Claude Code, Cursor and OpenCode don't
+  subscribe yet.
+</Note>
+
+```bash
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
+```
+
+## Quickstart
+
+Four files in a Next.js app.
+
+### 1. Identify the caller
+
+Every subscription belongs to the user who subscribed. `verifyToken` turns the request's bearer token
+into the SDK's `AuthInfo`, with your user id in `extra`, and `principal` reads that id back for the
+toolkit. If you also use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), both layers share this file:
+
+```ts lib/auth.ts
+import type { AuthInfo } from "@modelcontextprotocol/server";
+
+// 1. Runs on every MCP request (wired up with withMcpAuth in step 3).
+//    Returning undefined answers 401.
+export async function verifyToken(
+  req: Request,
+  bearerToken?: string,
+): Promise<AuthInfo | undefined> {
+  if (!bearerToken) return undefined;
+  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
+  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+}
+
+// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+export function principal({ auth }: { auth?: AuthInfo }): string {
+  const userId = auth?.extra?.userId;
+  if (typeof userId !== "string") throw new Error("Not authenticated");
+  return userId;
+}
+```
+
+### 2. Define the event layer and your events
+
+```ts lib/events.ts
+import { createEventLayer } from "@upstash/mcp-toolkit/events";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
+import * as z from "zod";
+import { principal } from "./auth";
+
+export const events = createEventLayer({
+  store: new RedisSubscriptionStore(),
+  delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
+  principal,
+});
+
+export const commentCreated = events.define("comment.created", {
+  description: "A new comment was added to a document.",
+  input: z.object({ documentId: z.string().optional() }), // what a subscriber may filter on
+  payload: z.object({ documentId: z.string(), text: z.string() }),
+  // May this user see comments on this document?
+  authorize: (args, { principal }) => canRead(principal, args.documentId),
+});
+```
+
+`authorize` is required. See [Matching and authorize](#matching-and-authorize) for when it runs.
+
+### 3. Serve the MCP endpoint
+
+```ts app/api/mcp/route.ts
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import { verifyToken } from "../../../lib/auth";
+import { events } from "../../../lib/events";
+
+const handler = createMcpHandler((server) => {
+  events.register(server); // adds events/list, events/subscribe and events/unsubscribe
+});
+
+// Runs verifyToken before any request is handled; no AuthInfo means 401.
+const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+export { authHandler as GET, authHandler as POST };
+```
+
+`withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
+to `principal` on every subscribe. With [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks) too, call
+`tasks.register(server)` in the same callback.
+
+### 4. Add the delivery endpoint
+
+```ts app/api/events/route.ts
+import { events } from "../../../lib/events";
+
+export const POST = events.createDeliveryHandler();
+```
+
+QStash delivers each event here. The handler verifies the QStash signature, signs the envelope with
+the subscriber's secret and POSTs it to the host.
+
+### Emit
+
+Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
+
+```ts
+await commentCreated.emit({ documentId: "doc_123", text: "Ship it?" });
+```
+
+`emit` is typed by the `payload` schema and validates against it. Every subscription that matches
+the payload, and that `authorize` still allows for `documentId: "doc_123"`, gets a signed webhook.
+It returns `{ eventId }`.
+
+### Environment variables
+
+```bash .env
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+# Both from the QStash console. QSTASH_URL is your QStash region's URL.
+QSTASH_URL=...
+QSTASH_TOKEN=...
+# Required: the delivery endpoint refuses to run without them.
+QSTASH_CURRENT_SIGNING_KEY=...
+QSTASH_NEXT_SIGNING_KEY=...
+# Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+MCP_EVENTS_SECRET_KEY=...
+# Where QStash delivers events. Must be publicly reachable.
+APP_URL=https://your-app.vercel.app
+```
+
+## What happens on the wire
+
+1. The host calls `events/subscribe` with the event name, arguments, its callback URL and a
+   `whsec_` signing secret.
+2. For a new callback or secret, your server POSTs a signed verification challenge and requires it
+   echoed back, then stores the subscription and answers with its `id` and a `refreshBefore` time.
+3. When you `emit`, every matching subscription that `authorize` still allows gets a POST with the
+   event envelope and [Standard Webhooks](https://www.standardwebhooks.com/) headers:
+
+```json
+{
+  "eventId": "evt_7c1…",
+  "name": "comment.created",
+  "timestamp": "2026-10-07T12:05:00Z",
+  "data": { "documentId": "doc_123", "text": "Ship it?" },
+  "cursor": null
+}
+```
+
+QStash retries failed deliveries with backoff. The event id stays the same across retries, so the
+host can drop duplicates, and the signature is computed fresh on every attempt.
+
+## Matching and authorize
+
+Every `input` field must also be a `payload` field: the payload is the one place an event's values
+come from, and the same values are used to route it and to authorize it. The payload's values for the
+input fields are parsed with the `input` schema, so its transforms (`.toLowerCase()`, say) apply on
+both sides and `authorize` gets the types it declares; a payload whose values don't fit `input` makes
+`emit` throw. A subscription matches when each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
+subscribers of `{ documentId: "doc_123" }` and of `{}`.
+
+`authorize(args, caller)` runs twice:
+
+* **On every subscribe and refresh**, with the subscription's arguments and
+  `{ principal, phase: "subscribe", auth, request }`, before the callback is challenged or anything
+  is stored. A refusal is an error to the host.
+* **Before every delivery**, with the _event's_ values for the input fields and
+  `{ principal, phase: "deliver" }`. So a subscriber who filtered on nothing is still checked against
+  each event's `documentId`, and revoked access stops the events. A refusal drops that delivery; a
+  throw (your database is down, say) makes QStash retry it.
+
+The token is never stored, so the delivery-time check gets no `auth` or `request`.
+`authorize: () => true` lets every authenticated subscriber hear every matching event.
+
+<Accordion title="Deduplicating an emit">
+  Pass `{ eventId }` as the second argument to `emit`. It is sent as `webhook-id`, so the host drops a
+  second emit with the same id as a duplicate:
+
+  ```ts
+  await commentCreated.emit({ documentId, text }, { eventId: comment.id });
+  ```
+</Accordion>
+
+<Accordion title="Users and subscriptions">
+  **The host routes to its user.** Every subscription carries a callback URL and signing secret that
+  the host generated for it. ChatGPT, for example, sends a unique
+  `https://connectors.api.openai.com/webhook/mcp-events/<id>` per monitor. Posting to that URL
+  reaches the right user's agent, so your server never needs to know who the host user is. Two users
+  subscribing to the same event produce two subscriptions and two deliveries.
+
+  **Your server knows who subscribed.** `events/subscribe` arrives with the same auth as any other
+  MCP request, and `principal` turns it into the subscriber's id. `events/subscribe` and
+  `events/unsubscribe` resolve `principal` before anything else, so an unidentified caller learns
+  nothing about your events and is refused with reason `not_authenticated`. A subscription's id is a
+  hash of subscriber, callback URL, event and arguments, so a user can only refresh or remove their
+  own. A server with no users of its own passes `principal: () => "local"`.
+
+  Every recipient of an emit gets the same payload, so don't put data in it that only some matching
+  subscribers may see.
+</Accordion>
+
+## Security
+
+<Accordion title="What the layer checks for you">
+  * **The callback URL.** It must be `https` on a public host name. Refused: every IP literal,
+    `localhost`, single-label, `.local` and `.internal` names, and credentials in the URL. Redirects
+    are never followed. Before a subscription is stored, the server POSTs a signed challenge and
+    requires the host to echo it back. Every failure returns the same `-32015` error, so a subscriber
+    can't use it to probe your network (the details go to your logs). DNS is not resolved, so use
+    egress filtering in production.
+  * **The signing secret.** It must be `whsec_` followed by 24 to 64 base64 bytes, and it is stored
+    encrypted with AES-256-GCM under `MCP_EVENTS_SECRET_KEY`, which must be base64 of at least 32
+    random bytes. A refresh with the same secret skips the challenge. If you rotate the key, stored
+    subscriptions stop receiving events until the host refreshes them.
+  * **The delivery endpoint.** It verifies QStash's signature with the `QSTASH_*_SIGNING_KEY`
+    variables (or a `receiver` you pass). Without them it throws on the first request instead of
+    sending unverified deliveries. A bad signature or body gets `489` with
+    `Upstash-NonRetryable-Error: true`.
+  * **Lifetime.** A subscription lasts 7 days by default and 30 days at most.
+  * **How many.** A subscriber holds at most 8 live subscriptions across all events. Past that, a new
+    subscribe is refused with reason `subscription_limit`, before the callback is challenged;
+    refreshing an existing one still works. Each subscription is a webhook per matching emit, so this
+    bounds what one user can make your server send. Set `maxSubscriptions` to change it, or
+    `Infinity` to turn it off.
+</Accordion>
+
+<Warning>
+  `allowInsecureCallbacks: true` turns the callback URL checks off. Use it only for local
+  development, never in production.
+</Warning>
+
+<Accordion title="Host responses">
+  | Callback answers | What happens |
+  | --- | --- |
+  | `2xx` | Delivered. |
+  | `410 Gone` | The subscription is deleted. |
+  | `413`, or a redirect | The event is dropped, not retried. |
+  | Anything else, or no answer | QStash retries with backoff. |
+</Accordion>
+
+<Accordion title="What is stored in Redis">
+  **`mcp-events:sub:<id>`** is the subscription (`event`, `args`, `url`, `encryptedSecret`,
+  `subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`** and
+  **`mcp-events:by:<subscriber>`** are sorted sets of the event's and the subscriber's subscription
+  ids, scored by expiry. The second one enforces the per-subscriber limit.
+
+  An event message carries the full payload, which stays in QStash (and in its DLQ, if every retry
+  fails) until it is delivered. The toolkit never stores the caller's token, the request, the
+  plaintext webhook secret or `MCP_EVENTS_SECRET_KEY`. Anyone with write access to your Redis can
+  change a callback URL, so treat the Redis credentials like any other production secret.
+</Accordion>
+
+## Options
+
+<Accordion title="All options">
+  **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
+  unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8 per subscriber),
+  `allowInsecureCallbacks`.
+
+  **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
+  Optional: `title`, `input`.
+
+  **`RedisSubscriptionStore`**: `redis` (defaults to one from env), `prefix` (`mcp-events:`),
+  `enableTelemetry`.
+
+  **`QStashDelivery`**: `url` is required. Optional: `qstash`, `receiver`, `enableTelemetry`.
+  Deliveries are retried 3 times with QStash's backoff.
+</Accordion>
+
+<Accordion title="Custom backends and receivers">
+  `@upstash/mcp-toolkit/events` doesn't import anything from Upstash. A backend implements one of
+  these interfaces (types exported from the same entry point):
+
+  ```ts
+  interface SubscriptionStore {
+    // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+    put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
+    get(id: string): Promise<Subscription | null>;
+    count(subscriber: string): Promise<number>; // live subscriptions, across all events
+    delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
+    find(event: string): Promise<Subscription[]>; // every live subscription to the event
+  }
+
+  interface EventDelivery {
+    enqueue(jobs: DeliveryJob[]): Promise<void>;
+    createDeliveryHandler(send: SendJob): (request: Request) => Promise<Response>;
+  }
+  ```
+
+  The entry point also exports `verifyWebhook` (Standard Webhooks) for writing a receiver.
+</Accordion>
+
+Not implemented: the draft's poll and stream delivery modes (`events/subscribe` refuses them) and
+event replay (`cursor` is always `null`).
+
+## Example
+
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo)
+includes Deploy Watch, an events-only server with a `deploy.finished` event filtered by
+environment, plus a local receiver that verifies each signed delivery. We tested it end to end with
+ChatGPT monitors. It needs `MCP_EVENTS_SECRET_KEY` set, and its deploy-report route is
+unauthenticated so the demo is easy to drive; a real server must authenticate the code that emits.
+
+# MCP Events with Redis and QStash
+Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-events
+
+Most agents only act when someone messages them. [MCP Events](https://github.com/modelcontextprotocol/experimental-ext-triggers-events)
+lets an agent wait for something instead: the host subscribes to an event on your MCP server, and
+when it happens your server POSTs a signed webhook that wakes the agent up.
+
+`@upstash/mcp-toolkit/events` implements the server side. You define events with typed payloads and
+call `emit` when something happens. The toolkit handles subscriptions, callback verification,
+signing and retries: subscriptions live in Upstash Redis, and every delivery goes through
+[QStash](/docs/qstash/overall/getstarted), which retries failed webhooks with backoff.
+
+<Note>
+  MCP Events is a draft. As of October 2026, ChatGPT is the only widely used host that subscribes to
+  it (webhook delivery, in Work chats), following [OpenAI's MCP Events guide](https://developers.openai.com/plugins/build/mcp-events).
+  Codex supports events only for OpenAI's own connectors. Claude Code, Cursor and OpenCode don't
+  subscribe yet.
+</Note>
+
+```bash
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
+```
+
+## Quickstart
+
+Four files in a Next.js app.
+
+### 1. Identify the caller
+
+Every subscription belongs to the user who subscribed. `verifyToken` turns the request's bearer token
+into the SDK's `AuthInfo`, with your user id in `extra`, and `principal` reads that id back for the
+toolkit. If you also use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), both layers share this file:
+
+```ts lib/auth.ts
+import type { AuthInfo } from "@modelcontextprotocol/server";
+
+// 1. Runs on every MCP request (wired up with withMcpAuth in step 3).
+//    Returning undefined answers 401.
+export async function verifyToken(
+  req: Request,
+  bearerToken?: string,
+): Promise<AuthInfo | undefined> {
+  if (!bearerToken) return undefined;
+  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
+  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+}
+
+// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+export function principal({ auth }: { auth?: AuthInfo }): string {
+  const userId = auth?.extra?.userId;
+  if (typeof userId !== "string") throw new Error("Not authenticated");
+  return userId;
+}
+```
+
+### 2. Define the event layer and your events
+
+```ts lib/events.ts
+import { createEventLayer } from "@upstash/mcp-toolkit/events";
+import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
+import * as z from "zod";
+import { principal } from "./auth";
+
+export const events = createEventLayer({
+  store: new RedisSubscriptionStore(),
+  delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
+  principal,
+});
+
+export const commentCreated = events.define("comment.created", {
+  description: "A new comment was added to a document.",
+  input: z.object({ documentId: z.string().optional() }), // what a subscriber may filter on
+  payload: z.object({ documentId: z.string(), text: z.string() }),
+  // May this user see comments on this document?
+  authorize: (args, { principal }) => canRead(principal, args.documentId),
+});
+```
+
+`authorize` is required. See [Matching and authorize](#matching-and-authorize) for when it runs.
+
+### 3. Serve the MCP endpoint
+
+```ts app/api/mcp/route.ts
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import { verifyToken } from "../../../lib/auth";
+import { events } from "../../../lib/events";
+
+const handler = createMcpHandler((server) => {
+  events.register(server); // adds events/list, events/subscribe and events/unsubscribe
+});
+
+// Runs verifyToken before any request is handled; no AuthInfo means 401.
+const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+export { authHandler as GET, authHandler as POST };
+```
+
+`withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
+to `principal` on every subscribe. With [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks) too, call
+`tasks.register(server)` in the same callback.
+
+### 4. Add the delivery endpoint
+
+```ts app/api/events/route.ts
+import { events } from "../../../lib/events";
+
+export const POST = events.createDeliveryHandler();
+```
+
+QStash delivers each event here. The handler verifies the QStash signature, signs the envelope with
+the subscriber's secret and POSTs it to the host.
+
+### Emit
+
+Call `emit` wherever the change happens: a route, a webhook from your own app, a background job.
+
+```ts
+await commentCreated.emit({ documentId: "doc_123", text: "Ship it?" });
+```
+
+`emit` is typed by the `payload` schema and validates against it. Every subscription that matches
+the payload, and that `authorize` still allows for `documentId: "doc_123"`, gets a signed webhook.
+It returns `{ eventId }`.
+
+### Environment variables
+
+```bash .env
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+# Both from the QStash console. QSTASH_URL is your QStash region's URL.
+QSTASH_URL=...
+QSTASH_TOKEN=...
+# Required: the delivery endpoint refuses to run without them.
+QSTASH_CURRENT_SIGNING_KEY=...
+QSTASH_NEXT_SIGNING_KEY=...
+# Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+MCP_EVENTS_SECRET_KEY=...
+# Where QStash delivers events. Must be publicly reachable.
+APP_URL=https://your-app.vercel.app
+```
+
+## What happens on the wire
+
+1. The host calls `events/subscribe` with the event name, arguments, its callback URL and a
+   `whsec_` signing secret.
+2. For a new callback or secret, your server POSTs a signed verification challenge and requires it
+   echoed back, then stores the subscription and answers with its `id` and a `refreshBefore` time.
+3. When you `emit`, every matching subscription that `authorize` still allows gets a POST with the
+   event envelope and [Standard Webhooks](https://www.standardwebhooks.com/) headers:
+
+```json
+{
+  "eventId": "evt_7c1…",
+  "name": "comment.created",
+  "timestamp": "2026-10-07T12:05:00Z",
+  "data": { "documentId": "doc_123", "text": "Ship it?" },
+  "cursor": null
+}
+```
+
+QStash retries failed deliveries with backoff. The event id stays the same across retries, so the
+host can drop duplicates, and the signature is computed fresh on every attempt.
+
+## Matching and authorize
+
+Every `input` field must also be a `payload` field: the payload is the one place an event's values
+come from, and the same values are used to route it and to authorize it. The payload's values for the
+input fields are parsed with the `input` schema, so its transforms (`.toLowerCase()`, say) apply on
+both sides and `authorize` gets the types it declares; a payload whose values don't fit `input` makes
+`emit` throw. A subscription matches when each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
+subscribers of `{ documentId: "doc_123" }` and of `{}`.
+
+`authorize(args, caller)` runs twice:
+
+* **On every subscribe and refresh**, with the subscription's arguments and
+  `{ principal, phase: "subscribe", auth, request }`, before the callback is challenged or anything
+  is stored. A refusal is an error to the host.
+* **Before every delivery**, with the _event's_ values for the input fields and
+  `{ principal, phase: "deliver" }`. So a subscriber who filtered on nothing is still checked against
+  each event's `documentId`, and revoked access stops the events. A refusal drops that delivery; a
+  throw (your database is down, say) makes QStash retry it.
+
+The token is never stored, so the delivery-time check gets no `auth` or `request`.
+`authorize: () => true` lets every authenticated subscriber hear every matching event.
+
+<Accordion title="Deduplicating an emit">
+  Pass `{ eventId }` as the second argument to `emit`. It is sent as `webhook-id`, so the host drops a
+  second emit with the same id as a duplicate:
+
+  ```ts
+  await commentCreated.emit({ documentId, text }, { eventId: comment.id });
+  ```
+</Accordion>
+
+<Accordion title="Users and subscriptions">
+  **The host routes to its user.** Every subscription carries a callback URL and signing secret that
+  the host generated for it. ChatGPT, for example, sends a unique
+  `https://connectors.api.openai.com/webhook/mcp-events/<id>` per monitor. Posting to that URL
+  reaches the right user's agent, so your server never needs to know who the host user is. Two users
+  subscribing to the same event produce two subscriptions and two deliveries.
+
+  **Your server knows who subscribed.** `events/subscribe` arrives with the same auth as any other
+  MCP request, and `principal` turns it into the subscriber's id. `events/subscribe` and
+  `events/unsubscribe` resolve `principal` before anything else, so an unidentified caller learns
+  nothing about your events and is refused with reason `not_authenticated`. A subscription's id is a
+  hash of subscriber, callback URL, event and arguments, so a user can only refresh or remove their
+  own. A server with no users of its own passes `principal: () => "local"`.
+
+  Every recipient of an emit gets the same payload, so don't put data in it that only some matching
+  subscribers may see.
+</Accordion>
+
+## Security
+
+<Accordion title="What the layer checks for you">
+  * **The callback URL.** It must be `https` on a public host name. Refused: every IP literal,
+    `localhost`, single-label, `.local` and `.internal` names, and credentials in the URL. Redirects
+    are never followed. Before a subscription is stored, the server POSTs a signed challenge and
+    requires the host to echo it back. Every failure returns the same `-32015` error, so a subscriber
+    can't use it to probe your network (the details go to your logs). DNS is not resolved, so use
+    egress filtering in production.
+  * **The signing secret.** It must be `whsec_` followed by 24 to 64 base64 bytes, and it is stored
+    encrypted with AES-256-GCM under `MCP_EVENTS_SECRET_KEY`, which must be base64 of at least 32
+    random bytes. A refresh with the same secret skips the challenge. If you rotate the key, stored
+    subscriptions stop receiving events until the host refreshes them.
+  * **The delivery endpoint.** It verifies QStash's signature with the `QSTASH_*_SIGNING_KEY`
+    variables (or a `receiver` you pass). Without them it throws on the first request instead of
+    sending unverified deliveries. A bad signature or body gets `489` with
+    `Upstash-NonRetryable-Error: true`.
+  * **Lifetime.** A subscription lasts 7 days by default and 30 days at most.
+  * **How many.** A subscriber holds at most 8 live subscriptions across all events. Past that, a new
+    subscribe is refused with reason `subscription_limit`, before the callback is challenged;
+    refreshing an existing one still works. Each subscription is a webhook per matching emit, so this
+    bounds what one user can make your server send. Set `maxSubscriptions` to change it, or
+    `Infinity` to turn it off.
+</Accordion>
+
+<Warning>
+  `allowInsecureCallbacks: true` turns the callback URL checks off. Use it only for local
+  development, never in production.
+</Warning>
+
+<Accordion title="Host responses">
+  | Callback answers | What happens |
+  | --- | --- |
+  | `2xx` | Delivered. |
+  | `410 Gone` | The subscription is deleted. |
+  | `413`, or a redirect | The event is dropped, not retried. |
+  | Anything else, or no answer | QStash retries with backoff. |
+</Accordion>
+
+<Accordion title="What is stored in Redis">
+  **`mcp-events:sub:<id>`** is the subscription (`event`, `args`, `url`, `encryptedSecret`,
+  `subscriber`, `createdAt`, `expiresAt`), expiring with it. **`mcp-events:idx:<event>`** and
+  **`mcp-events:by:<subscriber>`** are sorted sets of the event's and the subscriber's subscription
+  ids, scored by expiry. The second one enforces the per-subscriber limit.
+
+  An event message carries the full payload, which stays in QStash (and in its DLQ, if every retry
+  fails) until it is delivered. The toolkit never stores the caller's token, the request, the
+  plaintext webhook secret or `MCP_EVENTS_SECRET_KEY`. Anyone with write access to your Redis can
+  change a callback URL, so treat the Redis credentials like any other production secret.
+</Accordion>
+
+## Options
+
+<Accordion title="All options">
+  **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
+  unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8 per subscriber),
+  `allowInsecureCallbacks`.
+
+  **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
+  Optional: `title`, `input`.
+
+  **`RedisSubscriptionStore`**: `redis` (defaults to one from env), `prefix` (`mcp-events:`),
+  `enableTelemetry`.
+
+  **`QStashDelivery`**: `url` is required. Optional: `qstash`, `receiver`, `enableTelemetry`.
+  Deliveries are retried 3 times with QStash's backoff.
+</Accordion>
+
+<Accordion title="Custom backends and receivers">
+  `@upstash/mcp-toolkit/events` doesn't import anything from Upstash. A backend implements one of
+  these interfaces (types exported from the same entry point):
+
+  ```ts
+  interface SubscriptionStore {
+    // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+    put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
+    get(id: string): Promise<Subscription | null>;
+    count(subscriber: string): Promise<number>; // live subscriptions, across all events
+    delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
+    find(event: string): Promise<Subscription[]>; // every live subscription to the event
+  }
+
+  interface EventDelivery {
+    enqueue(jobs: DeliveryJob[]): Promise<void>;
+    createDeliveryHandler(send: SendJob): (request: Request) => Promise<Response>;
+  }
+  ```
+
+  The entry point also exports `verifyWebhook` (Standard Webhooks) for writing a receiver.
+</Accordion>
+
+Not implemented: the draft's poll and stream delivery modes (`events/subscribe` refuses them) and
+event replay (`cursor` is always `null`).
+
+## Example
+
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo)
+includes Deploy Watch, an events-only server with a `deploy.finished` event filtered by
+environment, plus a local receiver that verifies each signed delivery. We tested it end to end with
+ChatGPT monitors. It needs `MCP_EVENTS_SECRET_KEY` set, and its deploy-report route is
+unauthenticated so the demo is easy to drive; a real server must authenticate the code that emits.
+
+# Long-Running MCP Tools with Redis and QStash
+Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-tasks
+
+An MCP tool call is a request that waits for its response. When the work takes minutes, something
+gives up first: the client's tool timeout, your serverless function's limit, or the model.
+
+`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task
+id, the work runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted)
+so it survives restarts and the client's tool timeout, and the task record lives in Upstash Redis.
+The model checks on it with a shared `task_status` tool and can stop it with `task_cancel`.
+
+These are ordinary MCP tools, so they work in every client today: Claude Code, Codex, Cursor,
+OpenCode and ChatGPT. No client capability is required. The toolkit sits on top of the official MCP
+TypeScript SDK and uses WebCrypto only, so it runs on Node and edge runtimes.
+
+```bash
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
+```
+
+## Quickstart
+
+Four files in a Next.js app.
+
+### 1. Identify the caller
+
+Every task belongs to the user who started it. Two functions, kept in one file so the path is easy
+to follow:
+
+* `verifyToken` runs on every MCP request. It verifies the bearer token and returns the SDK's
+  `AuthInfo`, with your user id in `extra`. Step 3 wires it up with `withMcpAuth`.
+* `principal` is what the toolkit calls. It gets that `AuthInfo` and returns the user id, or throws.
+
+```ts lib/auth.ts
+import type { AuthInfo } from "@modelcontextprotocol/server";
+
+// 1. Runs on every MCP request. Returning undefined answers 401.
+export async function verifyToken(
+  req: Request,
+  bearerToken?: string,
+): Promise<AuthInfo | undefined> {
+  if (!bearerToken) return undefined;
+  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
+  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+}
+
+// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+export function principal({ auth }: { auth?: AuthInfo }): string {
+  const userId = auth?.extra?.userId;
+  if (typeof userId !== "string") throw new Error("Not authenticated");
+  return userId;
+}
+```
+
+### 2. Define the task layer and the task
+
+```ts lib/tasks.ts
+import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
+import * as z from "zod";
+import { principal } from "./auth";
+
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal,
+});
+
+// Define at module scope, so the /api/execute instance knows the handler too.
+tasks.define(
+  "generate_report",
+  { description: "Generates a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
+  async ({ topic }, task) => {
+    await task.update("Reading sources"); // the model sees this when it polls
+    return { content: [{ type: "text", text: await writeReport(topic) }] };
+  },
+);
+```
+
+The handler runs later, in `/api/execute`, when QStash delivers the task, not inside the tool call.
+`topic` is typed from `inputSchema`: Zod, Valibot and ArkType schemas all work.
+
+### 3. Serve the MCP endpoint
+
+```ts app/api/mcp/route.ts
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import { verifyToken } from "../../../lib/auth";
+import { tasks } from "../../../lib/tasks";
+
+const handler = createMcpHandler((server) => {
+  tasks.register(server); // adds generate_report, task_status and task_cancel
+});
+
+// Runs verifyToken before any tool sees the request; no AuthInfo means 401.
+const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+export { authHandler as GET, authHandler as POST };
+```
+
+`withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
+to `principal`. The task layer only registers tools, so nothing else changes in your route.
+
+### 4. Add the execute endpoint
+
+```ts app/api/execute/route.ts
+import { tasks } from "../../../lib/tasks";
+
+export const POST = tasks.createExecuteHandler();
+```
+
+This is where QStash delivers each task. The handler verifies the QStash signature, runs the task's
+handler and stores the result.
+
+### Environment variables
+
+```bash .env
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+# Both from the QStash console. QSTASH_URL is your QStash region's URL.
+QSTASH_URL=...
+QSTASH_TOKEN=...
+# Required: the execute endpoint refuses to run without them.
+QSTASH_CURRENT_SIGNING_KEY=...
+QSTASH_NEXT_SIGNING_KEY=...
+# Where QStash delivers tasks. Must be publicly reachable.
+APP_URL=https://your-app.vercel.app
+```
+
+<Note>
+  For local development, run the [QStash dev server](/docs/qstash/howto/local-development) with
+  `npx @upstash/qstash-cli dev`, set `QSTASH_URL=http://127.0.0.1:8080` and the credentials it prints,
+  and use `APP_URL=http://127.0.0.1:3000`.
+</Note>
+
+## What the model sees
+
+`tools/list` now has `generate_report` (starts the task and returns its id), `task_status` (shows
+progress, then the handler's result) and `task_cancel`.
+
+<Accordion title="Example responses">
+  ```jsonc
+  // generate_report: a handle, right away
+  { "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
+    "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 86400000, "pollIntervalMs": 2000 } }
+
+  // task_status: progress…
+  { "content": [{ "type": "text", "text": "Task 0e30… is working: Reading sources. Check again in about 2s." }],
+    "structuredContent": { "taskId": "0e30…", "status": "working", "statusMessage": "Reading sources" } }
+
+  // …then the handler's own content, as if the tool had run synchronously
+  { "content": [{ "type": "text", "text": "Task 0e30… is completed: Completed" },
+                { "type": "text", "text": "Report on coffee" }],
+    "structuredContent": { "taskId": "0e30…", "status": "completed", "result": { "content": [ … ] } } }
+  ```
+
+  The states are `working`, `completed`, `failed` and `cancelled`; the last three are final. The
+  task object has the same shape as the one in the MCP Tasks extension.
+
+  If the model stops polling, nothing is lost: the work finishes anyway, and the result can be read
+  until the task expires (1 day by default; set `defaults: { ttlMs }` on the layer).
+</Accordion>
+
+## Cancellation
+
+`task_cancel` marks the task `cancelled` and stops any pending delivery. Cancelling is cooperative,
+so running code only stops where it checks `task.isCancelled()`:
+
+```ts
+async ({ sources }, task) => {
+  for (const source of sources) {
+    if (await task.isCancelled()) return {};
+    await task.update(`Reading ${source}`);
+    await read(source);
+  }
+  return { content: [{ type: "text", text: "Done" }] };
+};
+```
+
+`isCancelled()` also returns `true` once the task has expired.
+
+<Warning>
+  Arguments are validated when the tool is called, then stored as JSON and handed to the handler
+  later. Values that don't survive JSON, such as a `Date` produced by `z.coerce.date()`, arrive as
+  strings. Keep task schemas to plain values, or parse them again inside the handler.
+</Warning>
+
+## Users
+
+Each task records who started it, and `task_status` / `task_cancel` only answer for that caller.
+Another user's task id reads exactly like an unknown one, so nobody can tell it exists.
+
+### Check what the arguments point at
+
+Owning the task is not the same as being allowed to touch what it works on. The model fills in the
+tool arguments, so a `workspaceId` in them is whatever it was told. If Alice starts a task with Bob's
+`workspaceId`, the task is hers, she can read its result, and the handler acted on Bob's workspace.
+
+Give the task an `authorize`, which runs when the tool is called, before anything is stored or
+queued, and use `task.principal` (the user who started the task) inside the handler. Never take a
+user id from the arguments:
+
+```ts lib/tasks.ts
+tasks.define(
+  "export_workspace",
+  {
+    description: "Exports a workspace to CSV.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    // May this user export this workspace? `false` refuses the call.
+    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+  },
+  async ({ workspaceId }, task) => {
+    const csv = await exportWorkspace(workspaceId, { as: task.principal });
+    return { content: [{ type: "text", text: csv }] };
+  },
+);
+```
+
+`authorize(args, { principal, auth, request })` gets the validated arguments, the caller's id and the
+same `auth` and `request` as `principal`. It is the only place a task sees the caller's token: the
+handler runs later, in a delivery request that carries no user auth, so `task.principal` is how it
+knows who it is working for.
+
+### Where principal comes from
+
+`principal` receives `{ auth, request }` and may be async. `auth` is exactly what `verifyToken`
+returned in [step 1](#1-identify-the-caller): `withMcpAuth` runs it, and the toolkit hands the result
+to `principal`. Nothing is read from request headers on its own. Without `mcp-handler`, pass the
+`AuthInfo` yourself with the SDK's `createMcpHandler`: `handler.fetch(request, { authInfo })`.
+
+<Accordion title="More on principal">
+  * **A throw refuses the call.** There is no anonymous mode: if `principal` throws, rejects, or
+    returns anything but a non-empty string, the tool call is refused as not authenticated.
+  * **Use the user id, not `auth.clientId`.** The client id identifies the OAuth app, and every
+    ChatGPT user shares the same one.
+  * `principal` also receives `request`, for cookie or session apps. It is unverified, so check the
+    session yourself, and never trust a header like `x-user-id`:
+
+    ```ts
+    import type { Caller } from "@upstash/mcp-toolkit/tasks";
+
+    export async function principal({ request }: Caller): Promise<string> {
+      const session = await getSession(request);
+      if (!session) throw new Error("Not authenticated");
+      return session.userId;
+    }
+    ```
+
+  * A server with no users of its own passes `principal: () => "local"`.
+</Accordion>
+
+## Work longer than one function invocation
+
+With `QStashDispatcher`, the whole handler runs in one serverless invocation. If it goes past your
+platform's time limit, it is killed, and the retry starts the handler from the beginning.
+
+`WorkflowDispatcher` runs each step in its own invocation and replays finished steps from a journal,
+so a task has no overall time limit. Only the dispatcher changes; the routes stay the same. The
+handler's `task` then also has `run`, `sleep` and `call`, inferred from the dispatcher:
+
+```ts lib/tasks.ts
+import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
+
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal,
+});
+
+tasks.define(
+  "migrate_workspace",
+  {
+    description: "Copies a workspace to new storage.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+  },
+  async ({ workspaceId }, task) => {
+    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
+    for (const [i, batch] of batches.entries()) {
+      if (await task.isCancelled()) return {};
+      await task.update(`Copying batch ${i + 1}/${batches.length}`);
+      await task.run(`copy-${i}`, () => copyBatch(batch));
+    }
+    return { content: [{ type: "text", text: "Done" }] };
+  },
+);
+```
+
+<Accordion title="Rules for Workflow handlers">
+  The handler runs again from the top on every step, and finished steps are replayed from the
+  journal:
+
+  * Put the work inside `task.run`. That makes it run once and survive a crash.
+  * `task.update(...)` does not need wrapping.
+  * Keep `task.isCancelled()` outside steps. It has to run again each time, or a later cancel is
+    never seen.
+  * Don't nest `task.run` calls.
+  * Each step must still fit within your function's time limit.
+
+  The task's TTL starts when the task is created and is never extended. When it runs out, the record
+  is deleted and `isCancelled()` returns true. The default is 1 day; set `ttlMs` higher for work that can take longer.
+
+  | | `QStashDispatcher` | `WorkflowDispatcher` |
+  | --- | --- | --- |
+  | Survives the process dying | yes (QStash redelivers) | yes (replayed from the journal) |
+  | Can run longer than one invocation | no | yes, one invocation per step |
+  | On a retry | the whole task starts over | only the failed step runs again |
+  | Cancel stops a running task | at its next `isCancelled` | the run itself is cancelled |
+</Accordion>
+
+## Retries and failures
+
+<Accordion title="How deliveries are verified and retried">
+  * The execute route answers **200** when the task ran (or had already finished), **500** when your
+    handler threw, so QStash tries again, and **489** with `Upstash-NonRetryable-Error: true` when the
+    signature or body is bad.
+  * Every delivery's QStash signature is checked against the URL you gave the dispatcher, not
+    `request.url`, so it works behind a proxy and a signature issued for another endpoint is refused.
+    This holds for `WorkflowDispatcher` too. Without signing keys (or a `receiver` you pass), the
+    route throws on its first request instead of running anything unverified.
+  * When your handler throws, the task is not marked failed. Only the dispatcher marks it `failed`,
+    and only after QStash has stopped retrying. The failed message stays in the QStash DLQ.
+  * When your handler *returns* a tool error (`isError: true`), the task is `failed` at once, with no
+    retry, and `task_status` returns your content with `isError`, as the synchronous tool would.
+  * The model only sees a failure's `error.code` and `error.message`. The transport's details
+    (`error.data`: the QStash DLQ id, the Workflow run id) stay in Redis for you. What your handler
+    threw and a dispatch error are logged, never stored or returned.
+  * By default QStash tries 5 times with backoff `min(pow(3, retried) * 1000, 300000)`, about two
+    minutes in total, so a task survives a server restart. The free tier and the local dev server
+    allow at most 5 retries.
+</Accordion>
+
+## Security and storage
+
+<Accordion title="Who can see what">
+  The server sets a task's owner from `principal`, and no tool argument can set it. Whether a caller
+  may start a task with given arguments is your `authorize`; the handler gets the owner as
+  `task.principal`. `task_status` and
+  `task_cancel` only accept UUID task ids, and compare the stored owner with the caller. Task ids are
+  random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash deliveries and
+  never returns a task.
+
+  Anyone with write access to your Redis can change an owner, so treat the Redis credentials like any
+  other production secret.
+</Accordion>
+
+<Accordion title="What is stored in Redis">
+  **`mcp:task:<taskId>`** is a hash with one JSON-encoded field per property: `taskId`, `name`,
+  `args`, `owner`, `status`, `statusMessage`, `result` / `error`, `createdAt`, `lastUpdatedAt`,
+  `ttlMs`, `pollIntervalMs`.
+
+  * `args` and `result` are **plain JSON**. Keep secrets out of tool arguments and results, or use a
+    short `ttlMs`.
+  * The task is written with its TTL before the tool replies, because the model's next poll may reach
+    another instance. The TTL counts from creation and is never extended.
+  * Status changes go through one guarded Lua script, and the first final status wins, so a completion
+    can't overwrite a cancel. Each property is its own field, so a progress update and a cancel never
+    overwrite each other.
+  * A Redis client built with `automaticDeserialization: false` is not supported.
+
+  A task message in QStash carries only `{ taskId }`. The toolkit never stores the caller's token or
+  the request.
+</Accordion>
+
+## Options
+
+<Accordion title="All options">
+  **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
+  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
+
+  **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
+  `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
+
+  **`RedisTaskStore`**: `redis` (defaults to one from env), `prefix` (`mcp:task:`), `enableTelemetry`.
+
+  **`QStashDispatcher`**: `url` is required. Optional: `qstash`, `receiver`, `retries` (5),
+  `retryDelay`, `enableTelemetry`.
+
+  **`WorkflowDispatcher`**: `url` is required. Optional: `client`, `qstash`, `receiver`, `retries`,
+  `enableTelemetry`.
+
+  `receiver` defaults to one built from the `QSTASH_*_SIGNING_KEY` variables. The Redis and QStash
+  clients get `@upstash/mcp-toolkit@<version>` added to their `Upstash-Telemetry-Sdk` header; turn it
+  off with `enableTelemetry: false` or `UPSTASH_DISABLE_TELEMETRY`.
+</Accordion>
+
+<Accordion title="Custom backends">
+  `@upstash/mcp-toolkit/tasks` doesn't import anything from Upstash. A backend implements one of these
+  interfaces (types exported from the same entry point):
+
+  ```ts
+  interface TaskStore {
+    create(task: Task): Promise<void>; // with its TTL
+    get(taskId: string): Promise<Task | null>;
+    update(taskId: string, patch: TaskPatch): Promise<void>; // ignored once the task is final
+    settle(taskId: string, patch: TaskPatch & { status: TerminalTaskStatus }): Promise<Task | null>; // first final status wins
+  }
+
+  interface TaskDispatcher<TContext = unknown> {
+    dispatch(task: Task): Promise<void>; // called once per task
+    cancel(taskId: string): Promise<void>;
+    createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
+  }
+  ```
+</Accordion>
+
+## Why tools, not the Tasks extension?
+
+The 2026-07-28 MCP specification defines a [Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)
+where the *client* polls, so the model spends no turns waiting. But a server may only return a task
+to a client that declared the extension, and as of October 2026 Claude Code, Codex, Cursor and
+OpenCode don't. Plain tools cost the model a few polling calls but work everywhere today.
+
+The store and dispatcher don't depend on the tools, so an adapter for the extension can serve the
+same records once clients support it. Also not implemented yet: `input_required` (a handler asking
+the user something partway through a task) and listing tasks.
+
+## Example
+
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo) is a
+Next.js app that runs the same tool on QStash and on Workflow, with a live log of every MCP request.
+
+# Long-Running MCP Tools with Redis and QStash
+Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-tasks
+
+An MCP tool call is a request that waits for its response. When the work takes minutes, something
+gives up first: the client's tool timeout, your serverless function's limit, or the model.
+
+`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task
+id, the work runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted)
+so it survives restarts and the client's tool timeout, and the task record lives in Upstash Redis.
+The model checks on it with a shared `task_status` tool and can stop it with `task_cancel`.
+
+These are ordinary MCP tools, so they work in every client today: Claude Code, Codex, Cursor,
+OpenCode and ChatGPT. No client capability is required. The toolkit sits on top of the official MCP
+TypeScript SDK and uses WebCrypto only, so it runs on Node and edge runtimes.
+
+```bash
+npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
+```
+
+## Quickstart
+
+Four files in a Next.js app.
+
+### 1. Identify the caller
+
+Every task belongs to the user who started it. Two functions, kept in one file so the path is easy
+to follow:
+
+* `verifyToken` runs on every MCP request. It verifies the bearer token and returns the SDK's
+  `AuthInfo`, with your user id in `extra`. Step 3 wires it up with `withMcpAuth`.
+* `principal` is what the toolkit calls. It gets that `AuthInfo` and returns the user id, or throws.
+
+```ts lib/auth.ts
+import type { AuthInfo } from "@modelcontextprotocol/server";
+
+// 1. Runs on every MCP request. Returning undefined answers 401.
+export async function verifyToken(
+  req: Request,
+  bearerToken?: string,
+): Promise<AuthInfo | undefined> {
+  if (!bearerToken) return undefined;
+  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
+  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+}
+
+// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+export function principal({ auth }: { auth?: AuthInfo }): string {
+  const userId = auth?.extra?.userId;
+  if (typeof userId !== "string") throw new Error("Not authenticated");
+  return userId;
+}
+```
+
+### 2. Define the task layer and the task
+
+```ts lib/tasks.ts
+import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
+import * as z from "zod";
+import { principal } from "./auth";
+
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal,
+});
+
+// Define at module scope, so the /api/execute instance knows the handler too.
+tasks.define(
+  "generate_report",
+  { description: "Generates a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
+  async ({ topic }, task) => {
+    await task.update("Reading sources"); // the model sees this when it polls
+    return { content: [{ type: "text", text: await writeReport(topic) }] };
+  },
+);
+```
+
+The handler runs later, in `/api/execute`, when QStash delivers the task, not inside the tool call.
+`topic` is typed from `inputSchema`: Zod, Valibot and ArkType schemas all work.
+
+### 3. Serve the MCP endpoint
+
+```ts app/api/mcp/route.ts
+import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import { verifyToken } from "../../../lib/auth";
+import { tasks } from "../../../lib/tasks";
+
+const handler = createMcpHandler((server) => {
+  tasks.register(server); // adds generate_report, task_status and task_cancel
+});
+
+// Runs verifyToken before any tool sees the request; no AuthInfo means 401.
+const authHandler = withMcpAuth(handler, verifyToken, { required: true });
+export { authHandler as GET, authHandler as POST };
+```
+
+`withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
+to `principal`. The task layer only registers tools, so nothing else changes in your route.
+
+### 4. Add the execute endpoint
+
+```ts app/api/execute/route.ts
+import { tasks } from "../../../lib/tasks";
+
+export const POST = tasks.createExecuteHandler();
+```
+
+This is where QStash delivers each task. The handler verifies the QStash signature, runs the task's
+handler and stores the result.
+
+### Environment variables
+
+```bash .env
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+# Both from the QStash console. QSTASH_URL is your QStash region's URL.
+QSTASH_URL=...
+QSTASH_TOKEN=...
+# Required: the execute endpoint refuses to run without them.
+QSTASH_CURRENT_SIGNING_KEY=...
+QSTASH_NEXT_SIGNING_KEY=...
+# Where QStash delivers tasks. Must be publicly reachable.
+APP_URL=https://your-app.vercel.app
+```
+
+<Note>
+  For local development, run the [QStash dev server](/docs/qstash/howto/local-development) with
+  `npx @upstash/qstash-cli dev`, set `QSTASH_URL=http://127.0.0.1:8080` and the credentials it prints,
+  and use `APP_URL=http://127.0.0.1:3000`.
+</Note>
+
+## What the model sees
+
+`tools/list` now has `generate_report` (starts the task and returns its id), `task_status` (shows
+progress, then the handler's result) and `task_cancel`.
+
+<Accordion title="Example responses">
+  ```jsonc
+  // generate_report: a handle, right away
+  { "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
+    "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 86400000, "pollIntervalMs": 2000 } }
+
+  // task_status: progress…
+  { "content": [{ "type": "text", "text": "Task 0e30… is working: Reading sources. Check again in about 2s." }],
+    "structuredContent": { "taskId": "0e30…", "status": "working", "statusMessage": "Reading sources" } }
+
+  // …then the handler's own content, as if the tool had run synchronously
+  { "content": [{ "type": "text", "text": "Task 0e30… is completed: Completed" },
+                { "type": "text", "text": "Report on coffee" }],
+    "structuredContent": { "taskId": "0e30…", "status": "completed", "result": { "content": [ … ] } } }
+  ```
+
+  The states are `working`, `completed`, `failed` and `cancelled`; the last three are final. The
+  task object has the same shape as the one in the MCP Tasks extension.
+
+  If the model stops polling, nothing is lost: the work finishes anyway, and the result can be read
+  until the task expires (1 day by default; set `defaults: { ttlMs }` on the layer).
+</Accordion>
+
+## Cancellation
+
+`task_cancel` marks the task `cancelled` and stops any pending delivery. Cancelling is cooperative,
+so running code only stops where it checks `task.isCancelled()`:
+
+```ts
+async ({ sources }, task) => {
+  for (const source of sources) {
+    if (await task.isCancelled()) return {};
+    await task.update(`Reading ${source}`);
+    await read(source);
+  }
+  return { content: [{ type: "text", text: "Done" }] };
+};
+```
+
+`isCancelled()` also returns `true` once the task has expired.
+
+<Warning>
+  Arguments are validated when the tool is called, then stored as JSON and handed to the handler
+  later. Values that don't survive JSON, such as a `Date` produced by `z.coerce.date()`, arrive as
+  strings. Keep task schemas to plain values, or parse them again inside the handler.
+</Warning>
+
+## Users
+
+Each task records who started it, and `task_status` / `task_cancel` only answer for that caller.
+Another user's task id reads exactly like an unknown one, so nobody can tell it exists.
+
+### Check what the arguments point at
+
+Owning the task is not the same as being allowed to touch what it works on. The model fills in the
+tool arguments, so a `workspaceId` in them is whatever it was told. If Alice starts a task with Bob's
+`workspaceId`, the task is hers, she can read its result, and the handler acted on Bob's workspace.
+
+Give the task an `authorize`, which runs when the tool is called, before anything is stored or
+queued, and use `task.principal` (the user who started the task) inside the handler. Never take a
+user id from the arguments:
+
+```ts lib/tasks.ts
+tasks.define(
+  "export_workspace",
+  {
+    description: "Exports a workspace to CSV.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    // May this user export this workspace? `false` refuses the call.
+    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+  },
+  async ({ workspaceId }, task) => {
+    const csv = await exportWorkspace(workspaceId, { as: task.principal });
+    return { content: [{ type: "text", text: csv }] };
+  },
+);
+```
+
+`authorize(args, { principal, auth, request })` gets the validated arguments, the caller's id and the
+same `auth` and `request` as `principal`. It is the only place a task sees the caller's token: the
+handler runs later, in a delivery request that carries no user auth, so `task.principal` is how it
+knows who it is working for.
+
+### Where principal comes from
+
+`principal` receives `{ auth, request }` and may be async. `auth` is exactly what `verifyToken`
+returned in [step 1](#1-identify-the-caller): `withMcpAuth` runs it, and the toolkit hands the result
+to `principal`. Nothing is read from request headers on its own. Without `mcp-handler`, pass the
+`AuthInfo` yourself with the SDK's `createMcpHandler`: `handler.fetch(request, { authInfo })`.
+
+<Accordion title="More on principal">
+  * **A throw refuses the call.** There is no anonymous mode: if `principal` throws, rejects, or
+    returns anything but a non-empty string, the tool call is refused as not authenticated.
+  * **Use the user id, not `auth.clientId`.** The client id identifies the OAuth app, and every
+    ChatGPT user shares the same one.
+  * `principal` also receives `request`, for cookie or session apps. It is unverified, so check the
+    session yourself, and never trust a header like `x-user-id`:
+
+    ```ts
+    import type { Caller } from "@upstash/mcp-toolkit/tasks";
+
+    export async function principal({ request }: Caller): Promise<string> {
+      const session = await getSession(request);
+      if (!session) throw new Error("Not authenticated");
+      return session.userId;
+    }
+    ```
+
+  * A server with no users of its own passes `principal: () => "local"`.
+</Accordion>
+
+## Work longer than one function invocation
+
+With `QStashDispatcher`, the whole handler runs in one serverless invocation. If it goes past your
+platform's time limit, it is killed, and the retry starts the handler from the beginning.
+
+`WorkflowDispatcher` runs each step in its own invocation and replays finished steps from a journal,
+so a task has no overall time limit. Only the dispatcher changes; the routes stay the same. The
+handler's `task` then also has `run`, `sleep` and `call`, inferred from the dispatcher:
+
+```ts lib/tasks.ts
+import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
+
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal,
+});
+
+tasks.define(
+  "migrate_workspace",
+  {
+    description: "Copies a workspace to new storage.",
+    inputSchema: z.object({ workspaceId: z.string() }),
+    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+  },
+  async ({ workspaceId }, task) => {
+    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
+    for (const [i, batch] of batches.entries()) {
+      if (await task.isCancelled()) return {};
+      await task.update(`Copying batch ${i + 1}/${batches.length}`);
+      await task.run(`copy-${i}`, () => copyBatch(batch));
+    }
+    return { content: [{ type: "text", text: "Done" }] };
+  },
+);
+```
+
+<Accordion title="Rules for Workflow handlers">
+  The handler runs again from the top on every step, and finished steps are replayed from the
+  journal:
+
+  * Put the work inside `task.run`. That makes it run once and survive a crash.
+  * `task.update(...)` does not need wrapping.
+  * Keep `task.isCancelled()` outside steps. It has to run again each time, or a later cancel is
+    never seen.
+  * Don't nest `task.run` calls.
+  * Each step must still fit within your function's time limit.
+
+  The task's TTL starts when the task is created and is never extended. When it runs out, the record
+  is deleted and `isCancelled()` returns true. The default is 1 day; set `ttlMs` higher for work that can take longer.
+
+  | | `QStashDispatcher` | `WorkflowDispatcher` |
+  | --- | --- | --- |
+  | Survives the process dying | yes (QStash redelivers) | yes (replayed from the journal) |
+  | Can run longer than one invocation | no | yes, one invocation per step |
+  | On a retry | the whole task starts over | only the failed step runs again |
+  | Cancel stops a running task | at its next `isCancelled` | the run itself is cancelled |
+</Accordion>
+
+## Retries and failures
+
+<Accordion title="How deliveries are verified and retried">
+  * The execute route answers **200** when the task ran (or had already finished), **500** when your
+    handler threw, so QStash tries again, and **489** with `Upstash-NonRetryable-Error: true` when the
+    signature or body is bad.
+  * Every delivery's QStash signature is checked against the URL you gave the dispatcher, not
+    `request.url`, so it works behind a proxy and a signature issued for another endpoint is refused.
+    This holds for `WorkflowDispatcher` too. Without signing keys (or a `receiver` you pass), the
+    route throws on its first request instead of running anything unverified.
+  * When your handler throws, the task is not marked failed. Only the dispatcher marks it `failed`,
+    and only after QStash has stopped retrying. The failed message stays in the QStash DLQ.
+  * When your handler *returns* a tool error (`isError: true`), the task is `failed` at once, with no
+    retry, and `task_status` returns your content with `isError`, as the synchronous tool would.
+  * The model only sees a failure's `error.code` and `error.message`. The transport's details
+    (`error.data`: the QStash DLQ id, the Workflow run id) stay in Redis for you. What your handler
+    threw and a dispatch error are logged, never stored or returned.
+  * By default QStash tries 5 times with backoff `min(pow(3, retried) * 1000, 300000)`, about two
+    minutes in total, so a task survives a server restart. The free tier and the local dev server
+    allow at most 5 retries.
+</Accordion>
+
+## Security and storage
+
+<Accordion title="Who can see what">
+  The server sets a task's owner from `principal`, and no tool argument can set it. Whether a caller
+  may start a task with given arguments is your `authorize`; the handler gets the owner as
+  `task.principal`. `task_status` and
+  `task_cancel` only accept UUID task ids, and compare the stored owner with the caller. Task ids are
+  random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash deliveries and
+  never returns a task.
+
+  Anyone with write access to your Redis can change an owner, so treat the Redis credentials like any
+  other production secret.
+</Accordion>
+
+<Accordion title="What is stored in Redis">
+  **`mcp:task:<taskId>`** is a hash with one JSON-encoded field per property: `taskId`, `name`,
+  `args`, `owner`, `status`, `statusMessage`, `result` / `error`, `createdAt`, `lastUpdatedAt`,
+  `ttlMs`, `pollIntervalMs`.
+
+  * `args` and `result` are **plain JSON**. Keep secrets out of tool arguments and results, or use a
+    short `ttlMs`.
+  * The task is written with its TTL before the tool replies, because the model's next poll may reach
+    another instance. The TTL counts from creation and is never extended.
+  * Status changes go through one guarded Lua script, and the first final status wins, so a completion
+    can't overwrite a cancel. Each property is its own field, so a progress update and a cancel never
+    overwrite each other.
+  * A Redis client built with `automaticDeserialization: false` is not supported.
+
+  A task message in QStash carries only `{ taskId }`. The toolkit never stores the caller's token or
+  the request.
+</Accordion>
+
+## Options
+
+<Accordion title="All options">
+  **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
+  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
+
+  **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
+  `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
+
+  **`RedisTaskStore`**: `redis` (defaults to one from env), `prefix` (`mcp:task:`), `enableTelemetry`.
+
+  **`QStashDispatcher`**: `url` is required. Optional: `qstash`, `receiver`, `retries` (5),
+  `retryDelay`, `enableTelemetry`.
+
+  **`WorkflowDispatcher`**: `url` is required. Optional: `client`, `qstash`, `receiver`, `retries`,
+  `enableTelemetry`.
+
+  `receiver` defaults to one built from the `QSTASH_*_SIGNING_KEY` variables. The Redis and QStash
+  clients get `@upstash/mcp-toolkit@<version>` added to their `Upstash-Telemetry-Sdk` header; turn it
+  off with `enableTelemetry: false` or `UPSTASH_DISABLE_TELEMETRY`.
+</Accordion>
+
+<Accordion title="Custom backends">
+  `@upstash/mcp-toolkit/tasks` doesn't import anything from Upstash. A backend implements one of these
+  interfaces (types exported from the same entry point):
+
+  ```ts
+  interface TaskStore {
+    create(task: Task): Promise<void>; // with its TTL
+    get(taskId: string): Promise<Task | null>;
+    update(taskId: string, patch: TaskPatch): Promise<void>; // ignored once the task is final
+    settle(taskId: string, patch: TaskPatch & { status: TerminalTaskStatus }): Promise<Task | null>; // first final status wins
+  }
+
+  interface TaskDispatcher<TContext = unknown> {
+    dispatch(task: Task): Promise<void>; // called once per task
+    cancel(taskId: string): Promise<void>;
+    createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
+  }
+  ```
+</Accordion>
+
+## Why tools, not the Tasks extension?
+
+The 2026-07-28 MCP specification defines a [Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)
+where the *client* polls, so the model spends no turns waiting. But a server may only return a task
+to a client that declared the extension, and as of October 2026 Claude Code, Codex, Cursor and
+OpenCode don't. Plain tools cost the model a few polling calls but work everywhere today.
+
+The store and dispatcher don't depend on the tools, so an adapter for the extension can serve the
+same records once clients support it. Also not implemented yet: `input_required` (a handler asking
+the user something partway through a task) and listing tasks.
+
+## Example
+
+The [MCP toolkit demo](https://github.com/upstash/agentkit/tree/main/examples/mcp-toolkit-demo) is a
+Next.js app that runs the same tool on QStash and on Workflow, with a live log of every MCP request.
 
 # TanStack AI Persistence, Resumable Streams & Memory with Redis
 Source: https://upstash.com/docs/redis/sdks/agentkit/tanstack-ai
@@ -98345,6 +100436,10 @@ Source: https://upstash.com/docs/search/integrations/docusaurus
   instead of this product.
 </Visibility>
 
+<Warning>
+Creating new Upstash Search databases is no longer supported. For new projects, use [Upstash Vector](/docs/vector/overall/getstarted) instead.
+</Warning>
+
 ## Features
 
 * 🤖 AI-powered search results based on your documentation
@@ -98421,6 +100516,10 @@ Source: https://upstash.com/docs/search/overall/getstarted
 
 import { Catalog } from "/snippets/catalog.jsx";
 import { AgentSetup } from "/snippets/agent-setup.jsx";
+
+<Warning>
+Creating new Upstash Search databases is no longer supported. For new projects, use [Upstash Vector](/docs/vector/overall/getstarted) instead.
+</Warning>
 
 <AgentSetup product="Search" />
 
@@ -99171,6 +101270,10 @@ Source: https://upstash.com/docs/search/tools/documentationcrawler
   instead of this product.
 </Visibility>
 
+<Warning>
+Creating new Upstash Search databases is no longer supported. For new projects, use [Upstash Vector](/docs/vector/overall/getstarted) instead.
+</Warning>
+
 ## Introduction
 
 This tool helps you crawl documentation websites incrementally, extract their content, and create a search index in Upstash Search.
@@ -99263,6 +101366,10 @@ Source: https://upstash.com/docs/search/tutorials/buildsearchbar
   [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
   instead of this product.
 </Visibility>
+
+<Warning>
+Creating new Upstash Search databases is no longer supported. For new projects, use [Upstash Vector](/docs/vector/overall/getstarted) instead.
+</Warning>
 
 ***
 
@@ -99490,6 +101597,10 @@ Source: https://upstash.com/docs/search/tutorials/nextjs
   [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
   instead of this product.
 </Visibility>
+
+<Warning>
+Creating new Upstash Search databases is no longer supported. For new projects, use [Upstash Vector](/docs/vector/overall/getstarted) instead.
+</Warning>
 
 ***
 
@@ -99740,6 +101851,10 @@ Source: https://upstash.com/docs/search/ui/search-bar
   [Upstash Redis Search](https://upstash.com/docs/redis/search/introduction)
   instead of this product.
 </Visibility>
+
+<Warning>
+Creating new Upstash Search databases is no longer supported. For new projects, use [Upstash Vector](/docs/vector/overall/getstarted) instead.
+</Warning>
 
 ***
 
@@ -108796,7 +110911,7 @@ const wikiTool = new WikipediaQueryRun({
 
 For available toolkits, you can explore the [LangChain Toolkits](https://js.langchain.com/v0.1/docs/modules/agents/tools/toolkits/) or other AI SDK-compatible toolkits like [Agentic](https://agentic.so/sdks/ai-sdk).
 
-By default, the Workflow SDK will wrap the execute/invoke methods of the tools you pass with [`context.run`](/docs/workflow/basics/context#context-run) to run them as a Workflow step. This means, you can't use steps like context.call, context.notify etc in execute/invoke right away. If you want to define steps in invoke/execute, you can use the `executeAsStep` option:
+By default, the Workflow SDK will wrap the execute/invoke methods of the tools you pass with [`context.run`](/docs/workflow/steps/run) to run them as a Workflow step. This means, you can't use steps like context.call, context.notify etc in execute/invoke right away. If you want to define steps in invoke/execute, you can use the `executeAsStep` option:
 
 ```ts {12}
 import { WorkflowTool } from '@upstash/workflow'
@@ -108850,7 +110965,7 @@ export const { POST } = serve(async (context) => {
 The parameters for defining an agent are as follows:
 
 * **`model`**: The LLM model that the agent will use.
-* **`name`**: The name of the agent. This name will be used when naming the [context.call steps](/docs/workflow/basics/context#context-call) for this agent. `context.call` is used when calling the LLM provider (such as OpenAI).
+* **`name`**: The name of the agent. This name will be used when naming the [context.call steps](/docs/workflow/steps/call) for this agent. `context.call` is used when calling the LLM provider (such as OpenAI).
 * **`maxSteps`**: The maximum number of times this agent can call the LLM provider (e.g., OpenAI).
 * **`tools`**: The list of tools available to the agent for completing tasks.
 * **`background`**: A description of the agent, which is used as a system prompt to provide context for the agent's behavior.
@@ -111390,9 +113505,21 @@ Workflows paused at a [`context.waitForEvent`](/docs/workflow/basics/context/wai
 
 ## Response
 
-Returns a list of `Waiter` objects representing the workflows that were notified:
+<ResponseField name="response" type="NotifyResponse[]">
+    A list of `NotifyResponse` objects, one for each workflow that was waiting on the event.
+    An empty list means no workflow was waiting.
 
-<ResponseField name="Waiter" type="object">
+    <Expandable defaultOpen>
+        <ResponseField name="messageId" type="string">
+            The ID of the notification message delivered to the workflow.
+            This is unique to every notification.
+        </ResponseField>
+
+        <ResponseField name="error" type="string">
+            Error message if delivering the notification to this waiter failed.
+        </ResponseField>
+
+        <ResponseField name="Waiter" type="object">
   <Expandable>
    	<ResponseField name="url" type="string" required>
       URL to call upon notify
@@ -111413,6 +113540,8 @@ Returns a list of `Waiter` objects representing the workflows that were notified
       Headers sent in case of time out
     </ResponseField>
   </Expandable>
+</ResponseField>
+    </Expandable>
 </ResponseField>
 
 ## Usage
@@ -112295,9 +114424,9 @@ Source: https://upstash.com/docs/workflow/changelog
 
 <Update label="August 2025">
 * **TypeScript SDK (`workflow-js`):**
-    * Added `retryDelay` option to dynamicaly program the retry duration. It can be configured on
-    [trigger](/docs/workflow/basics/client#trigger-workflow) , [context.call](/docs/workflow/basics/context#context-call)
-    or [serve](/docs/workflow/basics/serve#retrydelay)
+    * Added `retryDelay` option to dynamically program the retry duration. It can be configured on
+    [trigger](/docs/workflow/basics/client/trigger#body-retrydelay), [context.call](/docs/workflow/steps/call)
+    or `serve` (later moved to `client.trigger`, see the [migration guide](/docs/workflow/howto/migrations#configuration-moved-from-serve-to-trigger))
     * Added ability to detect if a given url is a workflow or not. Starting with `0.2.17` trigger made via the sdk can fail (instead of hanging),
     if there is no workflow serve on the given url.
 * **Console:**
@@ -112308,7 +114437,7 @@ Source: https://upstash.com/docs/workflow/changelog
 <Update label="July 2025">
 * **TypeScript SDK (`workflow-js`):**
     * Restart/Resume for DLQ is added to allow more options to handle failed runs. See [here](/docs/workflow/howto/failures#manually-handling-failed-workflow-runs)
-    * Added `WorkflowNonRetryableError` to fail a workflow without causing any retries. See [here](/docs/workflow/basics/context#error-handling-and-retries)
+    * Added `WorkflowNonRetryableError` to fail a workflow without causing any retries. See [here](/docs/workflow/features/retries/prevent-retries)
     * For additional bug fixes, see the full changelog [here](https://github.com/upstash/workflow-js/compare/v0.2.14...v0.2.16).
 </Update>
 
@@ -112390,8 +114519,8 @@ Source: https://upstash.com/docs/workflow/changelog
 
 <Update label="December 2024">
 * **TypeScript SDK (`workflow-js`):**
-    * Introduced third-party integrations, starting with Anthropic, Resend, and OpenAI. These integrations are automatically offloaded to workflows, ensuring long-running calls do not consume user environment time. See the related documentation [here](/docs/workflow/basics/context#context-api).
-    * Added a `timeout` parameter to `context.call`. Learn more in the [documentation](/docs/workflow/basics/context#context-call).
+    * Introduced third-party integrations, starting with Anthropic, Resend, and OpenAI. These integrations are automatically offloaded to workflows, ensuring long-running calls do not consume user environment time. See the related documentation [here](/docs/workflow/steps/api).
+    * Added a `timeout` parameter to `context.call`. Learn more in the [documentation](/docs/workflow/steps/call).
     * Improved support for workflows in Express and SvelteKit by adding the `useJSONContent` option.
     * Resolved loop detection issues on Cloudflare and Render.
     * Full changelog, including all fixes, is available [here](https://github.com/upstash/workflow-js/compare/v0.2.0...v0.2.3).
@@ -112409,10 +114538,10 @@ Source: https://upstash.com/docs/workflow/changelog
 * **TypeScript SDK (workflow-js):**
     * Added support for string durations (e.g., `1d`, `30s`) in `context.sleep` and `context.waitForEvent`.
     * Introduced integrations for [Astro](/docs/workflow/quickstarts/astro) and [Express](/docs/workflow/quickstarts/express).
-    * Added `client.trigger`, enabling workflows to start and return the workflow run ID. See the [documentation](/docs/workflow/basics/client#trigger-workflow).
-    * Added a retry option for `context.call`. See the [documentation](/docs/workflow/basics/context#context-call).
+    * Added `client.trigger`, enabling workflows to start and return the workflow run ID. See the [documentation](/docs/workflow/basics/client/trigger).
+    * Added a retry option for `context.call`. See the [documentation](/docs/workflow/steps/call).
     * Introduced a lazy fetch feature to support longer and larger workflows on resource-limited platforms.
-    * Added `context.cancel` to cancel the current workflow. See the [documentation](/docs/workflow/basics/context#context-cancel).
+    * Added `context.cancel` to cancel the current workflow. See the [documentation](/docs/workflow/steps/cancel).
     * Full changelog, including fixes, is available [here](https://github.com/upstash/workflow-js/compare/v0.1.2...v0.2.0).
 * **Workflow Server:**
     * Added bulk cancel functionality for workflow runs. See the [REST API](/docs/workflow/api-reference/runs/bulk-cancel-workflow-runs).
@@ -113134,7 +115263,7 @@ This way, you can invoke a workflow simply by passing the object to `context.inv
 # Notify
 Source: https://upstash.com/docs/workflow/features/notify
 
-You can notify all the workflow runs waitingi for a specific event ID.
+You can notify all the workflow runs waiting for a specific event ID.
 There are two ways to send a notify request.
 
 ## Notify within Workflow
@@ -113166,45 +115295,6 @@ export const { POST } = serve<string>(async (context) => {
 });
 ```
 
-```python Python
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-from datetime import datetime
-
-app = FastAPI()
-serve = Serve(app)
-
-@serve.post("/api/order-processor")
-async def order_processor(context: AsyncWorkflowContext[str]) -> None:
-    order_id = context.request_payload["order_id"]
-    processing_result = context.request_payload["processing_result"]
-
-    # Process the order
-    async def _process_order():
-        return await process_order(order_id)
-
-    result = await context.run("process-order", _process_order)
-
-    # Notify waiting workflows that processing is complete
-    notify_response = await context.notify(
-        "notify-processing-complete",
-        f"order-{order_id}",
-        {
-            "order_id": order_id,
-            "status": "completed",
-            "result": processing_result,
-            "completed_at": datetime.utcnow().isoformat()
-        }
-    )
-
-    # Log notification results
-    async def _log_notification():
-        print(f"Notified {len(notify_response)} waiting workflows")
-        return notify_response
-
-    await context.run("log-notification", _log_notification)
-```
 </CodeGroup>
 
 ## External Notification
@@ -113228,22 +115318,6 @@ await client.notify({
 });
 ```
 
-```python Python
-from upstash_workflow import Client
-
-client = Client("<WORKFLOW_TOKEN>")
-
-# Notify workflows waiting for a specific event
-await client.notify(
-    event_id="order-completed-123",
-    event_data={
-        "order_id": "123",
-        "status": "completed",
-        "delivery_time": "2 days",
-        "tracking_number": "TRK123456"
-    }
-)
-```
 </CodeGroup>
 
 ## Lookback Functionality
@@ -113277,27 +115351,9 @@ await client.notify({
 });
 ```
 
-```python Python
-from upstash_workflow import Client
-
-client = Client("<WORKFLOW_TOKEN>")
-
-# Trigger a workflow and get its run ID
-workflow_run = await client.trigger(
-    url="https://your-app.com/api/process-order",
-    body={"order_id": "123"}
-)
-
-# Immediately notify it with lookback enabled
-await client.notify(
-    event_id="payment-verified",
-    event_data={"verified": True, "amount": 100},
-    workflow_run_id=workflow_run.workflow_run_id  # Enables lookback
-)
-```
 </CodeGroup>
 
-The same also applies to `context.notify`
+The same also applies to `context.notify` by passing the `workflowRunId` as the fourth argument:
 
 <CodeGroup>
 ```typescript TypeScript
@@ -113317,9 +115373,9 @@ export const { POST } = serve<string>(async (context) => {
       orderId,
       status: "completed",
       result: processingResult,
-      completedAt: new Date().toISOString(),
-      workflowRunId: "targetWorkflowRunId"  // Enables lookback
-    }
+      completedAt: new Date().toISOString()
+    },
+    "targetWorkflowRunId" // Enables lookback
   );
 
 });
@@ -113618,46 +115674,6 @@ export const { POST } = serve<string>(async (context) => {
 });
 ```
 
-```python Python
-from fastapi import FastAPI
-from upstash_workflow.fastapi import Serve
-from upstash_workflow import AsyncWorkflowContext
-
-app = FastAPI()
-serve = Serve(app)
-
-@serve.post("/api/order-processing")
-async def order_processing(context: AsyncWorkflowContext[str]) -> None:
-    order_id = context.request_payload["order_id"]
-    user_email = context.request_payload["user_email"]
-
-    # Send order processing request
-    async def _request_order_processing():
-        return await request_order_processing(order_id)
-
-    await context.run("request-order-processing", _request_order_processing)
-
-    # Wait for order processing completion
-    result = await context.wait_for_event(
-        "wait-for-order-processing",
-        f"order-{order_id}",
-        timeout="10m"  # 10 minutes timeout
-    )
-
-    if result["timeout"]:
-        # Handle timeout scenario
-        async def _handle_timeout():
-            return await handle_order_timeout(order_id, user_email)
-
-        await context.run("handle-timeout", _handle_timeout)
-        return
-
-    # Process the completed order
-    async def _process_completed_order():
-        return await process_completed_order(order_id, result["event_data"])
-
-    await context.run("process-completed-order", _process_completed_order)
-```
 </CodeGroup>
 
 # Overview
@@ -113734,24 +115750,24 @@ import { Client } from "@upstash/workflow";
 const client = new Client({ token: "<WORKFLOW_TOKEN>" });
 
 const result = await client.notify({
-    eventId,
-    eventData
+  eventId,
+  eventData,
 });
 
-// Check if any workflows were notified
-if (result.waiters && result.waiters.length > 0) {
-    console.log(`Notified ${result.waiters.length} workflows`);
-    return result;
+// `result` is a list with one entry per notified workflow
+if (result.length > 0) {
+  console.log(`Notified ${result.length} workflows`);
+} else {
+  // If no workflows were waiting, wait and retry once
+  console.log("No workflows waiting, retrying in 5 seconds...");
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+
+  const retryResult = await client.notify({
+    eventId,
+    eventData,
+  });
+  console.log(`Retry notified ${retryResult.length} workflows`);
 }
-
-// If no workflows were waiting, wait and retry once
-console.log("No workflows waiting, retrying in 5 seconds...");
-await new Promise(resolve => setTimeout(resolve, 5000));
-
-return await client.notify({
-    eventId,
-    eventData
-});
 ```
 </CodeGroup>
 
@@ -113863,10 +115879,10 @@ Webhooks and [Wait for Event](/docs/workflow/features/wait-for-event) serve simi
 | **Trigger** | External HTTP call to unique URL | Notify via Upstash Workflow Client |
 | **Setup** | Create webhook, pass URL to external service | Share event ID with external service |
 | **Integration** | Easy with callback-based APIs | Requires Workflow Client integration |
-| **Lookback** | ✅ Yes - safe against race conditions | ❌ No - notify before wait will be lost |
+| **Lookback** | ✅ Yes - safe against race conditions | ⚠️ Only when notifying a specific run with `workflowRunId`; otherwise notify before wait is lost |
 | **Best For** | Third-party API callbacks | Internal event notifications |
 
-Choose webhooks when integrating with external services that support callback URLs, or when you need protection against race conditions. Choose Wait for Event when you have control over the notification mechanism and can use the Workflow Client.
+Choose webhooks when integrating with external services that support callback URLs, or when you need protection against race conditions without knowing the target workflow run. Choose Wait for Event when you have control over the notification mechanism and can use the Workflow Client. If you know the workflow run ID, pass it as `workflowRunId` to `notify` to enable [lookback](/docs/workflow/features/wait-for-event#option-1-lookback-with-workflowrunid).
 
 ## API Reference
 
@@ -115140,7 +117156,7 @@ This guide covers migration between different versions of Upstash Workflow.
 
     ### Updating `context.call`
 
-    If you were using [`context.call` method](/docs/workflow/basics/context#context-call) in your workflow, you will need to change
+    If you were using [`context.call` method](/docs/workflow/steps/call) in your workflow, you will need to change
     how it's called and what it returns. Here is what the change looks like:
 
     ```javascript
@@ -116155,22 +118171,6 @@ const { workflowRunId } = await client.trigger({
 });
 ```
 
-```python Python
-from upstash_workflow import Client
-
-client = Client("<QSTASH_TOKEN>")
-client.trigger(
-    url="https://my-app.com/api/workflow",
-    body={
-        "hello": "world",
-    },
-    redact={
-        "body": True,
-        "header": ["Authorization"] // or `header: True` to redact all headers
-    },
-)
-```
-
 ```bash cURL
 curl -XPOST \
     -H 'Authorization: Bearer XXX' \
@@ -116466,6 +118466,141 @@ You can use them to pass your custom authentication token to verify the requests
     If you implement custom authorization in your workflow route, you should also include the same authorization check in the failure function.
 
     The failure function executes independently of the route function, so without this check, unauthorized requests could trigger the failure function
+</Warning>
+
+# Singleton Workflows
+Source: https://upstash.com/docs/workflow/howto/singleton
+
+A singleton workflow has at most one run in progress at a time. A nightly sync,
+a per-user onboarding flow or a cache rebuild are typical examples: starting a
+second copy while the first one is still running would do the same work twice.
+
+You get this behavior by starting every run with the **same `workflowRunId`**.
+A run ID is reserved while its run is in progress, and released once the run
+finishes, fails or is cancelled.
+
+<Note>
+  Singleton workflows require `@upstash/workflow` **1.4.0** or later.
+
+  With older versions, a run started again with the same `workflowRunId` and the
+  same body within 10 minutes of the previous one is deduplicated by QStash: it
+  either doesn't start or gets stuck on its first step.
+</Note>
+
+There are two ways to handle a new trigger while a run is in progress:
+
+| Pattern | When a run is already in progress |
+| --- | --- |
+| [Keep the running one](#keep-the-running-one) | The new trigger is rejected. The existing run continues. |
+| [Replace the running one](#replace-the-running-one) | The running run is cancelled and a new one starts. |
+
+In both patterns, a trigger after the previous run has ended starts a new run,
+even with exactly the same body.
+
+## Keep the running one
+
+Trigger the workflow with a fixed `workflowRunId`. If a run with that ID is
+still in progress, `client.trigger` throws and no new run is started.
+
+```ts
+import { Client } from "@upstash/workflow";
+import { QstashError } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+try {
+  const { workflowRunId } = await client.trigger({
+    url: "https://<YOUR_WORKFLOW_ENDPOINT>/nightly-sync",
+    workflowRunId: "nightly-sync",
+    body: { source: "crm" },
+  });
+  console.log(`started ${workflowRunId}`); // started wfr_nightly-sync
+} catch (error) {
+  if (!(error instanceof QstashError) || error.status !== 400) {
+    throw error;
+  }
+
+  // a 400 can also mean an invalid request, so check that a run is in progress
+  const { runs } = await client.logs({
+    filter: { workflowRunId: "wfr_nightly-sync", state: "RUN_STARTED" },
+  });
+  if (runs.length === 0) {
+    throw error;
+  }
+  console.log("nightly-sync is already running, skipping");
+}
+```
+
+What `client.trigger` returns:
+
+* **No run in progress:** a new run starts and the call resolves to
+  `{ workflowRunId: "wfr_nightly-sync" }`.
+* **A run is in progress:** the call throws a `QstashError` with `status: 400`.
+  The running run is not affected.
+
+QStash returns `400` for other invalid trigger requests too, such as a malformed
+URL, so `status` alone doesn't tell you that the ID is taken. The example checks
+with [`client.logs`](/docs/workflow/basics/client/logs) that a run with the ID is in
+progress before skipping. If that run ends between the two calls, `runs` is
+empty and the error is rethrown, so you can retry the trigger.
+
+<Note>
+  `QstashError` comes from `@upstash/qstash`, which `@upstash/workflow` depends
+  on. If your package manager doesn't let you import a dependency of a
+  dependency, add `@upstash/qstash` to your own dependencies. Keep it on the
+  version `@upstash/workflow` uses: with two copies of the package,
+  `instanceof QstashError` doesn't match.
+</Note>
+
+<Tip>
+  The ID you pass is prefixed with `wfr_`. `nightly-sync` becomes
+  `wfr_nightly-sync`, which is the ID you see in the logs and pass to
+  `client.cancel`.
+</Tip>
+
+## Replace the running one
+
+To always run the latest request, first cancel the existing run by its
+prefixed run ID (for example, `wfr_rebuild-cache`), then start a new one with
+the unprefixed `workflowRunId` (for example, `rebuild-cache`). If the previous
+run hasn't finished yet, it is stopped and the new run takes its place.
+
+```ts
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+
+const { cancelled } = await client.cancel("wfr_rebuild-cache");
+console.log(`cancelled ${cancelled} run(s)`);
+
+const { workflowRunId } = await client.trigger({
+  url: "https://<YOUR_WORKFLOW_ENDPOINT>/rebuild-cache",
+  workflowRunId: "rebuild-cache",
+  body: { reason: "settings changed" },
+});
+console.log(`started ${workflowRunId}`); // started wfr_rebuild-cache
+```
+
+What each call returns:
+
+* `client.cancel` resolves to `{ cancelled: 1 }` when a run was in progress and
+  got cancelled, and to `{ cancelled: 0 }` when there was nothing to cancel. It
+  doesn't throw in either case, so you can call it unconditionally.
+* `client.trigger` resolves to `{ workflowRunId: "wfr_rebuild-cache" }`. The
+  cancel is completed before `client.cancel` returns, so the ID is free when you
+  trigger the new run.
+
+The cancelled run stops right away. If one of its steps is executing on your
+endpoint at that moment, that code runs to the end, but its result is
+discarded. Steps, waits and `context.call` results of the cancelled run are
+never added to the new run, even though both runs share the same ID.
+
+<Warning>
+  If two callers cancel and trigger the same ID at the same time, both cancels
+  can complete before either trigger. Then the first trigger starts a run, and
+  the second one throws the `400` error described in
+  [Keep the running one](#keep-the-running-one). Catch it and retry the cancel
+  and trigger if the latest request must win.
 </Warning>
 
 # Start a Run
@@ -117101,7 +119236,7 @@ execute: ({ location }) => context.run("weather tool", () => {
 # Anthropic
 Source: https://upstash.com/docs/workflow/integrations/anthropic
 
-The standard way to call a third-party endpoint in your workflow is by using [`context.call`](/docs/workflow/basics/context#context-call).
+The standard way to call a third-party endpoint in your workflow is by using [`context.call`](/docs/workflow/steps/call).
 
 However, if you need to call the Anthropic endpoint for text generation ([`/v1/messages`](https://docs.anthropic.com/en/api/messages)), you can leverage the type-safe method `context.api.anthropic.call` method:
 
@@ -117220,7 +119355,7 @@ Source: https://upstash.com/docs/workflow/integrations/openai
 
 ### Calling OpenAI
 
-The standard way to call a third-party endpoint in your workflow is by using [`context.call`](/docs/workflow/basics/context#context-call).
+The standard way to call a third-party endpoint in your workflow is by using [`context.call`](/docs/workflow/steps/call).
 
 However, if you need to call the OpenAI endpoint for text generation ([`/v1/chat/completions`](https://platform.openai.com/docs/api-reference/chat)), you can leverage the type-safe method `context.api.openai.call` method:
 
@@ -117367,7 +119502,7 @@ If you encounter issues, contact support.
 # Resend
 Source: https://upstash.com/docs/workflow/integrations/resend
 
-The standard way to call a third-party endpoint in your workflow is by using [`context.call`](/docs/workflow/basics/context#context-call).
+The standard way to call a third-party endpoint in your workflow is by using [`context.call`](/docs/workflow/steps/call).
 
 However, if you need to call the Resend endpoint to send emails ([`/emails`](https://resend.com/docs/api-reference/emails/send-email) or [`/emails/batch`](https://resend.com/docs/api-reference/emails/send-batch-emails)), you can leverage the type-safe method `context.api.resend.call` method:
 
@@ -117464,10 +119599,10 @@ For detailed pricing information based on different plans, visit our [Workflow p
 
 ### Message Usage per Workflow Run
 
-* [context.run](/docs/workflow/basics/context#context-run), [context.sleep](/docs/workflow/basics/context#context-sleep), [context.sleepUntil](/docs/workflow/basics/context#context-sleepuntil), or [context.waitForEvent](/docs/workflow/basics/context#context-waitforevent) commands generate a single message.
-* The [context.call](/docs/workflow/basics/context#context-call) command generates two messages.
+* [context.run](/docs/workflow/steps/run), [context.sleep](/docs/workflow/steps/sleep), [context.sleepUntil](/docs/workflow/steps/sleepUntil), or [context.waitForEvent](/docs/workflow/steps/waitForEvent) commands generate a single message.
+* The [context.call](/docs/workflow/steps/call) command generates two messages.
 * Each step in a [parallel run](/docs/workflow/howto/parallel-runs) costs 1 extra message.
-* If the workflow endpoint or URL in [context.call](/docs/workflow/basics/context#context-call) returns an error or is unreachable, the workflow SDK will retry the call (up to 3 times by default). Each retry counts as a new message.
+* If the workflow endpoint or URL in [context.call](/docs/workflow/steps/call) returns an error or is unreachable, the workflow SDK will retry the call (up to 3 times by default). Each retry counts as a new message.
 
 - [Astro](https://upstash.com/docs/workflow/quickstarts/astro.md)
 - [Cloudflare Workers](https://upstash.com/docs/workflow/quickstarts/cloudflare-workers.md)
@@ -117825,7 +119960,7 @@ async def example(context: AsyncWorkflowContext[Request]) -> None:
 
 <Tip>
     We provide integrations for **OpenAI, Anthropic, and Resend**, allowing you to call their APIs with strongly typed request bodies using `context.call`.
-    See [`context.api`](/docs/workflow/basics/context#context-api) for details.
+    See [`context.api`](/docs/workflow/steps/api) for details.
 </Tip>
 
 <Info>
@@ -118003,7 +120138,7 @@ Source: https://upstash.com/docs/workflow/steps/notify
 
 `context.notify()` notifies workflows that are waiting for a specific event, passing along an optional payload.
 
-It is typically used in combination with [`context.waitForEvent`](/docs/workflow/basics/context#context-waitforevent).
+It is typically used in combination with [`context.waitForEvent`](/docs/workflow/steps/waitForEvent).
 
 ## Arguments
 
@@ -118029,10 +120164,19 @@ It is typically used in combination with [`context.waitForEvent`](/docs/workflow
 
 ## Response
 
-`context.notify()` returns a list of waiters describing the workflows that were notified.
+`context.notify()` returns an object containing the notified event and the list of workflows that were notified.
+
+<ResponseField name="eventId" type="string">
+    The event ID that was notified.
+</ResponseField>
+
+<ResponseField name="eventData" type="any">
+    The event data sent with the notification.
+</ResponseField>
 
 <ResponseField name="notifyResponse" type="NotifyResponse[]">
-    A list of `NotifyResponse` objects describing each workflow that was waiting on the event.
+    A list of `NotifyResponse` objects, one for each workflow that was waiting on the event.
+    An empty list means no workflow was waiting.
 
     <Expandable defaultOpen>
         <ResponseField name="messageId" type="string">
@@ -118040,12 +120184,8 @@ It is typically used in combination with [`context.waitForEvent`](/docs/workflow
             This is unique to every notification.
         </ResponseField>
 
-        <ResponseField name="workflowRunId" type="string">
-            The unique identifier of the workflow run that was notified.
-        </ResponseField>
-
-        <ResponseField name="workflowCreatedAt" type="number">
-            Unix timestamp (in milliseconds) representing when the workflow was created.
+        <ResponseField name="error" type="string">
+            Error message if delivering the notification to this waiter failed.
         </ResponseField>
 
         <ResponseField name="Waiter" type="object">
@@ -118441,19 +120581,24 @@ Default timeout value is 7 days.
     A unique identifier for the event to wait on.
 </ParamField>
 
-<ParamField body="timeout" type="number|string">
-    The maximum time to wait before continuing execution.
+<ParamField body="options" type="object">
+    <Expandable defaultOpen>
+        <ParamField body="timeout" type="number|string">
+            The maximum time to wait before continuing execution.
 
-    * **String format**: Human‑readable duration (e.g., `"10s"`, `"2h"`, `"1d"`).
-    * **Number format**: Duration in seconds (e.g., `60`, `3600`).
+            * **String format**: Human‑readable duration (e.g., `"10s"`, `"2h"`, `"1d"`).
+            * **Number format**: Duration in seconds (e.g., `60`, `3600`).
 
-    Defaults to `7d` (7 days).
+            Defaults to `7d` (7 days).
+        </ParamField>
+    </Expandable>
 </ParamField>
 
 ## Response
 
-<ResponseField name="eventData" type="string|object">
+<ResponseField name="eventData" type="TEventData">
     The data passed in when the event is triggered via `notify()`.
+    Its type can be set with the generic parameter, e.g. `context.waitForEvent<{ approved: boolean }>(...)`. Defaults to `unknown`.
 </ResponseField>
 
 <ResponseField name="timeout" type="boolean">
@@ -118693,7 +120838,7 @@ You can find an example of this usage in [our documentation on usage with AI SDK
 
 ## Verification Failed Scenarios
 
-When [QStash signature verification](/docs/workflow/howto/security#using-qstashs-built-in-request-verification-recommended) is enabled, you might encounter an error like:
+When [QStash signature verification](/docs/workflow/howto/security#built-in-request-verification-recommended) is enabled, you might encounter an error like:
 
 ```
 Failed to verify that the Workflow request comes from QStash: some-error
@@ -118784,7 +120929,7 @@ Retry settings can be configured in two locations:
 1. [**Workflow Start** (client.trigger)](/docs/workflow/howto/start): For the triggered workflow run
    * Default retries: 3
 
-2. [**Context Call**](/docs/workflow/basics/context#context-call): For third party requests
+2. [**Context Call**](/docs/workflow/steps/call): For third party requests
    * Default retries: 0
 
 ## Verbose Mode Diagnostics
@@ -118796,7 +120941,7 @@ Retry settings can be configured in two locations:
   [Changelog](/docs/workflow/changelog) for updates.
 </Note>
 
-Use [verbose mode](/docs/workflow/basics/serve#verbose) to diagnose workflow issues.
+Use [verbose mode](/docs/workflow/basics/serve/advanced#path-verbose) to diagnose workflow issues.
 
 The logs in this section should be seen very rarely. If you observe these logs consistently, you can reach out to our support.
 
@@ -118811,9 +120956,9 @@ localhost. Received: ...
 This error indicates that the workflow URL has localhost. Publish requests will fail and workflow won't be able to run.
 
 **Potential Solutions:**
-* Verify [baseUrl](/docs/workflow/basics/serve#baseurl)
+* Verify [baseUrl](/docs/workflow/basics/serve/advanced#path-baseurl)
 * Check UPSTASH_WORKFLOW_URL
-* Explicitly pass the full [url](/docs/workflow/basics/serve#url)
+* Explicitly pass the full [url](/docs/workflow/basics/serve/advanced#path-url)
 
 ### Deduplication Log
 Since QStash has at least once delivery guarantee, there is a very small chance that a step will run twice. This is why we suggest [idempotancy](/docs/workflow/basics/caveats#ensure-idempotency-in-context-run). When this happens, the duplicate step should print the following log and terminate:
@@ -118865,7 +121010,7 @@ If it appears like the initial step has failed:
 * Verify that you're using the latest SDK version both in the workflow endpoint definition and in the code that calls `client.trigger`.
 
 If it appears like the initial step has completed but the workflow is still stuck:
-* Workflow SDK could be unable to correctly infer the workflow URL due to a proxy or an issue in the request object. To check if this is the issue, try passing the [`baseUrl` parameter to the `serve` method](/docs/workflow/basics/serve/advanced#param-base-url). This will override the automatic URL inference and use the provided base URL instead.
+* Workflow SDK could be unable to correctly infer the workflow URL due to a proxy or an issue in the request object. To check if this is the issue, try passing the [`baseUrl` parameter to the `serve` method](/docs/workflow/basics/serve/advanced#path-baseurl). This will override the automatic URL inference and use the provided base URL instead.
 
 ## Non-workflow Destination Error
 
