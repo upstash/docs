@@ -84,18 +84,52 @@ If no slots are available, new steps enter the **waitlist** until resources free
   <img src="/img/workflow/flow_control_ex_1.png" alt="Workflow parallelism waitlist" />
 </Frame>
 
+## Step-level Flow Control
+
+The flow control configuration of a run applies to all of its steps. To limit a single `context.run` step more
+strictly, pass a flow control configuration as the third argument of `context.run`:
+
+```typescript
+export const { POST } = serve(async (context) => {
+  await context.run("prepare", () => { ... });
+
+  await context.run(
+    "charge customer",
+    () => chargeCustomer(),
+    {
+      flowControl: { key: "payment-provider", parallelism: 3 },
+    }
+  );
+
+  await context.run("notify", () => { ... });
+});
+```
+
+Only the `charge customer` step is bound by the `payment-provider` key. The other steps keep the configuration
+the run was triggered with. Since the key is shared, at most 3 `charge customer` steps run at the same time
+across all runs using that key, no matter how many runs are active.
+
+Following the analogy above, this lets you enforce a parallelism limit on the "green" steps only.
+
+The step-level configuration replaces the run's flow control for that step as a whole: a step with its own
+flow control configuration does not also count against the run's flow control key.
+
 <Note>
-Upstash Workflow does not support per-step level configuration. Meaning that you can attach a flow-control configuration
-to the workflow run and all the steps will inherit to the same limits.
-Following the analogy above, you cannot enforce parallelism limit on "green" steps natively.
+When the step with flow control is reached right after a `context.run`, `context.sleep` or
+`context.sleepUntil` step, its configuration is attached to the request which delivers it, at no extra cost.
+In other cases (for example, when it is the first step of a run or comes after a `context.call`),
+the SDK publishes an additional hidden request to apply the configuration. This request is not shown in the
+workflow logs.
 
-The context.call and context.invoke steps are exception this to this rule and accept their own flow control configuration:
-
-- [context.call](/workflow/basics/context/call) – lets you run external HTTP requests under a separate key, so you can throttle third‑party API calls independently of your workflow logic.
-- [context.invoke](/workflow/basics/context/invoke) – starts a new workflow run with its own flow control configuration. This allows the invoked workflow to run under different limits than the parent workflow, giving you more precise control.
-
-If you want to throttle a specific `context.run` step, the recommended approach is to **extract it into a separate workflow** and call it using `context.invoke()` with its own flow control configuration with a stricter limits.
+Steps in a parallel group carry their own configuration and never need the extra request.
 </Note>
+
+`context.call` and `context.invoke` accept their own flow control configuration too:
+
+- [context.call](/workflow/steps/call) – lets you run external HTTP requests under a separate key, so you can throttle third‑party API calls independently of your workflow logic.
+- [context.invoke](/workflow/steps/invoke) – starts a new workflow run with its own flow control configuration.
+
+Inside a step, `context.flowControl` returns the flow control configuration applied to the current delivery.
 
 
 ## Configuration
