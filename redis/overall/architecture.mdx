@@ -1,0 +1,148 @@
+---
+title: "Architecture & Differences from Open-Source Redis"
+sidebarTitle: "Architecture"
+---
+
+Upstash Redis speaks the Redis protocol, but it is not a self-hosted Redis
+instance in a box. This page explains how it is built and where it intentionally
+differs from open-source Redis, so you know what to expect before you move a
+workload over.
+
+## Serverless Operational Model
+
+Upstash Redis is a serverless database. There is no server to provision or
+tune, capacity scales automatically with traffic, and billing is based on the
+commands you run, not on allocated capacity. The database scales to zero when
+idle — see [Serverless](/common/concepts/serverless) and
+[Scale to Zero](/common/concepts/scale-to-zero).
+
+Two transports are available on every database:
+
+- **Redis protocol over TCP** (TLS enabled by default), for any standard Redis
+  client, and
+- **HTTPS REST**, for serverless and edge runtimes where TCP connections are
+  restricted, plus scripting, pipelining and transactions over HTTP. See the
+  [REST API](/redis/features/restapi).
+
+Both transports hit the same engine and the same pricing: one command is one
+billable request either way.
+
+## Multi-Tier Storage
+
+Unlike open-source Redis, where all data lives in memory, Upstash stores every
+entry in **both memory and block storage** (for example AWS EBS). This is the
+[Durable Storage](/redis/features/durability) model:
+
+- Writes are persisted to block storage, so data survives restarts and
+  failures; persistence is always on.
+- An entry that stays idle long enough is evicted from memory **but not
+  deleted** — it remains on disk and is reloaded on the next access.
+- This keeps frequently accessed data in memory for low latency while letting
+  you pay mainly for active data.
+
+Memory eviction based on idleness is not the same thing as the cache eviction
+policy. Cache eviction, which removes keys beyond the data-size limit, is
+disabled by default and uses Upstash's `optimistic-volatile` policy — a
+combination of Redis's `volatile-random` and `allkeys-random` — rather than the
+common `allkeys-lru`. See [Eviction](/redis/features/eviction).
+
+## Replication and Consistency
+
+Paid databases are replicated across multiple instances using a
+**single-leader** model: each key is owned by a leader replica that handles its
+writes, while backup and read replicas serve reads. If a leader fails, the
+remaining replicas elect a new one. See [Replication](/redis/features/replication).
+
+The trade-off, as in most replicated systems, is [eventual
+consistency](/redis/features/consistency): replicas converge over time, with
+anti-entropy jobs resolving conflicts using a last-writer-wins rule. A single
+TCP connection gives you read-your-writes semantics — see
+[Read Your Writes](/redis/howto/readyourwrites). For writes that must be visible
+in many regions, [Global Databases](/redis/features/globaldatabase) replicate
+across regions instead of only within one.
+
+## Concurrency Model
+
+Open-source Redis executes commands on a single thread. Upstash runs commands
+concurrently and uses **key-based locking** to keep them isolated: a command
+locks the [hash tag](/redis/features/key-locking#hash-tags) of each key it
+touches, so commands on independent keys run in parallel. Reads take shared
+locks; writes take exclusive locks. `MULTI`/`EXEC` transactions lock the union
+of their keys at `EXEC` time.
+
+Lua scripts and Redis Functions default to a global lock because their key
+usage is not known in advance; add the `allow-key-locking` flag to opt into
+per-key locking. See [Key-Based Locking](/redis/features/key-locking) — it also
+explains why passing every key through the `KEYS` array keeps dynamic keys
+cheap (declared keys are loaded from disk before the lock is taken).
+
+## Differences from Open-Source Redis
+
+### Protocol level
+
+- **Protocol version**: Upstash supports the Redis client protocol up to
+  version `8.4`, with later changes added gradually. See
+  [Compatibility](/redis/overall/compatibility).
+- **No Redis Cluster sharding**: databases replicate but do not shard. Writes
+  to any key go to that key's leader; there is no multiple-primary cluster
+  mode. Multi-region reads come from
+  [Global Databases](/redis/features/globaldatabase).
+- **Lua scripting**: scripts run server-side under the
+  [locking model](/redis/features/key-locking#lua-scripts) and can be sent and
+  executed over the REST API with `EVAL`. The scripting command reference
+  [documents the REST form](/redis/commands/scripting/eval#rest-api).
+
+### REST API differences
+
+Over the REST transport some commands are not available because a stateless
+HTTP request cannot express the blocking or session semantics:
+
+- Blocking list commands `BLPOP`, `BRPOP`, `BRPOPLPUSH` and blocking sorted-set
+  commands `BZPOPMAX`, `BZPOPMIN`.
+- Transaction commands `WATCH`, `UNWATCH`, `DISCARD` (use `/multi-exec`
+  instead) and cluster commands.
+- `MONITOR` and `SUBSCRIBE`/`PUBLISH` work over REST but stream via
+  [Server-Sent Events](/redis/features/restapi#monitor-command).
+
+The full matrix is the [REST compatibility table](/redis/features/restapi#rest-redis-api-compatibility).
+
+### Command families
+
+Beyond the open-source command set, Upstash adds command families of its own:
+
+| Family | Commands | Not to be confused with |
+| --- | --- | --- |
+| [Search](/redis/commands/search/overview) | `SEARCH.*` | RediSearch (`FT.*`). Separate implementation, **not compatible** — see below. |
+| [Vector](/redis/commands/vector/overview) | `VECTOR.*` | Standalone Vector Index databases. |
+| [JSON](/redis/commands/json/overview) | `JSON.*` | The RedisJSON module shipped with Redis Stack; Upstash implements JSON natively. |
+| [Array](/redis/commands/array/overview) | `AR.*` | Any open-source command. |
+
+[Upstash Redis Search](/redis/search/introduction) is a separate full-text
+engine (Tantivy) from the open-source RediSearch module. They share no query
+syntax and no commands:
+
+| | Upstash Redis Search | RediSearch |
+| --- | --- | --- |
+| Command prefix | `SEARCH.*` | `FT.*` |
+| Query syntax | JSON-based filters | RediSearch query syntax |
+| Pagination | `LIMIT <count> OFFSET <offset>` | `LIMIT <offset> <count>` |
+
+Queries written for RediSearch must be rewritten to the JSON filter syntax. See
+[Upstash Redis Search vs RediSearch](/redis/search/troubleshooting#upstash-redis-search-vs-redisearch)
+for the full comparison.
+
+### Security
+
+TLS is always enabled, ACL is available on paid databases, and each database
+comes with Standard and Read Only REST tokens (derived from its password) plus
+the optional [Credential Protection](/redis/features/credential-protection)
+mode. See [Security](/redis/features/security). Application-level user
+authentication is **not** part of the service — see the
+[Shared Responsibility Model](/redis/help/shared-responsibility-model).
+
+## Next steps
+
+- [Compatibility](/redis/overall/compatibility) — supported commands and modules.
+- [Durable Storage](/redis/features/durability) — the multi-tier storage engine.
+- [Key-Based Locking](/redis/features/key-locking) — how concurrency is managed.
+- [REST API](/redis/features/restapi) — the HTTP transport in detail.
