@@ -57,10 +57,12 @@ export type WalkItem =
   | { type: "group"; group: string; depth: number }
   // `directory` is only present when the OpenAPI ref was given in object form.
   // Bare-string refs (`"openapi": "spec.yml"`) yield with source only.
-  | { type: "openapi"; source: string; directory?: string }
+  // `depth` is one more than the depth of the enclosing tab, product, or group.
+  | { type: "openapi"; source: string; directory?: string; depth: number }
   | {
       type: "page";
       path: string;
+      depth: number;
       metadata: PageMetadata;
       content: string;
     };
@@ -109,7 +111,7 @@ function* walkRoot(
   // Yield it before iterating groups/pages so callers see the spec
   // associated with the tab.
   if ("openapi" in root && root.openapi) {
-    yield openApiItem(root.openapi);
+    yield openApiItem(root.openapi, 1);
   }
 
   if (root.groups) {
@@ -135,13 +137,13 @@ function* walkGroup(
     }
     return;
   }
-  yield openApiItem(group.openapi);
+  yield openApiItem(group.openapi, depth + 1);
 }
 
-function openApiItem(ref: OpenApiRef): WalkItem {
+function openApiItem(ref: OpenApiRef, depth: number): WalkItem {
   return typeof ref === "string"
-    ? { type: "openapi", source: ref }
-    : { type: "openapi", source: ref.source, directory: ref.directory };
+    ? { type: "openapi", source: ref, depth }
+    : { type: "openapi", source: ref.source, directory: ref.directory, depth };
 }
 
 function* walkEntry(
@@ -150,14 +152,14 @@ function* walkEntry(
   docsRoot: string,
 ): Generator<WalkItem> {
   if (typeof entry === "string") {
-    const page = readPage(entry, docsRoot);
+    const page = readPage(entry, depth, docsRoot);
     if (page) yield page;
   } else {
     yield* walkGroup(entry, depth, docsRoot);
   }
 }
 
-function readPage(path: string, docsRoot: string): WalkItem | null {
+function readPage(path: string, depth: number, docsRoot: string): WalkItem | null {
   // Pages in docs.json omit the .mdx extension.
   // Some entries (e.g. "GET /redis/databases") reference operations inside
   // an OpenAPI spec rather than literal files. Skip those — the OpenAPI
@@ -173,6 +175,7 @@ function readPage(path: string, docsRoot: string): WalkItem | null {
   return {
     type: "page",
     path,
+    depth,
     metadata: {
       title: metadata.title || deriveTitleFromPath(path),
       description: metadata.description,
