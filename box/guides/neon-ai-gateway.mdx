@@ -1,0 +1,389 @@
+---
+title: "Use Neon AI Gateway with Upstash Box"
+sidebarTitle: "Neon AI Gateway"
+description: "Route Box agent model calls through Neon AI Gateway with one Neon credential, and understand how Bring Your Own Key (BYOK) works in Upstash Box."
+---
+
+[Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) gives you one OpenAI-compatible API and one Neon credential for frontier and open-weight models across providers. Pair it with Upstash Box when you want a sandboxed computer for the agent and a single gateway for inference.
+
+This guide covers:
+
+- How **Bring Your Own Key (BYOK)** works for Box agents
+- How Neon AI Gateway fits that model (one Neon credential instead of many lab keys)
+- Calling Neon from your host app while Box runs the sandbox
+- Pointing a custom agent inside the box at Neon AI Gateway
+
+---
+
+## Prerequisites
+
+- An [Upstash Box API key](/box/overall/quickstart#1-get-your-api-key)
+- A Neon project in a region where AI Gateway is available (`aws-us-east-2`, `aws-us-east-1`, `aws-eu-central-1`, or `aws-ap-southeast-1`)
+- A **paid** Neon plan with [AI Gateway prepaid credits](https://neon.com/docs/ai-gateway/prepaid-credits)
+
+---
+
+## How BYOK works in Upstash Box
+
+When you configure a built-in agent (`ClaudeCode`, `Codex`, or `OpenCode`), the `apiKey` field tells Box which credential pays for model calls. You can choose one of three modes:
+
+| Mode | Value | Who pays / owns the key |
+| --- | --- | --- |
+| Upstash-managed | `BoxApiKey.UpstashKey` | Upstash provides the provider key |
+| Console-stored | `BoxApiKey.StoredKey` | A key you saved in the Upstash Console |
+| **BYOK** | Your own secret string | You pass a provider (or gateway) API key directly |
+
+BYOK is the third mode: you bring the credential yourself.
+
+```typescript title="lib/box.ts"
+import { Agent, Box, BoxApiKey } from "@upstash/box"
+
+// Upstash-managed key
+await Box.create({
+  runtime: "node",
+  agent: {
+    harness: Agent.ClaudeCode,
+    model: "anthropic/claude-sonnet-4-6",
+    apiKey: BoxApiKey.UpstashKey,
+  },
+})
+
+// Key stored in the Upstash Console
+await Box.create({
+  runtime: "node",
+  agent: {
+    harness: Agent.ClaudeCode,
+    model: "anthropic/claude-sonnet-4-6",
+    apiKey: BoxApiKey.StoredKey,
+  },
+})
+
+// BYOK — your Anthropic / OpenAI / gateway credential
+await Box.create({
+  runtime: "node",
+  agent: {
+    harness: Agent.ClaudeCode,
+    model: "anthropic/claude-sonnet-4-6",
+    apiKey: process.env.ANTHROPIC_API_KEY!,
+  },
+})
+```
+
+```python title="box.py"
+import os
+from upstash_box import Agent, Box, BoxApiKey
+
+# Upstash-managed key
+Box.create(
+    runtime="node",
+    agent={
+        "harness": Agent.CLAUDE_CODE,
+        "model": "anthropic/claude-sonnet-4-6",
+        "api_key": BoxApiKey.UPSTASH_KEY,
+    },
+)
+
+# Key stored in the Upstash Console
+Box.create(
+    runtime="node",
+    agent={
+        "harness": Agent.CLAUDE_CODE,
+        "model": "anthropic/claude-sonnet-4-6",
+        "api_key": BoxApiKey.STORED_KEY,
+    },
+)
+
+# BYOK — your Anthropic / OpenAI / gateway credential
+Box.create(
+    runtime="node",
+    agent={
+        "harness": Agent.CLAUDE_CODE,
+        "model": "anthropic/claude-sonnet-4-6",
+        "api_key": os.environ["ANTHROPIC_API_KEY"],
+    },
+)
+```
+
+<Note>
+  Built-in Claude Code and Codex harnesses talk to Anthropic and OpenAI directly. For those harnesses, BYOK means an **Anthropic** or **OpenAI** key. To route inference through Neon AI Gateway instead, use a [custom agent](/box/overall/custom-agent) (or call Neon from your host app) as shown below.
+</Note>
+
+### Where Neon fits
+
+Neon AI Gateway is **not** traditional provider BYOK on Neon's side. You do **not** paste OpenAI or Anthropic keys into Neon. Neon authenticates you with a Neon credential (`nt_live_...`) that has the `ai_gateway:invoke` scope, and usage draws down [prepaid AI Gateway credits](https://neon.com/docs/ai-gateway/prepaid-credits) at the provider's published rates (no Neon markup).
+
+For Upstash Box, that Neon credential is still BYOK: you bring **one** Neon token instead of juggling separate Anthropic, OpenAI, and Google keys for multi-model apps.
+
+| Approach | Keys you manage | Where models are billed |
+| --- | --- | --- |
+| Direct provider BYOK | Anthropic / OpenAI / Google keys | Each lab account |
+| Neon AI Gateway | One Neon credential | Neon prepaid credits |
+| `BoxApiKey.UpstashKey` | None (Upstash-managed) | Upstash |
+
+---
+
+## Get Neon AI Gateway credentials
+
+Create a scoped credential and find your branch gateway host.
+
+```bash
+neon credentials create --scope ai_gateway:invoke --name upstash-box
+```
+
+Or in the Neon Console: **Connect** → **AI Gateway** → copy the snippet.
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+NEON_AI_GATEWAY_TOKEN=nt_live_xxxxxxxxxxxxxxxx
+NEON_AI_GATEWAY_BASE_URL=https://br-<name>-api.ai.<cell>.<region>.aws.neon.tech
+```
+
+`NEON_AI_GATEWAY_BASE_URL` is the **bare branch host** (scheme + host, no path). Append the dialect yourself:
+
+| Path | Use |
+| --- | --- |
+| `/v1` | OpenAI-compatible chat completions (all catalog models) |
+| `/openai/v1` | OpenAI Responses API |
+| `/anthropic` | Native Anthropic Messages (SDK appends `/v1/messages`) |
+| `/gemini` | Native Gemini `generateContent` |
+
+See [Neon AI Gateway authentication](https://neon.com/docs/ai-gateway/authentication) and [get started](https://neon.com/docs/ai-gateway/get-started) for full details.
+
+---
+
+## Pattern 1: Neon on the host, Box as the sandbox
+
+Keep the LLM call in your application and give the model Upstash Box tools (shell, files, preview). This matches the [Vercel AI SDK tools](/box/guides/ai-sdk-setup) guide, with Neon as the model provider.
+
+```bash
+npm install @upstash/box openai ai zod
+```
+
+```typescript title="lib/neon.ts"
+import OpenAI from "openai"
+
+export const neon = new OpenAI({
+  apiKey: process.env.NEON_AI_GATEWAY_TOKEN!,
+  baseURL: `${process.env.NEON_AI_GATEWAY_BASE_URL}/v1`,
+})
+```
+
+```typescript title="app/agent.ts"
+import { Box } from "@upstash/box"
+import { neon } from "../lib/neon"
+
+const box = await Box.create({ runtime: "node" })
+
+const completion = await neon.chat.completions.create({
+  model: "claude-sonnet-4-6", // or gpt-5-mini, gemini-3-flash, ...
+  messages: [
+    {
+      role: "user",
+      content:
+        "You have a Linux sandbox. Propose a shell command to print the Node version.",
+    },
+  ],
+})
+
+const command = completion.choices[0]?.message?.content?.trim()
+if (command) {
+  const run = await box.exec.command(command)
+  console.log(run.stdout)
+}
+
+await box.delete()
+```
+
+Swap the `model` string to change providers. No new SDK and no extra lab accounts — see the [Neon model catalog](https://neon.com/docs/ai-gateway/models).
+
+---
+
+## Pattern 2: Custom agent BYOK through Neon
+
+Use a [custom agent](/box/overall/custom-agent) when the model call must run **inside** the box and you want Neon AI Gateway as the BYOK backend.
+
+### 1. Create the box with Neon env vars
+
+```typescript title="lib/box.ts"
+import { Agent, Box } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    harness: Agent.Custom,
+    model: "claude-sonnet-4-6",
+    customHarness: {
+      command: "node",
+      args: ["/workspace/home/neon-agent.mjs"],
+      protocol: "box-sse-v1",
+    },
+  },
+  env: {
+    NEON_AI_GATEWAY_TOKEN: process.env.NEON_AI_GATEWAY_TOKEN!,
+    NEON_AI_GATEWAY_BASE_URL: process.env.NEON_AI_GATEWAY_BASE_URL!,
+  },
+  // Optional: lock egress to Neon + npm when installing deps
+  networkPolicy: {
+    mode: "custom",
+    allowedDomains: ["*.aws.neon.tech", "registry.npmjs.org"],
+  },
+})
+```
+
+```python title="box.py"
+import os
+from upstash_box import Agent, Box
+
+box = Box.create(
+    runtime="node",
+    agent={
+        "harness": Agent.CUSTOM,
+        "model": "claude-sonnet-4-6",
+        "custom_harness": {
+            "command": "node",
+            "args": ["/workspace/home/neon-agent.mjs"],
+            "protocol": "box-sse-v1",
+        },
+    },
+    env={
+        "NEON_AI_GATEWAY_TOKEN": os.environ["NEON_AI_GATEWAY_TOKEN"],
+        "NEON_AI_GATEWAY_BASE_URL": os.environ["NEON_AI_GATEWAY_BASE_URL"],
+    },
+    network_policy={
+        "mode": "custom",
+        "allowed_domains": ["*.aws.neon.tech", "registry.npmjs.org"],
+    },
+)
+```
+
+<Warning>
+  Environment variables are visible to all code inside the box. If you run untrusted code, prefer [Attach Headers](/box/overall/attach-headers) for the Neon host instead of putting `NEON_AI_GATEWAY_TOKEN` in `env`.
+</Warning>
+
+### 2. Write a harness that calls Neon
+
+```typescript title="neon-agent.mjs"
+import { runCustomHarness } from "@upstash/box"
+
+await runCustomHarness(async ({ prompt, model, sessionId }, emit) => {
+  const base = process.env.NEON_AI_GATEWAY_BASE_URL
+  const token = process.env.NEON_AI_GATEWAY_TOKEN
+  if (!base || !token) {
+    throw new Error("NEON_AI_GATEWAY_BASE_URL and NEON_AI_GATEWAY_TOKEN are required")
+  }
+
+  emit.tool({ name: "neon_chat_completions", input: { model } })
+
+  const response = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      stream: true,
+    }),
+  })
+
+  if (!response.ok || !response.body) {
+    const text = await response.text()
+    throw new Error(`Neon AI Gateway error ${response.status}: ${text}`)
+  }
+
+  let output = ""
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split("\n")
+    buffer = lines.pop() ?? ""
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue
+      const data = line.slice(6).trim()
+      if (data === "[DONE]") continue
+      const json = JSON.parse(data)
+      const delta = json.choices?.[0]?.delta?.content
+      if (delta) {
+        output += delta
+        emit.text(delta)
+      }
+    }
+  }
+
+  return { output, sessionId }
+})
+```
+
+Install the harness into the box, then run a task:
+
+```typescript
+import { readFile } from "node:fs/promises"
+
+await box.files.write({
+  path: "neon-agent.mjs",
+  content: await readFile("./neon-agent.mjs", "utf8"),
+})
+
+const run = await box.agent.run({
+  prompt: "Create index.txt that says hello from Neon AI Gateway",
+})
+
+console.log(run.result)
+```
+
+---
+
+## Keep the Neon token out of the container
+
+With [Attach Headers](/box/overall/attach-headers), the host injects `Authorization` for matching Neon hosts. Requests from inside the box never see the token.
+
+```typescript title="lib/box.ts"
+const host = new URL(process.env.NEON_AI_GATEWAY_BASE_URL!).host
+
+const box = await Box.create({
+  runtime: "node",
+  attachHeaders: {
+    [host]: {
+      Authorization: `Bearer ${process.env.NEON_AI_GATEWAY_TOKEN!}`,
+    },
+  },
+  env: {
+    // Safe to expose: host only, no secret
+    NEON_AI_GATEWAY_BASE_URL: process.env.NEON_AI_GATEWAY_BASE_URL!,
+  },
+})
+```
+
+Your harness then calls the gateway **without** setting `Authorization` itself — the proxy adds it. Do not also send a placeholder Authorization header from inside the box, or you will overwrite the attached value.
+
+---
+
+## List models at runtime
+
+Discover what your Neon branch can serve:
+
+```bash
+curl "$NEON_AI_GATEWAY_BASE_URL/v1/models" \
+  -H "Authorization: Bearer $NEON_AI_GATEWAY_TOKEN"
+```
+
+Use the returned `id` values (for example `claude-sonnet-4-6`, `gpt-5-mini`, `gemini-3-flash`) as the `model` field. The live catalog is also on [models.dev](https://models.dev/providers/neon).
+
+---
+
+## Next steps
+
+- [Neon AI Gateway overview](https://neon.com/docs/ai-gateway/overview)
+- [Neon AI Gateway authentication](https://neon.com/docs/ai-gateway/authentication)
+- [Custom agents](/box/overall/custom-agent)
+- [Attach Headers](/box/overall/attach-headers)
+- [Vercel AI SDK tools](/box/guides/ai-sdk-setup)
+- [Security & secrets](/box/overall/security)
