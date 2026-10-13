@@ -1,0 +1,123 @@
+---
+title: $rrf
+description: Merge the results of several retrievers with Reciprocal Rank Fusion.
+---
+
+The `$rrf` retriever runs several retrievers and merges their results with Reciprocal Rank Fusion
+(RRF). Each retriever ranks its own results. A document gets points from every retriever that returns
+it, so documents that rank high in several retrievers come first.
+
+Use `$rrf` for hybrid search, to merge a full-text query with an [`$ann`](./ann) semantic search. It
+also merges full-text queries only, or `$ann` retrievers only.
+
+```json
+{
+  "$rrf": {
+    "retrievers": [
+      { "description": "noise cancelling headphones" },
+      { "$ann": { "field": "description", "query": "noise cancelling headphones" } }
+    ]
+  }
+}
+```
+
+### Parameters
+
+| Parameter | Description | Default |
+|---|---|---|
+| `retrievers` | Required. 2 to 10 retrievers to merge. Each entry is a query object, a [`$standard`](./standard), or an [`$ann`](./ann). | |
+| `rankConstant` | An integer between `1` and `2147483647`. Higher values give lower-ranked results more influence. | `60` |
+| `window` | An integer between `1` and `11000`. The number of results each retriever contributes, and the maximum number of merged results. See [Paging](#paging). | `LIMIT` |
+
+### Scoring
+
+Each retriever that returns a document adds `weight / (rankConstant + rank)` to its score. `rank` is the
+position of the document in that retriever's results, starting at `1`.
+
+These scores are small numbers. Compare them only with other results of the same query.
+
+### Weights
+
+A weight scales how much a retriever adds to the score. All retrievers have a weight of `1` by default.
+
+- To set the weight of a query object, wrap it in [`$standard`](./standard).
+- An `$ann` retriever takes `weight` directly.
+- A weight must be `0` or greater. With a weight of `0`, the documents of that retriever stay in the
+  results, but the retriever adds nothing to their score.
+
+### Paging
+
+`window` sets how deep `$rrf` looks:
+
+- Each retriever contributes up to `window` results, and the merged list is cut at `window`.
+- When `window` is not set, it is equal to `LIMIT`, which is `10` by default.
+- `LIMIT` cannot be larger than `window`.
+- To use `OFFSET`, set `window`. A page that starts at or after `window` is empty.
+
+Keep the same `window` on every page so that pages do not overlap.
+
+### Examples
+
+#### Hybrid Search
+
+Merge a full-text query and a semantic search on the same field:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling headphones"}, {"$ann": {"field": "description", "query": "noise cancelling headphones"}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+#### Weighted Hybrid Search
+
+Give the full-text query twice the weight of the semantic search:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"$standard": {"query": {"description": "noise cancelling headphones"}, "weight": 2}}, {"$ann": {"field": "description", "query": "noise cancelling headphones", "weight": 1}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+#### Full-Text Queries Only
+
+`$rrf` does not need `HYBRID` fields:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"name": "wireless headphones"}, {"description": "bluetooth"}]}}'
+```
+</Tab>
+
+</Tabs>
+
+#### Paging Through Results
+
+Set `window` and keep it the same on every page:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+# Page 1
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "headphones"}, {"$ann": {"field": "description", "query": "headphones"}}], "window": 100}}' LIMIT 10
+
+# Page 2
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "headphones"}, {"$ann": {"field": "description", "query": "headphones"}}], "window": 100}}' LIMIT 10 OFFSET 10
+```
+</Tab>
+
+</Tabs>
+
+See [Query Options](./overview#query-options) for the `SEARCH.QUERY` options that work with `$rrf`, and
+[Counting and Aggregations](./overview#counting-and-aggregations) for `SEARCH.COUNT` and
+`SEARCH.AGGREGATE`.
