@@ -1,0 +1,61 @@
+---
+title: Overview
+description: Retrievers run one or more queries and return the top documents.
+---
+
+A retriever runs one or more queries and returns the top documents. Queries describe which documents
+match. Retrievers decide how those documents are found and ranked.
+
+### Available Retrievers
+
+| Retriever | Description |
+|---|---|
+| [`$rrf`](./rrf) | Merges the results of 2 to 10 retrievers with Reciprocal Rank Fusion. |
+| [`$ann`](./ann) | Finds the documents whose `HYBRID` field is closest in meaning to a text. |
+| [`$standard`](./standard) | Runs one query. Use it inside `$rrf` to set the weight of a query. |
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+# Search a HYBRID field by meaning
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "something to block noise on a flight"}}'
+
+# Merge a full-text query and a semantic search
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling headphones"}, {"$ann": {"field": "description", "query": "noise cancelling headphones"}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+### Where to Use Retrievers
+
+A retriever must be the only key of its object. You can use it in two places:
+
+- At the root of the query in [`SEARCH.QUERY`](/redis/commands/search/search-query),
+  [`SEARCH.COUNT`](/redis/commands/search/search-count), and
+  [`SEARCH.AGGREGATE`](/redis/commands/search/search-aggregate).
+- As an entry of `$rrf` `retrievers`.
+
+A retriever cannot be used inside a query, such as inside `$must`, `$should`, `$mustNot`, or an `$ann`
+filter. `$rrf` cannot be used inside another `$rrf`.
+
+### Query Options
+
+Some `SEARCH.QUERY` options do not work with retrievers:
+
+| Option | With `$rrf` | With `$ann` at the root |
+|---|---|---|
+| `ORDERBY` | Not supported | Not supported |
+| `SCOREFUNC` | Supported. It changes the scores of the full-text queries before their results are merged. It does not change `$ann` results. | Not supported |
+| `HIGHLIGHT` | Supported | Not supported |
+
+`$standard` at the root supports all options, the same as a plain query.
+
+### Counting and Aggregations
+
+`SEARCH.COUNT` and `SEARCH.AGGREGATE` accept `$rrf` when it has no `$ann` retriever.
+They use every document that matches any of the queries. `window` and `weight` do not apply, so the
+count can be larger than the number of results `SEARCH.QUERY` returns.
+
+`SEARCH.COUNT` and `SEARCH.AGGREGATE` do not support `$ann`.

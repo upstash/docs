@@ -1,0 +1,69 @@
+---
+title: $ann
+description: Find the documents whose HYBRID field is closest in meaning to a text.
+---
+
+The `$ann` retriever runs a semantic search. It finds the documents whose `HYBRID` field is closest in
+meaning to the query text, even when they use different words.
+
+`$ann` works only on [`HYBRID` fields](/redis/search/schema-definition#hybrid-fields).
+
+```json
+{ "$ann": { "field": "description", "query": "something to block noise on a flight" } }
+```
+
+### Parameters
+
+| Parameter | Description | Default |
+|---|---|---|
+| `field` | Required. The `HYBRID` field to search. | |
+| `query` | Required. The text to search for. Cannot be empty. | |
+| `profile` | Accuracy and speed trade-off: `fast`, `balanced`, or `precise`. | `balanced` |
+| `filter` | A query object. Only documents that match it are returned. | No filter |
+| `weight` | A number, `0` or greater. It scales how much the results add to the `$rrf` score. Valid only inside [`$rrf`](./rrf). | `1` |
+
+### Results
+
+Results are ordered by similarity. Scores are between `0` and `1`, and a higher score means a closer
+match.
+
+`$ann` has no score threshold. It returns up to `LIMIT` documents, even when they are not similar to
+the query.
+
+The search is approximate. `profile` trades speed for accuracy, the same way as `PROFILE` in
+[`VECTOR.QUERY`](/redis/commands/vector/vector-query). Paging with `OFFSET` is also approximate, so two
+pages of the same query can overlap or miss a document.
+
+### Filtering
+
+Use `filter` to search within a subset of documents. The filter is a regular query object, so all
+[query operators](/redis/search/query-operators/boolean-operators/overview) work in it. The filter
+selects the documents, but it does not change their scores.
+
+### Indexing
+
+Search updates the embeddings before the full-text index. Right after a write, `$ann` can return a
+document that full-text queries do not find yet.
+[`SEARCH.WAITINDEXING`](/redis/commands/search/search-waitindexing) waits for both.
+
+### Examples
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+# Search by meaning
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "something to block noise on a flight"}}'
+
+# Search by meaning within cheap sports products
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "headphones for running", "filter": {"category": "sports", "price": {"$lt": 100}}}}'
+
+# Use the most accurate profile, and return keys and scores only
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "headphones for running", "profile": "precise"}}' NOCONTENT
+```
+</Tab>
+
+</Tabs>
+
+See [Query Options](./overview#query-options) for the `SEARCH.QUERY` options that `$ann` does not
+support.
