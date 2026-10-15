@@ -1,0 +1,127 @@
+---
+title: "Per-User Cards: Ordering, Status, and Atomic Updates"
+description: "How to model and CRUD ordered, priority-based items per user on Upstash Redis — a sorted set for ordering, a hash per item for status and timestamps, and Lua for atomic transitions."
+---
+
+A common web pattern is to give every user a list of ordered items — cards on a
+board, tasks, or saved posts — where each item has a status, timestamps, and an
+order the user controls. This tutorial shows one way to model that on Upstash
+Redis: a sorted set per user for ordering, a hash per item for its mutable
+fields, and a small amount of Lua for the transitions that must be atomic.
+
+### Data Model
+
+Two Redis structures cover the shape:
+
+- A sorted set `user:<id>:cards` holds the user's card ids, ordered by a score
+  you choose. Lower score = earlier in the list, so the user's drag-and-drop
+  order is just the score.
+- A hash `card:<id>` per card holds the mutable fields: `title`, `status`,
+  `createdAt`, `updatedAt`.
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+type Card = { title: string; status: string; createdAt: number; updatedAt: number };
+```
+
+### Create a card
+
+Add the card to the user's sorted set and write its hash. Hash writes are atomic
+per field, and `ZADD` on a new member is an insert, so the two steps have no
+conflict in practice.
+
+```ts
+async function createCard(userId: string, title: string) {
+  const cardId = `card:${crypto.randomUUID()}`;
+  const now = Date.now();
+
+  // Ordered by score; 0 = front of the list.
+  await redis.zadd(`user:${userId}:cards`, { score: 0, member: cardId });
+  await redis.hset(cardId, { title, status: "active", createdAt: now, updatedAt: now });
+
+  return cardId;
+}
+```
+
+### List cards in order
+
+`ZRANGE` returns the ids in score order; fetch every card hash with `HGETALL`
+(the SDK decodes each hash member into an object):
+
+```ts
+async function listCards(userId: string) {
+  const ids = await redis.zrange(`user:${userId}:cards`, 0, -1);
+  const cards = await Promise.all(
+    ids.map((id) => redis.hgetall<Card>(id)),
+  );
+  return cards.filter(Boolean);
+}
+```
+
+### Reorder
+
+Reordering is a `ZADD` that overwrites the score of each moved card. `zadd`
+accepts several `{ score, member }` pairs in one call, so a whole drag ends up
+in a single request:
+
+```ts
+async function moveCard(userId: string, order: string[]) {
+  // order: the full list of card ids, first to last. Score = position.
+  const pairs = order.map((member, index) => ({ score: index, member }));
+  await redis.zadd(`user:${userId}:cards`, ...pairs);
+}
+```
+
+### Change status atomically
+
+Status transitions must be atomic: two requests moving the same card from
+`active` to `done` at once must not race. The check-and-write is a Lua script,
+which Upstash executes atomically (see [Key-Based
+Locking](/redis/features/key-locking) for how the engine serializes scripts).
+
+```ts
+const TRANSITION = `
+  if redis.call('HGET', KEYS[1], 'status') ~= ARGV[1] then
+    return 0
+  end
+  redis.call('HSET', KEYS[1], 'status', ARGV[2], 'updatedAt', ARGV[3])
+  return 1
+`;
+
+async function transitionCard(cardId: string, from: string, to: string) {
+  // Returns 1 when the transition happened, 0 when the card was not in `from`.
+  return redis.eval<number>(TRANSITION, [cardId], [from, to, Date.now().toString()]);
+}
+```
+
+`redis.eval` runs the script on the server, so the read of `status`, the check,
+and the write happen in one step — no other client can observe an in-between
+state.
+
+### Delete a card
+
+Removing a card must drop both structures, so do both under one transaction:
+
+```ts
+async function deleteCard(userId: string, cardId: string) {
+  await redis.multi()
+    .zrem(`user:${userId}:cards`, cardId)
+    .del(cardId)
+    .exec();
+}
+```
+
+### What about priority?
+
+An item that should sort above others of the same position gets a lower score —
+the half-interval trick used in [Redis Queue](/redis/tutorials/redis_queue), or
+a priority offset subtracted from a timestamp, works the same way on a
+per-user set.
+
+For a fuller treatment of sorted-set scheduling, status transitions, and atomic
+claims — including retries and dead-letter handling — the
+[Redis Queue tutorial](/redis/tutorials/redis_queue) builds the same primitives
+into a production job queue.
