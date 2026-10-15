@@ -55073,6 +55073,8 @@ SEARCH.AGGREGATE <name> '<json_filter>' '<json_aggregations>'
 
 `<json_filter>` is an [Upstash JSON filter](/docs/redis/search/querying). The command accepts an index name or alias. See [Aggregations](/docs/redis/search/aggregations) for the aggregation object and supported operators.
 
+`<json_filter>` can be an `$rrf` retriever when it has no `$ann` retriever. The command then aggregates every document that matches any of the queries. The `window` and `weight` parameters of `$rrf` do not apply. `$ann` is not supported.
+
 ## Response
 
 In `redis-cli --json`, the response is an object keyed by aggregation alias:
@@ -55665,6 +55667,8 @@ SEARCH.COUNT <name> '<json_filter>'
 
 `<json_filter>` is an [Upstash JSON filter](/docs/redis/search/querying). The command accepts an index name or alias.
 
+`<json_filter>` can be an `$rrf` retriever when it has no `$ann` retriever. The command then counts every document that matches any of the queries. The `window` and `weight` parameters of `$rrf` do not apply. `$ann` is not supported.
+
 ## Response
 
 Returns the number of matching documents as an integer. Returns `-1` if the index does not exist.
@@ -55842,11 +55846,11 @@ Source: https://upstash.com/docs/redis/commands/search/search-create
 
 Use `SEARCH.CREATE` to create a search index over JSON, hash, or string values, or over a stream.
 
-`ON` names the type of key to index and `PREFIX` the key prefixes to watch, so the index covers exactly the keys that match both, including keys written after it was created. The `SCHEMA` then declares which fields are searchable and how: `TEXT` fields are analyzed for full-text search, with `NOSTEM` and `NOTOKENIZE` to turn parts of that off, numeric, boolean, and date fields are matched exactly and can be marked `FAST` to make them usable for sorting and scoring, and `KEYWORD` and `FACET` fields are kept whole for exact matching and faceting. `FROM` maps a schema field to a differently named field in the document.
+`ON` names the type of key to index and `PREFIX` the key prefixes to watch, so the index covers exactly the keys that match both, including keys written after it was created. The `SCHEMA` then declares which fields are searchable and how: `TEXT` fields are analyzed for full-text search, with `NOSTEM` and `NOTOKENIZE` to turn parts of that off, numeric, boolean, and date fields are matched exactly and can be marked `FAST` to make them usable for sorting and scoring, and `KEYWORD` and `FACET` fields are kept whole for exact matching and faceting. `HYBRID` fields are `TEXT` fields that also store a vector embedding, so [`$ann`](/docs/redis/search/retrievers/ann) can search them by meaning. `FROM` maps a schema field to a differently named field in the document.
 
 `ON STREAM` indexes a single stream instead of a set of keys, so it takes the stream key in place of `PREFIX`. Each entry added with [`XADD`](/docs/redis/commands/streams/xadd) becomes a document whose fields are the entry's fields and whose ID is the entry ID, which is what makes a stream searchable by content rather than only by ID range. Entries removed from the stream leave the index as well.
 
-`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields can index multiple values. Store the field as a JSON array; for hash and stream indexes, store the complete JSON-encoded array in the field string. Each valid element is indexed separately, and a document matches when any element matches. `BOOL` and `FACET` fields remain single-valued.
+`TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields can index multiple values. Store the field as a JSON array; for hash and stream indexes, store the complete JSON-encoded array in the field string. Each valid element is indexed separately, and a document matches when any element matches. `BOOL` and `FACET` fields remain single-valued.
 
 Creating an index starts an initial scan of the matching keys, which `SKIPINITIALSCAN` skips when you only want to index data written from now on. `EXISTSOK` makes the command succeed instead of failing when the index already exists.
 
@@ -55867,6 +55871,7 @@ SEARCH.CREATE <name>
   [EXISTSOK]
   SCHEMA
     <field> TEXT [NOSTEM] [NOTOKENIZE] [FROM <source_field>]
+    | <field> HYBRID [NOSTEM] [FROM <source_field>]
     | <field> <U64|I64|F64|BOOL|DATE> [FAST] [FROM <source_field>]
     | <field> <KEYWORD|FACET> [FROM <source_field>]
     [...]
@@ -55879,7 +55884,7 @@ SEARCH.CREATE <name>
 | `ON` | Type of Redis value to index: `JSON`, `HASH`, `STRING`, or `STREAM`. A `STRING` value must contain a JSON object. |
 | `PREFIX` | One or more key prefixes. Prefixes in the same index cannot be duplicates or overlap one another. Not allowed with `ON STREAM`. |
 | `<stream-key>` | Key of the stream to index. Required with `ON STREAM`, and given in place of `PREFIX`. |
-| `LANGUAGE` | Stemming language for `TEXT` fields. Defaults to `english`. Supported values are `arabic`, `danish`, `dutch`, `english`, `finnish`, `french`, `german`, `greek`, `hungarian`, `italian`, `norwegian`, `portuguese`, `romanian`, `russian`, `spanish`, `swedish`, `tamil`, and `turkish`. |
+| `LANGUAGE` | Stemming language for `TEXT` and `HYBRID` fields. Defaults to `english`. Supported values are `arabic`, `danish`, `dutch`, `english`, `finnish`, `french`, `german`, `greek`, `hungarian`, `italian`, `norwegian`, `portuguese`, `romanian`, `russian`, `spanish`, `swedish`, `tamil`, and `turkish`. |
 | `SKIPINITIALSCAN` | Create the index without scanning existing keys. Later writes are still indexed. |
 | `EXISTSOK` | Return `0` when an index with the same data type, prefixes, and schema already exists. A configuration mismatch returns an error. |
 | `SCHEMA` | One or more field definitions. `SCHEMA` must be the final top-level clause. |
@@ -55889,11 +55894,11 @@ SEARCH.CREATE <name>
 | Option | Valid field types | Description |
 | --- | --- | --- |
 | `FAST` | `U64`, `I64`, `F64`, `BOOL`, `DATE` | Store the field for operations such as sorting and aggregations. Score functions accept `FAST` fields of type `U64`, `I64`, or `F64`. |
-| `NOSTEM` | `TEXT` | Index text without stemming words to their roots. |
+| `NOSTEM` | `TEXT`, `HYBRID` | Index text without stemming words to their roots. |
 | `NOTOKENIZE` | `TEXT` | Index the entire value as one token. |
 | `FROM <source_field>` | All field types | Read the value from a different document field or nested dot path while exposing it under `<field>` in the index. |
 
-`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields accept multiple values. A field whose value is a JSON array is indexed element by element, and a document matches when any valid element matches. See [Multi-value fields](/docs/redis/search/schema-definition#multi-value-fields) for data-type-specific input formats and query behavior.
+`TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields accept multiple values. A field whose value is a JSON array is indexed element by element, and a document matches when any valid element matches. See [Multi-value fields](/docs/redis/search/schema-definition#multi-value-fields) for data-type-specific input formats and query behavior.
 
 ## Response
 
@@ -55910,6 +55915,9 @@ SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST
 
 # Index a stream instead of a set of keys
 SEARCH.CREATE events ON STREAM stream:events SCHEMA message TEXT level KEYWORD
+
+# Index a field for hybrid search
+SEARCH.CREATE articles ON JSON PREFIX 1 article: SCHEMA title TEXT body HYBRID
 ```
 
 </Accordion>
@@ -56179,7 +56187,7 @@ Returns index metadata as alternating field names and values. The response conta
 | `name` | The index name. |
 | `type` | The indexed Redis value type: `HASH`, `JSON`, `STRING`, or `STREAM`. |
 | `prefixes` | Key prefixes included in the index. For a `STREAM` index, the single stream key it covers. |
-| `language` | Stemming language used by `TEXT` fields. |
+| `language` | Stemming language used by `TEXT` and `HYBRID` fields. |
 | `indexSize` | Current index size in bytes. |
 | `pendingUpdates` | Number of updates waiting to be indexed. |
 | `schema` | Field definitions, including `FROM`, `NOSTEM`, `NOTOKENIZE`, and `FAST` options where present. |
@@ -56955,7 +56963,9 @@ The filter is a JSON object naming index fields and the values to match, so `'{"
 
 Results come back ordered by relevance score by default. `ORDERBY` sorts by a `FAST` field instead, `LIMIT` and `OFFSET` page through the matches, `SELECT` and `NOCONTENT` cut the payload down to the fields you need, `HIGHLIGHT` wraps the matched terms in tags for display, and `SCOREFUNC` blends numeric fields such as popularity or recency into the relevance score.
 
-For multi-value `TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields, a document matches when any indexed array element satisfies the condition. Phrase queries on `TEXT` stay within one array element. `HIGHLIGHT` preserves the stored array shape in the response, marking matching string elements while leaving other elements unchanged. See [Multi-value queries](/docs/redis/search/querying#multi-value-fields) for examples.
+For multi-value `TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields, a document matches when any indexed array element satisfies the condition. Phrase queries on `TEXT` stay within one array element. `HIGHLIGHT` preserves the stored array shape in the response, marking matching string elements while leaving other elements unchanged. See [Multi-value queries](/docs/redis/search/querying#multi-value-fields) for examples.
+
+The query can also be a retriever. `$ann` searches `HYBRID` fields by meaning, and `$rrf` merges the results of several retrievers into one list. With `$ann`, results are ordered by similarity. With `$rrf`, they are ordered by the merged score. See [Retrievers](/docs/redis/search/retrievers/overview) for details.
 
 See [Querying and filtering](/docs/redis/search/querying) for the full filter syntax and worked examples, and [`SEARCH.COUNT`](/docs/redis/commands/search/search-count) when you only need the number of matches.
 
@@ -56992,6 +57002,8 @@ SEARCH.QUERY <name> '<query>'
 | `SCOREFUNC` | Adjust relevance scores using one or more `FAST` numeric fields. `FACTOR` defaults to `1`, `MISSING` to `0`, `MODIFIER` to `NONE`, `SCOREMODE` to `SUM`, and `COMBINEMODE` to `SUM`. | Disabled |
 <Warning>
   `NOCONTENT` cannot be combined with `SELECT` or `HIGHLIGHT`. `SCOREFUNC` cannot be combined with `ORDERBY`. Inside `MULTI` or `EVAL`, the command requires `NOCONTENT`.
+
+  `ORDERBY` cannot be used with `$rrf` or `$ann`. `SCOREFUNC` and `HIGHLIGHT` cannot be used with `$ann` at the root of the query. With `$rrf`, `LIMIT` cannot be larger than the `$rrf` `window`, and `OFFSET` requires an explicit `window`. See [Query Options](/docs/redis/search/retrievers/overview#query-options) and [`$rrf` paging](/docs/redis/search/retrievers/rrf#paging).
 </Warning>
 
 See [Querying and filtering](/docs/redis/search/querying) for the JSON filter operators and detailed query examples.
@@ -57001,7 +57013,7 @@ See [Querying and filtering](/docs/redis/search/querying) for the JSON filter op
 Returns an array of `[key, score, content]` results, or `null` if the index does not exist:
 
 * `key` is the Redis key of the matching document.
-* `score` is the floating-point relevance score.
+* `score` is the floating-point relevance score. With `$ann`, it is the similarity score. With `$rrf`, it is the merged score.
 * `content` is an array of field-value pairs. JSON indexes return `[["$", "<json_string>"]]`; hash indexes return `[["field", "value"], ...]`.
 
 When `NOCONTENT` is used, each result is `[key, score]`. When `SELECT` is used, only fields that exist in the document appear in the content. For an index created with `ON STREAM`, `key` is the entry ID of the matching stream entry.
@@ -57023,6 +57035,9 @@ A highlighted multi-valued field keeps its array form in the reply. Highlighting
 
 ```bash
 SEARCH.QUERY products '{"name": "wireless"}' LIMIT 10 OFFSET 0
+
+# Merge a full-text query and a semantic search on a HYBRID field
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "wireless"}, {"$ann": {"field": "description", "query": "wireless"}}]}}' LIMIT 10
 ```
 
 </Accordion>
@@ -79249,7 +79264,7 @@ Source: https://upstash.com/docs/redis/commands/vector/overview
 
 A vector index stores embeddings under IDs and answers nearest-neighbour queries over them. It lives at an ordinary Redis key, so [`EXISTS`](/docs/redis/commands/generic/exists), [`EXPIRE`](/docs/redis/commands/generic/expire), and [`DEL`](/docs/redis/commands/generic/del) apply to it, and a key already holding another type cannot be turned into one.
 
-[`VECTOR.CREATE`](/docs/redis/commands/vector/vector-create) fixes two properties for the life of the index: `DIM`, the number of elements every vector must have, and `METRIC`, how similarity is measured. Use `COSINE` when only the direction of the embedding matters, which is the usual choice for text embeddings, `DOT` when magnitude carries meaning, and `EUCLIDEAN` when straight-line distance does. Neither can be changed afterwards; to change one, drop the index and create it again.
+[`VECTOR.CREATE`](/docs/redis/commands/vector/vector-create) fixes two properties for the life of the index: `DIM`, the number of elements every vector must have, and `METRIC`, how similarity is measured. Use `COSINE` when only the direction of the embedding matters, which is the usual choice for text embeddings, `DOT` when your embeddings are already normalized to unit vectors, and `EUCLIDEAN` when straight-line distance does. Neither can be changed afterwards; to change one, drop the index and create it again.
 
 [`VECTOR.ADD`](/docs/redis/commands/vector/vector-add) upserts a vector under an ID and [`VECTOR.QUERY`](/docs/redis/commands/vector/vector-query) returns the nearest IDs with a score. Scores are normalized to `0` through `1` for every metric, so a higher score always means a closer match. Search is approximate: `PROFILE` moves a query along the recall and latency trade-off without changing anything stored.
 
@@ -79342,6 +79357,7 @@ VECTOR.ADD <index> <id>
 ## Important points
 
 * The three vector forms are mutually exclusive and exactly one must be given. `VALUES` is the readable form; `FP32` avoids decimal formatting on a binary-safe connection; `BASE64-FP32` carries the same bytes through JSON, which is what the [REST API](/docs/redis/features/restapi) needs.
+* On a `DOT` index, the vector must be a unit vector. Other vectors are rejected.
 * A vector whose length differs from the index's `DIM` returns `ERR vector dimension mismatch: expected <dim>, got <n>`.
 * An index that does not exist returns `ERR Index <index> is not found`. Create it with [`VECTOR.CREATE`](/docs/redis/commands/vector/vector-create) first.
 
@@ -79697,7 +79713,7 @@ Source: https://upstash.com/docs/redis/commands/vector/vector-create
 
 Use `VECTOR.CREATE` to create a vector index at a key.
 
-`DIM` fixes the number of elements every vector in the index must have, and `METRIC` fixes how similarity between two vectors is measured. Both are permanent: they decide how the index is built, so they cannot be changed afterwards, and a vector whose length does not match `DIM` is rejected at write time. Pick `COSINE` when only the direction of the embedding matters, which is the usual choice for text embeddings, `DOT` when magnitude carries meaning, and `EUCLIDEAN` when straight-line distance in the embedding space does.
+`DIM` fixes the number of elements every vector in the index must have, and `METRIC` fixes how similarity between two vectors is measured. Both are permanent: they decide how the index is built, so they cannot be changed afterwards, and a vector whose length does not match `DIM` is rejected at write time. Pick `COSINE` when only the direction of the embedding matters, which is the usual choice for text embeddings, `DOT` when your embeddings are already normalized to unit vectors, and `EUCLIDEAN` when straight-line distance in the embedding space does.
 
 The index occupies its key like any other Redis value, so [`EXISTS`](/docs/redis/commands/generic/exists), [`EXPIRE`](/docs/redis/commands/generic/expire), and [`DEL`](/docs/redis/commands/generic/del) work on it, and creating one at a key already used by another type fails. `EXISTSOK` makes the command succeed instead of failing when the index is already there, which keeps a start-up path idempotent; a mismatch in dimension or metric is still an error.
 
@@ -79721,6 +79737,7 @@ VECTOR.CREATE <index> DIM <dimension> METRIC <COSINE | EUCLIDEAN | DOT> [EXISTSO
 ## Important points
 
 * `DIM` and `METRIC` are both required and cannot be changed after the index is created. Use [`VECTOR.DROP`](/docs/redis/commands/vector/vector-drop) and create it again to change either.
+* A `DOT` index accepts only unit vectors, which are vectors with a magnitude of `1`. [`VECTOR.ADD`](/docs/redis/commands/vector/vector-add) and [`VECTOR.QUERY`](/docs/redis/commands/vector/vector-query) reject other vectors. Normalize your vectors first, or use `COSINE`.
 * Without `EXISTSOK`, creating an index that already exists returns `ERR Index <index> already exists`.
 * With `EXISTSOK`, an existing index with a different dimension or metric returns `ERR Index <index> already exists with a different configuration`.
 
@@ -80665,6 +80682,7 @@ VECTOR.QUERY <index> TOPK <count>
 * `TOPK` and the query vector are both required; the clauses may be given in any order.
 * The three vector forms are mutually exclusive and exactly one must be given. `VALUES` is the readable form; `FP32` avoids decimal formatting on a binary-safe connection; `BASE64-FP32` carries the same bytes through JSON, which is what the [REST API](/docs/redis/features/restapi) needs.
 * Results are ordered by score, highest first. Scores are normalized to `0` through `1` for every metric.
+* On a `DOT` index, the query vector must be a unit vector. Other vectors are rejected.
 * A query vector whose length differs from the index's `DIM` returns `ERR vector dimension mismatch: expected <dim>, got <n>`.
 
 ## Response
@@ -85125,6 +85143,9 @@ Source: https://upstash.com/docs/redis/overall/changelog
 
 <Update label="October 2026">
 * Added the [Insights](/docs/redis/howto/insights) tab to the console for databases with Prod Pack: request routing between regions, client IP ranges and SDKs, latency and throughput charts, usage against plan limits, Lua script statistics and a keyspace analysis.
+* Added [hybrid search](/docs/redis/search/hybrid-search) to Redis Search. `HYBRID` fields store a vector embedding, so you can search them by meaning.
+* Added [retrievers](/docs/redis/search/retrievers/overview) to Redis Search queries. [`$rrf`](/docs/redis/search/retrievers/rrf) merges the results of several retrievers into one list, [`$ann`](/docs/redis/search/retrievers/ann) searches `HYBRID` fields by meaning, and [`$standard`](/docs/redis/search/retrievers/standard) sets the weight of a query inside `$rrf`.
+* A [`$mustNot`](/docs/redis/search/query-operators/boolean-operators/must-not) query with no other conditions now matches every document it does not exclude, with a score of `0`. Inside `$should`, `$mustNot` now matches the documents it does not exclude. Before, `$mustNot` matched no documents in both cases.
 </Update>
 
 <Update label="September 2026">
@@ -94197,7 +94218,7 @@ SEARCH.AGGREGATE products '{}' '{"avg_price": {"$avg": {"field": "price"}}, "by_
 
 Use `filter` to restrict which documents participate in the aggregation.
 
-Filtering uses the same query syntax as [queries](./querying).
+Filtering uses the same query syntax as [queries](./querying). `$ann` is not supported.
 
 <Tabs>
 
@@ -95061,6 +95082,116 @@ SEARCH.COUNT products '{"price": {"$lt": 150}}'
   </Card>
 </CardGroup>
 
+# Hybrid Search
+Source: https://upstash.com/docs/redis/search/hybrid-search
+
+Full-text search finds documents that contain the words of your query. Semantic search finds documents
+with a similar meaning, even when they use different words. Hybrid search runs both and merges the
+results into one list.
+
+Hybrid search has two parts:
+
+* `HYBRID` fields are indexed for both full-text and semantic search.
+* [Retrievers](/docs/redis/search/retrievers/overview) run the searches. [`$ann`](/docs/redis/search/retrievers/ann)
+  runs a semantic search, and [`$rrf`](/docs/redis/search/retrievers/rrf) merges the results of several
+  retrievers into one list.
+
+## Hybrid fields
+
+A `HYBRID` field is a `TEXT` field that also stores a vector embedding. Full-text queries work on it
+the same way as on a `TEXT` field, and `$ann` searches its embeddings by meaning. See
+[Hybrid Fields](/docs/redis/search/schema-definition#hybrid-fields) for the field options.
+
+* An index can have more than one `HYBRID` field.
+* If the text of a document cannot be embedded, the document is still searchable by its text.
+* `HYBRID` fields work with JSON, hash, string, and stream indexes.
+
+## Create an index
+
+Declare the fields you want to search by meaning as `HYBRID`:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description HYBRID category KEYWORD price F64 FAST
+```
+</Tab>
+
+</Tabs>
+
+## Add documents
+
+Write documents as usual. Search indexes them and creates their embeddings:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+JSON.SET product:1 $ '{"name": "Studio Headphones", "description": "Over-ear headphones with active noise cancelling", "category": "audio", "price": 199}'
+JSON.SET product:2 $ '{"name": "Travel Earplugs", "description": "Soft foam earplugs that keep airplane cabin sound out", "category": "travel", "price": 9}'
+JSON.SET product:3 $ '{"name": "Sport Earbuds", "description": "Sweat-proof wireless earbuds for running", "category": "sports", "price": 79}'
+
+# Wait until the documents are indexed
+SEARCH.WAITINDEXING products
+```
+</Tab>
+
+</Tabs>
+
+## Search by meaning
+
+Use [`$ann`](/docs/redis/search/retrievers/ann) to find the documents that are closest in meaning to a
+text. This query can find the earplugs, even though their description does not contain the word
+"noise":
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "block noise on a flight"}}'
+
+# Search by meaning within one category
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "headphones for running", "filter": {"category": "sports"}}}'
+```
+</Tab>
+
+</Tabs>
+
+## Combine full-text and semantic search
+
+Use [`$rrf`](/docs/redis/search/retrievers/rrf) to run a full-text query and a semantic search, and merge
+their results into one list. Documents that rank high in both come first:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling"}, {"$ann": {"field": "description", "query": "noise cancelling"}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+To give one side more influence, set its weight. A full-text query takes a weight when you wrap it in
+[`$standard`](/docs/redis/search/retrievers/standard):
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"$standard": {"query": {"description": "noise cancelling"}, "weight": 2}}, {"$ann": {"field": "description", "query": "noise cancelling"}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+## Next steps
+
+* See [Retrievers](/docs/redis/search/retrievers/overview) for all retriever parameters and rules.
+* See [Schema Definition](/docs/redis/search/schema-definition#hybrid-fields) for field types and options.
+* See [`SEARCH.QUERY`](/docs/redis/commands/search/search-query) for all query options.
+
 # Indices
 Source: https://upstash.com/docs/redis/search/index-management
 
@@ -95657,6 +95788,7 @@ Upstash Redis Search is our first extension beyond the official Redis spec. Usin
 * **Auto-Synchronization**: Once you created an index, all write operations are automatically tracked
 * **Intuitive Query Language**: A type-safe JSON-based query syntax with boolean operators, fuzzy matching, phrase queries,
   regex support, and more.
+* **Hybrid Search**: Search `HYBRID` fields by meaning, and merge full-text and semantic search results into one list
 * **Production-Ready Performance**: Built on Tantivy, a fast full-text search engine library written in Rust
 
 ## Next Steps
@@ -95682,6 +95814,13 @@ Upstash Redis Search is our first extension beyond the official Redis spec. Usin
     href="/redis/search/querying"
   >
     Learn the JSON-based query language with filters and operators
+  </Card>
+  <Card
+    title="Hybrid Search"
+    icon="layer-group"
+    href="/redis/search/hybrid-search"
+  >
+    Combine full-text and semantic search in one query
   </Card>
   <Card
     title="Searching Streams"
@@ -95902,19 +96041,25 @@ SEARCH.QUERY products '{"$must": {"name": "headphones", "inStock": true}}'
 Source: https://upstash.com/docs/redis/search/query-operators/boolean-operators/must-not
 
 The `$mustNot` operator excludes documents that match any of the specified conditions.
-It acts as a filter, removing matching documents from the result set.
 
-The `$mustNot` operator only filters results—it never adds documents to the result set.
-This means it must be combined with `$must` or `$should` to define which documents to search.
+How `$mustNot` works depends on the other conditions next to it:
 
-A query with only `$mustNot` returns no results because there is no base set to filter:
+* **With other conditions, such as `$must` or a field condition**: `$mustNot` filters the matching
+  documents. It removes the documents that match its conditions.
+* **On its own**: the query matches every document that `$mustNot` does not exclude. All of these
+  documents have a score of `0`.
+* **Inside `$should`**: `$mustNot` is one of the alternatives. It matches every document it does not
+  exclude, with a score of `0`.
 
 ```ts
-// This returns NO results - nothing to filter
+// Matches all documents except electronics, with a score of 0
 { $mustNot: { category: "electronics" } }
 
-// This works - $must provides the base set, $mustNot filters it
+// Matches in-stock documents, except electronics
 { $must: { inStock: true }, $mustNot: { category: "electronics" } }
+
+// Matches headphones, and every document that is not electronics with a score of 0
+{ $should: [{ name: "headphones" }, { $mustNot: { category: "electronics" } }] }
 ```
 
 ### Excluding Multiple Conditions
@@ -96006,7 +96151,8 @@ The operators work together as follows:
 2. **`$should`** adds optional conditions:
    * When used alone: documents must match at least one condition
    * When combined with `$must`: conditions become optional score boosters
-3. **`$mustNot`** filters out unwanted documents from the result set.
+3. **`$mustNot`** filters out unwanted documents from the result set. When used alone, it matches every
+   document it does not exclude.
 
 ### Combining Operators
 
@@ -97280,9 +97426,18 @@ or [`$fuzzy`](./query-operators/field-operators/fuzzy).
 
 ***
 
+### Hybrid Search
+
+Retrievers add semantic search to queries. The [`$ann`](/docs/redis/search/retrievers/ann) retriever
+searches `HYBRID` fields by meaning, and the [`$rrf`](/docs/redis/search/retrievers/rrf) retriever merges
+the results of several retrievers into one list. See [Hybrid Search](/docs/redis/search/hybrid-search) for a guide
+and [Retrievers](/docs/redis/search/retrievers/overview) for the reference.
+
+***
+
 ## Multi-value fields
 
-`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields can contain multiple values. A condition
+`TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields can contain multiple values. A condition
 matches the document when at least one array element matches it. The query value remains a single
 value; you do not need to search the whole stored array.
 
@@ -97789,6 +97944,301 @@ The highlighting feature works with indexed field names, which are the aliases.
 - [Overview](https://upstash.com/docs/redis/search/recipes/overview.md)
 - [User Directory](https://upstash.com/docs/redis/search/recipes/user-directory.md)
 
+# $ann
+Source: https://upstash.com/docs/redis/search/retrievers/ann
+
+The `$ann` retriever runs a semantic search. It finds the documents whose `HYBRID` field is closest in
+meaning to the query text, even when they use different words.
+
+`$ann` works only on [`HYBRID` fields](/docs/redis/search/schema-definition#hybrid-fields).
+
+```json
+{ "$ann": { "field": "description", "query": "something to block noise on a flight" } }
+```
+
+### Parameters
+
+| Parameter | Description | Default |
+|---|---|---|
+| `field` | Required. The `HYBRID` field to search. | |
+| `query` | Required. The text to search for. Cannot be empty. | |
+| `profile` | Accuracy and speed trade-off: `fast`, `balanced`, or `precise`. | `balanced` |
+| `filter` | A query object. Only documents that match it are returned. | No filter |
+| `weight` | A number, `0` or greater. It scales how much the results add to the `$rrf` score. Valid only inside [`$rrf`](./rrf). | `1` |
+
+### Results
+
+Results are ordered by similarity. Scores are between `0` and `1`, and a higher score means a closer
+match.
+
+`$ann` has no score threshold. It returns up to `LIMIT` documents, even when they are not similar to
+the query.
+
+The search is approximate. `profile` trades speed for accuracy, the same way as `PROFILE` in
+[`VECTOR.QUERY`](/docs/redis/commands/vector/vector-query). Paging with `OFFSET` is also approximate, so two
+pages of the same query can overlap or miss a document.
+
+### Filtering
+
+Use `filter` to search within a subset of documents. The filter is a regular query object, so all
+[query operators](/docs/redis/search/query-operators/boolean-operators/overview) work in it. The filter
+selects the documents, but it does not change their scores.
+
+### Indexing
+
+Search updates the embeddings before the full-text index. Right after a write, `$ann` can return a
+document that full-text queries do not find yet.
+[`SEARCH.WAITINDEXING`](/docs/redis/commands/search/search-waitindexing) waits for both.
+
+### Examples
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+# Search by meaning
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "something to block noise on a flight"}}'
+
+# Search by meaning within cheap sports products
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "headphones for running", "filter": {"category": "sports", "price": {"$lt": 100}}}}'
+
+# Use the most accurate profile, and return keys and scores only
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "headphones for running", "profile": "precise"}}' NOCONTENT
+```
+</Tab>
+
+</Tabs>
+
+See [Query Options](./overview#query-options) for the `SEARCH.QUERY` options that `$ann` does not
+support.
+
+# Overview
+Source: https://upstash.com/docs/redis/search/retrievers/overview
+
+A retriever runs one or more queries and returns the top documents. Queries describe which documents
+match. Retrievers decide how those documents are found and ranked.
+
+### Available Retrievers
+
+| Retriever | Description |
+|---|---|
+| [`$rrf`](./rrf) | Merges the results of 2 to 10 retrievers with Reciprocal Rank Fusion. |
+| [`$ann`](./ann) | Finds the documents whose `HYBRID` field is closest in meaning to a text. |
+| [`$standard`](./standard) | Runs one query. Use it inside `$rrf` to set the weight of a query. |
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+# Search a HYBRID field by meaning
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "something to block noise on a flight"}}'
+
+# Merge a full-text query and a semantic search
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling headphones"}, {"$ann": {"field": "description", "query": "noise cancelling headphones"}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+### Where to Use Retrievers
+
+A retriever must be the only key of its object. You can use it in two places:
+
+* At the root of the query in [`SEARCH.QUERY`](/docs/redis/commands/search/search-query),
+  [`SEARCH.COUNT`](/docs/redis/commands/search/search-count), and
+  [`SEARCH.AGGREGATE`](/docs/redis/commands/search/search-aggregate).
+* As an entry of `$rrf` `retrievers`.
+
+A retriever cannot be used inside a query, such as inside `$must`, `$should`, `$mustNot`, or an `$ann`
+filter. `$rrf` cannot be used inside another `$rrf`.
+
+### Query Options
+
+Some `SEARCH.QUERY` options do not work with retrievers:
+
+| Option | With `$rrf` | With `$ann` at the root |
+|---|---|---|
+| `ORDERBY` | Not supported | Not supported |
+| `SCOREFUNC` | Supported. It changes the scores of the full-text queries before their results are merged. It does not change `$ann` results. | Not supported |
+| `HIGHLIGHT` | Supported | Not supported |
+
+`$standard` at the root supports all options, the same as a plain query.
+
+### Counting and Aggregations
+
+`SEARCH.COUNT` and `SEARCH.AGGREGATE` accept `$rrf` when it has no `$ann` retriever.
+They use every document that matches any of the queries. `window` and `weight` do not apply, so the
+count can be larger than the number of results `SEARCH.QUERY` returns.
+
+`SEARCH.COUNT` and `SEARCH.AGGREGATE` do not support `$ann`.
+
+# $rrf
+Source: https://upstash.com/docs/redis/search/retrievers/rrf
+
+The `$rrf` retriever runs several retrievers and merges their results with Reciprocal Rank Fusion
+(RRF). Each retriever ranks its own results. A document gets points from every retriever that returns
+it, so documents that rank high in several retrievers come first.
+
+Use `$rrf` for hybrid search, to merge a full-text query with an [`$ann`](./ann) semantic search. It
+also merges full-text queries only, or `$ann` retrievers only.
+
+```json
+{
+  "$rrf": {
+    "retrievers": [
+      { "description": "noise cancelling headphones" },
+      { "$ann": { "field": "description", "query": "noise cancelling headphones" } }
+    ]
+  }
+}
+```
+
+### Parameters
+
+| Parameter | Description | Default |
+|---|---|---|
+| `retrievers` | Required. 2 to 10 retrievers to merge. Each entry is a query object, a [`$standard`](./standard), or an [`$ann`](./ann). | |
+| `rankConstant` | An integer between `1` and `2147483647`. Higher values give lower-ranked results more influence. | `60` |
+| `window` | An integer between `1` and `11000`. The number of results each retriever contributes, and the maximum number of merged results. See [Paging](#paging). | `LIMIT` |
+
+### Scoring
+
+Each retriever that returns a document adds `weight / (rankConstant + rank)` to its score. `rank` is the
+position of the document in that retriever's results, starting at `1`.
+
+These scores are small numbers. Compare them only with other results of the same query.
+
+### Weights
+
+A weight scales how much a retriever adds to the score. All retrievers have a weight of `1` by default.
+
+* To set the weight of a query object, wrap it in [`$standard`](./standard).
+* An `$ann` retriever takes `weight` directly.
+* A weight must be `0` or greater. With a weight of `0`, the documents of that retriever stay in the
+  results, but the retriever adds nothing to their score.
+
+### Paging
+
+`window` sets how deep `$rrf` looks:
+
+* Each retriever contributes up to `window` results, and the merged list is cut at `window`.
+* When `window` is not set, it is equal to `LIMIT`, which is `10` by default.
+* `LIMIT` cannot be larger than `window`.
+* To use `OFFSET`, set `window`. A page that starts at or after `window` is empty.
+
+Keep the same `window` on every page so that pages do not overlap.
+
+### Examples
+
+#### Hybrid Search
+
+Merge a full-text query and a semantic search on the same field:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling headphones"}, {"$ann": {"field": "description", "query": "noise cancelling headphones"}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+#### Weighted Hybrid Search
+
+Give the full-text query twice the weight of the semantic search:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"$standard": {"query": {"description": "noise cancelling headphones"}, "weight": 2}}, {"$ann": {"field": "description", "query": "noise cancelling headphones", "weight": 1}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+#### Full-Text Queries Only
+
+`$rrf` does not need `HYBRID` fields:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"name": "wireless headphones"}, {"description": "bluetooth"}]}}'
+```
+</Tab>
+
+</Tabs>
+
+#### Paging Through Results
+
+Set `window` and keep it the same on every page:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+# Page 1
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "headphones"}, {"$ann": {"field": "description", "query": "headphones"}}], "window": 100}}' LIMIT 10
+
+# Page 2
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "headphones"}, {"$ann": {"field": "description", "query": "headphones"}}], "window": 100}}' LIMIT 10 OFFSET 10
+```
+</Tab>
+
+</Tabs>
+
+See [Query Options](./overview#query-options) for the `SEARCH.QUERY` options that work with `$rrf`, and
+[Counting and Aggregations](./overview#counting-and-aggregations) for `SEARCH.COUNT` and
+`SEARCH.AGGREGATE`.
+
+# $standard
+Source: https://upstash.com/docs/redis/search/retrievers/standard
+
+The `$standard` retriever runs one query. Use it inside [`$rrf`](./rrf) to set the weight of a query.
+
+```json
+{ "$standard": { "query": { "name": "headphones" }, "weight": 2 } }
+```
+
+### Parameters
+
+| Parameter | Description | Default |
+|---|---|---|
+| `query` | Required. A query object. See [Queries](/docs/redis/search/querying). | |
+| `weight` | A number, `0` or greater. It scales how much the query adds to the `$rrf` score. Valid only inside `$rrf`. | `1` |
+
+### Plain Query Objects
+
+A plain query object works the same as `$standard` without a weight. Use `$standard` only when you need
+to set a weight.
+
+These two `$rrf` retrievers give the same results:
+
+```json
+{ "$rrf": { "retrievers": [{ "name": "headphones" }, { "description": "wireless" }] } }
+
+{ "$rrf": { "retrievers": [{ "$standard": { "query": { "name": "headphones" } } }, { "$standard": { "query": { "description": "wireless" } } }] } }
+```
+
+### Examples
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+# Give the name match twice the weight of the description match
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"$standard": {"query": {"name": "headphones"}, "weight": 2}}, {"description": "headphones"}]}}'
+
+# Same as SEARCH.QUERY products '{"name": "headphones"}'
+SEARCH.QUERY products '{"$standard": {"query": {"name": "headphones"}}}'
+```
+</Tab>
+
+</Tabs>
+
 # Schemas
 Source: https://upstash.com/docs/redis/search/schema-definition
 
@@ -97810,6 +98260,7 @@ import { Redis, s } from "@upstash/redis"
 | `s.date()`    | `DATE`                        | Date/time field                                           | Yes           | Yes             | Yes                                | No                                      |
 | `s.boolean()` | `BOOL`                        | Boolean field                                             | Yes           | No              | No                                 | No                                      |
 | `s.facet()`   | `FACET`                       | Hierarchical path-based field                             | No            | No              | No                                 | No (only `$eq`, `$in`)                  |
+| -             | `HYBRID`                      | Full-text field that also supports semantic search        | No            | Yes             | No                                 | `$smart`, `$phrase`, `$fuzzy`, `$regex` |
 
 <Note>
 In the TypeScript SDK, `s.number()` defaults to `F64`. You can specify `s.number("U64")` or
@@ -97882,8 +98333,9 @@ const schema = s.object({
 ## Multi-value fields
 
 A document field can contain several values without a separate array type in the schema. Declare the
-field as `TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, or `DATE`, then store its value as a JSON array.
-Search indexes every valid array element under the same field.
+field as `TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, or `DATE`, then store its value as a JSON array.
+Search indexes every valid array element under the same field. For a `HYBRID` field, `$ann` uses one
+embedding of all elements together.
 
 For example, this schema accepts several tags, descriptions, prices, and restock dates per product:
 
@@ -98053,6 +98505,29 @@ SEARCH.CREATE idx ON JSON PREFIX 1 prefix: SCHEMA tag KEYWORD
 * When you need range operators (`$gt`, `$gte`, `$lt`, `$lte`) on string values
 * When the entire string should be treated as a single unit (no word splitting)
 * For tags, labels, status codes, or any string that should match exactly
+
+***
+
+## Hybrid Fields
+
+The `HYBRID` field type is a `TEXT` field that also supports semantic search. Search creates a
+vector embedding of the field value, and the [`$ann`](/docs/redis/search/retrievers/ann)
+retriever searches these embeddings by meaning. Full-text queries work on the field the same way as
+on a `TEXT` field.
+
+`HYBRID` fields accept the `NOSTEM` and `FROM` options.
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description HYBRID
+```
+</Tab>
+
+</Tabs>
+
+See [Hybrid Search](/docs/redis/search/hybrid-search) for how to query `HYBRID` fields.
 
 ***
 
@@ -98532,12 +99007,12 @@ Redis stores stream field values as strings. Search converts each value accordin
 * `U64`, `I64`, and `F64` fields require values in the corresponding numeric format.
 * `BOOL` fields accept `true` or `false`.
 * `DATE` fields require an RFC 3339 timestamp, such as `2026-08-24T09:30:00Z`.
-* `TEXT`, `KEYWORD`, and `FACET` fields use string values.
+* `TEXT`, `HYBRID`, `KEYWORD`, and `FACET` fields use string values.
 
 Missing fields, empty values, and values that cannot be converted are omitted from the indexed
 document. If an entry has no valid schema fields, it is not added to the index.
 
-`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields also accept JSON-encoded arrays. Each valid
+`TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields also accept JSON-encoded arrays. Each valid
 element is indexed as a separate value of the same field. For example, the `service` field can contain
 more than one service:
 
