@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -85,12 +85,35 @@ interface Entry {
   kind: "mdx" | "openapi";
 }
 
+/** A navigation entry with the group names above it, below its tab or product. */
+interface NavPage {
+  trail: string[];
+  entry: Entry;
+}
+
+/**
+ * A product root: a top-level directory with an `index.mdx`, served at
+ * `/docs/<dir>`. It gets its own `<dir>/llms.txt` listing the pages of every
+ * navigation product whose pages mostly live in that directory.
+ */
+interface ProductRoot {
+  dir: string;
+  title: string;
+  description?: string;
+  /** Products in this directory, the one with the most pages first. */
+  products: { name: string; pages: NavPage[] }[];
+}
+
 const entries: Entry[] = [];
 const openApiSpecs: { url: string }[] = [];
+/** Navigation entries per tab or product name, in sidebar order. */
+const navPages = new Map<string, NavPage[]>();
 
 addMdxEntry("README");
 
 let currentGroupDepth = 0;
+let currentRoot = "";
+const currentTrail: string[] = [];
 
 for (const item of walkNavigation({ docsRoot: DOCS_ROOT })) {
   handle(item);
@@ -99,27 +122,45 @@ for (const item of walkNavigation({ docsRoot: DOCS_ROOT })) {
 addOrphanMdxFiles();
 entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
+const productRoots = collectProductRoots();
+
 writeLlmsTxt();
 writeLlmsFullTxt();
 
 console.log(`Wrote ${LLMS_TXT}`);
 console.log(`Wrote ${LLMS_FULL_TXT}`);
 
+for (const root of productRoots) {
+  const file = join(DOCS_ROOT, root.dir, "llms.txt");
+  writeFileSync(file, productLlmsTxt(root));
+  console.log(`Wrote ${file}`);
+}
+removeStaleProductLlmsTxts();
+
 function handle(item: WalkItem): void {
   if (item.type === "group") {
     currentGroupDepth = item.depth;
+    if (item.depth === 0) {
+      currentRoot = item.group;
+      currentTrail.length = 0;
+    } else {
+      currentTrail.length = item.depth - 1;
+      currentTrail.push(item.group);
+    }
     return;
   }
 
   if (item.type === "openapi") {
     for (const op of expandOpenApi(DOCS_ROOT, item.source, item.directory)) {
-      entries.push({
+      const entry: Entry = {
         title: op.title,
         path: op.path,
         shortDescription: firstParagraph(op.description),
         fullBody: openApiBody(item.source, op.method, op.apiPath, op.description),
         kind: "openapi",
-      });
+      };
+      entries.push(entry);
+      addNavPage(entry, item.depth);
     }
     if (item.directory && currentGroupDepth === 2) {
       openApiSpecs.push({ url: `${SITE_URL}/${item.source}` });
@@ -128,13 +169,85 @@ function handle(item: WalkItem): void {
   }
 
   // type === "page"
-  entries.push({
+  const entry: Entry = {
     title: item.metadata.title,
     path: item.path,
     shortDescription: firstParagraph(item.metadata.description),
     fullBody: item.content,
     kind: "mdx",
+  };
+  entries.push(entry);
+  addNavPage(entry, item.depth);
+}
+
+function addNavPage(entry: Entry, depth: number): void {
+  const pages = navPages.get(currentRoot) ?? [];
+  pages.push({ trail: currentTrail.slice(0, depth - 1), entry });
+  navPages.set(currentRoot, pages);
+}
+
+/**
+ * Assigns each tab or product to the top-level directory most of its pages
+ * live in, and keeps the directories that have an `index.mdx`.
+ */
+function collectProductRoots(): ProductRoot[] {
+  const roots = new Map<string, ProductRoot>();
+  for (const [name, pages] of navPages) {
+    const counts = new Map<string, number>();
+    for (const { entry } of pages) {
+      const dir = entry.path.split("/")[0];
+      counts.set(dir, (counts.get(dir) ?? 0) + 1);
+    }
+    const dir = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const indexFile = dir && join(DOCS_ROOT, dir, "index.mdx");
+    if (!indexFile || !existsSync(indexFile)) continue;
+    let root = roots.get(dir);
+    if (!root) {
+      const { metadata } = parseFrontmatter(readFileSync(indexFile, "utf-8"));
+      root = {
+        dir,
+        title: metadata.title || titleFromBasename(dir),
+        description: firstParagraph(metadata.description),
+        products: [],
+      };
+      roots.set(dir, root);
+    }
+    root.products.push({ name, pages });
+  }
+  for (const root of roots.values()) {
+    root.products.sort((a, b) => b.pages.length - a.pages.length);
+  }
+  return [...roots.values()].sort((a, b) => (a.dir < b.dir ? -1 : 1));
+}
+
+/**
+ * `<dir>/llms.txt`: the product's pages under one heading per navigation
+ * group (`Group > Nested group`), in order of first appearance in the sidebar. A top-level group named after
+ * the product is left out of the heading. Products that share the directory
+ * with a larger one (Rate Limit lives under redis/) get their name in front.
+ */
+function productLlmsTxt(root: ProductRoot): string {
+  const sections = new Map<string, Entry[]>();
+  const seen = new Set<string>();
+  root.products.forEach(({ name, pages }, i) => {
+    for (const { trail, entry } of pages) {
+      if (seen.has(entry.path)) continue;
+      seen.add(entry.path);
+      const groups = trail[0] === name ? trail.slice(1) : trail;
+      const heading = (i === 0 ? groups : [name, ...groups]).join(" > ") || name;
+      sections.set(heading, [...(sections.get(heading) ?? []), entry]);
+    }
   });
+
+  const lines: string[] = [`# ${root.title}`, ""];
+  if (root.description) lines.push(`> ${root.description}`, "");
+  lines.push(
+    `Every ${root.title} page, grouped by sidebar section. Links point to the Markdown version of each page; drop the \`.md\` suffix for HTML. The index of all Upstash docs is ${SITE_URL}/llms.txt. Search them with GET ${SITE_URL}/search?q=<query>.`,
+  );
+  for (const [heading, sectionEntries] of sections) {
+    lines.push("", `## ${heading}`, "", ...sectionEntries.map(bullet));
+  }
+  return lines.join("\n") + "\n";
 }
 
 function addMdxEntry(path: string): void {
@@ -177,14 +290,21 @@ function writeLlmsTxt(): void {
   const lines: string[] = ["# Upstash Documentation", ""];
   lines.push(PREAMBLE, "");
   lines.push(SEARCH_SECTION, "");
+  if (productRoots.length > 0) {
+    lines.push("## Products", "", "Each product has a smaller index with only its own pages:", "");
+    for (const root of productRoots) {
+      const url = `${SITE_URL}/${root.dir}/llms.txt`;
+      lines.push(
+        root.description
+          ? `- [${root.title}](${url}): ${root.description}`
+          : `- [${root.title}](${url})`,
+      );
+    }
+    lines.push("");
+  }
   lines.push("## Docs", "");
   for (const e of entries) {
-    const url = `${SITE_URL}/${e.path}.md`;
-    lines.push(
-      e.shortDescription
-        ? `- [${e.title}](${url}): ${e.shortDescription}`
-        : `- [${e.title}](${url})`,
-    );
+    lines.push(bullet(e));
   }
   if (openApiSpecs.length > 0) {
     lines.push("", "## OpenAPI Specs", "");
@@ -193,6 +313,29 @@ function writeLlmsTxt(): void {
     }
   }
   writeFileSync(LLMS_TXT, lines.join("\n") + "\n");
+}
+
+/** Deletes `<dir>/llms.txt` files left behind by directories that are no longer product roots. */
+function removeStaleProductLlmsTxts(): void {
+  const dirs = new Set(productRoots.map((root) => root.dir));
+  for (const entry of readdirSync(DOCS_ROOT, { withFileTypes: true })) {
+    if (!entry.isDirectory() || dirs.has(entry.name) || SKIP_DIRS.has(entry.name)) continue;
+    const file = join(DOCS_ROOT, entry.name, "llms.txt");
+    if (!existsSync(file)) continue;
+    unlinkSync(file);
+    console.log(`Removed ${file}`);
+  }
+}
+
+/** `- [title](url.md): description`, the line format of every llms.txt index. */
+function bullet(e: Entry): string {
+  const url = pageUrl(e.path, ".md");
+  return e.shortDescription ? `- [${e.title}](${url}): ${e.shortDescription}` : `- [${e.title}](${url})`;
+}
+
+/** Published URL of a page. `<dir>/index` is served at `/<dir>`. */
+function pageUrl(path: string, suffix = ""): string {
+  return `${SITE_URL}/${path.replace(/\/index$/, "")}${suffix}`;
 }
 
 function isExcludedFromFullTxt(path: string): boolean {
@@ -220,12 +363,10 @@ function writeLlmsFullTxt(): void {
   chunks.push(`${SEARCH_SECTION}\n\n`);
   for (const e of entries) {
     if (isExcludedFromFullTxt(e.path)) {
-      const url = `${SITE_URL}/${e.path}.md`;
-      const desc = e.shortDescription ? `: ${e.shortDescription}` : "";
-      chunks.push(`- [${e.title}](${url})${desc}\n`);
+      chunks.push(`${bullet(e)}\n`);
       continue;
     }
-    const url = `${SITE_URL}/${e.path}`;
+    const url = pageUrl(e.path);
     const body =
       e.kind === "mdx"
         ? normalizeMdxBody(e.fullBody)

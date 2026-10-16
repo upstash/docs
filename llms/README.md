@@ -18,17 +18,20 @@ llms/
     └── check.ts       # rebuilds and fails if the files are out of date
 ```
 
-Outputs are written to the docs root:
+Outputs:
 
-- `docs/llms.txt`
-- `docs/llms-full.txt`
+- `llms.txt` and `llms-full.txt` at the docs root
+- `<product>/llms.txt` for every product root: a top-level directory with an
+  `index.mdx`, served at `/docs/<product>`. It lists the pages of each
+  navigation product whose pages mostly live in that directory, grouped by
+  sidebar group. The root `llms.txt` links them under `## Products`.
 
 ## Scripts
 
 ```sh
 npm install      # one-time, from this folder
-npm run build    # regenerate llms.txt and llms-full.txt
-npm run check    # rebuild, then exit non-zero if either file changed
+npm run build    # regenerate every llms.txt and llms-full.txt
+npm run check    # rebuild, then exit non-zero if any file changed
 ```
 
 `check` is what the GitHub workflow runs on every PR. If it finds the files
