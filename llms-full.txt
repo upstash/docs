@@ -14453,6 +14453,12 @@ not being used anymore; you should delete it. You can delete the API keys in the
 
 **Stats:** We will provide reports based on usage of your API keys.
 
+# Analyze Backup
+Source: https://upstash.com/docs/devops/developer-api/redis/backup/analyze_backup
+
+/devops/developer-api/openapi.yaml post /redis/backup-analysis/{id}/{backupid}
+This endpoint starts the offline analysis of a completed backup. The analysis scans the backup without touching the running database and takes minutes for large backups; poll the GET endpoint until the state is completed or failed. Available for databases on a Pro plan or with the Production Pack; other databases get 404. Not available for RDB exports, backups over 200 GiB, HIPAA databases or regional databases, nor for a backup whose analysis is already pending or completed.
+
 # Create Backup
 Source: https://upstash.com/docs/devops/developer-api/redis/backup/create_backup
 
@@ -14476,6 +14482,12 @@ Source: https://upstash.com/docs/devops/developer-api/redis/backup/enable_dailyb
 
 /devops/developer-api/openapi.yaml patch /redis/enable-dailybackup/{id}
 This endpoint enables daily backup for a Redis database.
+
+# Get Backup Analysis
+Source: https://upstash.com/docs/devops/developer-api/redis/backup/get_backup_analysis
+
+/devops/developer-api/openapi.yaml get /redis/backup-analysis/{id}/{backupid}
+This endpoint returns the state of a backup's analysis and, once completed, the report. Daily backups of databases on a Pro plan or with the Production Pack are analyzed automatically when they complete, except on regional and HIPAA databases and for backups over 200 GiB.
 
 # List Backup
 Source: https://upstash.com/docs/devops/developer-api/redis/backup/list_backup
@@ -14547,11 +14559,23 @@ Source: https://upstash.com/docs/devops/developer-api/redis/get_database
 /devops/developer-api/openapi.yaml get /redis/database/{id}
 This endpoint gets details of a database.
 
+# Get Database Insights
+Source: https://upstash.com/docs/devops/developer-api/redis/get_database_insights
+
+/devops/developer-api/openapi.yaml get /redis/insights/{id}
+This endpoint returns the Insights series of a database: service latency percentiles, read, write, engine, replication, lock-wait and Lua latency, expired entries, replication lag, throughput, bandwidth and disk size, for the whole database, one replica or every region, with each series' latest window compared to the one before it, and how much the limit, security and Lua counters grew over the period. Latencies are in milliseconds. Available for databases on a Pro plan or with the Production Pack.
+
 # Get Database Stats
 Source: https://upstash.com/docs/devops/developer-api/redis/get_database_stats
 
 /devops/developer-api/openapi.yaml get /redis/stats/{id}
 This endpoint gets detailed stats of a database.
+
+# Get Database Traffic
+Source: https://upstash.com/docs/devops/developer-api/redis/get_database_traffic
+
+/devops/developer-api/openapi.yaml get /redis/traffic/{id}
+This endpoint reports where a database's traffic comes from over a period. Available for databases on a Pro plan or with the Production Pack.
 
 # List Databases
 Source: https://upstash.com/docs/devops/developer-api/redis/list_databases
@@ -82989,7 +83013,7 @@ This guide will walk you through the steps to seamlessly connect your Datadog ac
 <Check >
 **Integration Scope**
 
-Upstash Datadog Integration only covers Pro databases or those included in the Enterprise Plan.
+Upstash Datadog Integration only covers Pro databases, databases with the Production Pack, and those included in the Enterprise Plan.
 
 </Check>
 
@@ -83049,6 +83073,38 @@ Once logged in, navigate to the "Integration" tab and continue with Datadog part
 Upstash will suspend all metric publishing process after the you remove Datadog Integration.
 
 After removing the integration on the Upstash side, it's crucial to go to your Datadog account and remove any related API keys or configurations associated with the integration.
+
+## Metrics Published
+
+Metrics arrive in Datadog under `upstash.db.<metric>` with `team` and `database` tags, refreshed every few minutes. Latencies are in milliseconds over the last ten minutes; a latency with no samples in that window is not sent.
+
+| Metric | What it measures |
+|---|---|
+| `dailyprocessedcommands`, `dailyreadcommands`, `dailywritecommands` | Commands today, and the read and write share |
+| `monthlycommands` | Commands this month |
+| `readpersecond`, `writepersecond`, `throughput` | Commands per second by type, and in total |
+| `hitrate`, `missrate` | Key hits and misses per second |
+| `connections`, `restconnections` | Open TCP and REST connections |
+| `totaldatasize`, `keyspace` | Data size in bytes, and number of keys |
+| `dailybandwidth`, `dailybandwidthin`, `dailybandwidthout` | Bandwidth today, total and by direction, bytes |
+| `monthlycost` | Cost this month |
+| `overalllatencyp50`, `overalllatencyp99` | Simple service latency: server time from reading a request to writing its response, for requests where every command is a single-key read or write; multi-key commands, scripts and cross-region requests are excluded |
+| `readlatencyp50`, `readlatencyp99`, `writelatencyp50`, `writelatencyp99` | Read and write request latency |
+| `overalllatencyp90` | Simple service latency, p90 |
+| `enginelatencyp99` | Time the engine spent executing commands, excluding network and queueing |
+| `lockwaitlatencyp99` | Time commands waited for the execution lock |
+| `replicationlatencyp999` | Time writes were held because of replication, p99.9 |
+| `lualatencyp50`, `lualatencyp99` | Lua script execution latency |
+| `throttledcommands` | Writes delayed today because persistence was falling behind |
+| `authfailures` | Refused authentications and commands sent before authenticating, per second, over TCP and REST. REST requests over the rate limit are counted here as well |
+| `restcommands` | Commands received over REST today |
+| `expiredentriespermin` | Keys removed per minute because their TTL passed |
+| `replicationlag` | Updates written on the primary that have not yet been sent to the replica |
+| `oversizerequests`, `oversizerecordaccesses` | Requests over the request size limit, and accesses to keys over the record size limit, today |
+| `keyspacenotifications`, `connectionsopened` | Keyspace notifications sent and TCP connections opened, per second |
+| `luaexecutions`, `luacommands` | Script executions today, and the commands they ran |
+| `luafailures`, `luatimeouts`, `luamemorylimits` | Script runs today that failed, timed out or hit the memory limit |
+| `undeliverable` | Requests and connections the Upstash proxies could not hand to any replica today |
 
 ## Pricing
 
@@ -83265,6 +83321,8 @@ Requests enter Upstash at the region closest to the client, whether or not your 
 
 Cross-region requests are expected. Writes always go to the primary region, and reads go to the nearest replica. If many reads cross regions, adding a [read region](/docs/redis/features/globaldatabase) close to those clients reduces their latency.
 
+The routes, client networks and client types are also available from the [Get Database Traffic](/docs/devops/developer-api/redis/get_database_traffic) endpoint.
+
 ### Where clients connect from
 
 The IP ranges your requests came from, busiest first, with the cloud each range belongs to, the entry region its requests used, and its share of the sampled requests. Hover a source to see its cloud region, when the range has one. Ranges are matched against the IP ranges that AWS, Google Cloud and Cloudflare publish. Serverless platforms show up as the cloud they run on, for example Vercel functions as AWS. Other addresses show up as Internet.
@@ -83300,6 +83358,8 @@ Charts of throughput, bandwidth, disk size, latency, expired entries and replica
 | Expired entries | Keys removed per minute because their TTL passed. |
 | Replication lag | Updates written on the primary that have not been sent yet to the replica in each region. |
 
+The same series, with each chart's comparison and anomalies, are available from the [Get Database Insights](/docs/devops/developer-api/redis/get_database_insights) endpoint.
+
 ## Limits
 
 How close the database is to the limits of its plan, and the requests a limit refused or delayed.
@@ -83332,7 +83392,7 @@ An analysis of what your keys hold, made from an offline scan of the latest anal
 * **Biggest keys**: the ten largest keys, with their type, size, element count and remaining TTL. Pick a type to see the largest keys of that type.
 * **Expiration profile**: keys grouped by remaining TTL range, with the number of keys, their share of the keys that have a TTL, and their size. The last row is the total of every key with a TTL.
 
-The keyspace is analyzed after every daily backup, so [daily backups](/docs/redis/features/backup) must be turned on. The analysis is not available for HIPAA-compliant databases.
+The keyspace is analyzed after every daily backup, so [daily backups](/docs/redis/features/backup) must be turned on. The analysis is not available for HIPAA-compliant or regional databases. To analyze another backup, use the [Analyze Backup](/docs/devops/developer-api/redis/backup/analyze_backup) endpoint.
 
 # Use IP Allowlist
 Source: https://upstash.com/docs/redis/howto/ipallowlist
@@ -83528,54 +83588,47 @@ Total number of requests per day, over the last 5 days.
 
 ## Database Usage
 
-If you click on the "Usage" tab, you can see more detailed charts about the usage of your database.
+The "Usage" tab of a database shows detailed charts. Pick the period at the top of the tab: the past hour, 3 hours, 12 hours, day, 3 days or week. Databases on a Pro plan or with the Production Pack can also select the past month. Charts refresh every minute.
+
+### Top Commands
+
+The ten most executed commands over the period, one line each.
 
 ### Throughput
 
   <img alt="Redis throughput chart" width="100%" />
 
-Throughput chart shows throughput values for reads, writes and commands (all
-commands including reads and writes) per second. The chart covers the last 1
-hour and it is updated every 10 seconds.
+Reads, writes and all commands per second.
 
 ### Service Time Latency
 
   <img alt="Redis latency chart" width="100%" />
 
-This chart shows the processing time of the request between it is received by
-the server and the response is sent to the caller. It shows the times in max,
-mean, min, 99.9 percentile and 99.99 percentile. The chart covers the last 1
-hour and it is updated every 10 seconds.
+The time between a request reaching the server and its response leaving it, for reads and writes separately, as the median (p50) and the 99th percentile (p99). Every latency chart describes a sliding ten-minute window, so it reacts within minutes; an idle database shows no data rather than zero.
 
 ### Data Size
 
   <img alt="Redis data size chart" width="100%" />
 
-This chart shows the data size of your database. The chart covers the last 24
-hours and it is updated every 10 seconds.
+The data size of your database on disk.
 
 ### Connections
 
   <img alt="Redis connection count chart" width="100%" />
 
-This chart shows the number of active client connections. It shows the number of
-open connections plus the number of short-lived connections that started and
-terminated in 10 seconds period. The chart covers the last 1 hour and it is
-updated every 10 seconds.
+Open TCP connections and open REST connections.
 
 ### Key Space
 
   <img alt="Redis keyspace chart" width="100%" />
 
-This chart shows the number of keys. The chart covers the last 24 hours and it
-is updated every 10 seconds.
+The number of keys in the database.
 
 ### Hits / Misses
 
   <img alt="Redis cache hits and misses chart" width="100%" />
 
-This chart shows the number of hits per second and misses per second. The chart
-covers the last 1 hour and it is updated every 10 seconds.
+Key hits and misses per second.
 
 # Migrate Regional to Global Database
 Source: https://upstash.com/docs/redis/howto/migratefromregionaltoglobal
@@ -84503,7 +84556,7 @@ To monitor your Upstash database in Prometheus and visualize metrics in Grafana,
 <Check >
 **Integration Scope**
 
-Upstash Prometheus Integration only covers Pro databases or those included in the Enterprise Plan.
+Upstash Prometheus Integration covers Pro databases, databases included in the Enterprise Plan, and databases with the Production Pack.
 
 </Check>
 
@@ -84594,6 +84647,48 @@ Select your Prometheus data source when prompted, and complete the import.
 Please check this address to access Upstash Grafana Dashboard <a href="https://grafana.com/grafana/dashboards/22257-upstash-redis-dashboard/"> Dashboard </a>
 
 ![grafana-dashboard.png]()
+
+## **Available Metrics**
+
+Every series is named `upstash_db_metrics` and carries the labels `database_id`, `database_name`, `account_id`, `replica_id` and `metric_name`. Query one metric by its `metric_name` label, for example `upstash_db_metrics{metric_name="daily_processed_commands"}`. A database with several replicas reports one series per replica; sum or take the max over `replica_id` as the metric suggests. Metrics counted by the Upstash proxies carry `replica_id="proxy-<region>"`, one series per region of proxies.
+
+Latencies are in nanoseconds and describe the last ten minutes. Daily counters reset at midnight UTC, monthly counters at the start of the month, and totals since the database started.
+
+| `metric_name` | What it measures |
+|---|---|
+| `persistence_entry_count` | Number of keys |
+| `total_data_size` | Data size on disk, bytes |
+| `total_processed_commands` | Commands processed since start |
+| `daily_processed_commands`, `daily_read_commands`, `daily_write_commands` | Commands today, and the read and write share |
+| `monthly_read_commands`, `monthly_write_commands` | Commands this month by type |
+| `monthly_processed_console_commands` | Commands issued from the console this month, not billed |
+| `non_billable_commands` | Commands excluded from billing |
+| `daily_rest_commands` | Commands received over REST today |
+| `command_<COMMAND>` | Executions of each command today, for example `command_GET` |
+| `daily_used_bandwidth`, `daily_bandwidth_ingress`, `daily_bandwidth_egress` | Bandwidth today, total and by direction, bytes |
+| `monthly_used_bandwidth` | Bandwidth this month, bytes |
+| `current_client_count`, `total_client_count` | Open TCP connections, and connections opened since start |
+| `rest_conn_count` | Open REST connections |
+| `total_hits`, `total_misses` | Key hits and misses since start |
+| `simple_service_latency_p50`, `_p90`, `_p99` | Simple service latency: server time from reading a request to writing its response, for requests where every command is a single-key read or write; multi-key commands, scripts and cross-region requests are excluded |
+| `read_service_latency_p50`, `_p99`, `_p99_9` | Read request latency |
+| `write_service_latency_p50`, `_p99`, `_p99_9` | Write request latency |
+| `command_latency_p50`, `_p99` | Time the engine spent executing commands, excluding network and queueing |
+| `wait_latency_p99` | Time commands waited for the execution lock |
+| `replication_latency_p99_9` | Time writes were held because of replication: waiting for the backup to acknowledge, or backpressure while a replica catches up |
+| `replication_backup_lag` | Updates written on the primary that have not yet been sent to the replica |
+| `lua_latency_p50`, `_p99`, `_p99_9`, `_p99_99` | Lua script execution latency |
+| `daily_script_commands`, `daily_commands_in_scripts` | Script executions today, and the commands they ran |
+| `lua_script_count`, `lua_script_failures`, `lua_script_timeouts`, `lua_script_memory_limits` | Scripts tracked today, and how many runs failed, timed out or hit the memory limit |
+| `throttled_commands` | Writes delayed today because persistence was falling behind |
+| `auth_failures`, `rest_auth_failures` | Refused authentications over TCP and REST, and commands sent before authenticating, since the database started. REST requests over the rate limit are counted in `rest_auth_failures` as well |
+| `tcp_over_size_requests`, `rest_over_size_requests` | Requests rejected for exceeding the request size limit today |
+| `over_size_record_accesses` | Accesses to keys above the record size limit today |
+| `monitor_count`, `monitored_commands` | Clients running MONITOR, and commands they observed |
+| `keyspace_notifications` | Keyspace notifications sent since start |
+| `inmemory_memory_expired_entry_count`, `persistence_expired_entry_count` | Keys removed because their TTL passed since start, in memory and on disk |
+| `slow_command_<COMMAND>`, `slow_command_count_<COMMAND>` | Commands that took 500 milliseconds or longer today: the slowest run in nanoseconds and how often it happened, for example `slow_command_count_KEYS` |
+| `proxy_undeliverable` | Requests and connections the proxies of a region could not hand to any replica today |
 
 ## **Conclusion**
 
@@ -85440,7 +85535,7 @@ For more details, see the [Redis pricing page](https://upstash.com/pricing/redis
 
 ### More Backup Capability
 
-Backups up to 3 days are possible with the Prod Pack add-on.
+Backups up to 3 days are possible with the Prod Pack add-on. Enabling Prod Pack turns on daily backups, and every daily backup of a global, non-HIPAA database is analyzed for the keyspace view of the Insights tab. The latest daily backup is included in Prod Pack at no extra charge; keeping the last 3 days bills the two older backups as usual. The first one is taken as soon as Prod Pack is enabled. They stay on while Prod Pack is enabled. Disabling Prod Pack turns off the daily backups it turned on, unless you chose to keep the last 3 days or the database is HIPAA-compliant; daily backups you had enabled before Prod Pack, and their retention, stay as they were. No backup is deleted: existing daily backups stay, and are billed as usual, until you delete them.
 
 ### Encryption at Rest
 
