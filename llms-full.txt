@@ -53525,6 +53525,17 @@ EVAL <script> <numkeys> [<key> [<key> ...]] [<arg> [<arg> ...]]
 * A script queued inside a `MULTI`/`EXEC` transaction always runs under the global lock, even when it sets `allow-key-locking`. Call it directly if you want per-key locking.
 * Pass every key the script touches through `KEYS` when possible. With `allow-key-locking`, a dynamic key is accepted only when its hash tag is already locked, and a cold dynamic key is loaded with that lock held. See [Dynamic Keys and Latency](/docs/redis/features/key-locking#dynamic-keys-and-latency).
 
+## Time inside a script
+
+A script can read the server clock with `redis.call('TIME')`. The reply is the same two-element array as the standalone command — Unix seconds, then the microseconds within the current second — and each element arrives as a bulk string, so convert the one you need before using it in arithmetic:
+
+```lua
+local now = redis.call('TIME')
+return tonumber(now[1]) -- Unix seconds
+```
+
+Reading the clock makes the script depend on when it runs rather than only on its `KEYS` and `ARGV`, so the same script can return different results for the same inputs. That is fine when the point is to stamp a value with the current time, but a script that must be reproducible should receive the timestamp as an argument instead. This works the same over the [REST API](#rest-api) as over TCP.
+
 ## Reply conversion
 
 Replies from `redis.call` and `redis.pcall` reach the script as Lua values, converted with RESP2 rules by default whatever protocol the client connection itself negotiated. `redis.setresp(3)` switches the script to RESP3 conversions for every call that follows, and `redis.setresp(2)` switches back. The setting lasts for the rest of the script's execution and does not change how the script's own return value is sent to the client.
@@ -61070,6 +61081,8 @@ Source: https://upstash.com/docs/redis/commands/server/time
 Use `TIME` to read the server's clock.
 
 The reply has two values: the Unix time in seconds and the microseconds elapsed within the current second. Because it comes from the server, every client gets the same reference regardless of its own clock drift, which makes it the value to use when computing deadlines, measuring intervals, or writing timestamps that different machines must agree on.
+
+Inside a Lua script, the same clock is available through `redis.call('TIME')`. See [Time inside a script](/docs/redis/commands/scripting/eval#time-inside-a-script).
 
 ## Syntax
 
