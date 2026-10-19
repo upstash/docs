@@ -13817,6 +13817,12 @@ Upstash does not require a credit card for Free databases. For paid databases, y
 
   <img alt="Add a Payment Method: Credit card form" />
 
+<Note>
+  Adding your first payment method moves every free resource on the account to
+  its paid plan, including all Redis databases and your QStash, Vector, Search
+  and Blob resources. See [Upgrade Your Database](/docs/redis/howto/upgrade-database).
+</Note>
+
 You can save multiple cards and pick one as the default. Payments are charged from the default card.
 
   <img alt="Add a Payment Method: Saved payment methods" />
@@ -16334,6 +16340,10 @@ other messages will still be sent.
 
 <Note>You can publish to destination, URL Group or queue in the same batch request.</Note>
 
+There is no fixed limit on the number of messages in a batch. The request body
+is limited to 100 MB, and each message is checked against your plan's limits,
+such as the maximum message size and daily message count.
+
 ## Batching messages with destinations
 
 <Info>You can also send messages to the same destination!</Info>
@@ -17821,6 +17831,19 @@ Retry-After: 10                            // Next retry will be scheduled after
 Retry-After: 6m5s                          // Next retry will be scheduled after 6 minutes 5 seconds delay.
 Retry-After: Sun, 27 Jun 2024 12:16:24 GMT // Next retry will be scheduled for the specified date, within the allowable limits.
 ```
+
+## Redirects
+
+QStash follows redirects from your endpoint, up to 10 in a row. Each redirect
+target goes through the same URL checks as the original destination. Only the
+final response decides the outcome: a 2XX is a success, and anything else,
+including a 3XX that QStash stops following, is retried.
+
+* `307` and `308` keep the request method and body.
+* `301`, `302` and `303` turn the request into a `GET` without a body.
+* The `Upstash-Signature` header is passed along, but its `sub` claim is still
+  the original destination URL. If your endpoint checks `sub`, a redirected
+  request fails verification. Publish to the final URL to avoid this.
 
 ## Upstash-Retried Header
 
@@ -19344,7 +19367,9 @@ Instead here are the steps you need to follow:
 2. Verify the signature
 3. Decode the payload and verify the claims
    * `iss`: The issuer must be`Upstash`.
-   * `sub`: The subject must the url of your API.
+   * `sub`: The subject must be the url of your API. This is the destination
+     URL you published to, even if QStash followed a redirect to reach your
+     endpoint.
    * `exp`: Verify the token has not expired yet.
    * `nbf`: Verify the token is already valid.
    * `body`: Hash the raw request body using `SHA-256` and compare it with the
@@ -83942,13 +83967,14 @@ The free tier has limits on monthly commands, data size, and the number of datab
 
 If your database is close to any of these limits, upgrade to the pay-as-you-go plan, which removes the daily request cap and raises the data size ceiling.
 
-To upgrade, you need a payment method. Follow the steps in [Add a Payment Method](/docs/common/account/add-payment-method). Once a payment method is added, your database switches automatically to the pay-as-you-go plan.
+To upgrade, you need a payment method. Follow the steps in [Add a Payment Method](/docs/common/account/add-payment-method). Once a payment method is added, all free resources on your account switch automatically to the pay-as-you-go plan: every Redis database, and your QStash, Vector, Search and Blob resources. You can't upgrade only one database, and an account with a payment method can't keep or create free databases.
 
 See [Pricing & Limits](../overall/pricing) for the full breakdown of the pay-as-you-go and Fixed plans. If your workload will exceed those quotas, reach out at support@upstash.com about our [Enterprise Plan](../overall/enterprise) where the limits are configurable.
 
 <Note>
   During the upgrade process, you will not lose any data but your database will
-  experience a downtime about 1-2 seconds. Your existing clients will be
+  experience a downtime about 1-2 seconds. Since every database on the account
+  is upgraded, each of them goes through this. Your existing clients will be
   disconnected. So it is recommended to upgrade your database when there is the
   least activity.
 </Note>
@@ -85185,10 +85211,11 @@ serverless functions, edge workloads, and apps that scale to zero.
 | Bandwidth          | Free up to 200 GB / month, then $0.03 / GB     |
 | Max data size      | 100 GB                                         |
 | Max commands / sec | 10,000                                         |
-| Databases          | First 10 free, then $0.50 each (up to 100)      |
+| Databases          | First 10 included, then $0.50 each per month    |
 
 To avoid surprise charges, set a **monthly budget** on a PAYG database. When the
 budget is reached the database is rate-limited rather than continuing to bill.
+Budgets are set per database; there is no account-wide budget.
 
 ## Fixed plans
 
@@ -85226,6 +85253,24 @@ support larger data sizes and custom limits — [contact us](/docs/common/help/s
   each write is replicated to every read region, and each replicated write counts as a
   command for billing. Adding read regions to a Fixed plan costs 50% of the base tier
   price per region.
+* **Lua scripts.** `EVAL`, `EVALSHA`, `EVAL_RO` and `EVALSHA_RO` are billed as one
+  command, plus one command for every `redis.call` or `redis.pcall` the script runs. A
+  script that runs a `GET` and a `SET` is billed as 3 commands.
+* **Transactions.** `MULTI` and `EXEC` are billed as commands too, so a transaction of N
+  commands is billed as N + 2. This also applies to transactions sent to the REST API's
+  `/multi-exec` endpoint. Commands are counted as they are queued, so a transaction that
+  is aborted at `EXEC` is still billed.
+* **Commands that are not billed.** `AUTH`, `HELLO`, `RESET`, `PING`, `SELECT`, `QUIT`,
+  `INFO`, `CONFIG` and `COMMAND`.
+* **Number of databases.** A free account can have 1 database. On PAYG, the first 10
+  databases are included and each additional database costs $0.50 per month. This is
+  charged on the account (as a "Database Surplus Charge"), not on a database, so a
+  database budget does not cap it. Paid accounts can have up to 100 databases; email
+  [support@upstash.com](mailto:support@upstash.com) to raise the limit.
+* **Adding a payment method.** Adding your first payment method moves every free
+  resource on the account to its paid plan: all Redis databases, plus QStash, Vector,
+  Search and Blob. An account with a payment method cannot have free databases. See
+  [Upgrade Your Database](/docs/redis/howto/upgrade-database).
 * **Storage.** On PAYG, storage is billed at $0.25/GB per month with the first 1 GB free.
   Fixed plans include storage up to the plan's data-size cap.
 * **Prod Pack.** Production features (high availability, encryption, SOC-2, advanced
@@ -85238,7 +85283,8 @@ support larger data sizes and custom limits — [contact us](/docs/common/help/s
   polling) can drive up command count even when there is no real workload — switching to
   a Fixed plan caps that cost.
 * Prefer pipelines and `MULTI`/`EXEC` to reduce round trips; note that each command inside
-  a pipeline or transaction is still billed individually.
+  a pipeline or transaction is still billed individually, and `MULTI` and `EXEC` are billed
+  as well.
 * Set a monthly budget on PAYG databases to bound spend.
 
 # Changelog
@@ -97480,12 +97526,16 @@ Limit controls how many results to return. Offset controls how many results to s
 | Parameter | Description | Default | Constraints |
 |-----------|-------------|---------|-------------|
 | `LIMIT` | Number of results to return | 10 | Must be between 1 and 1000 |
-| `OFFSET` | Number of results to skip | 0 | Must be non-negative |
+| `OFFSET` | Number of results to skip | 0 | Must be between 0 and 10,000 |
 
 <Note>
 `LIMIT` and `OFFSET` are separate keywords. This differs from RediSearch which uses the combined
 `LIMIT <offset> <count>` syntax. Using `LIMIT 0 10` will return an error.
 </Note>
+
+There is no separate limit on the length of a filter or query string, or on how
+deeply filters are nested. A query is bounded only by your plan's maximum
+request size (10 MB on the free plan).
 
 <Tabs>
 
