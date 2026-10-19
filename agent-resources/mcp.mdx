@@ -6,7 +6,7 @@ The Upstash MCP server lets your agent manage and debug your Upstash resources d
 
 Run it two ways:
 
-* **Remote (hosted)** — nothing to install. Connect over HTTP to `https://mcp.upstash.com/mcp` with OAuth or a developer API key. Covers Redis, QStash, Workflow, Vector, Search, Box, and Blob.
+* **Remote (hosted)** — nothing to install. Connect over HTTP to `https://mcp.upstash.com/mcp` with OAuth or a developer API key. Covers Redis, QStash, Workflow, Vector, Search, Box, and Blob, and in hosts that support [MCP Apps](https://github.com/modelcontextprotocol/ext-apps), such as ChatGPT, adds an interactive [Upstash console](#console-mcp-app) inside the conversation.
 * **Local (stdio)** — run [`@upstash/mcp-server`](https://github.com/upstash/mcp-server) with `npx`, authenticated with your email and API key. Covers Redis, QStash, Workflow, and Upstash Box.
 
 <Tip>
@@ -96,7 +96,7 @@ Create a key from the console — see [Developer API → Create an API key](/dev
 
 ## Feature groups
 
-Append `?features=` to the URL to scope which product tools the agent sees — comma-separated values from `redis`, `qstash_workflow`, `vector_search`, `box`, `blob`; omitted means all five:
+Append `?features=` to the URL to scope which product tools the agent sees — comma-separated values from `redis`, `qstash_workflow`, `vector_search`, `box`, `blob`, `console`; omitted means all six:
 
 ```
 https://mcp.upstash.com/mcp?features=redis,qstash_workflow
@@ -106,13 +106,15 @@ A group covers every product it names, because those products share their tools:
 
 `box` and `blob` are the two halves of one workflow — an agent works in a sandbox, then gets what it produced out of it as a URL — so a client scoping down to that names both: `?features=box,blob`.
 
+`console` adds the [Upstash console MCP App](#console-mcp-app). It shows a page for each product group the connection has, so a URL that names its groups without `console`, such as `?features=redis,qstash_workflow`, leaves the console out.
+
 <Note>
   A name the server does not recognize is dropped, so `?features=redis,typo` still returns the Redis tools. But if *every* name is dropped, the server starts with no tools at all — and a client then reports `tools/list` as an unknown method rather than showing an empty list. If a fresh connection looks like it has no tools, check the spelling here first.
 </Note>
 
 ## Tools
 
-55 tools, grouped the way `?features=` groups them. The access column is the tool's own annotation, which clients use to decide what to confirm with you: **read** never changes anything, **write** only adds, **destructive** can delete or overwrite what is already there. On a read-only connection every write and destructive tool is refused.
+59 tools, grouped the way `?features=` groups them. The access column is the tool's own annotation, which clients use to decide what to confirm with you: **read** never changes anything, **write** only adds, **destructive** can delete or overwrite what is already there. On a read-only connection every write and destructive tool is refused.
 
 The management tools that describe a resource (`redis_get_database`, `redis_create_database`, `index_get`, `index_create`, `qstash_list_users`) return its REST credentials only when called with `include_credentials: true`, so a routine lookup never carries a secret into the conversation. Listings never include credentials, and on a read-only connection they are omitted regardless.
 
@@ -143,13 +145,15 @@ The management tools that describe a resource (`redis_get_database`, `redis_crea
     | `qstash_list_users` | read | The QStash user per region; REST tokens and signing keys with `include_credentials` |
     | `qstash_list_schedules` | read | Schedules in a region |
     | `qstash_flow_control_get` | read | Rate and parallelism for a flow-control key, or the account's global parallelism |
-    | `logs_list` | read | Delivery and run logs, paginated by cursor |
+    | `logs_list` | read | Delivery and run logs, paginated by cursor; with `service: workflow` and a `workflowRunId`, one run's state, steps and errors, finished or not |
     | `dlq_list` | read | The dead-letter queue, paginated by cursor |
     | `qstash_publish_message` | write | Publishes a message to a destination URL |
     | `qstash_flow_control_manage` | destructive | Pauses, resumes, pins, unpins or resets the rate on a key |
     | `qstash_manage_schedule` | destructive | Creates, reads, deletes, pauses or resumes a schedule |
-    | `workflow_manage_run` | destructive | Reads a run's steps, or cancels the run |
+    | `workflow_manage_run` | destructive | `get_steps` for the live step state of a run still in progress, or `cancel` |
     | `dlq_manage` | destructive | Reads or deletes a DLQ entry; Workflow entries can also be restarted or resumed |
+
+    To inspect a Workflow run by ID, use `logs_list` with `service: workflow` and `workflowRunId`, not `workflow_manage_run`. Run IDs always start with `wfr_`: a custom ID passed when triggering is stored with that prefix (`my-run-1` becomes `wfr_my-run-1`), and the prefix is required. A `cancel` is asynchronous and does not confirm that the run existed. The run moves to `RUN_CANCELED` in `logs_list` after a short delay, so check there to verify it.
   </Accordion>
 
   <Accordion title="Vector and Search — 17 tools">
@@ -199,18 +203,54 @@ The management tools that describe a resource (`redis_get_database`, `redis_crea
     `box_git` `clone` is what writes the GitHub credentials into the box, so a repository cloned with `git` in `box_exec` cannot `push` or `create_pr`. A clone lands at `/workspace/home/<repo>`; pass that as `folder` on later calls. A Box API key made with `box_apikey` outlives the OAuth grant that created it — revoke it from the console when it is no longer needed. `box_env` is not a secrets store; a value set there lands in the environment of every future box.
   </Accordion>
 
-  <Accordion title="Blob — 3 tools">
+  <Accordion title="Blob — 4 tools">
     Object storage for getting files an agent produced somewhere else — a screenshot in a box, a build in CI — into a bucket, back out as a URL, and gone again once they are no longer needed. Bytes never pass through the MCP server: the tools handle paths, links and metadata only.
 
     | Tool | Access | Actions |
     | --- | --- | --- |
-    | `blob_bucket` | destructive | `list`, `create`, `delete` — `create` defaults to a public bucket, whose objects get a permanent URL; `delete` is refused while the bucket still holds objects |
+    | `blob_bucket` | destructive | `list`, `get`, `create`, `delete` — `get` returns the bucket token with `include_credentials`; `create` defaults to a public bucket, whose objects get a permanent URL; `delete` is refused while the bucket still holds objects |
     | `blob_upload_url` | write | Mints presigned `PUT` URLs for paths in a bucket, valid for at most 10 minutes |
+    | `blob_download_url` | read | Mints presigned `GET` URLs for objects, with an optional `download_as` file name, valid for at most 10 minutes; works on private buckets |
     | `blob_object` | destructive | `list`, `delete` — `list` pages through objects, 1,000 at a time, under an optional `prefix`; `delete` removes exact `paths` (up to 1,000) |
 
-    Upload with the returned headers sent verbatim — they are part of the signature, and a changed or missing one is refused by storage. Deleting a path that is already gone counts as deleted, and the result lists anything storage kept under `failed`. To remove a bucket, empty it first: list a page, delete its paths, repeat until the list comes back empty. No tool returns bucket tokens. On a read-only connection `blob_upload_url`, `blob_object` `delete` and `blob_bucket` `create`/`delete` are refused; listing works.
+    Upload with the returned headers sent verbatim — they are part of the signature, and a changed or missing one is refused by storage. Deleting a path that is already gone counts as deleted, and the result lists anything storage kept under `failed`. To remove a bucket, empty it first: list a page, delete its paths, repeat until the list comes back empty. The only way to get a bucket token (`UPSTASH_BLOB_TOKEN`, for configuring an app) is `blob_bucket` `get` with `include_credentials: true`; the other tools sign with it server-side and never return it. On a read-only connection `blob_upload_url`, `blob_object` `delete` and `blob_bucket` `create`/`delete` are refused, and `get` returns no token; listing and `blob_download_url` work.
+  </Accordion>
+
+  <Accordion title="Console — 3 tools">
+    | Tool | Access | What it does |
+    | --- | --- | --- |
+    | `upstash_console` | read | Opens the [Upstash console](#console-mcp-app); optional `product`, `resource` and `tab` open it on one view |
+    | `console_redis_keys` | read | Page only: one `SCAN` page of a database, optionally filtered by `type`, with each key's type and TTL |
+    | `console_redis_value` | read | Page only: one key's type, TTL, size and a bounded read of its value |
   </Accordion>
 </AccordionGroup>
+
+## Console (MCP App)
+
+In a host that supports [MCP Apps](https://github.com/modelcontextprotocol/ext-apps), such as ChatGPT, the server also serves the Upstash console as an interactive page rendered inside the conversation, so you can browse what the agent is working on instead of reading JSON. It is part of the default feature set, so connecting the server is enough.
+
+Open it in any of three ways:
+
+* from the host's app sidebar, or in a panel beside a chat
+* by asking to see your resources, e.g. "show me my Redis databases", which makes the model call `upstash_console`
+* on one view: the model passes `product`, `resource` (an ID or name; for QStash and Workflow, the region `eu` or `us`) and `tab`, e.g. `{ "product": "redis", "resource": "sessions-prod", "tab": "stats" }`, and you navigate on from there
+
+Every product has the same layout: a product picker, its resources, and tabs for the selected one. Each resource opens on an **Overview** with headline numbers, its URLs, a **Show credentials** button and connect snippets.
+
+| Product | What you can do |
+| --- | --- |
+| Redis | Browse keys by pattern and type, view and edit values, set TTLs, add and delete keys, run commands in a CLI, chart usage on a **Stats** tab; create and delete databases |
+| QStash | Per region: publish messages, manage schedules (create, pause, resume, delete), read logs, delete DLQ messages |
+| Workflow | Per region: trigger runs, browse runs with their steps and cancel a running one, restart or resume runs from the DLQ |
+| Vector and Search | Browse an index's documents by namespace |
+| Box | Box cost, CPU and memory, logs and stats; create, pause, resume and delete boxes; create a Box API key |
+| Blob | Browse objects by prefix; create buckets, delete objects, empty buckets |
+
+The page holds no credential and makes no request of its own. Every read and write is a tool call the host sends back to this server, so OAuth, the read-only gate and the field allowlists apply exactly as they do to the model. On a read-only connection the page hides its write actions. Deleting a database, box or bucket asks you to type its name, and other deletes ask for confirmation. **Show credentials** fetches a resource's secrets only when you open it, shows them masked until revealed, and never adds them to the model's context. As you select things, the page tells the model what is open, so "this key" or "that schedule" means what you are looking at, and its **Ask** buttons send a message about the current view.
+
+<Note>
+  `console_redis_keys` and `console_redis_value` are marked for the page only (`visibility: ["app"]`). A host without MCP Apps support ignores that and shows them to the model like any other tool; both are read-only. To leave the console out entirely, name your feature groups without `console`.
+</Note>
 
 # Local server (`@upstash/mcp-server`)
 
