@@ -4824,13 +4824,18 @@ export function boxTools(box: Box) {
         code: z.string().describe("The code to execute. Print the result."),
       }),
       execute: async ({ lang, code }) => {
-        // `timeout` stops runaway code after 30 seconds
-        const file = lang === "python" ? "main.py" : "main.js";
+        // a unique file per call, so the code never overwrites workspace files or another call's code
+        const file = `.run-${crypto.randomUUID()}.${lang === "python" ? "py" : "js"}`;
         await box.files.write({ path: file, content: code });
-        const run = await box.exec.command(
-          `timeout 30 ${lang === "python" ? "python3" : "node"} ${file}`,
-        );
-        return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
+        try {
+          // `timeout` stops runaway code after 30 seconds
+          const run = await box.exec.command(
+            `timeout 30 ${lang === "python" ? "python3" : "node"} ${file}`,
+          );
+          return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
+        } finally {
+          await box.files.remove(file);
+        }
       },
     }),
 
@@ -13123,7 +13128,7 @@ ssh current-wasp-05510@us-east-1.box.upstash.com
 
 ### Run a shell command
 
-A shell command resolves when the command finishes and gives you back the result and status. Commands and code snippets run this way are capped at 1 hour.
+A shell command resolves when the command finishes and gives you back the result and status. The SDK waits up to 10 minutes for the result by default (set `timeout` in the box config to change it). If the request gives up, the command keeps running in the box, so wrap commands that must stop in `timeout`, for example `timeout 60 npm test`.
 
 <CodeGroup>
 ```typescript box.ts
