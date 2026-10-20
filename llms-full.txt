@@ -4824,7 +4824,12 @@ export function boxTools(box: Box) {
         code: z.string().describe("The code to execute. Print the result."),
       }),
       execute: async ({ lang, code }) => {
-        const run = await box.exec.code({ lang, code, timeout: 30_000 });
+        // `timeout` stops runaway code after 30 seconds
+        const file = lang === "python" ? "main.py" : "main.js";
+        await box.files.write({ path: file, content: code });
+        const run = await box.exec.command(
+          `timeout 30 ${lang === "python" ? "python3" : "node"} ${file}`,
+        );
         return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
       },
     }),
@@ -4916,7 +4921,7 @@ export function boxTools(box: Box) {
 ```
 
 <Note>
-  The file tools are rooted at **`/workspace/home`**, and paths outside it are rejected. `exec` can write anywhere, but anything you move through the files API has to live under that root. Tell the model so in the system prompt.
+  The file tools resolve relative paths against **`/workspace/home`**. Absolute paths elsewhere are not blocked, but keep the agent's work under `/workspace/home` and tell the model so in the system prompt.
 </Note>
 
 `runCommand` waits for the command to exit, which is why `startServer` exists: a foreground `npm run dev` would block the tool call forever and the model would never reach `exposePort`. `startServer` detaches the process, confirms something is actually listening, and returns the crash log when nothing is.
@@ -5076,7 +5081,11 @@ export const runCode = tool({
     });
 
     try {
-      const run = await box.exec.code({ lang, code, timeout: 10_000 });
+      const file = lang === "python" ? "main.py" : "main.js";
+      await box.files.write({ path: file, content: code });
+      const run = await box.exec.command(
+        `timeout 10 ${lang === "python" ? "python3" : "node"} ${file}`,
+      );
       return { ok: run.exitCode === 0, output: run.result };
     } finally {
       await box.delete();
@@ -5085,7 +5094,7 @@ export const runCode = tool({
 });
 ```
 
-`ttl: 120` deletes the box after two minutes even if the `finally` never runs. Always set a `timeout` on `exec.code` too: without one, an infinite loop hangs the request until the backend gives up.
+`ttl: 120` deletes the box after two minutes even if the `finally` never runs. The code runs under `timeout` because `exec.code` has no per-call timeout: without it, an infinite loop hangs the request until the backend gives up.
 
 ***
 
@@ -5538,7 +5547,7 @@ export async function reviewPullRequest(input: PullRequestInput): Promise<Review
     const reviewRun = await box.agent.run({
       responseSchema,
       prompt: `
-Repository path: /work/${repoDir}
+Repository path: /workspace/home/${repoDir}
 Base branch: ${input.base}
 Head branch: ${input.head}
 
@@ -5567,7 +5576,7 @@ Rules:
 }
 
 const result = await reviewPullRequest({
-  repo: "github.com/your-org/your-repo",
+  repo: "https://github.com/your-org/your-repo",
   base: "main",
   head: "feature/my-change",
 })
@@ -5877,10 +5886,10 @@ The system prompt is set when the conversation starts and stays for the rest of 
 ## Troubleshooting
 
 * **`BoxAgent` is not assignable to `AbstractAgent`**: your `@ag-ui/client` version differs from the one `@copilotkit/runtime` uses.
-* **Permission denied writing files**: the agent can only write under `/workspace/home`.
+* **Permission denied writing files**: the agent runs as `boxuser`, and its work belongs under `/workspace/home`. System paths need `sudo`.
 * **The chat is empty after a reload**: this example keeps visible messages in memory. The agent in the box still has the earlier conversation and files.
 * **`Box cannot start a run in its current state`**: a box runs one prompt at a time. The user sent a message, for example from a second tab, while the agent was still working.
-* **No tool cards with OpenCode**: the OpenCode harness streams only text, so the chat shows the reply without the tool calls.
+* **Tool cards never finish with OpenCode**: the OpenCode harness streams tool calls but not their results, so cards show the call without its output.
 * **Box limit reached**: the error comes from `Box.create`. Delete unused boxes in the console or upgrade your plan.
 
 # Vercel Eve Sandbox for Isolated Code Execution
@@ -6002,7 +6011,7 @@ export const environment = UpstashSandbox.environment({
   size: "medium",
   async prepare(sandbox) {
     await sandbox.setNetworkPolicy("allow-all"); // prepare starts deny-all too
-    const result = await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+    const result = await sandbox.run({ command: "sudo -n apt-get update && sudo -n apt-get install -y ripgrep" });
     if (result.exitCode !== 0) throw new Error(result.stderr);
   },
 });
@@ -6075,7 +6084,7 @@ export default defineSandbox({
   backend: upstash({ runtime: "node" }),
   async bootstrap({ use }) {
     const sandbox = await use({ networkPolicy: "allow-all" });
-    await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+    await sandbox.run({ command: "sudo -n apt-get update && sudo -n apt-get install -y ripgrep" });
   },
   async onSession({ use }) {
     await use();
@@ -6087,7 +6096,7 @@ export const environment = UpstashSandbox.environment({
   runtime: "node",
   async prepare(sandbox) {
     await sandbox.setNetworkPolicy("allow-all");
-    await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+    await sandbox.run({ command: "sudo -n apt-get update && sudo -n apt-get install -y ripgrep" });
   },
 });
 
@@ -6888,10 +6897,10 @@ Manage the branch with slash commands inside Pi:
 When the agent starts a server in the box, ask it for a preview link. The `preview_url` tool returns a live, basic-auth-protected URL for any port:
 
 ```
-https://<box-name>-8080.preview.box.upstash.com
+https://<box-id>-8080.preview.box.upstash.com
 ```
 
-The login is printed alongside the URL, and your browser prompts for it. Preview URLs are created fresh on every call, so ask again after a box resumes from idle. See [Preview URLs](/docs/box/overall/preview) for how these work.
+The login is printed alongside the URL, and your browser prompts for it. The URL survives an idle pause, and a request to it wakes the box. See [Preview URLs](/docs/box/overall/preview) for how these work.
 
 ***
 
@@ -6901,7 +6910,7 @@ Each Pi session gets one box, and the box follows the session:
 
 * **Resume a session**, and its box is reattached, with your files and environment exactly where you left them.
 * **Idle sessions** pause the box automatically with the filesystem preserved; the next tool call transparently restarts it. Nothing to configure.
-* **Delete a session** from Pi's resume menu, and its box is deleted too. A box lives as long as its session.
+* **Delete a session** from Pi's resume menu, and its box is deleted the next time Pi starts or shuts down. A box lives as long as its session.
 
 ***
 
@@ -6973,7 +6982,7 @@ The first tool call opens a consent page in your browser. Pick your account or t
 
 Ask your agent:
 
-> Create a node box called `web-dev` and clone `github.com/my-org/my-app` into it.
+> Create a node box called `web-dev` and clone `https://github.com/my-org/my-app` into it.
 
 The agent creates the box and clones the repository. You can also create a box in the [Upstash Console](https://console.upstash.com) and let the agent pick it up by name.
 
@@ -7072,7 +7081,7 @@ T3 Code uses Codex to name threads, so either sign in to Codex too or switch the
 
 ## 5. Start T3 Code
 
-Start the server on all interfaces so the public URL can reach it, with its data under `/workspace`, the box's persistent storage. Then print the pairing link it writes on startup:
+Start the server on all interfaces so the public URL can reach it, with its data under `/workspace/home`, the box's persistent storage. Then print the pairing link it writes on startup:
 
 ```bash
 setsid nohup t3 serve --host 0.0.0.0 --port 3773 --base-dir /workspace/home/.t3 > /tmp/t3.log 2>&1 < /dev/null &
@@ -7143,7 +7152,7 @@ setsid nohup t3 serve --host 0.0.0.0 --port 3773 --base-dir /workspace/home/.t3 
 
 ## Good to Know
 
-* Everything T3 Code keeps, including projects, threads and your browser pairing, lives under `/workspace/home/.t3` on persistent storage. If you point a project at an existing folder, keep that under `/workspace` too.
+* Everything T3 Code keeps, including projects, threads and your browser pairing, lives under `/workspace/home/.t3` on persistent storage. If you point a project at an existing folder, keep that under `/workspace/home` too.
 * After a reset, install T3 Code again (step 3). A snapshot restore brings your projects and pairing back as they were.
 * If a thread says "Claude could not authenticate", the sign-in from step 4 is missing. Sign in and start a new thread.
 
@@ -7228,9 +7237,9 @@ export const repoSandbox = defineSandbox({
   Clone the repo in a `setup` step rather than with `source: githubRepo(...)`. A box's home directory is created with agent dotfiles already in it (`.claude`, `.codex`, `.cursor`, `.local`), and `@tanstack/ai-sandbox` clones the source straight into that directory. `git clone` refuses a non-empty target and exits `128`, the bootstrap does not surface the failure, and your setup steps then run against an empty workspace. Cloning into `/tmp` and copying the contents across sidesteps it.
 </Warning>
 
-The harness spawns its CLI inside the box, so the CLI has to be on the box's `PATH`. The `node` runtime already ships `claude`, `codex`, and `opencode` in `/usr/local/bin`, so those three need no setup step at all.
+The harness spawns its CLI inside the box, so the CLI has to be on the box's `PATH`. Every runtime already has `claude`, `codex`, and `opencode` on `PATH`, so those three need no setup step at all.
 
-For any other CLI, install it with `sudo -n`. A box runs as the non-root `boxuser`, and `/usr/local/lib/node_modules` is root-owned, so a plain `npm install -g` fails with `EACCES` and takes the whole bootstrap down with it:
+For any other CLI, install it with `sudo -n`. A box runs as the non-root `boxuser`, and the global `node_modules` is root-owned, so a plain `npm install -g` fails with `EACCES` and takes the whole bootstrap down with it:
 
 ```typescript
 setup: ["sudo -n npm install -g @some/agent-cli --include=optional && some-agent --version"],
@@ -7430,7 +7439,7 @@ try {
 # Playwright Web Scraping with a Cloud Browser
 Source: https://upstash.com/docs/box/guides/web-scraping-playwright
 
-Every box can come with its own browser. Create one with `browser: true` and you get a managed, headless Chromium that boots on first use. Nothing to install, no `apt-get`, no Chromium binary to keep up to date.
+Every box can come with its own browser. Create one with `browser: true` and you get a managed Chromium that boots on first use. Nothing to install, no `apt-get`, no Chromium binary to keep up to date.
 
 This guide scrapes a JavaScript-heavy site with that built-in browser. We read rendered pages through the SDK, extract structured data against a schema, then connect Playwright over CDP to harvest many pages deterministically.
 
@@ -7443,7 +7452,7 @@ This guide scrapes a JavaScript-heavy site with that built-in browser. We read r
 ## 1. Installation
 
 ```bash
-npm install @upstash/box playwright-core zod
+npm install @upstash/box playwright-core zod dotenv
 ```
 
 `playwright-core` is enough. You connect to the box's Chromium instead of launching one locally, so there are no browser binaries to download on your side either.
@@ -7681,7 +7690,7 @@ A full runnable version of this is the [AI-compiled scraper](https://github.com/
 
 ## 7. Reuse the box across runs
 
-A browser box has nothing to install, so there is no setup cost to snapshot away. What is worth keeping is the box itself: the cached recipe, the cookies, and a logged-in session.
+A browser box has nothing to install, so there is no setup cost to snapshot away. What is worth keeping is the box itself: the cached recipe and the browser profile.
 
 Keep the box id and re-attach on the next run:
 
@@ -7691,7 +7700,9 @@ const box = process.env.SCRAPER_BOX_ID
   : await Box.create({ runtime: "node", browser: true })
 ```
 
-The box pauses when idle and resumes on demand with its filesystem intact. It bills until you delete it, so delete it when you are done with the target site:
+The box pauses when idle and resumes on demand with its filesystem intact. Pausing restarts the browser: session-only cookies are lost and the old CDP and live view URLs stop working, so call `cdpUrl()` again after a resume. For a long-lived logged-in session, create the box with `keepAlive: true` so it never pauses.
+
+A paused box is not billed for compute. Delete it when you are done with the target site:
 
 ```typescript
 await box.delete()
@@ -7711,7 +7722,7 @@ To log in once and have every later script reuse that session, see the [login on
 # Agent
 Source: https://upstash.com/docs/box/overall/agent
 
-**For every box, you can configure a built-in agent like Claude Code, Codex or OpenCode**. It has access to the filesystem, git, and shell commands and should simulate running an Agent on your own computer.
+**For every box, you can configure a built-in agent: Claude Code, Codex, OpenCode, or Cursor**. It has access to the filesystem, git, and shell commands and should simulate running an Agent on your own computer. You can also bring your own agent process with a [custom agent](/docs/box/overall/custom-agent).
 
 You can choose between:
 
@@ -7836,27 +7847,43 @@ box = Box.create(
 </CodeGroup>
 
 </Tab>
-<Tab title="OpenCode">
+<Tab title="Cursor">
 
-Get your API key from [OpenCode](https://opencode.ai).
+Get your API key from [Cursor](https://cursor.com). Cursor runs require your own key.
 
 ```bash title=".env" {2}
-UPSTASH_BOX_API_KEY=abx_xxxxxxxxxxxxxxxxxxxxxxxx
-ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+CURSOR_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-```tsx {5-8}
-import { Box, Agent, OpenCodeModel } from "@upstash/box"
+<CodeGroup>
+```tsx box.ts {5-8}
+import { Agent, Box } from "@upstash/box"
 
 const box = await Box.create({
   runtime: "node",
   agent: {
-    provider: Agent.OpenCode,
-    model: OpenCodeModel.Claude_Sonnet_4_5,
-    apiKey: process.env.ANTHROPIC_API_KEY!,
+    harness: Agent.Cursor,
+    model: "cursor/composer-2.5",
+    apiKey: process.env.CURSOR_API_KEY!,
   },
 })
 ```
+
+```python box.py
+import os
+from upstash_box import Box, Agent
+
+box = Box.create(
+    runtime="node",
+    agent={
+        "harness": Agent.CURSOR,
+        "model": "cursor/composer-2.5",
+        "api_key": os.environ["CURSOR_API_KEY"],
+    },
+)
+```
+</CodeGroup>
 
 </Tab>
 </Tabs>
@@ -7997,7 +8024,7 @@ Use Codex when you want a strongly structured response that you can feed into an
 import { z } from "zod"
 
 const result = await box.agent.run({
-  prompt: "Analyze /work/report.csv and return the top 10 customers by revenue",
+  prompt: "Analyze report.csv and return the top 10 customers by revenue",
   responseSchema: z.object({
     customers: z.array(
       z.object({
@@ -8022,7 +8049,7 @@ class Result(BaseModel):
     customers: list[Customer]
 
 result = box.agent.run(
-    prompt="Analyze /work/report.csv and return the top 10 customers by revenue",
+    prompt="Analyze report.csv and return the top 10 customers by revenue",
     response_schema=Result,
 )
 
@@ -8051,7 +8078,7 @@ const box = await Box.create({
   },
 })
 
-await box.git.clone({ repo: "github.com/your-org/your-repo" })
+await box.git.clone({ repo: "https://github.com/your-org/your-repo" })
 
 const stream = await box.agent.stream({
   prompt: "Fix the null token bug in src/auth.ts and add tests",
@@ -8081,7 +8108,7 @@ box = Box.create(
     git={"token": os.environ["GITHUB_TOKEN"]},
 )
 
-box.git.clone(repo="github.com/your-org/your-repo")
+box.git.clone(repo="https://github.com/your-org/your-repo")
 
 stream = box.agent.stream(prompt="Fix the null token bug in src/auth.ts and add tests")
 
@@ -8123,17 +8150,18 @@ const results = await Promise.all(
     const box = await Box.create({
       runtime: "node",
       agent: {
+        harness: Agent.ClaudeCode,
         model: "anthropic/claude-opus-4-5",
         apiKey: process.env.ANTHROPIC_API_KEY,
       },
     })
 
     await box.files.upload([
-      { path: `./resumes/${file}`, destination: "/work/resume.pdf" },
+      { path: `./resumes/${file}`, destination: "resume.pdf" },
     ])
 
     const run = await box.agent.run({
-      prompt: `Read /work/resume.pdf. Extract candidate data and score 0-100 for: ${job}`,
+      prompt: `Read resume.pdf. Extract candidate data and score 0-100 for: ${job}`,
       responseSchema,
     })
 
@@ -8150,7 +8178,7 @@ const ranked = results.sort((a, b) => b.score - a.score)
 import asyncio
 import os
 from pydantic import BaseModel, Field
-from upstash_box import AsyncBox
+from upstash_box import Agent, AsyncBox
 
 class Candidate(BaseModel):
     name: str
@@ -8167,11 +8195,15 @@ resumes = [f for f in os.listdir("./resumes") if f.endswith(".pdf")]
 async def process(file: str) -> dict:
     box = await AsyncBox.create(
         runtime="node",
-        agent={"model": "anthropic/claude-opus-4-5", "api_key": os.environ["ANTHROPIC_API_KEY"]},
+        agent={
+            "harness": Agent.CLAUDE_CODE,
+            "model": "anthropic/claude-opus-4-5",
+            "api_key": os.environ["ANTHROPIC_API_KEY"],
+        },
     )
-    await box.files.upload([{"path": f"./resumes/{file}", "destination": "/work/resume.pdf"}])
+    await box.files.upload([{"path": f"./resumes/{file}", "destination": "resume.pdf"}])
     run = await box.agent.run(
-        prompt=f"Read /work/resume.pdf. Extract candidate data and score 0-100 for: {job}",
+        prompt=f"Read resume.pdf. Extract candidate data and score 0-100 for: {job}",
         response_schema=Candidate,
     )
     await box.delete()
@@ -8238,7 +8270,7 @@ Execution timeout in milliseconds. When reached, the run is aborted.
 
 ### onToolUse
 
-Type: `{ name: string; input: Record<string, unknown> }`
+Type: `(tool: { toolCallId?: string; name: string; input: Record<string, unknown> }) => void`
 Supported on: `box.agent.run()` and `box.agent.stream()`
 
 Called whenever the agent invokes a tool (for example file, shell, or git tools).
@@ -8264,7 +8296,7 @@ const responseSchema = z.object({
 })
 
 const analysis = await box.agent.run({
-  prompt: "Analyze /work/report.csv and return top customers by revenue",
+  prompt: "Analyze report.csv and return top customers by revenue",
   responseSchema,
 })
 
@@ -8282,7 +8314,7 @@ class Analysis(BaseModel):
     customers: list[Customer]
 
 analysis = box.agent.run(
-    prompt="Analyze /work/report.csv and return top customers by revenue",
+    prompt="Analyze report.csv and return top customers by revenue",
     response_schema=Analysis,
 )
 
@@ -8422,8 +8454,10 @@ Beyond reading pages, a tab can act. A DOM-aware browser agent runs inside the b
 
 <Note>
   LLM-resolved AI actions are metered and need an API key for the model's
-  provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
-  your account. Every method accepts a provider-prefixed `model` override such
+  provider (Anthropic, OpenAI, OpenRouter, Vercel, OpenCode, Bedrock, or Neon)
+  on the box or your account. Boxes on the Upstash-managed key need no key of
+  your own for Anthropic, OpenAI, OpenRouter, or OpenCode models. Cursor models
+  are not supported. Every method accepts a provider-prefixed `model` override such
   as `"openai/gpt-4o"`. Without an override, the call uses the model the box
   was configured with. If the box has no model, it falls back to
   `anthropic/claude-sonnet-4-5`. Replaying a pre-resolved action with
@@ -8529,6 +8563,8 @@ cdp_url = box.browser.cdp_url()
 </CodeGroup>
 
 Like [live view](/docs/box/overall/browser/live-view) URLs, the CDP URL carries its auth token in the URL. Anyone who has it gets full control of the browser, so treat it as a secret.
+
+The CDP URL is revoked when the box pauses, and a request to it does not wake the box. After the box resumes, call `cdpUrl()` again for a fresh one.
 
 ## Playwright
 
@@ -8720,6 +8756,8 @@ print(live_url)
 
 The URL is self-contained. Authentication is a token embedded in the URL itself, so it works anywhere a browser can load a page. The viewing side needs no API key and no SDK.
 
+Live view URLs are revoked when the box pauses, and opening one does not wake the box. After the box resumes, call `liveViewUrl()` again for a fresh one.
+
 ## Embedding
 
 ```html
@@ -8748,9 +8786,9 @@ For an interactive version of the same view, open the **Browser** tab on your bo
 # Browser
 Source: https://upstash.com/docs/box/overall/browser/overview
 
-**Every box can come with its own browser.** Create a box with `browser: true` to get a managed, headless Chromium that you control through the SDK. You can open tabs, read pages, take screenshots, extract structured data, act on the live DOM with AI, record sessions, and connect Playwright directly over CDP.
+**Every box can come with its own browser.** Create a box with `browser: true` to get a managed Chromium that you control through the SDK. You can open tabs, read pages, take screenshots, extract structured data, act on the live DOM with AI, record sessions, and connect Playwright directly over CDP.
 
-Everything works headless. There is no desktop, no VNC, and nothing to install. Chromium is provisioned with the box and boots on first use.
+Chromium runs on a virtual display inside the box. There is no desktop, no VNC, and nothing to install. Chromium is provisioned with the box and boots on first use.
 
 ## Create a box with a browser
 
@@ -8827,8 +8865,10 @@ print(page.title)
   The AI-powered operations use an LLM and are metered:
   [`extract`](/docs/box/overall/browser/reading-pages) and [`observe`,
   `act`](/docs/box/overall/browser/ai-actions). They need an API key for the model's
-  provider (Anthropic, OpenAI, OpenRouter, Vercel, or OpenCode) on the box or
-  your account. The exception is replaying a resolved action with
+  provider (Anthropic, OpenAI, OpenRouter, Vercel, OpenCode, Bedrock, or Neon)
+  on the box or your account. Boxes on the Upstash-managed key need no key of
+  your own for Anthropic, OpenAI, OpenRouter, or OpenCode models. Cursor models
+  are not supported. The exception is replaying a resolved action with
   [`act(action)`](/docs/box/overall/browser/ai-actions#replay-an-action-without-an-llm),
   which uses no LLM and needs no key.
 </Note>
@@ -8867,7 +8907,7 @@ for link in content.links or []:
 
 ## Screenshots
 
-`screenshot()` captures the tab as a PNG. It works headless, with no display needed. By default you get raw PNG bytes. Ask for base64 if you are passing the image on, for example to an LLM:
+`screenshot()` captures the tab as a PNG. By default you get raw PNG bytes. Ask for base64 if you are passing the image on, for example to an LLM:
 
 <CodeGroup>
 ```typescript box.ts
@@ -9070,7 +9110,7 @@ print(tab.id, tab.url, tab.title)
 </CodeGroup>
 
 * `waitUntil`: when navigation counts as done. One of `"load"` (default), `"domcontentloaded"`, or `"networkidle"`.
-* `timeout`: navigation timeout in milliseconds. Defaults to `30000`. Pass `0` to disable it.
+* `timeout`: navigation timeout in milliseconds. Defaults to `30000`. Pass `0` to wait up to the server cap of about 295 seconds.
 
 ## Navigate
 
@@ -9088,7 +9128,7 @@ print(page.title, page.url)
 ```
 </CodeGroup>
 
-Unlike `tab.create`, `goto` has no `waitUntil` or `timeout` options. It waits for the page to load with a fixed 60 second deadline.
+Unlike `tab.create`, `goto` has no `waitUntil` or `timeout` options. It waits up to 15 seconds for the page's load event, then returns whatever has loaded.
 
 ## List and re-attach
 
@@ -9438,7 +9478,7 @@ Source: https://upstash.com/docs/box/overall/custom-harness/pydantic-ai
 # Ephemeral Box
 Source: https://upstash.com/docs/box/overall/ephemeral-box
 
-`EphemeralBox` is a lightweight, short-lived sandbox that provides only **exec** and **file** operations. It's designed for quick, disposable compute tasks where a full Box (with agent, git, snapshots, etc.) is unnecessary.
+`EphemeralBox` is a lightweight, short-lived sandbox that provides **exec**, **file**, **schedule**, and **snapshot** operations. It's designed for quick, disposable compute tasks where a full Box (with agent, git, public URLs, etc.) is unnecessary.
 
 ***
 
@@ -9470,7 +9510,7 @@ box = EphemeralBox.create(
 
 **Key difference from `Box.create()`:** Ephemeral boxes are ready immediately — no polling. The API returns with `status: "idle"` and the box is usable right away.
 
-The request sends `{ ephemeral: true, ttl?, runtime? }` to `POST /v2/box`.
+The request sends `{ ephemeral: true, ttl?, runtime?, name?, labels?, size?, env_vars?, attach_headers?, network_policy? }` to `POST /v2/box`.
 
 ***
 
@@ -9485,16 +9525,18 @@ The request sends `{ ephemeral: true, ttl?, runtime? }` to `POST /v2/box`.
 | `exec.session()` | Yes | Yes |
 | `files.read/write/list/upload/download` | Yes | Yes |
 | `files.stat/mkdir/rename/remove` | Yes | Yes |
-| `schedule.exec/prompt/list/get/pause/resume/delete` | Yes | Yes |
+| `schedule.exec/list/get/update/pause/resume/delete` | Yes | Yes |
+| `schedule.agent()` | Yes | **No** (no agent) |
 | `cd()` / `cwd` | Yes | Yes |
 | `getStatus()` | Yes | Yes |
 | `delete()` | Yes | Yes |
-| `networkPolicy` / `updateNetworkPolicy()` | Yes | Yes |
+| `networkPolicy` (read) | Yes | Yes |
+| `updateNetworkPolicy()` | Yes | **No** |
 | `expiresAt` | No | Yes |
 | `agent.run()` / `agent.stream()` | Yes | **No** |
 | `git.*` | Yes | **No** |
 | `getPublicURL()` / `listPublicURLs()` / `deletePublicURL()` | Yes | **No** |
-| `snapshot()` / `fromSnapshot()` | Yes | Yes |
+| `snapshot()` / `listSnapshots()` / `deleteSnapshot()` / `fromSnapshot()` | Yes | Yes |
 | `pause()` / `resume()` | Yes | **No** |
 | `configureModel()` | Yes | **No** |
 | `logs()` / `listRuns()` | Yes | **No** |
@@ -9512,8 +9554,8 @@ The request sends `{ ephemeral: true, ttl?, runtime? }` to `POST /v2/box`.
 
 1. **Instant creation** — no polling loop; the response is the ready box
 2. **Auto-expiry** — boxes are automatically deleted after TTL; `expiresAt` tracks this
-3. **Reduced surface** — only exec + files; no agent, git, public URLs, snapshots, pause/resume
-4. **Simpler config** — `EphemeralBoxConfig` has only `apiKey`, `runtime`, `ttl`, `name`, `networkPolicy`, `baseUrl`, `timeout`, `debug` (no agent, git, env, skills, mcpServers)
+3. **Reduced surface** — exec, files, schedules, and snapshots; no agent, git, public URLs, or `pause()`/`resume()`. An idle ephemeral box can still be auto-paused before its TTL (after 1 hour on the free plan, 6 hours on paid plans), and new exec or file calls resume it
+4. **Simpler config** — `EphemeralBoxConfig` has `apiKey`, `baseUrl`, `name`, `labels`, `runtime`, `size`, `ttl`, `env`, `attachHeaders`, `networkPolicy`, `timeout`, `debug`, and `enableTelemetry` (TypeScript only). There is no agent, git, skills, mcpServers, keepAlive, or initCommand
 5. **Composition over inheritance** — `EphemeralBox` wraps an internal `Box` and exposes only the relevant subset, so agent/git/etc. are not accessible even at runtime
 
 ***
@@ -9599,25 +9641,25 @@ Every box has its own isolated filesystem. Upload, write, read, list, and downlo
 
 ### Upload files
 
-Push local files into the box. Each entry maps a local path to a destination inside the box workspace.
+Push local files into the box. Each entry maps a local file to a destination inside the box. Relative destinations resolve against the box's current directory, `/workspace/home` by default.
 
 <CodeGroup>
 ```typescript box.ts
 await box.files.upload([
-  { path: "./data/report.csv", destination: "/work/report.csv" },
-  { path: "./config.json", destination: "/work/config.json" },
+  { path: "./data/report.csv", destination: "report.csv" },
+  { path: "./config.json", destination: "config.json" },
 ])
 ```
 
 ```python box.py
 box.files.upload([
-    {"path": "./data/report.csv", "destination": "/work/report.csv"},
-    {"path": "./config.json", "destination": "/work/config.json"},
+    {"path": "./data/report.csv", "destination": "report.csv"},
+    {"path": "./config.json", "destination": "config.json"},
 ])
 ```
 </CodeGroup>
 
-You can upload multiple files in a single call. All uploads run in parallel.
+All files in a call are sent in a single request. Each file can be up to 100 MB, and a request up to about 1 GB in total. Each `path` must be a file, not a directory.
 
 ***
 
@@ -9628,14 +9670,14 @@ Create or overwrite a file directly from a string. Useful when you want to injec
 <CodeGroup>
 ```typescript box.ts
 await box.files.write({
-  path: "/work/script.js",
+  path: "script.js",
   content: `console.log("hello from box")`,
 })
 ```
 
 ```python box.py
 box.files.write(
-    path="/work/script.js",
+    path="script.js",
     content='console.log("hello from box")',
 )
 ```
@@ -9649,14 +9691,14 @@ Read the contents of a file as a string.
 
 <CodeGroup>
 ```typescript box.ts
-const content = await box.files.read("/work/output.json")
+const content = await box.files.read("output.json")
 console.log(JSON.parse(content))
 ```
 
 ```python box.py
 import json
 
-content = box.files.read("/work/output.json")
+content = box.files.read("output.json")
 print(json.loads(content))
 ```
 </CodeGroup>
@@ -9777,26 +9819,26 @@ box.files.remove("build", recursive=True)
 
 ### List files
 
-List the entries in a directory. Each entry includes the path, size, type, and last modified timestamp.
+List the entries in a directory. Each entry includes the name, path, size, whether it is a directory, and the last modified timestamp.
 
 <CodeGroup>
 ```typescript box.ts
-const files = await box.files.list("/work")
+const files = await box.files.list()
 
 console.log(files)
 // [
-//   { path: "/work/report.csv", size: 1024, type: "file", modifiedAt: "2026-02-23T..." },
-//   { path: "/work/output", size: 4096, type: "directory", modifiedAt: "2026-02-23T..." },
+//   { name: "report.csv", path: "/workspace/home/report.csv", size: 1024, is_dir: false, mod_time: "2026-02-23T..." },
+//   { name: "output", path: "/workspace/home/output", size: 4096, is_dir: true, mod_time: "2026-02-23T..." },
 // ]
 ```
 
 ```python box.py
-files = box.files.list("/work")
+files = box.files.list()
 
 print(files)
 # [
-#   FileEntry(name="report.csv", path="/work/report.csv", size=1024, is_dir=False, mod_time="2026-02-23T..."),
-#   FileEntry(name="output", path="/work/output", size=4096, is_dir=True, mod_time="2026-02-23T..."),
+#   FileEntry(name="report.csv", path="/workspace/home/report.csv", size=1024, is_dir=False, mod_time="2026-02-23T..."),
+#   FileEntry(name="output", path="/workspace/home/output", size=4096, is_dir=True, mod_time="2026-02-23T..."),
 # ]
 ```
 </CodeGroup>
@@ -9805,17 +9847,19 @@ print(files)
 
 ### Download files
 
-Pull files from the box back to your local machine. Call with no arguments to download the entire workspace, or pass a `folder` to download a specific file or directory.
+Pull files from a box directory back to your local machine. Pass a `folder` to download that directory into `./<folder name>`, or call with no arguments to download the current directory (`./workspace` for the default `/workspace/home`).
+
+Downloads are not recursive: only the files directly inside the directory are downloaded, and subdirectories are skipped. `folder` must be a directory, not a single file. To fetch one file, use `files.read`.
 
 <CodeGroup>
 ```typescript box.ts
 await box.files.download()
-await box.files.download({ folder: "/work/output" })
+await box.files.download({ folder: "output" })
 ```
 
 ```python box.py
 box.files.download()
-box.files.download(folder="/work/output")
+box.files.download(folder="output")
 ```
 </CodeGroup>
 
@@ -9838,11 +9882,11 @@ const box = await Box.create({
 })
 
 await box.files.upload([
-  { path: "./resumes/candidate.pdf", destination: "/work/resume.pdf" },
+  { path: "./resumes/candidate.pdf", destination: "resume.pdf" },
 ])
 
 const run = await box.agent.run({
-  prompt: "Read /work/resume.pdf. Extract the candidate's name, email, and skills.",
+  prompt: "Read resume.pdf. Extract the candidate's name, email, and skills.",
   responseSchema: z.object({
     name: z.string(),
     email: z.string(),
@@ -9872,11 +9916,11 @@ box = Box.create(
 )
 
 box.files.upload([
-    {"path": "./resumes/candidate.pdf", "destination": "/work/resume.pdf"},
+    {"path": "./resumes/candidate.pdf", "destination": "resume.pdf"},
 ])
 
 run = box.agent.run(
-    prompt="Read /work/resume.pdf. Extract the candidate's name, email, and skills.",
+    prompt="Read resume.pdf. Extract the candidate's name, email, and skills.",
     response_schema=Candidate,
 )
 
@@ -9901,10 +9945,11 @@ const box = await Box.create({
   git: { token: process.env.GITHUB_TOKEN },
 })
 
-await box.git.clone({ repo: "github.com/your-org/your-api" })
+await box.git.clone({ repo: "https://github.com/your-org/your-api" })
+await box.cd("your-api")
 
 await box.files.write({
-  path: "/work/your-api/.env.test",
+  path: ".env.test",
   content: `DATABASE_URL=postgres://localhost:5432/test\nREDIS_URL=redis://localhost:6379`,
 })
 
@@ -9923,10 +9968,11 @@ box = Box.create(
     git={"token": os.environ["GITHUB_TOKEN"]},
 )
 
-box.git.clone(repo="github.com/your-org/your-api")
+box.git.clone(repo="https://github.com/your-org/your-api")
+box.cd("your-api")
 
 box.files.write(
-    path="/work/your-api/.env.test",
+    path=".env.test",
     content="DATABASE_URL=postgres://localhost:5432/test\nREDIS_URL=redis://localhost:6379",
 )
 
@@ -9936,31 +9982,32 @@ box.agent.run(prompt="Run the integration test suite using the config in .env.te
 
 ### Collect outputs from parallel boxes
 
-Fan out work across multiple boxes, then download each result locally.
+Fan out work across multiple boxes. Each box writes to its own output folder, so the downloads land in separate local folders.
 
 <CodeGroup>
 ```typescript box.ts
 import { Agent, Box } from "@upstash/box"
 
-const prompts = [
-  "Analyze /work/data.csv and write a summary to /work/summary.md",
-  "Generate charts from /work/data.csv and save PNGs to /work/charts/",
-  "Find anomalies in /work/data.csv and write a report to /work/anomalies.md",
+const tasks = [
+  { out: "summary", prompt: "Analyze data.csv and write a summary to summary/summary.md" },
+  { out: "charts", prompt: "Generate charts from data.csv and save PNGs to charts/" },
+  { out: "anomalies", prompt: "Find anomalies in data.csv and write a report to anomalies/report.md" },
 ]
 
-const results = await Promise.all(
-  prompts.map(async (prompt) => {
+await Promise.all(
+  tasks.map(async ({ out, prompt }) => {
     const box = await Box.create({
       runtime: "node",
       agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY },
     })
 
     await box.files.upload([
-      { path: "./data.csv", destination: "/work/data.csv" },
+      { path: "./data.csv", destination: "data.csv" },
     ])
 
     await box.agent.run({ prompt })
-    await box.files.download({ folder: "/work" })
+    // Downloads the files in the box's `out` folder into ./<out>
+    await box.files.download({ folder: out })
     await box.delete()
   })
 )
@@ -9971,25 +10018,26 @@ import asyncio
 import os
 from upstash_box import AsyncBox, Agent
 
-prompts = [
-    "Analyze /work/data.csv and write a summary to /work/summary.md",
-    "Generate charts from /work/data.csv and save PNGs to /work/charts/",
-    "Find anomalies in /work/data.csv and write a report to /work/anomalies.md",
+tasks = [
+    ("summary", "Analyze data.csv and write a summary to summary/summary.md"),
+    ("charts", "Generate charts from data.csv and save PNGs to charts/"),
+    ("anomalies", "Find anomalies in data.csv and write a report to anomalies/report.md"),
 ]
 
-async def run_one(prompt: str) -> None:
+async def run_one(out: str, prompt: str) -> None:
     box = await AsyncBox.create(
         runtime="node",
         agent={"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]},
     )
-    await box.files.upload([{"path": "./data.csv", "destination": "/work/data.csv"}])
+    await box.files.upload([{"path": "./data.csv", "destination": "data.csv"}])
     await box.agent.run(prompt=prompt)
-    await box.files.download(folder="/work")
+    # Downloads the files in the box's `out` folder into ./<out>
+    await box.files.download(folder=out)
     await box.delete()
 
 async def main() -> None:
     # fan out across boxes in parallel
-    await asyncio.gather(*(run_one(p) for p in prompts))
+    await asyncio.gather(*(run_one(out, prompt) for out, prompt in tasks))
 
 asyncio.run(main())
 ```
@@ -10113,7 +10161,7 @@ box.git.exec(args=["checkout", "-b", "fix/empty-state"])
 
 ### Inspect what changed
 
-Use `status()` for a compact summary and `diff()` to diff the repo's uncommitted changes against the initial state.
+Use `status()` for a compact summary and `diff()` to see the repo's uncommitted changes against `HEAD`.
 
 <CodeGroup>
 ```tsx box.ts
@@ -10258,7 +10306,7 @@ status = box.git.status()
 
 ### Diff
 
-Returns the current Git diff as a string.
+Returns the uncommitted changes in the repo (`git diff HEAD`) as a string.
 
 * Useful to display a patch in your UI
 * Review what an agent changed
@@ -10317,11 +10365,11 @@ commit = box.git.commit(
 
 ### Push
 
-Pushes the current branch. You can also provide a branch name explicitly.
+Checks out the given branch at the current commit (`git checkout -B`) and pushes it to `origin`. Without a branch, it pushes to a branch named after the box ID.
 
 <CodeGroup>
 ```tsx box.ts
-// 👇 push to default branch
+// 👇 push to a branch named after the box ID
 await box.git.push()
 
 // 👇 or to a specific branch
@@ -10331,7 +10379,7 @@ await box.git.push({
 ```
 
 ```python box.py
-# 👇 push to default branch
+# 👇 push to a branch named after the box ID
 box.git.push()
 
 # 👇 or to a specific branch
@@ -10630,7 +10678,7 @@ Every box is a self-contained environment with five capabilities:
 
 | Module         | Description                                                  |
 | -------------- | ------------------------------------------------------------ |
-| **Agent**      | Run a coding agent (Claude Code or Codex)                    |
+| **Agent**      | Run a coding agent (Claude Code, Codex, OpenCode, Cursor, or a custom agent) |
 | **Git**        | Clone repos, inspect diffs, and open pull requests           |
 | **Shell**      | Execute OS-level commands, or hold one open with [live sessions](/docs/box/overall/live-sessions) |
 | **Filesystem** | Upload, write, read, list, download, and manage files inside the box |
@@ -10676,7 +10724,7 @@ box = Box.create(runtime="node-alpine")
 
 Every Upstash Box comes with built-in coding agent harnesses. You don't need to bring your own agent framework or wire up tool calls. The box already knows how to give an agent access to its shell, filesystem, and git, and how to stream output back to you.
 
-We currently support Claude Code and Codex as native agents inside of a box. You choose a model when creating a box.
+We currently support Claude Code, Codex, OpenCode, and Cursor as native agents inside of a box, and you can bring your own with a [custom agent](/docs/box/overall/custom-agent). You choose a harness and model when creating a box.
 
 For more details, see the [Agent](/docs/box/overall/agent) page.
 
@@ -10700,11 +10748,13 @@ When you create a box, Upstash provisions a new isolated container with its own 
 
 If the box has an [init command](/docs/box/overall/quickstart#init-command), the box runs it once after the container starts, on create, on resume, and after a snapshot restore.
 
-### 2. Running
+### 2. Idle and Running
 
-The box automatically enters Running state after creation. Your agent can run bash commands, read and write files, interact with git, and make outbound network requests. `stdout` and `stderr` stream back in real-time.
+Once provisioning finishes, the box is `idle` and ready for work. While an agent run or command executes, the box is `running`. Your agent can run bash commands, read and write files, interact with git, and make outbound network requests. `stdout` and `stderr` stream back in real-time.
 
-If a box sits idle with no active commands, it automatically transitions to Paused after an idle timeout. Free plans auto-pause sooner than paid plans. If `keepAlive` is enabled, it stays on instead.
+The full set of statuses is `creating`, `idle`, `running`, `paused`, `error`, and `deleted`.
+
+If a box sits idle with no active commands, it automatically transitions to Paused: after 1 hour on the free plan and 6 hours on paid plans. If `keepAlive` is enabled, it stays on instead.
 
 ### 3. Paused
 
@@ -10714,7 +10764,7 @@ By default, boxes are billed only on active usage, so a paused box does not incu
 
 ### 4. Snapshot
 
-Snapshots capture the full workspace state of a box at a point in time. They let you checkpoint a working environment and later create a new box from that exact state.
+Snapshots capture the full workspace state of a box at a point in time. They let you checkpoint a working environment and later create a new box from that state. Some settings, such as network policy and a directly passed agent API key, are not inherited by the restored box.
 
 Learn more in [Snapshots](/docs/box/overall/snapshots).
 
@@ -10952,6 +11002,10 @@ Source: https://upstash.com/docs/box/overall/keep-alive
 When `keepAlive` is enabled, the box stays on between sessions instead of auto-pausing when idle. Use it when you need a box to remain continuously available, for example to host a server, keep a long-running agent ready, or preserve an always-on development environment.
 
 For most workloads, the default Box lifecycle is still the better choice. Boxes auto-pause when idle and are more cost-efficient for bursty workloads unless `keepAlive` is enabled.
+
+<Note>
+Keep-alive boxes require a paid plan. On the free plan, creating a box with `keepAlive: true` fails with a `403` error.
+</Note>
 
 ***
 
@@ -11452,7 +11506,7 @@ By default, boxes use:
 | --- | --- |
 | `allow-all` | Default. No outbound restrictions. |
 | `deny-all` | Block all outbound network access. |
-| `custom` | Allow or deny specific domains and CIDR ranges. |
+| `custom` | Allowlist. Only the listed domains and CIDR ranges are reachable, minus any `deniedCidrs`. Everything else is blocked. |
 
 The SDK type is:
 
@@ -11543,7 +11597,7 @@ box = Box.create(
 ```
 </CodeGroup>
 
-`networkPolicy` is also supported in `Box.fromSnapshot()` and `EphemeralBox`.
+`networkPolicy` is also supported in `Box.fromSnapshot()` and `EphemeralBox`. A box restored from a snapshot does not inherit the source box's policy, so pass it again on restore.
 
 ***
 
@@ -11589,16 +11643,17 @@ box.update_network_policy({"mode": "allow-all"})
 ```
 </CodeGroup>
 
-Changes take effect immediately. You do not need to recreate the box.
+Changes take effect immediately. You do not need to recreate the box. `updateNetworkPolicy()` is not available on `EphemeralBox`.
 
 ***
 
 ## Matching rules
 
-* `allowedDomains` supports exact matches such as `api.github.com`
-* wildcard domains must use `*.suffix` form, for example `*.githubusercontent.com`
+* `custom` mode is default-deny: a destination is reachable only if its domain is in `allowedDomains` or its resolved IP is in `allowedCidrs`
+* `allowedDomains` supports exact matches such as `api.github.com` and must be lowercase
+* wildcard domains must use `*.suffix` form, for example `*.githubusercontent.com`. `*.github.com` does not match `github.com` itself
 * `allowedCidrs` and `deniedCidrs` use standard CIDR notation
-* in `custom` mode, `deniedCidrs` takes precedence over allowed CIDRs
+* `deniedCidrs` only removes addresses from what is allowed. A resolved IP in a denied range is blocked even when its domain is in `allowedDomains`. A `custom` policy with only `deniedCidrs` blocks everything
 * private IP ranges are always blocked even if you try to allow them explicitly
 
 ***
@@ -11653,12 +11708,13 @@ box.update_network_policy({
 ```
 </CodeGroup>
 
-Block a specific CIDR range:
+Allow a CIDR range except for a sub-range:
 
 <CodeGroup>
 ```typescript box.ts
 await box.updateNetworkPolicy({
   mode: "custom",
+  allowedCidrs: ["104.16.0.0/12"],
   deniedCidrs: ["104.16.120.0/24"],
 })
 ```
@@ -11666,6 +11722,7 @@ await box.updateNetworkPolicy({
 ```python box.py
 box.update_network_policy({
     "mode": "custom",
+    "allowed_cidrs": ["104.16.0.0/12"],
     "denied_cidrs": ["104.16.120.0/24"],
 })
 ```
@@ -11699,9 +11756,9 @@ import { Agent, Box } from "@upstash/box"
 const box = await Box.create({ runtime: "node" })
 
 // Start a web server on port 3000
-await box.exec.command("cd /work && npm install express")
+await box.exec.command("npm install express")
 await box.files.write({
-  path: "/work/server.js",
+  path: "server.js",
   content: `
     const express = require('express')
     const app = express()
@@ -11709,7 +11766,7 @@ await box.files.write({
     app.listen(3000)
   `,
 })
-await box.exec.command("node /work/server.js &")
+await box.exec.command("nohup node server.js > server.log 2>&1 &")
 
 // Create a public URL
 const publicUrl = await box.getPublicURL(3000)
@@ -11724,9 +11781,9 @@ from upstash_box import Box
 box = Box.create(runtime="node")
 
 # Start a web server on port 3000
-box.exec.command("cd /work && npm install express")
+box.exec.command("npm install express")
 box.files.write(
-    path="/work/server.js",
+    path="server.js",
     content="""
     const express = require('express')
     const app = express()
@@ -11734,7 +11791,7 @@ box.files.write(
     app.listen(3000)
   """,
 )
-box.exec.command("node /work/server.js &")
+box.exec.command("nohup node server.js > server.log 2>&1 &")
 
 # Create a public URL
 public_url = box.get_public_url(3000)
@@ -11900,8 +11957,10 @@ result = box.list_public_urls()
 
 print(result["public_urls"])
 # [
-#   PublicURL(url="https://{BOX_ID}-3000.preview.box.upstash.com", port=3000),
-#   PublicURL(url="https://{BOX_ID}-8080.preview.box.upstash.com", port=8080),
+#   PublicURLListItem(id="{BOX_ID}-3000", port=3000, url="https://{BOX_ID}-3000.preview.box.upstash.com",
+#                     created_at=1789990404, basic_auth=False, bearer_token=False),
+#   PublicURLListItem(id="{BOX_ID}-8080", port=8080, url="https://{BOX_ID}-8080.preview.box.upstash.com",
+#                     created_at=1789990512, basic_auth=False, bearer_token=True),
 # ]
 ```
 </CodeGroup>
@@ -12097,7 +12156,7 @@ const box = await Box.create({ runtime: "python" })
 
 // Set up a Flask app
 await box.files.write({
-  path: "/work/app.py",
+  path: "app.py",
   content: `
 from flask import Flask
 app = Flask(__name__)
@@ -12111,7 +12170,7 @@ if __name__ == '__main__':
   `,
 })
 
-await box.exec.command("pip install flask && python /work/app.py &")
+await box.exec.command("pip install flask && nohup python app.py > app.log 2>&1 &")
 
 // Create authenticated public URL
 const publicUrl = await box.getPublicURL(8080, { basicAuth: true })
@@ -12131,7 +12190,7 @@ box = Box.create(runtime="python")
 
 # Set up a Flask app
 box.files.write(
-    path="/work/app.py",
+    path="app.py",
     content="""
 from flask import Flask
 app = Flask(__name__)
@@ -12145,7 +12204,7 @@ if __name__ == '__main__':
   """,
 )
 
-box.exec.command("pip install flask && python /work/app.py &")
+box.exec.command("pip install flask && nohup python app.py > app.log 2>&1 &")
 
 # Create authenticated public URL
 public_url = box.get_public_url(8080, basic_auth=True)
@@ -12170,7 +12229,7 @@ const box = await Box.create({ runtime: "node" })
 
 // Start frontend on port 3000
 await box.files.write({
-  path: "/work/frontend.js",
+  path: "frontend.js",
   content: `
 const express = require('express')
 const app = express()
@@ -12181,7 +12240,7 @@ app.listen(3000)
 
 // Start API on port 8080
 await box.files.write({
-  path: "/work/api.js",
+  path: "api.js",
   content: `
 const express = require('express')
 const app = express()
@@ -12191,7 +12250,7 @@ app.listen(8080)
 })
 
 await box.exec.command("npm install express")
-await box.exec.command("node /work/frontend.js & node /work/api.js &")
+await box.exec.command("nohup node frontend.js > frontend.log 2>&1 & nohup node api.js > api.log 2>&1 &")
 
 // Create a public URL for each service
 const frontendPublicUrl = await box.getPublicURL(3000)
@@ -12208,7 +12267,7 @@ box = Box.create(runtime="node")
 
 # Start frontend on port 3000
 box.files.write(
-    path="/work/frontend.js",
+    path="frontend.js",
     content="""
 const express = require('express')
 const app = express()
@@ -12219,7 +12278,7 @@ app.listen(3000)
 
 # Start API on port 8080
 box.files.write(
-    path="/work/api.js",
+    path="api.js",
     content="""
 const express = require('express')
 const app = express()
@@ -12229,7 +12288,7 @@ app.listen(8080)
 )
 
 box.exec.command("npm install express")
-box.exec.command("node /work/frontend.js & node /work/api.js &")
+box.exec.command("nohup node frontend.js > frontend.log 2>&1 & nohup node api.js > api.log 2>&1 &")
 
 # Create a public URL for each service
 frontend_public_url = box.get_public_url(3000)
@@ -12251,7 +12310,7 @@ import { Agent, Box } from "@upstash/box"
 const box = await Box.create({ runtime: "node" })
 
 // Start test server
-await box.exec.command("npx http-server /work -p 3000 &")
+await box.exec.command("nohup npx http-server . -p 3000 > http.log 2>&1 &")
 
 // Create a public URL for testing
 const publicUrl = await box.getPublicURL(3000)
@@ -12272,7 +12331,7 @@ from upstash_box import Box
 box = Box.create(runtime="node")
 
 # Start test server
-box.exec.command("npx http-server /work -p 3000 &")
+box.exec.command("nohup npx http-server . -p 3000 > http.log 2>&1 &")
 
 # Create a public URL for testing
 public_url = box.get_public_url(3000)
@@ -12287,7 +12346,7 @@ box.delete()
 ```
 </CodeGroup>
 
-<Note>The SDK still supports `getPreviewUrl`, `listPreviews`, and `deletePreview`, but they are deprecated aliases for `getPublicURL`, `listPublicURLs`, and `deletePublicURL`.</Note>
+<Note>The TypeScript SDK still supports `getPreviewUrl`, `listPreviews`, and `deletePreview`, but they are deprecated aliases for `getPublicURL`, `listPublicURLs`, and `deletePublicURL`.</Note>
 
 # Pricing & Limits
 Source: https://upstash.com/docs/box/overall/pricing
@@ -12373,7 +12432,7 @@ box = Box.create(runtime="node")
 Your box is ready to use! You can already use it as a standalone, secure, isolated sandbox with full shell access, git, and filesystem operations.
 
 <Tip>
-  You can also create a keep-alive box by setting `keepAlive: true`. Keep-alive boxes stay on between sessions instead of auto-pausing. See [Keep Alive](/docs/box/overall/keep-alive).
+  You can also create a keep-alive box by setting `keepAlive: true`. Keep-alive boxes stay on between sessions instead of auto-pausing and require a paid plan. See [Keep Alive](/docs/box/overall/keep-alive).
 </Tip>
 
 #### Init command
@@ -12561,7 +12620,7 @@ Great example use cases:
   </Card>
 
   <Card title="Agent" href="/box/overall/agent">
-    Boxes have Claude Code, Codex or OpenCode built-in.
+    Boxes have Claude Code, Codex, OpenCode, and Cursor built-in, plus custom agents.
   </Card>
 </CardGroup>
 
@@ -12885,7 +12944,8 @@ const box = await Box.create({
   git: { token: process.env.GITHUB_TOKEN },
 })
 
-await box.git.clone({ repo: "github.com/your-org/your-repo" })
+await box.git.clone({ repo: "https://github.com/your-org/your-repo" })
+await box.cd("your-repo")
 
 await box.schedule.agent({
   cron: "0 9 * * 1-5",
@@ -12909,7 +12969,8 @@ box = Box.create(
     git={"token": os.environ["GITHUB_TOKEN"]},
 )
 
-box.git.clone(repo="github.com/your-org/your-repo")
+box.git.clone(repo="https://github.com/your-org/your-repo")
+box.cd("your-repo")
 
 box.schedule.agent(
     cron="0 9 * * 1-5",
@@ -13011,7 +13072,7 @@ Treat both as secrets and share them only where that level of access is intended
 
 ## Blocked Environment Variables
 
-For system security, the following environment variables cannot be set:
+For system security, the following environment variables cannot be set. If you pass them in `env` when creating a box, they are ignored. Saving them as account-level environment variables fails with a `400` error.
 
 | Variable | Reason |
 |---|---|
@@ -13020,6 +13081,10 @@ For system security, the following environment variables cannot be set:
 | `LD_PRELOAD` | Prevents shared library injection |
 | `LD_LIBRARY_PATH` | Prevents library path hijacking |
 | `NODE_OPTIONS` | Prevents Node.js flag injection |
+| `UPSTASH_BOX_ID` | Reserved. Set by the platform to the box ID |
+| `UPSTASH_BOX_NAME` | Reserved. Set by the platform to the box name |
+| `UPSTASH_BOX_AGENT` | Reserved. Set by the platform to the agent harness, when one is configured |
+| `UPSTASH_BOX_RUNTIME` | Reserved. Set by the platform to the box runtime |
 
 All other environment variables — including `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and their `*_BASE_URL` variants — are allowed. The built-in agent runner uses its own isolated environment that overrides these per-run.
 
@@ -13058,7 +13123,7 @@ ssh current-wasp-05510@us-east-1.box.upstash.com
 
 ### Run a shell command
 
-A shell command resolves when the command finishes and gives you back the result and status.
+A shell command resolves when the command finishes and gives you back the result and status. Commands and code snippets run this way are capped at 1 hour.
 
 <CodeGroup>
 ```typescript box.ts
@@ -13099,15 +13164,14 @@ You can execute code inside of a box:
 const run = await box.exec.code({
   code: "console.log('hello')",
   lang: "js",
-  timeout: 10_000,
 })
 
-console.log(run.output) // "hello"
-console.log(run.exit_code) // "0"
+console.log(run.result)   // "hello"
+console.log(run.exitCode) // 0
 ```
 
 ```python box.py
-run = box.exec.code(code="print('hello')", lang="python", timeout=10_000)
+run = box.exec.code(code="print('hello')", lang="python")
 
 print(run.result)     # "hello"
 print(run.exit_code)  # 0
@@ -13142,13 +13206,13 @@ Pass a full shell expression. Pipes, redirects, and chained commands all work as
 
 <CodeGroup>
 ```typescript box.ts
-const run = await box.exec.command("cd /work && npm install && npm test")
+const run = await box.exec.command("cd my-app && npm install && npm test")
 
 console.log(run.result)
 ```
 
 ```python box.py
-run = box.exec.command("cd /work && npm install && npm test")
+run = box.exec.command("cd my-app && npm install && npm test")
 
 print(run.result)
 ```
@@ -13180,23 +13244,25 @@ session.wait(30)
 
 ***
 
-### Cancel a long-running command
+### Stop a long-running command
 
-You can cancel a run to abort it. The status becomes `"cancelled"`.
+`exec.command` only returns once the command exits, so it cannot be stopped midway. To stop a command while it runs, start it as a [live session](/docs/box/overall/live-sessions#stop-a-session) and terminate it.
 
 <CodeGroup>
 ```typescript box.ts
-const run = await box.exec.command("sleep 10")
-await run.cancel()
+const session = await box.exec.session({ argv: ["sleep", "600"] })
 
-console.log(run.status) // "cancelled"
+// SIGTERM now, then SIGKILL after 5s if it is still running
+session.terminate(5000)
+await session.wait()
 ```
 
 ```python box.py
-run = box.exec.command("sleep 10")
-run.cancel()
+session = box.exec.session(argv=["sleep", "600"])
 
-print(run.status)  # "cancelled"
+# SIGTERM now, then SIGKILL after 5s if it is still running
+session.terminate(5000)
+session.wait(30)
 ```
 </CodeGroup>
 
@@ -13248,7 +13314,8 @@ const box = await Box.create({
   git: { token: process.env.GITHUB_TOKEN },
 })
 
-await box.git.clone({ repo: "github.com/your-org/your-api" })
+await box.git.clone({ repo: "https://github.com/your-org/your-api" })
+await box.cd("your-api")
 await box.exec.command("npm install")
 
 await box.agent.run({
@@ -13266,7 +13333,8 @@ box = Box.create(
     git={"token": os.environ["GITHUB_TOKEN"]},
 )
 
-box.git.clone(repo="github.com/your-org/your-api")
+box.git.clone(repo="https://github.com/your-org/your-api")
+box.cd("your-api")
 box.exec.command("npm install")
 
 box.agent.run(prompt="Run the test suite and fix any failing tests")
@@ -13275,7 +13343,7 @@ box.agent.run(prompt="Run the test suite and fix any failing tests")
 
 ### Run a build and extract artifacts
 
-Execute a build command, then download the output.
+Upload the project files, run the build, then download the output. Upload each file individually, since `files.upload` does not take directories.
 
 <CodeGroup>
 ```typescript box.ts
@@ -13284,12 +13352,12 @@ import { Agent, Box } from "@upstash/box"
 const box = await Box.create({ runtime: "node" })
 
 await box.files.upload([
-  { path: "./src", destination: "/work/src" },
-  { path: "./package.json", destination: "/work/package.json" },
+  { path: "./package.json", destination: "app/package.json" },
+  { path: "./src/index.js", destination: "app/src/index.js" },
 ])
 
-await box.exec.command("cd /work && npm install && npm run build")
-await box.files.download({ folder: "/work/dist" })
+await box.exec.command("cd app && npm install && npm run build")
+await box.files.download({ folder: "app/dist" }) // saved to ./dist
 await box.delete()
 ```
 
@@ -13299,12 +13367,12 @@ from upstash_box import Box
 box = Box.create(runtime="node")
 
 box.files.upload([
-    {"path": "./src", "destination": "/work/src"},
-    {"path": "./package.json", "destination": "/work/package.json"},
+    {"path": "./package.json", "destination": "app/package.json"},
+    {"path": "./src/index.js", "destination": "app/src/index.js"},
 ])
 
-box.exec.command("cd /work && npm install && npm run build")
-box.files.download(folder="/work/dist")
+box.exec.command("cd app && npm install && npm run build")
+box.files.download(folder="app/dist")  # saved to ./dist
 box.delete()
 ```
 </CodeGroup>
@@ -13326,7 +13394,7 @@ const check = await box.exec.command("python3 --version && pip list")
 console.log(check.result)
 
 await box.agent.run({
-  prompt: "Write a data pipeline that reads /work/raw.csv, cleans it, and saves /work/clean.parquet",
+  prompt: "Write a data pipeline that reads raw.csv, cleans it, and saves clean.parquet",
 })
 ```
 
@@ -13342,7 +13410,7 @@ box = Box.create(
 check = box.exec.command("python3 --version && pip list")
 print(check.result)
 
-box.agent.run(prompt="Write a data pipeline that reads /work/raw.csv, cleans it, and saves /work/clean.parquet")
+box.agent.run(prompt="Write a data pipeline that reads raw.csv, cleans it, and saves clean.parquet")
 ```
 </CodeGroup>
 
@@ -13357,10 +13425,16 @@ Snapshots let you capture and duplicate box state. Use **snapshots** to save a p
 
 A snapshot captures:
 
-* **Filesystem**: the full disk state of the box at the time of the snapshot.
-* **Agent configuration**: the agent harness, model, and API key settings.
+* **Filesystem**: the disk state of the box at the time of the snapshot, including cloned repos and installed packages.
+* **Box configuration**: the agent model, runtime, and browser setting. The agent harness is taken from the source box.
 
-A snapshot does not carry active schedules over to the new box.
+A restored box does not inherit:
+
+* **Agent API key**: a key passed directly as `apiKey` is not stored in the snapshot. The restored box uses your stored key for that provider or the Upstash-managed key. Pass `agent` again to use your own key.
+* **Network policy**: pass `networkPolicy` again on restore.
+* **Attach headers**: pass `attachHeaders` again on restore.
+* **Lifecycle settings**: init command, keep-alive, and size use the values passed on restore.
+* **Schedules**: active schedules are not carried over.
 
 <Note>
 Snapshots are the best way to preserve cloned repositories, installed dependencies, and prepared workspaces. If your box already has a repo checked out, restoring from a snapshot is usually faster than cloning it again.
@@ -13380,11 +13454,12 @@ const snapshot = await box.snapshot({ name: "after-setup" })
 
 console.log(snapshot)
 // {
-//   id: "snap_x7f...",
+//   id: "3f9c2a1e-7b4d-4c8e-9a51-2d6f0b8e4c17",
 //   name: "after-setup",
-//   boxId: "box_abc123",
-//   sizeBytes: 52428800,
-//   createdAt: "2026-02-23T..."
+//   box_id: "sweet-shark-26021",
+//   size_bytes: 52428800,
+//   status: "ready",
+//   created_at: 1771845600,
 // }
 ```
 
@@ -13393,9 +13468,9 @@ snapshot = box.snapshot(name="after-setup")
 
 print(snapshot)
 # Snapshot(
-#   id="snap_x7f...",
+#   id="3f9c2a1e-7b4d-4c8e-9a51-2d6f0b8e4c17",
 #   name="after-setup",
-#   box_id="box_abc123",
+#   box_id="sweet-shark-26021",
 #   size_bytes=52428800,
 #   status="ready",
 #   created_at=1771845600,
@@ -13419,8 +13494,8 @@ const snapshots = await box.listSnapshots()
 
 console.log(snapshots)
 // [
-//   { id: "snap_x7f...", name: "after-setup", status: "ready", ... },
-//   { id: "snap_a3b...", name: "pre-refactor", status: "ready", ... },
+//   { id: "3f9c2a1e-...", name: "after-setup", status: "ready", ... },
+//   { id: "8b2e6d40-...", name: "pre-refactor", status: "ready", ... },
 // ]
 ```
 
@@ -13429,8 +13504,8 @@ snapshots = box.list_snapshots()
 
 print(snapshots)
 # [
-#   Snapshot(id="snap_x7f...", name="after-setup", status="ready", ...),
-#   Snapshot(id="snap_a3b...", name="pre-refactor", status="ready", ...),
+#   Snapshot(id="3f9c2a1e-...", name="after-setup", status="ready", ...),
+#   Snapshot(id="8b2e6d40-...", name="pre-refactor", status="ready", ...),
 # ]
 ```
 </CodeGroup>
@@ -13443,11 +13518,11 @@ Remove a snapshot by ID.
 
 <CodeGroup>
 ```typescript box.ts
-await box.deleteSnapshot("snap_x7f...")
+await box.deleteSnapshot(snapshot.id)
 ```
 
 ```python box.py
-box.delete_snapshot("snap_x7f...")
+box.delete_snapshot(snapshot.id)
 ```
 </CodeGroup>
 
@@ -13455,7 +13530,7 @@ box.delete_snapshot("snap_x7f...")
 
 ### Restore from a snapshot
 
-`Box.fromSnapshot()` provisions a new box with the exact state from the snapshot. The original box is unaffected. You can branch into multiple boxes from the same checkpoint.
+`Box.fromSnapshot()` provisions a new box from the snapshot's filesystem and agent model. The original box is unaffected. You can branch into multiple boxes from the same checkpoint.
 
 <CodeGroup>
 ```typescript box.ts
@@ -13464,7 +13539,7 @@ const restored = await Box.fromSnapshot(snapshot.id)
 // Box.fromSnapshot accepts creation options such as name:
 const named = await Box.fromSnapshot(snapshot.id, { name: "restored-worker" })
 
-const files = await restored.files.list("/work")
+const files = await restored.files.list("/workspace/home")
 console.log(files)
 ```
 
@@ -13474,12 +13549,12 @@ restored = Box.from_snapshot(snapshot.id)
 # Box.from_snapshot accepts creation options such as name:
 named = Box.from_snapshot(snapshot.id, name="restored-worker")
 
-files = restored.files.list("/work")
+files = restored.files.list("/workspace/home")
 print(files)
 ```
 </CodeGroup>
 
-The restored box starts with the same workspace state from the snapshot. You can also configure lifecycle settings such as keep-alive and init commands on the restored box.
+The restored box starts with the same workspace state from the snapshot. Settings that are not inherited, such as `agent.apiKey`, `networkPolicy`, `attachHeaders`, `initCommand`, and `keepAlive`, can be passed to `fromSnapshot()`. Env vars from the source box carry over.
 
 ***
 
@@ -13499,7 +13574,7 @@ const box = await Box.create({
   git: { token: process.env.GITHUB_TOKEN },
 })
 
-await box.git.clone({ repo: "github.com/my-org/my-repo" })
+await box.git.clone({ repo: "https://github.com/my-org/my-repo" })
 const checkpoint = await box.snapshot({ name: "pre-refactor" })
 
 const run = await box.agent.run({
@@ -13508,7 +13583,10 @@ const run = await box.agent.run({
 })
 
 if (run.status === "failed") {
-  const fallback = await Box.fromSnapshot(checkpoint.id)
+  // 👇 the API key is not stored in the snapshot, so pass the agent again
+  const fallback = await Box.fromSnapshot(checkpoint.id, {
+    agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY },
+  })
   await fallback.agent.run({
     prompt: "Add connection pooling to the existing database layer without rewriting it",
   })
@@ -13525,7 +13603,7 @@ box = Box.create(
     git={"token": os.environ["GITHUB_TOKEN"]},
 )
 
-box.git.clone(repo="github.com/my-org/my-repo")
+box.git.clone(repo="https://github.com/my-org/my-repo")
 checkpoint = box.snapshot(name="pre-refactor")
 
 run = box.agent.run(
@@ -13534,7 +13612,11 @@ run = box.agent.run(
 )
 
 if run.status == "failed":
-    fallback = Box.from_snapshot(checkpoint.id)
+    # 👇 the API key is not stored in the snapshot, so pass the agent again
+    fallback = Box.from_snapshot(
+        checkpoint.id,
+        agent={"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]},
+    )
     fallback.agent.run(
         prompt="Add connection pooling to the existing database layer without rewriting it",
     )
@@ -13556,7 +13638,10 @@ await base.delete()
 
 const boxes = await Promise.all(
   tasks.map(async (task) => {
-    const box = await Box.fromSnapshot(baseSnap.id)
+    // 👇 the base box has no agent, so configure one on restore
+    const box = await Box.fromSnapshot(baseSnap.id, {
+      agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY },
+    })
     await box.agent.run({ prompt: task })
     return box
   })
@@ -13565,7 +13650,10 @@ const boxes = await Promise.all(
 
 ```python box.py
 import asyncio
-from upstash_box import AsyncBox
+import os
+from upstash_box import Agent, AsyncBox
+
+agent = {"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]}
 
 async def main() -> None:
     base = await AsyncBox.create(runtime="node")
@@ -13574,7 +13662,8 @@ async def main() -> None:
     await base.delete()
 
     async def run_task(task: str) -> AsyncBox:
-        box = await AsyncBox.from_snapshot(base_snap.id)
+        # 👇 the base box has no agent, so configure one on restore
+        box = await AsyncBox.from_snapshot(base_snap.id, agent=agent)
         await box.agent.run(prompt=task)
         return box
 
@@ -13597,14 +13686,17 @@ const seed = await Box.create({
   runtime: "node",
   git: { token: process.env.GITHUB_TOKEN },
 })
-await seed.git.clone({ repo: "github.com/your-org/monorepo" })
+await seed.git.clone({ repo: "https://github.com/your-org/monorepo" })
 const snap = await seed.snapshot({ name: "repo-cloned" })
 await seed.delete()
 
+// 👇 the seed box has no agent, so configure one on restore
+const agent = { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY }
+
 const [security, performance, docs] = await Promise.all([
-  Box.fromSnapshot(snap.id),
-  Box.fromSnapshot(snap.id),
-  Box.fromSnapshot(snap.id),
+  Box.fromSnapshot(snap.id, { agent }),
+  Box.fromSnapshot(snap.id, { agent }),
+  Box.fromSnapshot(snap.id, { agent }),
 ])
 
 await Promise.all([
@@ -13617,21 +13709,24 @@ await Promise.all([
 ```python box.py
 import asyncio
 import os
-from upstash_box import AsyncBox
+from upstash_box import Agent, AsyncBox
+
+# the seed box has no agent, so configure one on restore
+agent = {"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]}
 
 async def main() -> None:
     seed = await AsyncBox.create(
         runtime="node",
         git={"token": os.environ["GITHUB_TOKEN"]},
     )
-    await seed.git.clone(repo="github.com/your-org/monorepo")
+    await seed.git.clone(repo="https://github.com/your-org/monorepo")
     snap = await seed.snapshot(name="repo-cloned")
     await seed.delete()
 
     security, performance, docs = await asyncio.gather(
-        AsyncBox.from_snapshot(snap.id),
-        AsyncBox.from_snapshot(snap.id),
-        AsyncBox.from_snapshot(snap.id),
+        AsyncBox.from_snapshot(snap.id, agent=agent),
+        AsyncBox.from_snapshot(snap.id, agent=agent),
+        AsyncBox.from_snapshot(snap.id, agent=agent),
     )
 
     await asyncio.gather(
@@ -13659,7 +13754,7 @@ A very powerful pattern is the **Agent Server**: a long-running, per-tenant agen
 
 Each user gets a dedicated Box running its own agent. The agent observes every request and response in a non-blocking way. It builds up a personalized understanding of what that user needs. Over time, it contributes back to a shared **Knowledge Base**, so insights from one tenant can improve results for everyone.
 
-Because boxes are serverless, idle tenants only cost a very low storage rate. When a user returns, their box wakes instantly with all prior state intact (installed packages, file history, learned preferences) and picks up exactly where it left off.
+Because idle boxes auto-pause, idle tenants don't use compute. When a user returns, their box resumes with all prior state intact (installed packages, file history, learned preferences) and picks up exactly where it left off.
 
 ## 2. Multi-Agent Orchestration
 
@@ -13688,7 +13783,7 @@ const reviews = await Promise.all([
 const jury = await Box.create({
   runtime: "node",
   agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-sonnet-4-6" },
-  git: { token: process.env.GIT_TOKEN },
+  git: { token: process.env.GITHUB_TOKEN },
 })
 
 await jury.agent.run({
@@ -13743,19 +13838,24 @@ For example, at Context7 we use Box to benchmark LLMs for context extraction ove
 
 <CodeGroup>
 ```typescript box.ts
-const models = ["anthropic/claude-opus-4-6", "openai/gpt-5.3-codex", "openrouter/google/gemini-2.5-pro"]
+// each model is paired with the harness that runs it
+const agents = [
+  { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6" },
+  { harness: Agent.Codex, model: "openai/gpt-5.3-codex" },
+  { harness: Agent.OpenCode, model: "openrouter/google/gemini-2.5-pro" },
+]
 
 const docs = await fs.readFile("./documentation.md", "utf-8")
 const prompt = `Extract all API endpoints from this documentation:\n${docs}`
 
 const boxes = await Promise.all(
-  models.map((model) => Box.create({ runtime: "node", agent: { model } })),
+  agents.map((agent) => Box.create({ runtime: "node", agent })),
 )
 
 const results = await Promise.all(boxes.map((box) => box.agent.run({ prompt })))
 
 const evaluation = results.map((r, i) => ({
-  model: models[i],
+  model: agents[i].model,
   result: r.result,
   hallucinationPct: evaluateHallucination(r.result, docs),
   accuracyScore: evaluateAccuracy(r.result, docs),
