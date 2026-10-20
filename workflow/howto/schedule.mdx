@@ -33,6 +33,7 @@ Let's create a user-specific schedule, sending a first report to each user exact
 <CodeGroup>
 
 ```typescript api/sign-up/route.ts
+import { NextResponse } from "next/server";
 import { signUp } from "@/utils/auth-utils";
 import { Client } from "@upstash/qstash";
 
@@ -41,11 +42,18 @@ const client = new Client({ token: process.env.QSTASH_TOKEN! });
 export async function POST(request: Request) {
   const userData: UserData = await request.json();
 
+  // Simulate user registration
+  const user = await signUp(userData);
+
+  // Weekly cron expression whose first run is 7 days from signup
+  const firstSummaryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const cron = `${firstSummaryDate.getUTCMinutes()} ${firstSummaryDate.getUTCHours()} * * ${firstSummaryDate.getUTCDay()}`;
+
   // Schedule weekly account summary
   await client.schedules.create({
-    scheduleId: `user-summary-${user.email}`,
+    scheduleId: `user-summary-${user.id}`,
     destination: "https://<YOUR_APP_URL>/api/send-weekly-summary",
-    body: { userId: user.id },
+    body: JSON.stringify({ userId: user.id }),
     cron: cron,
   });
 
@@ -78,11 +86,11 @@ async def sign_up(request: Request):
     first_summary_date = datetime.now() + timedelta(days=7)
 
     # Create cron expression for weekly summaries starting 7 days from signup
-    cron = f"{first_summary_date.minute} {first_summary_date.hour} * * {first_summary_date.day}"
+    cron = f"{first_summary_date.minute} {first_summary_date.hour} * * {first_summary_date.isoweekday() % 7}"
 
     # Schedule weekly account summary
     await client.schedule.create_json(
-        schedule_id=f"user-summary-{user.email}",
+        schedule_id=f"user-summary-{user.id}",
         destination="https://<YOUR_APP_URL>/api/send-weekly-summary",
         body={"userId": user.id},
         cron=cron,
