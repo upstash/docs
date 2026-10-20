@@ -6399,6 +6399,179 @@ result = sandbox.execute("sleep 5 && echo done", timeout=30)
 
 To see everything else a box can do, like snapshots, git, previews, and schedules, check the [Box quickstart](/docs/box/overall/quickstart).
 
+# Run Box Agents on Neon AI Gateway Models
+Source: https://upstash.com/docs/box/guides/neon-ai-gateway
+
+Run Box's built-in agents on [Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) models. One Neon credential covers Claude, GPT, Gemini, and open-weight models, and usage draws down your Neon [prepaid credits](https://neon.com/docs/ai-gateway/prepaid-credits).
+
+***
+
+## 1. Get a Neon credential
+
+You need a Neon project in an AI Gateway region (`aws-us-east-2`, `aws-us-east-1`, `aws-eu-central-1`, or `aws-ap-southeast-1`) on a paid plan with prepaid credits.
+
+This writes your branch's gateway token and URL to `.env`:
+
+```bash
+neon env pull -s ai-gateway --file .env
+```
+
+Or open **Connect** → **AI Gateway** in the Neon Console and copy the snippet. Add your Box API key next to them:
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+NEON_AI_GATEWAY_TOKEN=nt_live_xxxxxxxxxxxxxxxx
+NEON_AI_GATEWAY_BASE_URL=https://br-<name>-api.ai.<cell>.<region>.aws.neon.tech
+```
+
+***
+
+## 2. Save it in Upstash Box
+
+In the [Upstash Console](https://console.upstash.com/box), open **Box** → **Settings** → **Agent API Keys**. Under **Neon AI Gateway**, paste the token and the branch gateway URL, then click **Add key**.
+
+<Note>
+  A Neon credential is a token plus a branch URL, so Box only accepts it as a stored key. Boxes on Neon models use `BoxApiKey.StoredKey`; passing the token as `apiKey` is rejected.
+</Note>
+
+***
+
+## 3. Create a box
+
+Pick a `neon/` model and a harness that can run it:
+
+<CodeGroup>
+```typescript box.ts
+import { Agent, Box, BoxApiKey, NeonModel } from "@upstash/box";
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    harness: Agent.ClaudeCode,
+    model: NeonModel.Claude_Sonnet_5,
+    apiKey: BoxApiKey.StoredKey,
+  },
+});
+
+const run = await box.agent.run({
+  prompt: "Create hello.txt that says hello from Neon AI Gateway",
+});
+
+console.log(run.result);
+await box.delete();
+```
+
+```python box.py
+from upstash_box import Agent, Box, BoxApiKey, NeonModel
+
+box = Box.create(
+    runtime="node",
+    agent={
+        "harness": Agent.CLAUDE_CODE,
+        "model": NeonModel.CLAUDE_SONNET_5,
+        "api_key": BoxApiKey.STORED_KEY,
+    },
+)
+
+run = box.agent.run(prompt="Create hello.txt that says hello from Neon AI Gateway")
+
+print(run.result)
+box.delete()
+```
+</CodeGroup>
+
+Each harness reaches Neon through a different API, so not every model runs on every harness:
+
+| Models | Harness |
+| --- | --- |
+| Claude (`neon/claude-*`) | Claude Code or OpenCode |
+| GPT-5.4 and newer, GPT-5.5 Pro, GPT-5.3 Codex | Codex |
+| GPT-5 Mini, GPT-5 Nano, Grok 4.6 | Codex or OpenCode |
+| Gemini, gpt-oss, and other open-weight models | OpenCode |
+
+Box rejects a model the harness can't run. `NeonModel` lists the catalog; any other model id your branch serves works as `neon/<id>`. Claude Code on Neon runs without the WebSearch tool, which Neon doesn't serve.
+
+***
+
+## Use Neon in a custom agent
+
+If you run your own [custom agent](/docs/box/overall/custom-agent), call Neon directly and let [Attach Headers](/docs/box/overall/attach-headers) add the token, so it never enters the box:
+
+```typescript box.ts
+import { readFile } from "node:fs/promises";
+import { Agent, Box } from "@upstash/box";
+
+const baseUrl = process.env.NEON_AI_GATEWAY_BASE_URL!;
+const neonHost = new URL(baseUrl).host;
+
+const box = await Box.create({
+  runtime: "node",
+  agent: {
+    harness: Agent.Custom,
+    model: "gpt-5-mini",
+    customHarness: { command: "node", args: ["/workspace/home/neon-agent.mjs"] },
+  },
+  attachHeaders: {
+    [neonHost]: { Authorization: `Bearer ${process.env.NEON_AI_GATEWAY_TOKEN}` },
+  },
+  env: { NEON_AI_GATEWAY_BASE_URL: baseUrl },
+});
+
+await box.exec.command("cd /workspace/home && npm install @upstash/box");
+await box.files.write({
+  path: "neon-agent.mjs",
+  content: await readFile("./neon-agent.mjs", "utf8"),
+});
+
+const run = await box.agent.run({ prompt: "Say hello from Neon AI Gateway" });
+console.log(run.result);
+await box.delete();
+```
+
+The agent sends no `Authorization` header; the proxy adds it on the way out:
+
+```javascript neon-agent.mjs
+import { runCustomHarness } from "@upstash/box";
+
+const url = `${process.env.NEON_AI_GATEWAY_BASE_URL}/v1/chat/completions`;
+
+await runCustomHarness(async ({ prompt, model }, emit) => {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }] }),
+  });
+  if (!response.ok) throw new Error(`Neon AI Gateway ${response.status}: ${await response.text()}`);
+
+  const { choices, usage } = await response.json();
+  const output = choices[0].message.content;
+  emit.text(output);
+  return { output, inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens };
+});
+```
+
+The model is a plain Neon id here, without the `neon/` prefix.
+
+***
+
+## List models
+
+See what your branch serves:
+
+```bash
+curl "$NEON_AI_GATEWAY_BASE_URL/v1/models" \
+  -H "Authorization: Bearer $NEON_AI_GATEWAY_TOKEN"
+```
+
+***
+
+## Next steps
+
+* [Neon AI Gateway models](https://neon.com/docs/ai-gateway/models)
+* [Neon AI Gateway authentication](https://neon.com/docs/ai-gateway/authentication)
+* [Custom agents](/docs/box/overall/custom-agent)
+* [Attach Headers](/docs/box/overall/attach-headers)
+
 # Run a Next.js App in a Cloud Sandbox with a Public URL
 Source: https://upstash.com/docs/box/guides/nextjs-setup
 
