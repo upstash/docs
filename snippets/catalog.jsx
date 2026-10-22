@@ -94,7 +94,7 @@ export const Catalog = ({ product, type, featured, search, cols = 3 }) => {
     { title: "Hacker News Trends", description: "Trend search over Hacker News, built on Upstash.", href: "https://hackernewstrends.com", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
     { title: "Eve: Hacker News Agent", description: "A Hacker News agent built with the Vercel Eve framework.", href: "https://upstash-hackernews-eve-agent.vercel.app", product: "redis", type: "demo", lang: "typescript", search: true, featured: true },
     { title: "OpenClaw", description: "Run OpenClaw inside an Upstash Box.", href: "/box/guides/openclaw-setup", product: "box", type: "guide" },
-    { title: "Hermes", description: "Run the Hermes agent inside a Box.", href: "/box/guides/hermes-setup", product: "box", type: "guide" },
+    { title: "Hermes", description: "Host Hermes in a Box and use it from Hermes Desktop.", href: "/box/guides/hermes-setup", product: "box", type: "guide" },
     { title: "Playwright", description: "Scrape dynamic sites with the box's built-in browser.", href: "/box/guides/web-scraping-playwright", product: "box", type: "guide" },
     { title: "TanStack AI", description: "Run a TanStack AI coding agent inside a Box.", href: "/box/guides/tanstack-setup", product: "box", type: "guide" },
     { title: "Vercel Eve", description: "Back Eve's agent sandbox with a Box.", href: "/box/guides/eve-setup", product: "box", type: "guide" },
