@@ -120,7 +120,7 @@ export const environment = UpstashSandbox.environment({
   size: "medium",
   async prepare(sandbox) {
     await sandbox.setNetworkPolicy("allow-all"); // prepare starts deny-all too
-    const result = await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+    const result = await sandbox.run({ command: "sudo -n apt-get update && sudo -n apt-get install -y ripgrep" });
     if (result.exitCode !== 0) throw new Error(result.stderr);
   },
 });
@@ -193,7 +193,7 @@ export default defineSandbox({
   backend: upstash({ runtime: "node" }),
   async bootstrap({ use }) {
     const sandbox = await use({ networkPolicy: "allow-all" });
-    await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+    await sandbox.run({ command: "sudo -n apt-get update && sudo -n apt-get install -y ripgrep" });
   },
   async onSession({ use }) {
     await use();
@@ -205,7 +205,7 @@ export const environment = UpstashSandbox.environment({
   runtime: "node",
   async prepare(sandbox) {
     await sandbox.setNetworkPolicy("allow-all");
-    await sandbox.run({ command: "sudo -n apt-get install -y jq" });
+    await sandbox.run({ command: "sudo -n apt-get update && sudo -n apt-get install -y ripgrep" });
   },
 });
 
