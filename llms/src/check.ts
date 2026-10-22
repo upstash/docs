@@ -12,14 +12,14 @@ execSync("npx tsx src/build.ts", {
 });
 
 // Step 2: check whether the generated files differ from what's committed
-const status = execSync("git status --porcelain -- llms.txt llms-full.txt", {
+const status = execSync("git status --porcelain -- llms.txt llms-full.txt ':(glob)*/llms.txt'", {
   cwd: DOCS_ROOT,
   encoding: "utf-8",
 }).trim();
 
 if (status) {
   console.error(
-    "\n >> Error: llms.txt / llms-full.txt are out of date. Run `npm run build` in llms/ and commit the result.\n",
+    "\n >> Error: llms.txt files are out of date. Run `npm run build` in llms/ and commit the result.\n",
   );
   console.error("Changed files:\n");
   console.error(status);
@@ -27,4 +27,4 @@ if (status) {
   process.exit(1);
 }
 
-console.log("llms.txt and llms-full.txt are up to date.");
+console.log("llms.txt files are up to date.");
