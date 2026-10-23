@@ -8,8 +8,8 @@ Most agents only act when someone messages them. [MCP Events](https://github.com
 lets an agent wait for something instead: the host subscribes to an event on your MCP server, and
 when it happens your server POSTs a signed webhook that wakes the agent up.
 
-`@upstash/mcp-toolkit/events` implements the server side. You define events with typed payloads and
-call `emit` when something happens. The toolkit handles subscriptions, callback verification,
+`@upstash/mcp-toolkit/events` implements the server side. You register events with typed payloads
+and call `emit` when something happens. The toolkit handles subscriptions, callback verification,
 signing and retries: subscriptions live in Upstash Redis, and every delivery goes through
 [QStash](/qstash/overall/getstarted), which retries failed webhooks with backoff.
 
@@ -32,7 +32,8 @@ Four files in a Next.js app.
 
 Every subscription belongs to the user who subscribed. `verifyToken` turns the request's bearer token
 into the SDK's `AuthInfo`, with your user id in `extra`, and `principal` reads that id back for the
-toolkit. If you also use [MCP Tasks](/redis/sdks/agentkit/mcp-tasks), both layers share this file:
+toolkit. If you also use [MCP Tasks](/redis/sdks/agentkit/mcp-tasks), `McpTasks` and `McpEvents`
+share this file:
 
 ```ts lib/auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
@@ -44,11 +45,17 @@ export async function verifyToken(
   bearerToken?: string,
 ): Promise<AuthInfo | undefined> {
   if (!bearerToken) return undefined;
-  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
-  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+  // Clerk, WorkOS, Auth0, your own
+  const { sub, client_id } = await verifyJwt(bearerToken);
+  return {
+    token: bearerToken,
+    clientId: client_id,
+    scopes: [],
+    extra: { userId: sub },
+  };
 }
 
-// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+// 2. The toolkit calls this with that AuthInfo. Return the user id or throw.
 export function principal({ auth }: { auth?: AuthInfo }): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -56,30 +63,36 @@ export function principal({ auth }: { auth?: AuthInfo }): string {
 }
 ```
 
-### 2. Define the event layer and your events
+### 2. Create `McpEvents` and register your events
 
 ```ts lib/events.ts
-import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
+import { McpEvents } from "@upstash/mcp-toolkit/events";
+import {
+  QStashDelivery,
+  RedisSubscriptionStore,
+} from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 import { principal } from "./auth";
 
-export const events = createEventLayer({
+export const events = new McpEvents({
   store: new RedisSubscriptionStore(),
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
   principal,
 });
 
-export const commentCreated = events.define("comment.created", {
+// Register at module scope, like a task.
+export const commentCreated = events.registerEvent("comment.created", {
   description: "A new comment was added to a document.",
-  input: z.object({ documentId: z.string().optional() }), // what a subscriber may filter on
+  // What a subscriber may filter on.
+  input: z.object({ documentId: z.string().optional() }),
   payload: z.object({ documentId: z.string(), text: z.string() }),
   // May this user see comments on this document?
   authorize: (args, { principal }) => canRead(principal, args.documentId),
 });
 ```
 
-`authorize` is required. See [Matching and authorize](#matching-and-authorize) for when it runs.
+`registerEvent` returns the event's handle, `{ name, emit }`. `authorize` is required. See
+[Matching and authorize](#matching-and-authorize) for when it runs.
 
 ### 3. Serve the MCP endpoint
 
@@ -89,7 +102,8 @@ import { verifyToken } from "../../../lib/auth";
 import { events } from "../../../lib/events";
 
 const handler = createMcpHandler((server) => {
-  events.register(server); // adds events/list, events/subscribe and events/unsubscribe
+  // serves events/list, events/subscribe and events/unsubscribe
+  events.attach(server);
 });
 
 // Runs verifyToken before any request is handled; no AuthInfo means 401.
@@ -99,7 +113,7 @@ export { authHandler as GET, authHandler as POST };
 
 `withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
 to `principal` on every subscribe. With [MCP Tasks](/redis/sdks/agentkit/mcp-tasks) too, call
-`tasks.register(server)` in the same callback.
+`tasks.attach(server)` in the same callback.
 
 ### 4. Add the delivery endpoint
 
@@ -135,7 +149,8 @@ QSTASH_TOKEN=...
 # Required: the delivery endpoint refuses to run without them.
 QSTASH_CURRENT_SIGNING_KEY=...
 QSTASH_NEXT_SIGNING_KEY=...
-# Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+# Encrypts the hosts' signing secrets at rest.
+# Generate with: openssl rand -base64 32
 MCP_EVENTS_SECRET_KEY=...
 # Where QStash delivers events. Must be publicly reachable.
 APP_URL=https://your-app.vercel.app
@@ -214,7 +229,7 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
 ## Security
 
-<Accordion title="What the layer checks for you">
+<Accordion title="What McpEvents checks for you">
   - **The callback URL.** It must be `https` on a public host name. Refused: every IP literal,
     `localhost`, single-label, `.local` and `.internal` names, and credentials in the URL. Redirects
     are never followed. Before a subscription is stored, the server POSTs a signed challenge and
@@ -266,12 +281,14 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 ## Options
 
 <Accordion title="All options">
-  **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
+  **`new McpEvents(options)`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
   unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8 per subscriber),
   `allowInsecureCallbacks`.
 
-  **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
-  Optional: `title`, `input`.
+  **`events.registerEvent(name, config)`**: `description`, `payload` and `authorize` are required.
+  Optional: `title`, `input`. Returns the event's handle, `{ name, emit }`. Call it at module scope.
+  `events.attach(server)` serves `events/*` on a server, and `events.createDeliveryHandler()` is the
+  delivery's endpoint.
 
   **`RedisSubscriptionStore`**: `redis` (defaults to one from env), `prefix` (`mcp-events:`),
   `enableTelemetry`.
@@ -286,12 +303,19 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
   ```ts
   interface SubscriptionStore {
-    // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+    // false, storing nothing, when a new one would put its subscriber over
+    // `limit` (atomically)
     put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
     get(id: string): Promise<Subscription | null>;
-    count(subscriber: string): Promise<number>; // live subscriptions, across all events
-    delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
-    find(event: string): Promise<Subscription[]>; // every live subscription to the event
+    // live subscriptions, across all events
+    count(subscriber: string): Promise<number>;
+    delete(subscription: {
+      id: string;
+      event: string;
+      subscriber: string;
+    }): Promise<void>;
+    // every live subscription to the event
+    find(event: string): Promise<Subscription[]>;
   }
 
   interface EventDelivery {
