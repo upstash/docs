@@ -26,7 +26,7 @@ npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
 
 ## Quickstart
 
-Four files in a Next.js app.
+Four files.
 
 ### 1. Identify the caller
 
@@ -35,7 +35,7 @@ into the SDK's `AuthInfo`, with your user id in `extra`, and `principal` reads t
 toolkit. If you also use [MCP Tasks](/redis/sdks/agentkit/mcp-tasks), `McpTasks` and `McpEvents`
 share this file:
 
-```ts lib/auth.ts
+```ts auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
 
 // 1. Runs on every MCP request (wired up with withMcpAuth in step 3).
@@ -65,7 +65,7 @@ export function principal({ auth }: { auth?: AuthInfo }): string {
 
 ### 2. Create `McpEvents` and register your events
 
-```ts lib/events.ts
+```ts events.ts
 import { McpEvents } from "@upstash/mcp-toolkit/events";
 import {
   QStashDelivery,
@@ -96,10 +96,10 @@ export const commentCreated = events.registerEvent("comment.created", {
 
 ### 3. Serve the MCP endpoint
 
-```ts app/api/mcp/route.ts
+```ts mcp.ts
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
-import { verifyToken } from "../../../lib/auth";
-import { events } from "../../../lib/events";
+import { verifyToken } from "./auth";
+import { events } from "./events";
 
 const handler = createMcpHandler((server) => {
   // serves events/list, events/subscribe and events/unsubscribe
@@ -117,8 +117,8 @@ to `principal` on every subscribe. With [MCP Tasks](/redis/sdks/agentkit/mcp-tas
 
 ### 4. Add the delivery endpoint
 
-```ts app/api/events/route.ts
-import { events } from "../../../lib/events";
+```ts events-route.ts
+import { events } from "./events";
 
 export const POST = events.createDeliveryHandler();
 ```
@@ -153,7 +153,7 @@ QSTASH_NEXT_SIGNING_KEY=...
 # Generate with: openssl rand -base64 32
 MCP_EVENTS_SECRET_KEY=...
 # Where QStash delivers events. Must be publicly reachable.
-APP_URL=https://your-app.vercel.app
+APP_URL=https://your-app.com
 ```
 
 ## What happens on the wire
@@ -233,8 +233,9 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
   - **The callback URL.** It must be `https` on a public host name. Refused: every IP literal,
     `localhost`, single-label, `.local` and `.internal` names, and credentials in the URL. Redirects
     are never followed. Before a subscription is stored, the server POSTs a signed challenge and
-    requires the host to echo it back. Every failure returns the same `-32015` error, so a subscriber
-    can't use it to probe your network (the details go to your logs). DNS is not resolved, so use
+    requires the host to echo it back. A malformed URL returns `-32602` (`invalid_callback_url`); a
+    failed challenge always returns the same `-32015` error, so a subscriber can't use it to probe
+    your network (the details go to your logs). DNS is not resolved, so use
     egress filtering in production.
   - **The signing secret.** It must be `whsec_` followed by 24 to 64 base64 bytes, and it is stored
     encrypted with AES-256-GCM under `MCP_EVENTS_SECRET_KEY`, which must be base64 of at least 32
@@ -305,7 +306,10 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
   interface SubscriptionStore {
     // false, storing nothing, when a new one would put its subscriber over
     // `limit` (atomically)
-    put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
+    put(
+      subscription: Subscription,
+      options: { limit: number },
+    ): Promise<boolean>;
     get(id: string): Promise<Subscription | null>;
     // live subscriptions, across all events
     count(subscriber: string): Promise<number>;
@@ -320,7 +324,9 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
   interface EventDelivery {
     enqueue(jobs: DeliveryJob[]): Promise<void>;
-    createDeliveryHandler(send: SendJob): (request: Request) => Promise<Response>;
+    createDeliveryHandler(
+      send: SendJob,
+    ): (request: Request) => Promise<Response>;
   }
   ```
 
