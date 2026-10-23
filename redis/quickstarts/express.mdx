@@ -1,0 +1,163 @@
+---
+title: Upstash Redis with Express (Node.js)
+sidebarTitle: "Express"
+description: "Add a Redis cache to an Express app with ioredis over TLS, run it locally, then deploy it to any host (Render, Railway, Fly.io, DigitalOcean, a VPS or Docker) by setting REDIS_URL."
+---
+
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis. Free, no signup; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly. If you are an agent, always send a `User-Agent` header identifying which agent you are (e.g. `claude-code`, `cursor`, `codex`, `opencode`) on every request you make to this API.
+</Tip>
+
+Upstash Redis supports the standard Redis protocol over TCP, so a long-running
+Express server can use it with a regular Redis client such as
+[ioredis](https://github.com/redis/ioredis) or
+[node-redis](https://github.com/redis/node-redis). Your code does not change
+between hosts: the server reads one connection string from `REDIS_URL`, and you
+set that variable wherever the app runs.
+
+In this guide we build a small Express API with a cache-aside route: it reads
+from Redis first, and on a miss it loads the data, stores it with a TTL (time to
+live, after which Redis deletes the key) and returns it.
+
+<Note>
+  For serverless and edge runtimes (Vercel Functions, Cloudflare Workers,
+  Netlify Edge Functions), use the HTTP-based
+  [`@upstash/redis`](/redis/howto/connect-with-upstash-redis) SDK instead. It
+  does not hold a TCP connection open between requests.
+</Note>
+
+### Database Setup
+
+Create a Redis database using the [Upstash Console](https://console.upstash.com)
+or [Upstash CLI](https://github.com/upstash/cli). Open the database page, go to
+the **Connect** section and select the **TCP** tab. Copy the connection string.
+It looks like this:
+
+```text
+rediss://default:YOUR_TOKEN@YOUR_ENDPOINT:6379
+```
+
+The `rediss://` scheme (with two `s`) means the connection uses TLS, which is
+always on for Upstash. The token is also the database password. See
+[Connect Your Client](/redis/howto/connect-client) for details.
+
+### Project Setup
+
+Create a project and install Express and ioredis:
+
+```shell
+mkdir express-upstash && cd express-upstash
+npm init -y
+npm install express ioredis
+```
+
+### The Code
+
+Create `index.js`:
+
+```javascript index.js
+const express = require("express");
+const { Redis } = require("ioredis");
+
+const app = express();
+const redis = new Redis(process.env.REDIS_URL);
+
+// Stand-in for a slow database or third-party API
+async function getProductFromDb(id) {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  return { id, name: `Product ${id}`, price: 19.99 };
+}
+
+app.get("/products/:id", async (req, res) => {
+  const key = `product:${req.params.id}`;
+
+  const cached = await redis.get(key);
+  if (cached) {
+    return res.json({ source: "cache", data: JSON.parse(cached) });
+  }
+
+  const product = await getProductFromDb(req.params.id);
+  await redis.set(key, JSON.stringify(product), "EX", 60);
+  res.json({ source: "database", data: product });
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
+```
+
+The route caches each product for 60 seconds. When the data changes, delete the
+key (`await redis.del(key)`) so the next request loads the new value.
+
+### Run Locally
+
+Put the connection string in a `.env` file and start the server. Node.js 20.6
+and later can load the file with `--env-file`:
+
+```shell .env
+REDIS_URL="rediss://default:YOUR_TOKEN@YOUR_ENDPOINT:6379"
+```
+
+```shell
+node --env-file=.env index.js
+```
+
+Request the same product twice. The first request loads it from the
+"database", the second one comes from Redis:
+
+```shell
+curl http://localhost:3000/products/42
+# {"source":"database","data":{"id":"42","name":"Product 42","price":19.99}}
+
+curl http://localhost:3000/products/42
+# {"source":"cache","data":{"id":"42","name":"Product 42","price":19.99}}
+```
+
+Add `.env` to your `.gitignore` so the token is not committed.
+
+### Deploy
+
+The app only needs two things from a host: a way to run `node index.js` and an
+environment variable named `REDIS_URL` with your connection string. Hosts set
+`PORT` themselves, and the code above already reads it.
+
+<CardGroup cols={2}>
+  <Card title="Render" icon="server" href="/redis/quickstarts/render">
+    Deploy as a Render Web Service.
+  </Card>
+  <Card title="Fly.io" icon="paper-plane" href="/redis/quickstarts/fly">
+    Deploy with `fly launch`.
+  </Card>
+  <Card title="DigitalOcean" icon="droplet" href="/redis/quickstarts/digitalocean">
+    Deploy on App Platform or a Droplet.
+  </Card>
+  <Card title="Koyeb" icon="cloud" href="/redis/quickstarts/koyeb">
+    Deploy from Git or a container.
+  </Card>
+</CardGroup>
+
+On a VPS or with Docker, pass the variable when you start the process, for
+example `docker run -e REDIS_URL="rediss://..." my-app`.
+
+### Using node-redis instead
+
+node-redis takes the same connection string:
+
+```javascript
+const { createClient } = require("redis");
+
+const redis = createClient({ url: process.env.REDIS_URL });
+redis.on("error", (err) => console.error("Redis error", err));
+
+async function main() {
+  await redis.connect();
+  await redis.set("product:42", "cached value", { EX: 60 });
+  console.log(await redis.get("product:42"));
+  await redis.quit();
+}
+
+main();
+```
+
+For sessions, see [Express Session with Upstash Redis](/redis/tutorials/express_session).

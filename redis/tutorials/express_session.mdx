@@ -1,105 +1,116 @@
 ---
-title: Express Session with Serverless Redis
-
-description: This tutorial shows how to use Upstash as the session storage of your Express application.
+title: Express Session with Upstash Redis
+description: Store Express sessions in Upstash Redis with express-session, connect-redis and node-redis, so sessions survive restarts and work across multiple servers.
 ---
 
-This tutorial shows how to use Serverless Redis as your session storage for your
-Express Applications.
+`express-session` keeps sessions in memory by default. That memory store loses
+every session when the process restarts, and each server instance has its own
+copy, so it does not work behind a load balancer. Storing sessions in Redis
+fixes both.
 
-See the
-[code](https://github.com/upstash/examples/tree/main/examples/express-session-with-redis)
+This tutorial uses [connect-redis](https://github.com/tj/connect-redis), which
+works with the [node-redis](https://github.com/redis/node-redis) client.
 
-### Step-1: Create Project
+### Step 1: Create a database
 
-Create a folder for your project and run: `npm init`
+Create a Redis database as described in [Getting Started](../overall/getstarted).
+On the database page, open the **Connect** section, select the **TCP** tab and
+copy the connection string:
 
-### Step-2: Install Redis and Express
+```text
+rediss://default:YOUR_TOKEN@YOUR_ENDPOINT:6379
+```
 
-In your project folder run:
-`npm install express redis connect-redis express-session`
+### Step 2: Create the project
 
-### Step-3: Create a Redis (Upstash) Database For Free
+```shell
+mkdir express-session-redis && cd express-session-redis
+npm init -y
+npm install express express-session connect-redis redis
+```
 
-Create a database as described [here](../overall/getstarted).
+### Step 3: index.js
 
-### Step-4: index.js
+```javascript index.js
+const express = require("express");
+const session = require("express-session");
+const { RedisStore } = require("connect-redis");
+const { createClient } = require("redis");
 
-In Upstash console, click the `Connect` button, copy the connection code
-(Node.js node-redis). Create index.js file as below and replace the Redis
-connection part.
+const redisClient = createClient({ url: process.env.REDIS_URL });
+redisClient.on("error", (err) => console.error("Redis error", err));
+redisClient.connect().catch(console.error);
 
-```javascript
-var express = require("express");
-var parseurl = require("parseurl");
-var session = require("express-session");
-const redis = require("redis");
-
-var RedisStore = require("connect-redis")(session);
-var client = redis.createClient({
-  // REPLACE HERE
-});
-
-var app = express();
+const app = express();
 
 app.use(
   session({
-    store: new RedisStore({ client: client }),
-    secret: "forest squirrel",
+    store: new RedisStore({ client: redisClient, prefix: "myapp:" }),
+    secret: process.env.SESSION_SECRET || "replace-with-a-long-random-string",
     resave: false,
-    saveUninitialized: true,
+    saveUninitialized: false,
   })
 );
 
-app.use(function (req, res, next) {
-  if (!req.session.views) {
-    req.session.views = {};
-  }
-
-  // get the url pathname
-  var pathname = parseurl(req).pathname;
-
-  // count the views
-  req.session.views[pathname] = (req.session.views[pathname] || 0) + 1;
-  next();
+app.get("/:page", (req, res) => {
+  req.session.views = req.session.views || {};
+  const page = req.params.page;
+  req.session.views[page] = (req.session.views[page] || 0) + 1;
+  res.send(`You viewed /${page} ${req.session.views[page]} times`);
 });
 
-app.get("/foo", function (req, res, next) {
-  res.send("you viewed this page " + req.session.views["/foo"] + " times");
-});
-
-app.get("/bar", function (req, res, next) {
-  res.send("you viewed this page " + req.session.views["/bar"] + " times");
-});
-
-app.listen(3000, function () {
-  console.log("Example app listening on port 3000!");
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
 });
 ```
 
-### Step-5: Run the app
+Each session is stored as one key with the `myapp:` prefix. connect-redis sets
+a TTL (time to live) on the key from the session cookie's expiry, or one day
+by default, so Redis deletes old sessions on its own.
 
-`node index.js`
+### Step 4: Run the app
 
-### Step-6: Check your work
+Put the connection string in a `.env` file and start the server:
 
-Open http://localhost:3000/bar and http://localhost:3000/foo in different
-browsers. Check if the view-count is incrementing as expected.
+```shell .env
+REDIS_URL="rediss://default:YOUR_TOKEN@YOUR_ENDPOINT:6379"
+SESSION_SECRET="a-long-random-string"
+```
 
-### FAQ:
+```shell
+node --env-file=.env index.js
+```
 
-**There is a default session storage of express-session. Why do I need Redis?**
+### Step 5: Check your work
 
-_Default session store loses the session data when the process crashes.
-Moreover, it does not scale. You can not utilize multiple web servers to serve
-your sessions._
+Open http://localhost:3000/foo and http://localhost:3000/bar in two different
+browsers and refresh a few times. Each browser has its own count:
 
-**Why Upstash?**
+```text
+You viewed /foo 1 times
+You viewed /foo 2 times
+You viewed /bar 1 times
+```
 
-_You can use any Redis offering or self hosted one. But Upstash's serverless
-approach with per-request-pricing will help you to minimize your cost with zero
-maintenance._
+Restart the server and refresh again. The counts continue, because the sessions
+are in Redis.
 
-**How to configure the session storage?**
+### Deploy
 
-_See [here](https://github.com/expressjs/session#readme)_
+Set `REDIS_URL` and `SESSION_SECRET` as environment variables on your host.
+See [Render](/redis/quickstarts/render), [Fly.io](/redis/quickstarts/fly) or
+[DigitalOcean](/redis/quickstarts/digitalocean) for host-specific steps.
+
+### FAQ
+
+**Can I use ioredis?**
+
+connect-redis is built for node-redis. If the rest of your app uses ioredis,
+you can still use node-redis just for sessions, with the same `REDIS_URL`.
+
+**How do I configure the session cookie?**
+
+See the [express-session options](https://github.com/expressjs/session#options).
+For production behind HTTPS, set `cookie: { secure: true }` and
+`app.set("trust proxy", 1)` if a proxy terminates TLS.
