@@ -88100,8 +88100,8 @@ Most agents only act when someone messages them. [MCP Events](https://github.com
 lets an agent wait for something instead: the host subscribes to an event on your MCP server, and
 when it happens your server POSTs a signed webhook that wakes the agent up.
 
-`@upstash/mcp-toolkit/events` implements the server side. You define events with typed payloads and
-call `emit` when something happens. The toolkit handles subscriptions, callback verification,
+`@upstash/mcp-toolkit/events` implements the server side. You register events with typed payloads
+and call `emit` when something happens. The toolkit handles subscriptions, callback verification,
 signing and retries: subscriptions live in Upstash Redis, and every delivery goes through
 [QStash](/docs/qstash/overall/getstarted), which retries failed webhooks with backoff.
 
@@ -88124,7 +88124,8 @@ Four files in a Next.js app.
 
 Every subscription belongs to the user who subscribed. `verifyToken` turns the request's bearer token
 into the SDK's `AuthInfo`, with your user id in `extra`, and `principal` reads that id back for the
-toolkit. If you also use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), both layers share this file:
+toolkit. If you also use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), `McpTasks` and `McpEvents`
+share this file:
 
 ```ts lib/auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
@@ -88136,11 +88137,17 @@ export async function verifyToken(
   bearerToken?: string,
 ): Promise<AuthInfo | undefined> {
   if (!bearerToken) return undefined;
-  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
-  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+  // Clerk, WorkOS, Auth0, your own
+  const { sub, client_id } = await verifyJwt(bearerToken);
+  return {
+    token: bearerToken,
+    clientId: client_id,
+    scopes: [],
+    extra: { userId: sub },
+  };
 }
 
-// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+// 2. The toolkit calls this with that AuthInfo. Return the user id or throw.
 export function principal({ auth }: { auth?: AuthInfo }): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -88148,30 +88155,36 @@ export function principal({ auth }: { auth?: AuthInfo }): string {
 }
 ```
 
-### 2. Define the event layer and your events
+### 2. Create `McpEvents` and register your events
 
 ```ts lib/events.ts
-import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
+import { McpEvents } from "@upstash/mcp-toolkit/events";
+import {
+  QStashDelivery,
+  RedisSubscriptionStore,
+} from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 import { principal } from "./auth";
 
-export const events = createEventLayer({
+export const events = new McpEvents({
   store: new RedisSubscriptionStore(),
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
   principal,
 });
 
-export const commentCreated = events.define("comment.created", {
+// Register at module scope, like a task.
+export const commentCreated = events.registerEvent("comment.created", {
   description: "A new comment was added to a document.",
-  input: z.object({ documentId: z.string().optional() }), // what a subscriber may filter on
+  // What a subscriber may filter on.
+  input: z.object({ documentId: z.string().optional() }),
   payload: z.object({ documentId: z.string(), text: z.string() }),
   // May this user see comments on this document?
   authorize: (args, { principal }) => canRead(principal, args.documentId),
 });
 ```
 
-`authorize` is required. See [Matching and authorize](#matching-and-authorize) for when it runs.
+`registerEvent` returns the event's handle, `{ name, emit }`. `authorize` is required. See
+[Matching and authorize](#matching-and-authorize) for when it runs.
 
 ### 3. Serve the MCP endpoint
 
@@ -88181,7 +88194,8 @@ import { verifyToken } from "../../../lib/auth";
 import { events } from "../../../lib/events";
 
 const handler = createMcpHandler((server) => {
-  events.register(server); // adds events/list, events/subscribe and events/unsubscribe
+  // serves events/list, events/subscribe and events/unsubscribe
+  events.attach(server);
 });
 
 // Runs verifyToken before any request is handled; no AuthInfo means 401.
@@ -88191,7 +88205,7 @@ export { authHandler as GET, authHandler as POST };
 
 `withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
 to `principal` on every subscribe. With [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks) too, call
-`tasks.register(server)` in the same callback.
+`tasks.attach(server)` in the same callback.
 
 ### 4. Add the delivery endpoint
 
@@ -88227,7 +88241,8 @@ QSTASH_TOKEN=...
 # Required: the delivery endpoint refuses to run without them.
 QSTASH_CURRENT_SIGNING_KEY=...
 QSTASH_NEXT_SIGNING_KEY=...
-# Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+# Encrypts the hosts' signing secrets at rest.
+# Generate with: openssl rand -base64 32
 MCP_EVENTS_SECRET_KEY=...
 # Where QStash delivers events. Must be publicly reachable.
 APP_URL=https://your-app.vercel.app
@@ -88306,7 +88321,7 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
 ## Security
 
-<Accordion title="What the layer checks for you">
+<Accordion title="What McpEvents checks for you">
   * **The callback URL.** It must be `https` on a public host name. Refused: every IP literal,
     `localhost`, single-label, `.local` and `.internal` names, and credentials in the URL. Redirects
     are never followed. Before a subscription is stored, the server POSTs a signed challenge and
@@ -88358,12 +88373,14 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 ## Options
 
 <Accordion title="All options">
-  **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
+  **`new McpEvents(options)`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
   unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8 per subscriber),
   `allowInsecureCallbacks`.
 
-  **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
-  Optional: `title`, `input`.
+  **`events.registerEvent(name, config)`**: `description`, `payload` and `authorize` are required.
+  Optional: `title`, `input`. Returns the event's handle, `{ name, emit }`. Call it at module scope.
+  `events.attach(server)` serves `events/*` on a server, and `events.createDeliveryHandler()` is the
+  delivery's endpoint.
 
   **`RedisSubscriptionStore`**: `redis` (defaults to one from env), `prefix` (`mcp-events:`),
   `enableTelemetry`.
@@ -88378,12 +88395,19 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
   ```ts
   interface SubscriptionStore {
-    // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+    // false, storing nothing, when a new one would put its subscriber over
+    // `limit` (atomically)
     put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
     get(id: string): Promise<Subscription | null>;
-    count(subscriber: string): Promise<number>; // live subscriptions, across all events
-    delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
-    find(event: string): Promise<Subscription[]>; // every live subscription to the event
+    // live subscriptions, across all events
+    count(subscriber: string): Promise<number>;
+    delete(subscription: {
+      id: string;
+      event: string;
+      subscriber: string;
+    }): Promise<void>;
+    // every live subscription to the event
+    find(event: string): Promise<Subscription[]>;
   }
 
   interface EventDelivery {
@@ -88413,8 +88437,8 @@ Most agents only act when someone messages them. [MCP Events](https://github.com
 lets an agent wait for something instead: the host subscribes to an event on your MCP server, and
 when it happens your server POSTs a signed webhook that wakes the agent up.
 
-`@upstash/mcp-toolkit/events` implements the server side. You define events with typed payloads and
-call `emit` when something happens. The toolkit handles subscriptions, callback verification,
+`@upstash/mcp-toolkit/events` implements the server side. You register events with typed payloads
+and call `emit` when something happens. The toolkit handles subscriptions, callback verification,
 signing and retries: subscriptions live in Upstash Redis, and every delivery goes through
 [QStash](/docs/qstash/overall/getstarted), which retries failed webhooks with backoff.
 
@@ -88437,7 +88461,8 @@ Four files in a Next.js app.
 
 Every subscription belongs to the user who subscribed. `verifyToken` turns the request's bearer token
 into the SDK's `AuthInfo`, with your user id in `extra`, and `principal` reads that id back for the
-toolkit. If you also use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), both layers share this file:
+toolkit. If you also use [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks), `McpTasks` and `McpEvents`
+share this file:
 
 ```ts lib/auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
@@ -88449,11 +88474,17 @@ export async function verifyToken(
   bearerToken?: string,
 ): Promise<AuthInfo | undefined> {
   if (!bearerToken) return undefined;
-  const { sub, client_id } = await verifyJwt(bearerToken); // Clerk, WorkOS, Auth0, your own
-  return { token: bearerToken, clientId: client_id, scopes: [], extra: { userId: sub } };
+  // Clerk, WorkOS, Auth0, your own
+  const { sub, client_id } = await verifyJwt(bearerToken);
+  return {
+    token: bearerToken,
+    clientId: client_id,
+    scopes: [],
+    extra: { userId: sub },
+  };
 }
 
-// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+// 2. The toolkit calls this with that AuthInfo. Return the user id or throw.
 export function principal({ auth }: { auth?: AuthInfo }): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -88461,30 +88492,36 @@ export function principal({ auth }: { auth?: AuthInfo }): string {
 }
 ```
 
-### 2. Define the event layer and your events
+### 2. Create `McpEvents` and register your events
 
 ```ts lib/events.ts
-import { createEventLayer } from "@upstash/mcp-toolkit/events";
-import { QStashDelivery, RedisSubscriptionStore } from "@upstash/mcp-toolkit/upstash";
+import { McpEvents } from "@upstash/mcp-toolkit/events";
+import {
+  QStashDelivery,
+  RedisSubscriptionStore,
+} from "@upstash/mcp-toolkit/upstash";
 import * as z from "zod";
 import { principal } from "./auth";
 
-export const events = createEventLayer({
+export const events = new McpEvents({
   store: new RedisSubscriptionStore(),
   delivery: new QStashDelivery({ url: `${process.env.APP_URL}/api/events` }),
   principal,
 });
 
-export const commentCreated = events.define("comment.created", {
+// Register at module scope, like a task.
+export const commentCreated = events.registerEvent("comment.created", {
   description: "A new comment was added to a document.",
-  input: z.object({ documentId: z.string().optional() }), // what a subscriber may filter on
+  // What a subscriber may filter on.
+  input: z.object({ documentId: z.string().optional() }),
   payload: z.object({ documentId: z.string(), text: z.string() }),
   // May this user see comments on this document?
   authorize: (args, { principal }) => canRead(principal, args.documentId),
 });
 ```
 
-`authorize` is required. See [Matching and authorize](#matching-and-authorize) for when it runs.
+`registerEvent` returns the event's handle, `{ name, emit }`. `authorize` is required. See
+[Matching and authorize](#matching-and-authorize) for when it runs.
 
 ### 3. Serve the MCP endpoint
 
@@ -88494,7 +88531,8 @@ import { verifyToken } from "../../../lib/auth";
 import { events } from "../../../lib/events";
 
 const handler = createMcpHandler((server) => {
-  events.register(server); // adds events/list, events/subscribe and events/unsubscribe
+  // serves events/list, events/subscribe and events/unsubscribe
+  events.attach(server);
 });
 
 // Runs verifyToken before any request is handled; no AuthInfo means 401.
@@ -88504,7 +88542,7 @@ export { authHandler as GET, authHandler as POST };
 
 `withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
 to `principal` on every subscribe. With [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks) too, call
-`tasks.register(server)` in the same callback.
+`tasks.attach(server)` in the same callback.
 
 ### 4. Add the delivery endpoint
 
@@ -88540,7 +88578,8 @@ QSTASH_TOKEN=...
 # Required: the delivery endpoint refuses to run without them.
 QSTASH_CURRENT_SIGNING_KEY=...
 QSTASH_NEXT_SIGNING_KEY=...
-# Encrypts the hosts' signing secrets at rest. Generate with: openssl rand -base64 32
+# Encrypts the hosts' signing secrets at rest.
+# Generate with: openssl rand -base64 32
 MCP_EVENTS_SECRET_KEY=...
 # Where QStash delivers events. Must be publicly reachable.
 APP_URL=https://your-app.vercel.app
@@ -88619,7 +88658,7 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
 ## Security
 
-<Accordion title="What the layer checks for you">
+<Accordion title="What McpEvents checks for you">
   * **The callback URL.** It must be `https` on a public host name. Refused: every IP literal,
     `localhost`, single-label, `.local` and `.internal` names, and credentials in the URL. Redirects
     are never followed. Before a subscription is stored, the server POSTs a signed challenge and
@@ -88671,12 +88710,14 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 ## Options
 
 <Accordion title="All options">
-  **`createEventLayer`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
+  **`new McpEvents(options)`**: `store`, `delivery` and `principal` are required, and so is `secretKey`
   unless `MCP_EVENTS_SECRET_KEY` is set. Optional: `maxSubscriptions` (8 per subscriber),
   `allowInsecureCallbacks`.
 
-  **`events.define(name, config)`**: `description`, `payload` and `authorize` are required.
-  Optional: `title`, `input`.
+  **`events.registerEvent(name, config)`**: `description`, `payload` and `authorize` are required.
+  Optional: `title`, `input`. Returns the event's handle, `{ name, emit }`. Call it at module scope.
+  `events.attach(server)` serves `events/*` on a server, and `events.createDeliveryHandler()` is the
+  delivery's endpoint.
 
   **`RedisSubscriptionStore`**: `redis` (defaults to one from env), `prefix` (`mcp-events:`),
   `enableTelemetry`.
@@ -88691,12 +88732,19 @@ The token is never stored, so the delivery-time check gets no `auth` or `request
 
   ```ts
   interface SubscriptionStore {
-    // false, storing nothing, when a new one would put its subscriber over `limit` (atomically)
+    // false, storing nothing, when a new one would put its subscriber over
+    // `limit` (atomically)
     put(subscription: Subscription, options: { limit: number }): Promise<boolean>;
     get(id: string): Promise<Subscription | null>;
-    count(subscriber: string): Promise<number>; // live subscriptions, across all events
-    delete(subscription: { id: string; event: string; subscriber: string }): Promise<void>;
-    find(event: string): Promise<Subscription[]>; // every live subscription to the event
+    // live subscriptions, across all events
+    count(subscriber: string): Promise<number>;
+    delete(subscription: {
+      id: string;
+      event: string;
+      subscriber: string;
+    }): Promise<void>;
+    // every live subscription to the event
+    find(event: string): Promise<Subscription[]>;
   }
 
   interface EventDelivery {
@@ -88742,23 +88790,28 @@ npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
 
 ## An MCP server with a slow tool
 
-```ts mcp.ts
+```ts
+// mcp.ts
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { McpTasks } from "@upstash/mcp-toolkit/tasks";
 import * as z from "zod";
 
 // No store or dispatcher: tasks are kept in memory and run in this process.
-const tasks = createTaskLayer({ principal: () => "local" });
+const tasks = new McpTasks({ principal: () => "local" });
 
-// Define at module scope; the handler runs after the tool call has answered.
-tasks.define(
+// Register at module scope; the handler runs after the tool call has answered.
+tasks.registerTask(
   "generate_report",
-  { description: "Writes a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
+  {
+    description: "Writes a report on a topic.",
+    inputSchema: z.object({ topic: z.string() }),
+  },
   async ({ topic }, task) => {
     for (const step of ["Reading sources", "Drafting", "Polishing"]) {
       if (await task.isCancelled()) return {};
       await task.update(step); // progress, shown to whoever polls
-      await new Promise((resolve) => setTimeout(resolve, 2000)); // the slow part
+      // the slow part
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     return { content: [{ type: "text", text: `A report on ${topic}.` }] };
   },
@@ -88766,17 +88819,14 @@ tasks.define(
 
 const mcp = createMcpHandler(() => {
   const server = new McpServer({ name: "reports", version: "1.0.0" });
-  server.registerTool(
-    "ping",
-    { description: "An ordinary tool, for comparison.", inputSchema: z.object({}) },
-    async () => ({ content: [{ type: "text", text: "pong" }] }),
-  );
-  tasks.register(server); // generate_report, task_status, task_cancel, tasks/get, tasks/cancel
+  // generate_report, task_status, task_cancel, tasks/get and tasks/cancel
+  tasks.attach(server);
   return server;
 });
 
 // Serve POST /mcp with it.
-export const handler = (request: Request): Promise<Response> => mcp.fetch(request);
+export const handler = (request: Request): Promise<Response> =>
+  mcp.fetch(request);
 ```
 
 `handler` is a Web-standard `(request: Request) => Promise<Response>`, so it mounts in any
@@ -88804,9 +88854,9 @@ serverless or run more than one instance.
 
 ## What the client sees
 
-`tools/list` has `ping`, `generate_report`, `task_status` and `task_cancel`, and the server
-advertises the Tasks extension (`io.modelcontextprotocol/tasks`, protocol revision 2026-07-28). On
-every call to `generate_report`, the layer checks whether the request declares the extension:
+`tools/list` has `generate_report`, `task_status` and `task_cancel`, and the server advertises the
+Tasks extension (`io.modelcontextprotocol/tasks`, protocol revision 2026-07-28). On every call to
+`generate_report`, `McpTasks` checks whether the request declares the extension:
 
 * **A client that declares it** gets a native task (`resultType: "task"`). The client polls
   `tasks/get` itself, shows the progress, and hands the model the handler's result when it is done,
@@ -88834,12 +88884,15 @@ model may call `task_status` on it too; both paths give the same answer.
 <Accordion title="Native task responses">
   ```jsonc
   // tools/call generate_report, from a client that declared the extension
-  { "resultType": "task", "taskId": "0e30…", "status": "working", "statusMessage": "Queued",
-    "createdAt": "…", "lastUpdatedAt": "…", "ttlMs": 86400000, "pollIntervalMs": 2000 }
+  { "resultType": "task", "taskId": "0e30…", "status": "working",
+    "statusMessage": "Queued", "createdAt": "…", "lastUpdatedAt": "…",
+    "ttlMs": 86400000, "pollIntervalMs": 2000 }
 
-  // tasks/get { taskId }: the same fields, plus `result` once completed, or `error` once failed
-  { "resultType": "complete", "taskId": "0e30…", "status": "completed", "statusMessage": "Completed", …,
-    "result": { "content": [{ "type": "text", "text": "A report on coffee." }] } }
+  // tasks/get { taskId }: the same fields, plus `result` (the tool result) once
+  // completed, or `error` once failed
+  { "resultType": "complete", "taskId": "0e30…", "status": "completed",
+    "statusMessage": "Completed", …,
+    "result": { "content": [{ "type": "text", "text": "Report on coffee" }] } }
 
   // tasks/cancel { taskId }
   { "resultType": "complete" }
@@ -88852,22 +88905,27 @@ model may call `task_status` on it too; both paths give the same answer.
 <Accordion title="Tool-based responses">
   ```jsonc
   // generate_report: a handle, right away
-  { "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
-    "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 86400000, "pollIntervalMs": 2000 } }
+  { "content": [{ "type": "text",
+                  "text": "Started task 0e30…. Call task_status with …" }],
+    "structuredContent": { "taskId": "0e30…", "status": "working",
+                           "ttlMs": 86400000, "pollIntervalMs": 2000 } }
 
   // task_status: progress…
-  { "content": [{ "type": "text", "text": "Task 0e30… is working: Reading sources. Check again in about 2s." }],
-    "structuredContent": { "taskId": "0e30…", "status": "working", "statusMessage": "Reading sources" } }
+  { "content": [{ "type": "text",
+                  "text": "Task 0e30… is working: Reading sources. …" }],
+    "structuredContent": { "taskId": "0e30…", "status": "working",
+                           "statusMessage": "Reading sources" } }
 
   // …then the handler's own content, as if the tool had run synchronously
-  { "content": [{ "type": "text", "text": "Task 0e30… is completed: Completed" },
-                { "type": "text", "text": "A report on coffee." }],
-    "structuredContent": { "taskId": "0e30…", "status": "completed", "result": { "content": [ … ] } } }
+  { "content": [{ "type": "text", "text": "Task 0e30… is completed: …" },
+                { "type": "text", "text": "Report on coffee" }],
+    "structuredContent": { "taskId": "0e30…", "status": "completed",
+                           "result": { "content": [ … ] } } }
   ```
 
   The states are `working`, `completed`, `failed` and `cancelled`; the last three are final. If the
   model stops polling, nothing is lost: the work finishes anyway, and the result can be read until
-  the task expires (1 day by default; set `defaults: { ttlMs }` on the layer).
+  the task expires (1 day by default; set `defaults: { ttlMs }` on `McpTasks`).
 </Accordion>
 
 ## Make it durable with Redis and QStash
@@ -88883,32 +88941,36 @@ UPSTASH_REDIS_REST_URL=...
 UPSTASH_REDIS_REST_TOKEN=...
 QSTASH_URL=...                   # your QStash region's URL, from the console
 QSTASH_TOKEN=...
-QSTASH_CURRENT_SIGNING_KEY=...   # required: the execute endpoint refuses to run without them
+# Required: the execute endpoint refuses to run without them.
+QSTASH_CURRENT_SIGNING_KEY=...
 QSTASH_NEXT_SIGNING_KEY=...
 APP_URL=https://your-app.com     # QStash has to be able to reach it
 ```
 
-Pass a store and a dispatcher; the tool definitions and the MCP handler stay exactly as they were:
+Pass a store and a dispatcher; `registerTask` and the MCP handler stay exactly as they were:
 
 ```ts mcp.ts
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { McpTasks } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 
-const tasks = createTaskLayer({
+const tasks = new McpTasks({
   store: new RedisTaskStore(),
-  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  dispatcher: new QStashDispatcher({
+    url: `${process.env.APP_URL}/api/execute`,
+  }),
   principal: () => "local",
 });
 
-// tasks.define(...) and the MCP handler as above, then one more endpoint.
+// registerTask(...) and the MCP handler as above, then one more endpoint.
 // QStash delivers each task here: serve POST /api/execute with it.
-export const execute: (request: Request) => Promise<Response> = tasks.createExecuteHandler();
+export const execute: (request: Request) => Promise<Response> =
+  tasks.createExecuteHandler();
 ```
 
 The execute endpoint is another `(request: Request) => Promise<Response>`, mounted like the MCP one,
 at the URL you gave the dispatcher. It verifies the QStash signature, runs the task's handler and
 stores the result. Every instance that serves it must import the module that calls
-`tasks.define(...)`, so it knows the handlers.
+`tasks.registerTask(...)`, so it knows the handlers.
 
 For work that can outlast one function invocation, use `WorkflowDispatcher` (same `url`, same
 endpoint): each step runs in its own invocation, so a task has no overall time limit. See
@@ -88930,7 +88992,7 @@ endpoint): each step runs in its own invocation, so a task has no overall time l
 
 In production (`NODE_ENV=production`), the in-memory defaults log a one-time warning. If a single
 long-lived server is what you want, pass them explicitly to say so:
-`createTaskLayer({ store: new MemoryTaskStore(), dispatcher: new InProcessDispatcher(), principal })`
+`new McpTasks({ store: new MemoryTaskStore(), dispatcher: new InProcessDispatcher(), principal })`
 (both from `@upstash/mcp-toolkit/tasks`). `await dispatcher.drain()` on shutdown lets running tasks
 finish.
 
@@ -88947,14 +89009,16 @@ import type { AuthInfo } from "@modelcontextprotocol/server";
 import type { Caller } from "@upstash/mcp-toolkit/tasks";
 
 // 1. Your token check. Clerk, WorkOS, Auth0, your own.
-export async function verifyToken(request: Request): Promise<AuthInfo | undefined> {
+export async function verifyToken(
+  request: Request,
+): Promise<AuthInfo | undefined> {
   const token = request.headers.get("authorization")?.replace(/^Bearer /, "");
   if (!token) return undefined;
   const { sub, client_id } = await verifyJwt(token);
   return { token, clientId: client_id, scopes: [], extra: { userId: sub } };
 }
 
-// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+// 2. The toolkit calls this with that AuthInfo. Return the user id or throw.
 export function principal({ auth }: Caller): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -88963,7 +89027,7 @@ export function principal({ auth }: Caller): string {
 ```
 
 ```ts mcp.ts
-// createTaskLayer({ principal, ... }), and the handler checks the token first
+// new McpTasks({ principal, ... }), and the handler checks the token first
 export async function handler(request: Request): Promise<Response> {
   const authInfo = await verifyToken(request);
   if (!authInfo) return new Response("Unauthorized", { status: 401 });
@@ -88994,13 +89058,14 @@ which runs when the tool is called, before anything is stored or queued, and use
 (the user who started the task) inside the handler. Never take a user id from the arguments:
 
 ```ts
-tasks.define(
+tasks.registerTask(
   "export_workspace",
   {
     description: "Exports a workspace to CSV.",
     inputSchema: z.object({ workspaceId: z.string() }),
     // May this user export this workspace? `false` refuses the call.
-    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+    authorize: ({ workspaceId }, { principal }) =>
+      canExport(principal, workspaceId),
   },
   async ({ workspaceId }, task) => {
     const csv = await exportWorkspace(workspaceId, { as: task.principal });
@@ -89033,7 +89098,7 @@ To answer every client with the tool-based handle, set `mode: "tools"`. The serv
 `tasks/*` methods and doesn't advertise the extension:
 
 ```ts
-const tasks = createTaskLayer({ principal, mode: "tools" }); // default: "native"
+const tasks = new McpTasks({ principal, mode: "tools" }); // default: "native"
 ```
 
 Use it when something depends on the task id appearing in the tool result, such as a client
@@ -89050,23 +89115,31 @@ so a task has no overall time limit. Only the dispatcher changes; the endpoints 
 handler's `task` then also has `run`, `sleep` and `call`:
 
 ```ts
-import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
+import {
+  RedisTaskStore,
+  WorkflowDispatcher,
+} from "@upstash/mcp-toolkit/upstash";
 
-const tasks = createTaskLayer({
+const tasks = new McpTasks({
   store: new RedisTaskStore(),
-  dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  dispatcher: new WorkflowDispatcher({
+    url: `${process.env.APP_URL}/api/execute`,
+  }),
   principal,
 });
 
-tasks.define(
+tasks.registerTask(
   "migrate_workspace",
   {
     description: "Copies a workspace to new storage.",
     inputSchema: z.object({ workspaceId: z.string() }),
-    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+    authorize: ({ workspaceId }, { principal }) =>
+      isOwner(principal, workspaceId),
   },
   async ({ workspaceId }, task) => {
-    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
+    const batches = await task.run("plan", () =>
+      listBatches(workspaceId, task.principal),
+    );
     for (const [i, batch] of batches.entries()) {
       if (await task.isCancelled()) return {};
       await task.update(`Copying batch ${i + 1}/${batches.length}`);
@@ -89158,13 +89231,15 @@ tasks.define(
 ## Options
 
 <Accordion title="All options">
-  **`createTaskLayer`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by default)
+  **`new McpTasks(options)`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by default)
   and `dispatcher` (an `InProcessDispatcher` by default; a dispatcher needs a store with it), `mode`
   (`"native"`, or `"tools"` for the tool-based handle only), `defaults.ttlMs` (1 day) and
   `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
-  **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
-  `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
+  **`tasks.registerTask(name, config, handler)`**: `description` and `inputSchema` are required.
+  Optional: `title`, `completedMessage` (defaults to `"Completed"`),
+  `authorize(args, { principal, auth, request })`. Call it at module scope. `tasks.attach(server)`
+  adds the task tools to a server, and `tasks.createExecuteHandler()` is the dispatcher's endpoint.
 
   **`RedisTaskStore`**: `redis` (defaults to one from env), `prefix` (`mcp:task:`), `enableTelemetry`.
 
@@ -89188,15 +89263,22 @@ tasks.define(
   interface TaskStore {
     create(task: Task): Promise<void>; // with its TTL
     get(taskId: string): Promise<Task | null>;
-    update(taskId: string, patch: TaskPatch): Promise<void>; // ignored once the task is final
-    settle(taskId: string, patch: TaskPatch & { status: TerminalTaskStatus }): Promise<Task | null>; // first final status wins
+    // ignored once the task is final
+    update(taskId: string, patch: TaskPatch): Promise<void>;
+    settle(
+      taskId: string,
+      patch: TaskPatch & { status: TerminalTaskStatus },
+    ): Promise<Task | null>; // first final status wins
   }
 
   interface TaskDispatcher<TContext = unknown> {
     dispatch(task: Task): Promise<void>; // called once per task
     cancel(taskId: string): Promise<void>;
-    createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
-    connect?(endpoints: TaskEndpoints<TContext>): void; // called when the layer is created
+    createExecuteHandler(
+      endpoints: TaskEndpoints<TContext>,
+    ): (request: Request) => Promise<Response>;
+    // called once, by new McpTasks(...)
+    connect?(endpoints: TaskEndpoints<TContext>): void;
   }
   ```
 </Accordion>
@@ -89238,23 +89320,28 @@ npm install @upstash/mcp-toolkit @modelcontextprotocol/server zod
 
 ## An MCP server with a slow tool
 
-```ts mcp.ts
+```ts
+// mcp.ts
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { McpTasks } from "@upstash/mcp-toolkit/tasks";
 import * as z from "zod";
 
 // No store or dispatcher: tasks are kept in memory and run in this process.
-const tasks = createTaskLayer({ principal: () => "local" });
+const tasks = new McpTasks({ principal: () => "local" });
 
-// Define at module scope; the handler runs after the tool call has answered.
-tasks.define(
+// Register at module scope; the handler runs after the tool call has answered.
+tasks.registerTask(
   "generate_report",
-  { description: "Writes a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
+  {
+    description: "Writes a report on a topic.",
+    inputSchema: z.object({ topic: z.string() }),
+  },
   async ({ topic }, task) => {
     for (const step of ["Reading sources", "Drafting", "Polishing"]) {
       if (await task.isCancelled()) return {};
       await task.update(step); // progress, shown to whoever polls
-      await new Promise((resolve) => setTimeout(resolve, 2000)); // the slow part
+      // the slow part
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     return { content: [{ type: "text", text: `A report on ${topic}.` }] };
   },
@@ -89262,17 +89349,14 @@ tasks.define(
 
 const mcp = createMcpHandler(() => {
   const server = new McpServer({ name: "reports", version: "1.0.0" });
-  server.registerTool(
-    "ping",
-    { description: "An ordinary tool, for comparison.", inputSchema: z.object({}) },
-    async () => ({ content: [{ type: "text", text: "pong" }] }),
-  );
-  tasks.register(server); // generate_report, task_status, task_cancel, tasks/get, tasks/cancel
+  // generate_report, task_status, task_cancel, tasks/get and tasks/cancel
+  tasks.attach(server);
   return server;
 });
 
 // Serve POST /mcp with it.
-export const handler = (request: Request): Promise<Response> => mcp.fetch(request);
+export const handler = (request: Request): Promise<Response> =>
+  mcp.fetch(request);
 ```
 
 `handler` is a Web-standard `(request: Request) => Promise<Response>`, so it mounts in any
@@ -89300,9 +89384,9 @@ serverless or run more than one instance.
 
 ## What the client sees
 
-`tools/list` has `ping`, `generate_report`, `task_status` and `task_cancel`, and the server
-advertises the Tasks extension (`io.modelcontextprotocol/tasks`, protocol revision 2026-07-28). On
-every call to `generate_report`, the layer checks whether the request declares the extension:
+`tools/list` has `generate_report`, `task_status` and `task_cancel`, and the server advertises the
+Tasks extension (`io.modelcontextprotocol/tasks`, protocol revision 2026-07-28). On every call to
+`generate_report`, `McpTasks` checks whether the request declares the extension:
 
 * **A client that declares it** gets a native task (`resultType: "task"`). The client polls
   `tasks/get` itself, shows the progress, and hands the model the handler's result when it is done,
@@ -89330,12 +89414,15 @@ model may call `task_status` on it too; both paths give the same answer.
 <Accordion title="Native task responses">
   ```jsonc
   // tools/call generate_report, from a client that declared the extension
-  { "resultType": "task", "taskId": "0e30…", "status": "working", "statusMessage": "Queued",
-    "createdAt": "…", "lastUpdatedAt": "…", "ttlMs": 86400000, "pollIntervalMs": 2000 }
+  { "resultType": "task", "taskId": "0e30…", "status": "working",
+    "statusMessage": "Queued", "createdAt": "…", "lastUpdatedAt": "…",
+    "ttlMs": 86400000, "pollIntervalMs": 2000 }
 
-  // tasks/get { taskId }: the same fields, plus `result` once completed, or `error` once failed
-  { "resultType": "complete", "taskId": "0e30…", "status": "completed", "statusMessage": "Completed", …,
-    "result": { "content": [{ "type": "text", "text": "A report on coffee." }] } }
+  // tasks/get { taskId }: the same fields, plus `result` (the tool result) once
+  // completed, or `error` once failed
+  { "resultType": "complete", "taskId": "0e30…", "status": "completed",
+    "statusMessage": "Completed", …,
+    "result": { "content": [{ "type": "text", "text": "Report on coffee" }] } }
 
   // tasks/cancel { taskId }
   { "resultType": "complete" }
@@ -89348,22 +89435,27 @@ model may call `task_status` on it too; both paths give the same answer.
 <Accordion title="Tool-based responses">
   ```jsonc
   // generate_report: a handle, right away
-  { "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
-    "structuredContent": { "taskId": "0e30…", "status": "working", "ttlMs": 86400000, "pollIntervalMs": 2000 } }
+  { "content": [{ "type": "text",
+                  "text": "Started task 0e30…. Call task_status with …" }],
+    "structuredContent": { "taskId": "0e30…", "status": "working",
+                           "ttlMs": 86400000, "pollIntervalMs": 2000 } }
 
   // task_status: progress…
-  { "content": [{ "type": "text", "text": "Task 0e30… is working: Reading sources. Check again in about 2s." }],
-    "structuredContent": { "taskId": "0e30…", "status": "working", "statusMessage": "Reading sources" } }
+  { "content": [{ "type": "text",
+                  "text": "Task 0e30… is working: Reading sources. …" }],
+    "structuredContent": { "taskId": "0e30…", "status": "working",
+                           "statusMessage": "Reading sources" } }
 
   // …then the handler's own content, as if the tool had run synchronously
-  { "content": [{ "type": "text", "text": "Task 0e30… is completed: Completed" },
-                { "type": "text", "text": "A report on coffee." }],
-    "structuredContent": { "taskId": "0e30…", "status": "completed", "result": { "content": [ … ] } } }
+  { "content": [{ "type": "text", "text": "Task 0e30… is completed: …" },
+                { "type": "text", "text": "Report on coffee" }],
+    "structuredContent": { "taskId": "0e30…", "status": "completed",
+                           "result": { "content": [ … ] } } }
   ```
 
   The states are `working`, `completed`, `failed` and `cancelled`; the last three are final. If the
   model stops polling, nothing is lost: the work finishes anyway, and the result can be read until
-  the task expires (1 day by default; set `defaults: { ttlMs }` on the layer).
+  the task expires (1 day by default; set `defaults: { ttlMs }` on `McpTasks`).
 </Accordion>
 
 ## Make it durable with Redis and QStash
@@ -89379,32 +89471,36 @@ UPSTASH_REDIS_REST_URL=...
 UPSTASH_REDIS_REST_TOKEN=...
 QSTASH_URL=...                   # your QStash region's URL, from the console
 QSTASH_TOKEN=...
-QSTASH_CURRENT_SIGNING_KEY=...   # required: the execute endpoint refuses to run without them
+# Required: the execute endpoint refuses to run without them.
+QSTASH_CURRENT_SIGNING_KEY=...
 QSTASH_NEXT_SIGNING_KEY=...
 APP_URL=https://your-app.com     # QStash has to be able to reach it
 ```
 
-Pass a store and a dispatcher; the tool definitions and the MCP handler stay exactly as they were:
+Pass a store and a dispatcher; `registerTask` and the MCP handler stay exactly as they were:
 
 ```ts mcp.ts
-import { createTaskLayer } from "@upstash/mcp-toolkit/tasks";
+import { McpTasks } from "@upstash/mcp-toolkit/tasks";
 import { QStashDispatcher, RedisTaskStore } from "@upstash/mcp-toolkit/upstash";
 
-const tasks = createTaskLayer({
+const tasks = new McpTasks({
   store: new RedisTaskStore(),
-  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  dispatcher: new QStashDispatcher({
+    url: `${process.env.APP_URL}/api/execute`,
+  }),
   principal: () => "local",
 });
 
-// tasks.define(...) and the MCP handler as above, then one more endpoint.
+// registerTask(...) and the MCP handler as above, then one more endpoint.
 // QStash delivers each task here: serve POST /api/execute with it.
-export const execute: (request: Request) => Promise<Response> = tasks.createExecuteHandler();
+export const execute: (request: Request) => Promise<Response> =
+  tasks.createExecuteHandler();
 ```
 
 The execute endpoint is another `(request: Request) => Promise<Response>`, mounted like the MCP one,
 at the URL you gave the dispatcher. It verifies the QStash signature, runs the task's handler and
 stores the result. Every instance that serves it must import the module that calls
-`tasks.define(...)`, so it knows the handlers.
+`tasks.registerTask(...)`, so it knows the handlers.
 
 For work that can outlast one function invocation, use `WorkflowDispatcher` (same `url`, same
 endpoint): each step runs in its own invocation, so a task has no overall time limit. See
@@ -89426,7 +89522,7 @@ endpoint): each step runs in its own invocation, so a task has no overall time l
 
 In production (`NODE_ENV=production`), the in-memory defaults log a one-time warning. If a single
 long-lived server is what you want, pass them explicitly to say so:
-`createTaskLayer({ store: new MemoryTaskStore(), dispatcher: new InProcessDispatcher(), principal })`
+`new McpTasks({ store: new MemoryTaskStore(), dispatcher: new InProcessDispatcher(), principal })`
 (both from `@upstash/mcp-toolkit/tasks`). `await dispatcher.drain()` on shutdown lets running tasks
 finish.
 
@@ -89443,14 +89539,16 @@ import type { AuthInfo } from "@modelcontextprotocol/server";
 import type { Caller } from "@upstash/mcp-toolkit/tasks";
 
 // 1. Your token check. Clerk, WorkOS, Auth0, your own.
-export async function verifyToken(request: Request): Promise<AuthInfo | undefined> {
+export async function verifyToken(
+  request: Request,
+): Promise<AuthInfo | undefined> {
   const token = request.headers.get("authorization")?.replace(/^Bearer /, "");
   if (!token) return undefined;
   const { sub, client_id } = await verifyJwt(token);
   return { token, clientId: client_id, scopes: [], extra: { userId: sub } };
 }
 
-// 2. The toolkit calls this with the AuthInfo above. Return the user id, or throw.
+// 2. The toolkit calls this with that AuthInfo. Return the user id or throw.
 export function principal({ auth }: Caller): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
@@ -89459,7 +89557,7 @@ export function principal({ auth }: Caller): string {
 ```
 
 ```ts mcp.ts
-// createTaskLayer({ principal, ... }), and the handler checks the token first
+// new McpTasks({ principal, ... }), and the handler checks the token first
 export async function handler(request: Request): Promise<Response> {
   const authInfo = await verifyToken(request);
   if (!authInfo) return new Response("Unauthorized", { status: 401 });
@@ -89490,13 +89588,14 @@ which runs when the tool is called, before anything is stored or queued, and use
 (the user who started the task) inside the handler. Never take a user id from the arguments:
 
 ```ts
-tasks.define(
+tasks.registerTask(
   "export_workspace",
   {
     description: "Exports a workspace to CSV.",
     inputSchema: z.object({ workspaceId: z.string() }),
     // May this user export this workspace? `false` refuses the call.
-    authorize: ({ workspaceId }, { principal }) => canExport(principal, workspaceId),
+    authorize: ({ workspaceId }, { principal }) =>
+      canExport(principal, workspaceId),
   },
   async ({ workspaceId }, task) => {
     const csv = await exportWorkspace(workspaceId, { as: task.principal });
@@ -89529,7 +89628,7 @@ To answer every client with the tool-based handle, set `mode: "tools"`. The serv
 `tasks/*` methods and doesn't advertise the extension:
 
 ```ts
-const tasks = createTaskLayer({ principal, mode: "tools" }); // default: "native"
+const tasks = new McpTasks({ principal, mode: "tools" }); // default: "native"
 ```
 
 Use it when something depends on the task id appearing in the tool result, such as a client
@@ -89546,23 +89645,31 @@ so a task has no overall time limit. Only the dispatcher changes; the endpoints 
 handler's `task` then also has `run`, `sleep` and `call`:
 
 ```ts
-import { RedisTaskStore, WorkflowDispatcher } from "@upstash/mcp-toolkit/upstash";
+import {
+  RedisTaskStore,
+  WorkflowDispatcher,
+} from "@upstash/mcp-toolkit/upstash";
 
-const tasks = createTaskLayer({
+const tasks = new McpTasks({
   store: new RedisTaskStore(),
-  dispatcher: new WorkflowDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  dispatcher: new WorkflowDispatcher({
+    url: `${process.env.APP_URL}/api/execute`,
+  }),
   principal,
 });
 
-tasks.define(
+tasks.registerTask(
   "migrate_workspace",
   {
     description: "Copies a workspace to new storage.",
     inputSchema: z.object({ workspaceId: z.string() }),
-    authorize: ({ workspaceId }, { principal }) => isOwner(principal, workspaceId),
+    authorize: ({ workspaceId }, { principal }) =>
+      isOwner(principal, workspaceId),
   },
   async ({ workspaceId }, task) => {
-    const batches = await task.run("plan", () => listBatches(workspaceId, task.principal));
+    const batches = await task.run("plan", () =>
+      listBatches(workspaceId, task.principal),
+    );
     for (const [i, batch] of batches.entries()) {
       if (await task.isCancelled()) return {};
       await task.update(`Copying batch ${i + 1}/${batches.length}`);
@@ -89654,13 +89761,15 @@ tasks.define(
 ## Options
 
 <Accordion title="All options">
-  **`createTaskLayer`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by default)
+  **`new McpTasks(options)`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by default)
   and `dispatcher` (an `InProcessDispatcher` by default; a dispatcher needs a store with it), `mode`
   (`"native"`, or `"tools"` for the tool-based handle only), `defaults.ttlMs` (1 day) and
   `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
-  **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
-  `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
+  **`tasks.registerTask(name, config, handler)`**: `description` and `inputSchema` are required.
+  Optional: `title`, `completedMessage` (defaults to `"Completed"`),
+  `authorize(args, { principal, auth, request })`. Call it at module scope. `tasks.attach(server)`
+  adds the task tools to a server, and `tasks.createExecuteHandler()` is the dispatcher's endpoint.
 
   **`RedisTaskStore`**: `redis` (defaults to one from env), `prefix` (`mcp:task:`), `enableTelemetry`.
 
@@ -89684,15 +89793,22 @@ tasks.define(
   interface TaskStore {
     create(task: Task): Promise<void>; // with its TTL
     get(taskId: string): Promise<Task | null>;
-    update(taskId: string, patch: TaskPatch): Promise<void>; // ignored once the task is final
-    settle(taskId: string, patch: TaskPatch & { status: TerminalTaskStatus }): Promise<Task | null>; // first final status wins
+    // ignored once the task is final
+    update(taskId: string, patch: TaskPatch): Promise<void>;
+    settle(
+      taskId: string,
+      patch: TaskPatch & { status: TerminalTaskStatus },
+    ): Promise<Task | null>; // first final status wins
   }
 
   interface TaskDispatcher<TContext = unknown> {
     dispatch(task: Task): Promise<void>; // called once per task
     cancel(taskId: string): Promise<void>;
-    createExecuteHandler(endpoints: TaskEndpoints<TContext>): (request: Request) => Promise<Response>;
-    connect?(endpoints: TaskEndpoints<TContext>): void; // called when the layer is created
+    createExecuteHandler(
+      endpoints: TaskEndpoints<TContext>,
+    ): (request: Request) => Promise<Response>;
+    // called once, by new McpTasks(...)
+    connect?(endpoints: TaskEndpoints<TContext>): void;
   }
   ```
 </Accordion>
