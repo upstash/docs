@@ -158,9 +158,9 @@ model may call `task_status` on it too; both paths give the same answer.
                            "result": { "content": [ … ] } } }
   ```
 
-  The states are `working`, `completed`, `failed` and `cancelled`; the last three are final. If the
-  model stops polling, nothing is lost: the work finishes anyway, and the result can be read until
-  the task expires (1 day by default; set `defaults: { ttlMs }` on `McpTasks`).
+  The states are `working`, `input_required`, `completed`, `failed` and `cancelled`; the last three
+  are final. If the model stops polling, nothing is lost: the work finishes anyway, and the result
+  can be read until the task expires (1 day by default; set `defaults: { ttlMs }` on `McpTasks`).
 </Accordion>
 
 ## Make it durable with Redis and QStash
@@ -226,6 +226,7 @@ endpoint): each step runs in its own invocation, so a task has no overall time l
 | Survives the process dying         | no                          | yes (QStash redelivers)    | yes (replayed from the journal) |
 | Can run longer than one invocation | n/a: as long as the process | no                         | yes, one invocation per step    |
 | When the handler throws            | `failed`, no retry          | the whole task starts over | only the failed step runs again |
+| Ask the user (`task.elicit`)       | yes                         | no                         | yes                             |
 
 In production (`NODE_ENV=production`), the in-memory defaults log a one-time warning. If a single
 long-lived server is what you want, pass them explicitly to say so:
@@ -349,6 +350,44 @@ returns `true` once the task has expired.
   later. Values that don't survive JSON, such as a `Date` produced by `z.coerce.date()`, arrive as
   strings. Keep task schemas to plain values, or parse them again inside the handler.
 </Warning>
+
+## Ask the user from a task
+
+A task can stop partway, ask the user a question, and carry on with the answer. MCP calls this
+[elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation): the
+client shows the user a form built from a schema and sends back what they entered.
+
+```ts
+tasks.registerTask(
+  "publish_post",
+  {
+    description: "Publishes a post once the user approves it.",
+    inputSchema: z.object({ title: z.string() }),
+  },
+  async ({ title }, task) => {
+    const answer = await task.elicit({
+      message: `Publish "${title}" now?`,
+      requestedSchema: z.object({ publish: z.boolean() }),
+    });
+    // `content` is typed and validated against requestedSchema
+    if (answer.action === "accept" && answer.content.publish) {
+      return { content: [{ type: "text", text: "Published." }] };
+    }
+    return { content: [{ type: "text", text: "Not published." }] };
+  },
+);
+```
+
+`answer.action` is `"accept"` (with `content`), `"decline"` or `"cancel"`. While it waits, the task
+is `input_required`; the client answers with `tasks/update` and the handler carries on.
+
+- **Backends.** Works in memory and with `WorkflowDispatcher`. Not with `QStashDispatcher`: there,
+  `task.elicit` doesn't exist.
+- **Claude Code** shows the form in interactive terminal sessions. In headless sessions it can't, so
+  it cancels the task.
+- **Clients without native tasks** get the question from `task_status` if they support
+  elicitation. Otherwise the model is told that only the user can answer; there is no tool for the
+  model to answer in their place.
 
 ## Tool-based handle for every client
 
@@ -543,12 +582,10 @@ tasks.registerTask(
 
 ## Not supported yet
 
-- `input_required`: a handler asking the user something partway through a task. `tasks/update`
-  answers "Method not found".
+- Asking the user with `QStashDispatcher` (use `WorkflowDispatcher`), and input requests other
+  than form elicitation, such as URL elicitation.
 - Listing tasks: `tasks/list` and `notifications/tasks`.
 - `tasks/result`. A completed task's result comes with `tasks/get`.
-
-Claude Code uses none of these.
 
 ## Example
 
