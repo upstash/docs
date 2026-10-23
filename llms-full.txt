@@ -22449,7 +22449,7 @@ Source: https://upstash.com/docs/qstash/sdks/ts/mcp-events
 Source: https://upstash.com/docs/qstash/sdks/ts/mcp-tasks
 
 <Card title="MCP Tasks" icon="list-check" href="/redis/sdks/agentkit/mcp-tasks" horizontal>
-  Durable long-running MCP tools on QStash or Upstash Workflow, with the task record in Upstash Redis.
+  Durable long-running MCP tools on QStash or Upstash Workflow, with the task record in Upstash Redis. Native MCP Tasks for clients that support them, a pollable task id for every other client.
 </Card>
 
 # QStash TypeScript SDK Overview
@@ -88725,14 +88725,20 @@ Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-tasks
 An MCP tool call is a request that waits for its response. When the work takes minutes, something
 gives up first: the client's tool timeout, your serverless function's limit, or the model.
 
-`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task
-id, the work runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted)
-so it survives restarts and the client's tool timeout, and the task record lives in Upstash Redis.
-The model checks on it with a shared `task_status` tool and can stop it with `task_cancel`.
+`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately, the work
+runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted) so it
+survives restarts and the client's tool timeout, and the task record lives in Upstash Redis. How the
+client gets the result depends on what it supports:
 
-These are ordinary MCP tools, so they work in every client today: Claude Code, Codex, Cursor,
-OpenCode and ChatGPT. No client capability is required. The toolkit sits on top of the official MCP
-TypeScript SDK and uses WebCrypto only, so it runs on Node and edge runtimes.
+* **Clients that declare the [MCP Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)**
+  (Claude Code) get a native task. The client polls it with `tasks/get` and can stop it with
+  `tasks/cancel`, so the model spends no turns waiting.
+* **Every other client** (Codex, Cursor, OpenCode, ChatGPT) gets a task id in an ordinary tool
+  result. The model checks on it with a shared `task_status` tool and can stop it with `task_cancel`.
+
+One server handles both, decided per call, and the setup is the same either way. The toolkit sits
+on top of the official MCP TypeScript SDK and uses WebCrypto only, so it runs on Node and edge
+runtimes.
 
 ```bash
 npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
@@ -88791,7 +88797,7 @@ tasks.define(
   "generate_report",
   { description: "Generates a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
   async ({ topic }, task) => {
-    await task.update("Reading sources"); // the model sees this when it polls
+    await task.update("Reading sources"); // progress, shown while the task runs
     return { content: [{ type: "text", text: await writeReport(topic) }] };
   },
 );
@@ -88808,7 +88814,7 @@ import { verifyToken } from "../../../lib/auth";
 import { tasks } from "../../../lib/tasks";
 
 const handler = createMcpHandler((server) => {
-  tasks.register(server); // adds generate_report, task_status and task_cancel
+  tasks.register(server); // generate_report, task_status, task_cancel, tasks/get and tasks/cancel
 });
 
 // Runs verifyToken before any tool sees the request; no AuthInfo means 401.
@@ -88817,7 +88823,9 @@ export { authHandler as GET, authHandler as POST };
 ```
 
 `withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
-to `principal`. The task layer only registers tools, so nothing else changes in your route.
+to `principal`. `tasks.register(server)` adds the tools, advertises the Tasks extension and serves
+`tasks/get` and `tasks/cancel` through the SDK's own extension points, so nothing else changes in
+your route. Call it before the server is connected, as `createMcpHandler` does.
 
 ### 4. Add the execute endpoint
 
@@ -88851,12 +88859,65 @@ APP_URL=https://your-app.vercel.app
   and use `APP_URL=http://127.0.0.1:3000`.
 </Note>
 
-## What the model sees
+## How clients get the result
 
-`tools/list` now has `generate_report` (starts the task and returns its id), `task_status` (shows
-progress, then the handler's result) and `task_cancel`.
+`tools/list` now has `generate_report`, `task_status` and `task_cancel`, and the server advertises
+the Tasks extension (`io.modelcontextprotocol/tasks`, protocol revision 2026-07-28). On every call to
+`generate_report`, the layer checks whether the request declares the extension and answers with a
+native task or with the tool-based handle. Both read the same task record.
 
-<Accordion title="Example responses">
+### Native tasks
+
+A client that declares the extension gets a task (`resultType: "task"`) instead of a tool result.
+The client polls `tasks/get` on its own, shows progress in its UI, and hands the model the handler's
+result once the task completes. `tasks/cancel` stops it.
+
+In Claude Code, the call returns at once and Claude keeps working on other things. The footer shows
+**1 MCP task** while it runs, and the result arrives in the conversation when the task completes.
+See [MCP Tasks for server authors](https://code.claude.com/docs/en/mcp#mcp-tasks-for-server-authors)
+in the Claude Code docs.
+
+Which clients declare the extension:
+
+* **Claude Code** CLI v2.1.304 and later, in interactive terminal sessions, the Agent SDK and GitHub
+  Actions. It does not on calls from subagents, in the VS Code extension or in the desktop app;
+  those calls get the tool-based handle.
+* **Codex, Cursor, OpenCode and ChatGPT** don't declare it (as of October 2026) and get the
+  tool-based handle.
+
+`task_status` and `task_cancel` stay listed in native mode, because they are the fallback, and one
+client can send both kinds of call. Claude Code shows the model a native task's id, so the model may
+call `task_status` on it too; both read the same task record and give the same answer.
+
+<Accordion title="Native task responses">
+  ```jsonc
+  // tools/call generate_report, from a client that declared the extension
+  { "resultType": "task", "taskId": "0e30…", "status": "working", "statusMessage": "Queued for durable execution",
+    "createdAt": "…", "lastUpdatedAt": "…", "ttlMs": 86400000, "pollIntervalMs": 2000 }
+
+  // tasks/get { taskId }: the same fields, plus `result` (the tool result) once completed,
+  // or `error` once failed
+  { "resultType": "complete", "taskId": "0e30…", "status": "completed", "statusMessage": "Completed", …,
+    "result": { "content": [{ "type": "text", "text": "Report on coffee" }] } }
+
+  // tasks/cancel { taskId }
+  { "resultType": "complete" }
+  ```
+
+  * A **failed** task carries a JSON-RPC `error`. When the handler returned a tool error
+    (`isError: true`), its message is that result's text, which is what the model would have read
+    from a synchronous tool. When the transport gave up, it is the stored code and message.
+    `error.data` stays in Redis.
+  * An unknown, expired or malformed task id, another user's task, and an unidentified caller all
+    get the same `-32602` error, so ids can't be probed.
+</Accordion>
+
+### Tool-based handle
+
+Every other call gets the task id in an ordinary tool result. The model calls `task_status` to see
+progress and then the handler's result, and `task_cancel` to stop the task.
+
+<Accordion title="Tool-based responses">
   ```jsonc
   // generate_report: a handle, right away
   { "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
@@ -88879,9 +88940,27 @@ progress, then the handler's result) and `task_cancel`.
   until the task expires (1 day by default; set `defaults: { ttlMs }` on the layer).
 </Accordion>
 
+### Keep the tool-based handle for every client
+
+To answer every client with the tool-based handle, set `mode: "tools"`. The server then serves no
+`tasks/*` methods and doesn't advertise the extension:
+
+```ts lib/tasks.ts
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal,
+  mode: "tools", // default: "native"
+});
+```
+
+Use it when something depends on the task id appearing in the tool result, such as a client
+integration or test that reads `structuredContent.taskId`, or when you want every client to see the
+same tools and responses.
+
 ## Cancellation
 
-`task_cancel` marks the task `cancelled` and stops any pending delivery. Cancelling is cooperative,
+`task_cancel` and `tasks/cancel` mark the task `cancelled` and stop any pending delivery. Cancelling is cooperative,
 so running code only stops where it checks `task.isCancelled()`:
 
 ```ts
@@ -88905,7 +88984,8 @@ async ({ sources }, task) => {
 
 ## Users
 
-Each task records who started it, and `task_status` / `task_cancel` only answer for that caller.
+Each task records who started it, and `task_status`, `task_cancel`, `tasks/get` and `tasks/cancel`
+only answer for that caller.
 Another user's task id reads exactly like an unknown one, so nobody can tell it exists.
 
 ### Check what the arguments point at
@@ -89053,10 +89133,10 @@ tasks.define(
 <Accordion title="Who can see what">
   The server sets a task's owner from `principal`, and no tool argument can set it. Whether a caller
   may start a task with given arguments is your `authorize`; the handler gets the owner as
-  `task.principal`. `task_status` and
-  `task_cancel` only accept UUID task ids, and compare the stored owner with the caller. Task ids are
-  random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash deliveries and
-  never returns a task.
+  `task.principal`. `task_status`, `task_cancel`, `tasks/get` and `tasks/cancel` only accept UUID task
+  ids, and compare the stored owner with the caller. For anyone else, a task looks exactly like an
+  unknown id (a tool error for the tools, `-32602` for `tasks/*`). Task ids are random UUIDs. Nothing
+  lists tasks, and the execute route only accepts signed QStash deliveries and never returns a task.
 
   Anyone with write access to your Redis can change an owner, so treat the Redis credentials like any
   other production secret.
@@ -89084,7 +89164,7 @@ tasks.define(
 
 <Accordion title="All options">
   **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
-  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
+  `mode` (`"native"`, the default, or `"tools"` for the tool-based handle only), `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
   **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
   `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
@@ -89122,16 +89202,14 @@ tasks.define(
   ```
 </Accordion>
 
-## Why tools, not the Tasks extension?
+## Not supported yet
 
-The 2026-07-28 MCP specification defines a [Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)
-where the *client* polls, so the model spends no turns waiting. But a server may only return a task
-to a client that declared the extension, and as of October 2026 Claude Code, Codex, Cursor and
-OpenCode don't. Plain tools cost the model a few polling calls but work everywhere today.
+* `input_required`: a handler asking the user something partway through a task. `tasks/update`
+  answers "Method not found".
+* Listing tasks: `tasks/list` and `notifications/tasks`.
+* `tasks/result`. A completed task's result comes with `tasks/get`.
 
-The store and dispatcher don't depend on the tools, so an adapter for the extension can serve the
-same records once clients support it. Also not implemented yet: `input_required` (a handler asking
-the user something partway through a task) and listing tasks.
+Claude Code uses none of these.
 
 ## Example
 
@@ -89144,14 +89222,20 @@ Source: https://upstash.com/docs/redis/sdks/agentkit/mcp-tasks
 An MCP tool call is a request that waits for its response. When the work takes minutes, something
 gives up first: the client's tool timeout, your serverless function's limit, or the model.
 
-`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately with a task
-id, the work runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted)
-so it survives restarts and the client's tool timeout, and the task record lives in Upstash Redis.
-The model checks on it with a shared `task_status` tool and can stop it with `task_cancel`.
+`@upstash/mcp-toolkit/tasks` turns a slow tool into a task. The tool answers immediately, the work
+runs on [QStash](/docs/qstash/overall/getstarted) or [Upstash Workflow](/docs/workflow/getstarted) so it
+survives restarts and the client's tool timeout, and the task record lives in Upstash Redis. How the
+client gets the result depends on what it supports:
 
-These are ordinary MCP tools, so they work in every client today: Claude Code, Codex, Cursor,
-OpenCode and ChatGPT. No client capability is required. The toolkit sits on top of the official MCP
-TypeScript SDK and uses WebCrypto only, so it runs on Node and edge runtimes.
+* **Clients that declare the [MCP Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)**
+  (Claude Code) get a native task. The client polls it with `tasks/get` and can stop it with
+  `tasks/cancel`, so the model spends no turns waiting.
+* **Every other client** (Codex, Cursor, OpenCode, ChatGPT) gets a task id in an ordinary tool
+  result. The model checks on it with a shared `task_status` tool and can stop it with `task_cancel`.
+
+One server handles both, decided per call, and the setup is the same either way. The toolkit sits
+on top of the official MCP TypeScript SDK and uses WebCrypto only, so it runs on Node and edge
+runtimes.
 
 ```bash
 npm install @upstash/mcp-toolkit @modelcontextprotocol/server mcp-handler zod
@@ -89210,7 +89294,7 @@ tasks.define(
   "generate_report",
   { description: "Generates a report on a topic.", inputSchema: z.object({ topic: z.string() }) },
   async ({ topic }, task) => {
-    await task.update("Reading sources"); // the model sees this when it polls
+    await task.update("Reading sources"); // progress, shown while the task runs
     return { content: [{ type: "text", text: await writeReport(topic) }] };
   },
 );
@@ -89227,7 +89311,7 @@ import { verifyToken } from "../../../lib/auth";
 import { tasks } from "../../../lib/tasks";
 
 const handler = createMcpHandler((server) => {
-  tasks.register(server); // adds generate_report, task_status and task_cancel
+  tasks.register(server); // generate_report, task_status, task_cancel, tasks/get and tasks/cancel
 });
 
 // Runs verifyToken before any tool sees the request; no AuthInfo means 401.
@@ -89236,7 +89320,9 @@ export { authHandler as GET, authHandler as POST };
 ```
 
 `withMcpAuth` hands the `AuthInfo` from `verifyToken` to the MCP server, and the toolkit passes it
-to `principal`. The task layer only registers tools, so nothing else changes in your route.
+to `principal`. `tasks.register(server)` adds the tools, advertises the Tasks extension and serves
+`tasks/get` and `tasks/cancel` through the SDK's own extension points, so nothing else changes in
+your route. Call it before the server is connected, as `createMcpHandler` does.
 
 ### 4. Add the execute endpoint
 
@@ -89270,12 +89356,65 @@ APP_URL=https://your-app.vercel.app
   and use `APP_URL=http://127.0.0.1:3000`.
 </Note>
 
-## What the model sees
+## How clients get the result
 
-`tools/list` now has `generate_report` (starts the task and returns its id), `task_status` (shows
-progress, then the handler's result) and `task_cancel`.
+`tools/list` now has `generate_report`, `task_status` and `task_cancel`, and the server advertises
+the Tasks extension (`io.modelcontextprotocol/tasks`, protocol revision 2026-07-28). On every call to
+`generate_report`, the layer checks whether the request declares the extension and answers with a
+native task or with the tool-based handle. Both read the same task record.
 
-<Accordion title="Example responses">
+### Native tasks
+
+A client that declares the extension gets a task (`resultType: "task"`) instead of a tool result.
+The client polls `tasks/get` on its own, shows progress in its UI, and hands the model the handler's
+result once the task completes. `tasks/cancel` stops it.
+
+In Claude Code, the call returns at once and Claude keeps working on other things. The footer shows
+**1 MCP task** while it runs, and the result arrives in the conversation when the task completes.
+See [MCP Tasks for server authors](https://code.claude.com/docs/en/mcp#mcp-tasks-for-server-authors)
+in the Claude Code docs.
+
+Which clients declare the extension:
+
+* **Claude Code** CLI v2.1.304 and later, in interactive terminal sessions, the Agent SDK and GitHub
+  Actions. It does not on calls from subagents, in the VS Code extension or in the desktop app;
+  those calls get the tool-based handle.
+* **Codex, Cursor, OpenCode and ChatGPT** don't declare it (as of October 2026) and get the
+  tool-based handle.
+
+`task_status` and `task_cancel` stay listed in native mode, because they are the fallback, and one
+client can send both kinds of call. Claude Code shows the model a native task's id, so the model may
+call `task_status` on it too; both read the same task record and give the same answer.
+
+<Accordion title="Native task responses">
+  ```jsonc
+  // tools/call generate_report, from a client that declared the extension
+  { "resultType": "task", "taskId": "0e30…", "status": "working", "statusMessage": "Queued for durable execution",
+    "createdAt": "…", "lastUpdatedAt": "…", "ttlMs": 86400000, "pollIntervalMs": 2000 }
+
+  // tasks/get { taskId }: the same fields, plus `result` (the tool result) once completed,
+  // or `error` once failed
+  { "resultType": "complete", "taskId": "0e30…", "status": "completed", "statusMessage": "Completed", …,
+    "result": { "content": [{ "type": "text", "text": "Report on coffee" }] } }
+
+  // tasks/cancel { taskId }
+  { "resultType": "complete" }
+  ```
+
+  * A **failed** task carries a JSON-RPC `error`. When the handler returned a tool error
+    (`isError: true`), its message is that result's text, which is what the model would have read
+    from a synchronous tool. When the transport gave up, it is the stored code and message.
+    `error.data` stays in Redis.
+  * An unknown, expired or malformed task id, another user's task, and an unidentified caller all
+    get the same `-32602` error, so ids can't be probed.
+</Accordion>
+
+### Tool-based handle
+
+Every other call gets the task id in an ordinary tool result. The model calls `task_status` to see
+progress and then the handler's result, and `task_cancel` to stop the task.
+
+<Accordion title="Tool-based responses">
   ```jsonc
   // generate_report: a handle, right away
   { "content": [{ "type": "text", "text": "Started task 0e30…. Call task_status with taskId \"0e30…\" in about 2s to check on it." }],
@@ -89298,9 +89437,27 @@ progress, then the handler's result) and `task_cancel`.
   until the task expires (1 day by default; set `defaults: { ttlMs }` on the layer).
 </Accordion>
 
+### Keep the tool-based handle for every client
+
+To answer every client with the tool-based handle, set `mode: "tools"`. The server then serves no
+`tasks/*` methods and doesn't advertise the extension:
+
+```ts lib/tasks.ts
+export const tasks = createTaskLayer({
+  store: new RedisTaskStore(),
+  dispatcher: new QStashDispatcher({ url: `${process.env.APP_URL}/api/execute` }),
+  principal,
+  mode: "tools", // default: "native"
+});
+```
+
+Use it when something depends on the task id appearing in the tool result, such as a client
+integration or test that reads `structuredContent.taskId`, or when you want every client to see the
+same tools and responses.
+
 ## Cancellation
 
-`task_cancel` marks the task `cancelled` and stops any pending delivery. Cancelling is cooperative,
+`task_cancel` and `tasks/cancel` mark the task `cancelled` and stop any pending delivery. Cancelling is cooperative,
 so running code only stops where it checks `task.isCancelled()`:
 
 ```ts
@@ -89324,7 +89481,8 @@ async ({ sources }, task) => {
 
 ## Users
 
-Each task records who started it, and `task_status` / `task_cancel` only answer for that caller.
+Each task records who started it, and `task_status`, `task_cancel`, `tasks/get` and `tasks/cancel`
+only answer for that caller.
 Another user's task id reads exactly like an unknown one, so nobody can tell it exists.
 
 ### Check what the arguments point at
@@ -89472,10 +89630,10 @@ tasks.define(
 <Accordion title="Who can see what">
   The server sets a task's owner from `principal`, and no tool argument can set it. Whether a caller
   may start a task with given arguments is your `authorize`; the handler gets the owner as
-  `task.principal`. `task_status` and
-  `task_cancel` only accept UUID task ids, and compare the stored owner with the caller. Task ids are
-  random UUIDs. No tool lists tasks, and the execute route only accepts signed QStash deliveries and
-  never returns a task.
+  `task.principal`. `task_status`, `task_cancel`, `tasks/get` and `tasks/cancel` only accept UUID task
+  ids, and compare the stored owner with the caller. For anyone else, a task looks exactly like an
+  unknown id (a tool error for the tools, `-32602` for `tasks/*`). Task ids are random UUIDs. Nothing
+  lists tasks, and the execute route only accepts signed QStash deliveries and never returns a task.
 
   Anyone with write access to your Redis can change an owner, so treat the Redis credentials like any
   other production secret.
@@ -89503,7 +89661,7 @@ tasks.define(
 
 <Accordion title="All options">
   **`createTaskLayer`**: `store`, `dispatcher` and `principal` are required. Optional:
-  `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
+  `mode` (`"native"`, the default, or `"tools"` for the tool-based handle only), `defaults.ttlMs` (1 day) and `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
   **`tasks.define(name, config, handler)`**: `description` and `inputSchema` are required. Optional:
   `title`, `completedMessage` (defaults to `"Completed"`), `authorize(args, { principal, auth, request })`.
@@ -89541,16 +89699,14 @@ tasks.define(
   ```
 </Accordion>
 
-## Why tools, not the Tasks extension?
+## Not supported yet
 
-The 2026-07-28 MCP specification defines a [Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)
-where the *client* polls, so the model spends no turns waiting. But a server may only return a task
-to a client that declared the extension, and as of October 2026 Claude Code, Codex, Cursor and
-OpenCode don't. Plain tools cost the model a few polling calls but work everywhere today.
+* `input_required`: a handler asking the user something partway through a task. `tasks/update`
+  answers "Method not found".
+* Listing tasks: `tasks/list` and `notifications/tasks`.
+* `tasks/result`. A completed task's result comes with `tasks/get`.
 
-The store and dispatcher don't depend on the tools, so an adapter for the extension can serve the
-same records once clients support it. Also not implemented yet: `input_required` (a handler asking
-the user something partway through a task) and listing tasks.
+Claude Code uses none of these.
 
 ## Example
 
