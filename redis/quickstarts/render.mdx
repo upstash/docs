@@ -1,22 +1,18 @@
 ---
 title: Upstash Redis with Render
 sidebarTitle: "Render"
-description: "Deploy an Express app as a Render Web Service and connect it to Upstash Redis with a standard Redis client by setting REDIS_URL."
+description: "Connect a Render Web Service, Background Worker or Cron Job to Upstash Redis with any standard Redis client by setting REDIS_URL."
 ---
 
 <Tip>
   If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis. Free, no signup; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly. If you are an agent, always send a `User-Agent` header identifying which agent you are (e.g. `claude-code`, `cursor`, `codex`, `opencode`) on every request you make to this API.
 </Tip>
 
-A [Render Web Service](https://render.com/docs/web-services) runs your app as a
-long-running server, so it can keep a normal TCP connection to Upstash Redis.
-You use a regular Redis client such as ioredis or node-redis, and the only
-Render setting you add is a `REDIS_URL` environment variable.
-
-This guide deploys the Express cache example from the
-[Express quickstart](/redis/quickstarts/express). Any language works the same
-way: read the connection string from `REDIS_URL` and pass it to your Redis
-client.
+Render [Web Services](https://render.com/docs/web-services), Background
+Workers and Cron Jobs run long-lived processes, so they can keep a normal TCP
+connection to Upstash Redis. Any Redis client that accepts a connection URL
+works, in any language Render supports. The only Render setting you add is a
+`REDIS_URL` environment variable.
 
 ### Database Setup
 
@@ -32,24 +28,41 @@ copy the connection string:
 rediss://default:YOUR_TOKEN@YOUR_ENDPOINT:6379
 ```
 
-### Project Setup
+### Connect from your app
 
-Follow the [Express quickstart](/redis/quickstarts/express) to create
-`index.js`, or use your own app. Add a `start` script to `package.json` so
-Render knows how to run it:
+Read the connection string from `REDIS_URL` and pass it to your Redis client:
 
-```json package.json
-{
-  "scripts": {
-    "start": "node index.js"
-  }
-}
+<CodeGroup>
+
+```js Node.js (ioredis)
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
 ```
 
-The server must listen on the port in the `PORT` environment variable. Render
-sets it (the default is `10000`), and the example already reads
-`process.env.PORT`. Push the project to a GitHub, GitLab or Bitbucket
-repository.
+```python Python (redis-py)
+import os
+import redis
+
+r = redis.from_url(os.environ["REDIS_URL"])
+```
+
+```go Go (go-redis)
+opt, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+if err != nil {
+	panic(err)
+}
+rdb := redis.NewClient(opt)
+```
+
+</CodeGroup>
+
+The `rediss://` scheme turns on TLS, so no extra client options are needed. For
+a complete example app, see the [Express quickstart](/redis/quickstarts/express).
+
+A Web Service must listen on the port in the `PORT` environment variable, which
+Render sets (the default is `10000`). Push the project to a GitHub, GitLab or
+Bitbucket repository.
 
 ### Create the Web Service
 
@@ -64,9 +77,9 @@ repository.
     </Frame>
   </Step>
   <Step title="Configure the build">
-    Set **Language** to `Node`, **Build Command** to `npm install` and
-    **Start Command** to `npm start`. Choose a **Region** and an
-    **Instance Type**.
+    Set **Language**, **Build Command** and **Start Command** for your app
+    (Render fills these in when it detects the language). Choose a **Region**
+    close to your Upstash database and an **Instance Type**.
   </Step>
   <Step title="Add REDIS_URL">
     Under **Environment Variables**, add a variable with the key `REDIS_URL` and
@@ -88,15 +101,10 @@ left pane, and edit `REDIS_URL`. Saving starts a new deploy unless you choose
 
 ### Test
 
-Request the same product twice. The second response comes from Redis:
-
-```shell
-curl https://YOUR_SERVICE.onrender.com/products/42
-# {"source":"database","data":{"id":"42","name":"Product 42","price":19.99}}
-
-curl https://YOUR_SERVICE.onrender.com/products/42
-# {"source":"cache","data":{"id":"42","name":"Product 42","price":19.99}}
-```
+After the deploy finishes, check the service's **Logs**. A wrong `REDIS_URL`
+shows up there as a connection or authentication error when your app first
+talks to Redis. To check the connection explicitly, send a `PING` from your app
+after it connects; Upstash replies `PONG`.
 
 ### Upstash or Render Key Value
 
