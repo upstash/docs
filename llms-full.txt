@@ -88129,6 +88129,7 @@ share this file:
 
 ```ts auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
+import type { Caller } from "@upstash/mcp-toolkit/events";
 
 // 1. Runs on every MCP request (wired up with withMcpAuth in step 3).
 //    Returning undefined answers 401.
@@ -88148,7 +88149,7 @@ export async function verifyToken(
 }
 
 // 2. The toolkit calls this with that AuthInfo. Return the user id or throw.
-export function principal({ auth }: { auth?: AuthInfo }): string {
+export function principal({ auth }: Caller): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
   return userId;
@@ -88276,8 +88277,9 @@ Every `input` field must also be a `payload` field: the payload is the one place
 come from, and the same values are used to route it and to authorize it. The payload's values for the
 input fields are parsed with the `input` schema, so its transforms (`.toLowerCase()`, say) apply on
 both sides and `authorize` gets the types it declares; a payload whose values don't fit `input` makes
-`emit` throw. A subscription matches when each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
-subscribers of `{ documentId: "doc_123" }` and of `{}`.
+`emit` throw. A subscription matches when each argument it gave equals the payload's value.
+Emitting `{ documentId: "doc_123", text }` reaches subscribers of `{ documentId: "doc_123" }` and of
+`{}`.
 
 `authorize(args, caller)` runs twice:
 
@@ -88472,6 +88474,7 @@ share this file:
 
 ```ts auth.ts
 import type { AuthInfo } from "@modelcontextprotocol/server";
+import type { Caller } from "@upstash/mcp-toolkit/events";
 
 // 1. Runs on every MCP request (wired up with withMcpAuth in step 3).
 //    Returning undefined answers 401.
@@ -88491,7 +88494,7 @@ export async function verifyToken(
 }
 
 // 2. The toolkit calls this with that AuthInfo. Return the user id or throw.
-export function principal({ auth }: { auth?: AuthInfo }): string {
+export function principal({ auth }: Caller): string {
   const userId = auth?.extra?.userId;
   if (typeof userId !== "string") throw new Error("Not authenticated");
   return userId;
@@ -88619,8 +88622,9 @@ Every `input` field must also be a `payload` field: the payload is the one place
 come from, and the same values are used to route it and to authorize it. The payload's values for the
 input fields are parsed with the `input` schema, so its transforms (`.toLowerCase()`, say) apply on
 both sides and `authorize` gets the types it declares; a payload whose values don't fit `input` makes
-`emit` throw. A subscription matches when each argument it gave equals the payload's value. Emitting `{ documentId: "doc_123", text }` reaches
-subscribers of `{ documentId: "doc_123" }` and of `{}`.
+`emit` throw. A subscription matches when each argument it gave equals the payload's value.
+Emitting `{ documentId: "doc_123", text }` reaches subscribers of `{ documentId: "doc_123" }` and of
+`{}`.
 
 `authorize(args, caller)` runs twice:
 
@@ -89115,6 +89119,13 @@ the same `auth` and `request` as `principal`. It is the only place a task sees t
 the handler runs after the tool call has answered (with QStash, in a delivery request that carries
 no user auth), so `task.principal` is how it knows who it is working for.
 
+**Errors and limits.** When `authorize` or a store throws, the caller sees only `Internal error. Try
+again later.` (a tool error, or `-32603` on `tasks/*` and `events/*`) and the real error goes to
+`console.error`, so a database host or credential in it never reaches the model. Each user may have
+at most 100 tasks working or waiting for input (`maxActiveTasks`), and a task's arguments may be at
+most 64 KiB of JSON (`maxArgsBytes`); past either, the call is refused before anything is stored.
+A task waiting for an answer counts as active until it is answered, cancelled or expires.
+
 ## Cancellation
 
 `task_cancel` and `tasks/cancel` mark the task `cancelled`. With Workflow the run is cancelled too;
@@ -89159,13 +89170,17 @@ tasks.registerTask(
 `answer.action` is `"accept"` (with `content`), `"decline"` or `"cancel"`. While it waits, the task
 is `input_required`; the client answers with `tasks/update` and the handler carries on.
 
-* **Backends.** Works in memory and with `WorkflowDispatcher`. Not with `QStashDispatcher`: there,
-  `task.elicit` doesn't exist.
+* **Backends.** Works in memory and with `WorkflowDispatcher` (which waits without holding a
+  function open; call `elicit` between steps, not inside `task.run`). Not with `QStashDispatcher`:
+  there, `task` has no `elicit` in the types (a plain-JS call fails the task).
 * **Claude Code** shows the form in interactive terminal sessions. In headless sessions it can't, so
   it cancels the task.
 * **Clients without native tasks** get the question from `task_status` if they support
-  elicitation. Otherwise the model is told that only the user can answer; there is no tool for the
-  model to answer in their place.
+  elicitation on a 2026-07-28 connection. Otherwise, including on 2025-era connections (the default
+  in many clients, the official SDK client 2.3.1 among them), the model is told the task is waiting
+  and that only the user can answer. There is no tool for the model to answer in their place.
+* If the task is cancelled or expires while waiting, `elicit` throws; don't catch that error. A
+  task asks at most 16 questions, one at a time.
 
 ## Tool-based handle for every client
 
@@ -89264,10 +89279,11 @@ tasks.registerTask(
     retry, and `task_status` returns your content with `isError`, as the synchronous tool would.
   * What a failure looks like to the model is `error.code` and `error.message`. The transport's
     details (`error.data`: the QStash DLQ id, the Workflow run id) stay in Redis for you. What your
-    handler threw and a dispatch error are logged, never stored or returned.
+    handler threw and a dispatch error are never returned. QStash and Workflow only log them; the
+    in-memory dispatcher also keeps the message in `error.data`.
   * By default QStash retries 5 times (6 attempts in total) with backoff
-    `min(pow(3, retried) * 1000, 300000)`, about two minutes in total, so a task survives a server restart. The free tier and the local dev server
-    allow at most 5 retries.
+    `min(pow(3, retried) * 1000, 300000)`, about two minutes in total, so a task survives a server
+    restart. The free tier and the local dev server allow at most 5 retries.
 </Accordion>
 
 ## Security and storage
@@ -89288,16 +89304,20 @@ tasks.registerTask(
 <Accordion title="What is stored in Redis">
   **`mcp:task:<taskId>`** is a hash with one JSON-encoded field per property: `taskId`, `name`,
   `args`, `owner`, `status`, `statusMessage`, `result` / `error`, `createdAt`, `lastUpdatedAt`,
-  `ttlMs`, `pollIntervalMs`.
+  `ttlMs`, `pollIntervalMs`, and, for a task that asks the user, `inputRequests` (the open question)
+  and one `response:<key>` field per answer.
 
-  * `args` and `result` are **plain JSON**. Keep secrets out of tool arguments and results, or use a
-    short `ttlMs`.
+  * `args`, `result` and the user's answers are **plain JSON**. Keep secrets out of tool arguments,
+    results and forms, or use a short `ttlMs`.
   * The task is written with its TTL before the tool replies, because the model's next poll may reach
     another instance. The TTL counts from creation and is never extended.
   * Status changes go through one guarded Lua script, and the first final status wins, so a completion
     can't overwrite a cancel. Each property is its own field, so a progress update and a cancel never
     overwrite each other.
   * A Redis client built with `automaticDeserialization: false` is not supported.
+
+  **`mcp:task:active:<owner>`** is a sorted set of the owner's task ids, scored by expiry, for
+  `maxActiveTasks`. Counting drops the expired and finished ones.
 
   A task message in QStash carries only `{ taskId }`. The toolkit never stores the caller's token or
   the request.
@@ -89308,7 +89328,9 @@ tasks.registerTask(
 <Accordion title="All options">
   **`new McpTasks(options)`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by default)
   and `dispatcher` (an `InProcessDispatcher` by default; a dispatcher needs a store with it), `mode`
-  (`"native"`, or `"tools"` for the tool-based handle only), `defaults.ttlMs` (1 day) and
+  (`"native"`, or `"tools"` for the tool-based handle only), `maxActiveTasks` (100 per user working
+  or `input_required`; `Infinity` turns it off), `maxArgsBytes` (64 KiB of JSON), `defaults.ttlMs`
+  (1 day) and
   `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
   **`tasks.registerTask(name, config, handler)`**: `description` and `inputSchema` are required.
@@ -89344,6 +89366,14 @@ tasks.registerTask(
       taskId: string,
       patch: TaskPatch & { status: TerminalTaskStatus },
     ): Promise<Task | null>; // first final status wins
+    // records answers while input_required; resolves the keys it resumed
+    respond(
+      taskId: string,
+      responses: Record<string, TaskInputResponse>,
+      statusMessage: string,
+    ): Promise<string[]>;
+    // working + input_required, for maxActiveTasks
+    countActive(owner: string): Promise<number>;
   }
 
   // CanAsk: whether handlers get task.elicit. TContext: what the transport
@@ -89715,6 +89745,13 @@ the same `auth` and `request` as `principal`. It is the only place a task sees t
 the handler runs after the tool call has answered (with QStash, in a delivery request that carries
 no user auth), so `task.principal` is how it knows who it is working for.
 
+**Errors and limits.** When `authorize` or a store throws, the caller sees only `Internal error. Try
+again later.` (a tool error, or `-32603` on `tasks/*` and `events/*`) and the real error goes to
+`console.error`, so a database host or credential in it never reaches the model. Each user may have
+at most 100 tasks working or waiting for input (`maxActiveTasks`), and a task's arguments may be at
+most 64 KiB of JSON (`maxArgsBytes`); past either, the call is refused before anything is stored.
+A task waiting for an answer counts as active until it is answered, cancelled or expires.
+
 ## Cancellation
 
 `task_cancel` and `tasks/cancel` mark the task `cancelled`. With Workflow the run is cancelled too;
@@ -89759,13 +89796,17 @@ tasks.registerTask(
 `answer.action` is `"accept"` (with `content`), `"decline"` or `"cancel"`. While it waits, the task
 is `input_required`; the client answers with `tasks/update` and the handler carries on.
 
-* **Backends.** Works in memory and with `WorkflowDispatcher`. Not with `QStashDispatcher`: there,
-  `task.elicit` doesn't exist.
+* **Backends.** Works in memory and with `WorkflowDispatcher` (which waits without holding a
+  function open; call `elicit` between steps, not inside `task.run`). Not with `QStashDispatcher`:
+  there, `task` has no `elicit` in the types (a plain-JS call fails the task).
 * **Claude Code** shows the form in interactive terminal sessions. In headless sessions it can't, so
   it cancels the task.
 * **Clients without native tasks** get the question from `task_status` if they support
-  elicitation. Otherwise the model is told that only the user can answer; there is no tool for the
-  model to answer in their place.
+  elicitation on a 2026-07-28 connection. Otherwise, including on 2025-era connections (the default
+  in many clients, the official SDK client 2.3.1 among them), the model is told the task is waiting
+  and that only the user can answer. There is no tool for the model to answer in their place.
+* If the task is cancelled or expires while waiting, `elicit` throws; don't catch that error. A
+  task asks at most 16 questions, one at a time.
 
 ## Tool-based handle for every client
 
@@ -89864,10 +89905,11 @@ tasks.registerTask(
     retry, and `task_status` returns your content with `isError`, as the synchronous tool would.
   * What a failure looks like to the model is `error.code` and `error.message`. The transport's
     details (`error.data`: the QStash DLQ id, the Workflow run id) stay in Redis for you. What your
-    handler threw and a dispatch error are logged, never stored or returned.
+    handler threw and a dispatch error are never returned. QStash and Workflow only log them; the
+    in-memory dispatcher also keeps the message in `error.data`.
   * By default QStash retries 5 times (6 attempts in total) with backoff
-    `min(pow(3, retried) * 1000, 300000)`, about two minutes in total, so a task survives a server restart. The free tier and the local dev server
-    allow at most 5 retries.
+    `min(pow(3, retried) * 1000, 300000)`, about two minutes in total, so a task survives a server
+    restart. The free tier and the local dev server allow at most 5 retries.
 </Accordion>
 
 ## Security and storage
@@ -89888,16 +89930,20 @@ tasks.registerTask(
 <Accordion title="What is stored in Redis">
   **`mcp:task:<taskId>`** is a hash with one JSON-encoded field per property: `taskId`, `name`,
   `args`, `owner`, `status`, `statusMessage`, `result` / `error`, `createdAt`, `lastUpdatedAt`,
-  `ttlMs`, `pollIntervalMs`.
+  `ttlMs`, `pollIntervalMs`, and, for a task that asks the user, `inputRequests` (the open question)
+  and one `response:<key>` field per answer.
 
-  * `args` and `result` are **plain JSON**. Keep secrets out of tool arguments and results, or use a
-    short `ttlMs`.
+  * `args`, `result` and the user's answers are **plain JSON**. Keep secrets out of tool arguments,
+    results and forms, or use a short `ttlMs`.
   * The task is written with its TTL before the tool replies, because the model's next poll may reach
     another instance. The TTL counts from creation and is never extended.
   * Status changes go through one guarded Lua script, and the first final status wins, so a completion
     can't overwrite a cancel. Each property is its own field, so a progress update and a cancel never
     overwrite each other.
   * A Redis client built with `automaticDeserialization: false` is not supported.
+
+  **`mcp:task:active:<owner>`** is a sorted set of the owner's task ids, scored by expiry, for
+  `maxActiveTasks`. Counting drops the expired and finished ones.
 
   A task message in QStash carries only `{ taskId }`. The toolkit never stores the caller's token or
   the request.
@@ -89908,7 +89954,9 @@ tasks.registerTask(
 <Accordion title="All options">
   **`new McpTasks(options)`**: `principal` is required. Optional: `store` (a `MemoryTaskStore` by default)
   and `dispatcher` (an `InProcessDispatcher` by default; a dispatcher needs a store with it), `mode`
-  (`"native"`, or `"tools"` for the tool-based handle only), `defaults.ttlMs` (1 day) and
+  (`"native"`, or `"tools"` for the tool-based handle only), `maxActiveTasks` (100 per user working
+  or `input_required`; `Infinity` turns it off), `maxArgsBytes` (64 KiB of JSON), `defaults.ttlMs`
+  (1 day) and
   `defaults.pollIntervalMs` (2 seconds), in positive whole milliseconds.
 
   **`tasks.registerTask(name, config, handler)`**: `description` and `inputSchema` are required.
@@ -89944,6 +89992,14 @@ tasks.registerTask(
       taskId: string,
       patch: TaskPatch & { status: TerminalTaskStatus },
     ): Promise<Task | null>; // first final status wins
+    // records answers while input_required; resolves the keys it resumed
+    respond(
+      taskId: string,
+      responses: Record<string, TaskInputResponse>,
+      statusMessage: string,
+    ): Promise<string[]>;
+    // working + input_required, for maxActiveTasks
+    countActive(owner: string): Promise<number>;
   }
 
   // CanAsk: whether handlers get task.elicit. TContext: what the transport
