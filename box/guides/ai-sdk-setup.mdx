@@ -79,8 +79,18 @@ export function boxTools(box: Box) {
         code: z.string().describe("The code to execute. Print the result."),
       }),
       execute: async ({ lang, code }) => {
-        const run = await box.exec.code({ lang, code, timeout: 30_000 });
-        return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
+        // a unique file per call, so the code never overwrites workspace files or another call's code
+        const file = `.run-${crypto.randomUUID()}.${lang === "python" ? "py" : "js"}`;
+        await box.files.write({ path: file, content: code });
+        try {
+          // `timeout` stops runaway code after 30 seconds
+          const run = await box.exec.command(
+            `timeout 30 ${lang === "python" ? "python3" : "node"} ${file}`,
+          );
+          return { ok: run.exitCode === 0, output: run.result.slice(0, 8_000) };
+        } finally {
+          await box.files.remove(file);
+        }
       },
     }),
 
@@ -171,7 +181,7 @@ export function boxTools(box: Box) {
 ```
 
 <Note>
-  The file tools are rooted at **`/workspace/home`**, and paths outside it are rejected. `exec` can write anywhere, but anything you move through the files API has to live under that root. Tell the model so in the system prompt.
+  The file tools resolve relative paths against **`/workspace/home`**. Absolute paths elsewhere are not blocked, but keep the agent's work under `/workspace/home` and tell the model so in the system prompt.
 </Note>
 
 `runCommand` waits for the command to exit, which is why `startServer` exists: a foreground `npm run dev` would block the tool call forever and the model would never reach `exposePort`. `startServer` detaches the process, confirms something is actually listening, and returns the crash log when nothing is.
@@ -331,7 +341,11 @@ export const runCode = tool({
     });
 
     try {
-      const run = await box.exec.code({ lang, code, timeout: 10_000 });
+      const file = lang === "python" ? "main.py" : "main.js";
+      await box.files.write({ path: file, content: code });
+      const run = await box.exec.command(
+        `timeout 10 ${lang === "python" ? "python3" : "node"} ${file}`,
+      );
       return { ok: run.exitCode === 0, output: run.result };
     } finally {
       await box.delete();
@@ -340,7 +354,7 @@ export const runCode = tool({
 });
 ```
 
-`ttl: 120` deletes the box after two minutes even if the `finally` never runs. Always set a `timeout` on `exec.code` too: without one, an infinite loop hangs the request until the backend gives up.
+`ttl: 120` deletes the box after two minutes even if the `finally` never runs. The code runs under `timeout` because `exec.code` has no per-call timeout: without it, an infinite loop hangs the request until the backend gives up.
 
 ---
 

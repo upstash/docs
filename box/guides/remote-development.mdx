@@ -62,7 +62,7 @@ The first tool call opens a consent page in your browser. Pick your account or t
 
 Ask your agent:
 
-> Create a node box called `web-dev` and clone `github.com/my-org/my-app` into it.
+> Create a node box called `web-dev` and clone `https://github.com/my-org/my-app` into it.
 
 The agent creates the box and clones the repository. You can also create a box in the [Upstash Console](https://console.upstash.com) and let the agent pick it up by name.
 

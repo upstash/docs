@@ -28,13 +28,40 @@ ssh current-wasp-05510@us-east-1.box.upstash.com
   You can also copy this command from the **SSH** button on the box details page in the Upstash Console.
 </Tip>
 
+### SSH keys
+
+Instead of the password, you can log in with an SSH key. A key you add works for all boxes in your account or team.
+
+1. Create a key pair, if you don't have one:
+
+   ```bash
+   mkdir -p ~/.ssh && chmod 700 ~/.ssh
+   ssh-keygen -t ed25519 -f ~/.ssh/upstash_box
+   ```
+
+2. In the [Upstash Console](https://console.upstash.com/box?tab=settings&section=ssh-keys), go to **Box → Settings → SSH Keys**, click **New SSH Key**, and paste the contents of `~/.ssh/upstash_box.pub`.
+
+3. Connect with the private key:
+
+   ```bash
+   ssh -i ~/.ssh/upstash_box <box-id>@us-east-1.box.upstash.com
+   ```
+
+If your key is one SSH tries by default, such as `~/.ssh/id_ed25519`, you can leave out `-i`.
+
+<Note>
+  You can also click **Generate Key** to have Upstash create the key pair. The private key is shown only once and isn't stored, so save it right away.
+</Note>
+
+Accepted key types are ed25519, ECDSA, their security-key (`sk-`) variants, and RSA keys of at least 2048 bits. An account can have up to 20 keys.
+
 ---
 
 ## API
 
 ### Run a shell command
 
-A shell command resolves when the command finishes and gives you back the result and status.
+A shell command resolves when the command finishes and gives you back the result and status. The SDK waits up to 10 minutes for the result by default (set `timeout` in the box config to change it). If the request gives up, the command keeps running in the box, so wrap commands that must stop in `timeout`, for example `timeout 60 npm test`.
 
 <CodeGroup>
 ```typescript box.ts
@@ -75,15 +102,14 @@ You can execute code inside of a box:
 const run = await box.exec.code({
   code: "console.log('hello')",
   lang: "js",
-  timeout: 10_000,
 })
 
-console.log(run.result) // "hello"
+console.log(run.result)   // "hello"
 console.log(run.exitCode) // 0
 ```
 
 ```python box.py
-run = box.exec.code(code="print('hello')", lang="python", timeout=10_000)
+run = box.exec.code(code="print('hello')", lang="python")
 
 print(run.result)     # "hello"
 print(run.exit_code)  # 0
@@ -118,13 +144,13 @@ Pass a full shell expression. Pipes, redirects, and chained commands all work as
 
 <CodeGroup>
 ```typescript box.ts
-const run = await box.exec.command("cd /work && npm install && npm test")
+const run = await box.exec.command("cd my-app && npm install && npm test")
 
 console.log(run.result)
 ```
 
 ```python box.py
-run = box.exec.command("cd /work && npm install && npm test")
+run = box.exec.command("cd my-app && npm install && npm test")
 
 print(run.result)
 ```
@@ -156,23 +182,25 @@ session.wait(30)
 
 ---
 
-### Cancel a long-running command
+### Stop a long-running command
 
-You can cancel a run to abort it. The status becomes `"cancelled"`.
+`exec.command` only returns once the command exits, so it cannot be stopped midway. To stop a command while it runs, start it as a [live session](/box/overall/live-sessions#stop-a-session) and terminate it.
 
 <CodeGroup>
 ```typescript box.ts
-const run = await box.exec.command("sleep 10")
-await run.cancel()
+const session = await box.exec.session({ argv: ["sleep", "600"] })
 
-console.log(run.status) // "cancelled"
+// SIGTERM now, then SIGKILL after 5s if it is still running
+session.terminate(5000)
+await session.wait()
 ```
 
 ```python box.py
-run = box.exec.command("sleep 10")
-run.cancel()
+session = box.exec.session(argv=["sleep", "600"])
 
-print(run.status)  # "cancelled"
+# SIGTERM now, then SIGKILL after 5s if it is still running
+session.terminate(5000)
+session.wait(30)
 ```
 </CodeGroup>
 
@@ -224,7 +252,8 @@ const box = await Box.create({
   git: { token: process.env.GITHUB_TOKEN },
 })
 
-await box.git.clone({ repo: "github.com/your-org/your-api" })
+await box.git.clone({ repo: "https://github.com/your-org/your-api" })
+await box.cd("your-api")
 await box.exec.command("npm install")
 
 await box.agent.run({
@@ -242,7 +271,8 @@ box = Box.create(
     git={"token": os.environ["GITHUB_TOKEN"]},
 )
 
-box.git.clone(repo="github.com/your-org/your-api")
+box.git.clone(repo="https://github.com/your-org/your-api")
+box.cd("your-api")
 box.exec.command("npm install")
 
 box.agent.run(prompt="Run the test suite and fix any failing tests")
@@ -251,7 +281,7 @@ box.agent.run(prompt="Run the test suite and fix any failing tests")
 
 ### Run a build and extract artifacts
 
-Execute a build command, then download the output.
+Upload the project files, run the build, then download the output. Upload each file individually, since `files.upload` does not take directories.
 
 <CodeGroup>
 ```typescript box.ts
@@ -260,12 +290,12 @@ import { Agent, Box } from "@upstash/box"
 const box = await Box.create({ runtime: "node" })
 
 await box.files.upload([
-  { path: "./src", destination: "/work/src" },
-  { path: "./package.json", destination: "/work/package.json" },
+  { path: "./package.json", destination: "app/package.json" },
+  { path: "./src/index.js", destination: "app/src/index.js" },
 ])
 
-await box.exec.command("cd /work && npm install && npm run build")
-await box.files.download({ folder: "/work/dist" })
+await box.exec.command("cd app && npm install && npm run build")
+await box.files.download({ folder: "app/dist" }) // saved to ./dist
 await box.delete()
 ```
 
@@ -275,12 +305,12 @@ from upstash_box import Box
 box = Box.create(runtime="node")
 
 box.files.upload([
-    {"path": "./src", "destination": "/work/src"},
-    {"path": "./package.json", "destination": "/work/package.json"},
+    {"path": "./package.json", "destination": "app/package.json"},
+    {"path": "./src/index.js", "destination": "app/src/index.js"},
 ])
 
-box.exec.command("cd /work && npm install && npm run build")
-box.files.download(folder="/work/dist")
+box.exec.command("cd app && npm install && npm run build")
+box.files.download(folder="app/dist")  # saved to ./dist
 box.delete()
 ```
 </CodeGroup>
@@ -302,7 +332,7 @@ const check = await box.exec.command("python3 --version && pip list")
 console.log(check.result)
 
 await box.agent.run({
-  prompt: "Write a data pipeline that reads /work/raw.csv, cleans it, and saves /work/clean.parquet",
+  prompt: "Write a data pipeline that reads raw.csv, cleans it, and saves clean.parquet",
 })
 ```
 
@@ -318,6 +348,6 @@ box = Box.create(
 check = box.exec.command("python3 --version && pip list")
 print(check.result)
 
-box.agent.run(prompt="Write a data pipeline that reads /work/raw.csv, cleans it, and saves /work/clean.parquet")
+box.agent.run(prompt="Write a data pipeline that reads raw.csv, cleans it, and saves clean.parquet")
 ```
 </CodeGroup>

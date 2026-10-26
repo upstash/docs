@@ -78,7 +78,7 @@ export async function reviewPullRequest(input: PullRequestInput): Promise<Review
     const reviewRun = await box.agent.run({
       responseSchema,
       prompt: `
-Repository path: /work/${repoDir}
+Repository path: /workspace/home/${repoDir}
 Base branch: ${input.base}
 Head branch: ${input.head}
 
@@ -107,7 +107,7 @@ Rules:
 }
 
 const result = await reviewPullRequest({
-  repo: "github.com/your-org/your-repo",
+  repo: "https://github.com/your-org/your-repo",
   base: "main",
   head: "feature/my-change",
 })

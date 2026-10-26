@@ -30,7 +30,7 @@ By default, boxes use:
 | --- | --- |
 | `allow-all` | Default. No outbound restrictions. |
 | `deny-all` | Block all outbound network access. |
-| `custom` | Allow or deny specific domains and CIDR ranges. |
+| `custom` | Allowlist. Only the listed domains and CIDR ranges are reachable, minus any `deniedCidrs`. Everything else is blocked. |
 
 The SDK type is:
 
@@ -121,7 +121,7 @@ box = Box.create(
 ```
 </CodeGroup>
 
-`networkPolicy` is also supported in `Box.fromSnapshot()` and `EphemeralBox`.
+`networkPolicy` is also supported in `Box.fromSnapshot()` and `EphemeralBox`. A box restored from a snapshot does not inherit the source box's policy, so pass it again on restore.
 
 ---
 
@@ -167,16 +167,17 @@ box.update_network_policy({"mode": "allow-all"})
 ```
 </CodeGroup>
 
-Changes take effect immediately. You do not need to recreate the box.
+Changes take effect immediately. You do not need to recreate the box. `updateNetworkPolicy()` is not available on `EphemeralBox`.
 
 ---
 
 ## Matching rules
 
-- `allowedDomains` supports exact matches such as `api.github.com`
-- wildcard domains must use `*.suffix` form, for example `*.githubusercontent.com`
+- `custom` mode is default-deny: a destination is reachable only if its domain is in `allowedDomains` or its resolved IP is in `allowedCidrs`
+- `allowedDomains` supports exact matches such as `api.github.com` and must be lowercase
+- wildcard domains must use `*.suffix` form, for example `*.githubusercontent.com`. `*.github.com` does not match `github.com` itself
 - `allowedCidrs` and `deniedCidrs` use standard CIDR notation
-- in `custom` mode, `deniedCidrs` takes precedence over allowed CIDRs
+- `deniedCidrs` only removes addresses from what is allowed. A resolved IP in a denied range is blocked even when its domain is in `allowedDomains`. A `custom` policy with only `deniedCidrs` blocks everything
 - private IP ranges are always blocked even if you try to allow them explicitly
 
 ---
@@ -231,12 +232,13 @@ box.update_network_policy({
 ```
 </CodeGroup>
 
-Block a specific CIDR range:
+Allow a CIDR range except for a sub-range:
 
 <CodeGroup>
 ```typescript box.ts
 await box.updateNetworkPolicy({
   mode: "custom",
+  allowedCidrs: ["104.16.0.0/12"],
   deniedCidrs: ["104.16.120.0/24"],
 })
 ```
@@ -244,6 +246,7 @@ await box.updateNetworkPolicy({
 ```python box.py
 box.update_network_policy({
     "mode": "custom",
+    "allowed_cidrs": ["104.16.0.0/12"],
     "denied_cidrs": ["104.16.120.0/24"],
 })
 ```
