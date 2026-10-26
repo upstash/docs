@@ -1,4 +1,5 @@
-// Agent grid for /agent-resources/overview.
+// Agent grid for /agent-resources/overview. Each card links to its section on /agent-resources/clients;
+// every card has the same footer action: Install for agents with a one-click link, Setup guide otherwise.
 // Icons: Simple Icons (CC0, https://simpleicons.org) for brand marks and lobe-icons (MIT, https://github.com/lobehub/lobe-icons) for OpenAI, Gemini, Devin, Grok, and Antigravity.
 // Everything lives inside the exported component: Mintlify does not expose non-exported top-level consts to snippet components.
 
@@ -60,18 +61,27 @@ export const AgentGrid = () => {
   const PLUGIN = "Plugin";
   const EXTENSION = "Extension";
 
+  // One-click install links. Cursor opens the Upstash plugin (skills + MCP) in the Cursor Marketplace;
+  // VS Code uses the same MCP deeplink as /agent-resources/clients; Claude opens the "Add custom connector"
+  // dialog prefilled with the remote MCP server.
+  const INSTALL = {
+    claude: "https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Upstash&connectorUrl=https%3A%2F%2Fmcp.upstash.com%2Fmcp",
+    cursor: "https://cursor.com/marketplace/upstash",
+    vscode: "https://insiders.vscode.dev/redirect?url=vscode%3Amcp%2Finstall%3F%7B%22name%22%3A%22upstash%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.upstash.com%2Fmcp%22%7D",
+  };
+
   const AGENTS = [
     { name: "Claude Code", slug: "claude-code", icon: "claude", desc: "Anthropic's terminal and IDE agent. The marketplace plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP] },
-    { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. One-click MCP install button; skills via the Agent Skills CLI.", badges: [SKILLS, MCP] },
+    { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. The Cursor Marketplace plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP], install: INSTALL.cursor },
     { name: "OpenAI Codex", slug: "openai-codex", icon: "openai", desc: "OpenAI's coding agent. The Codex plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP] },
     { name: "OpenCode", slug: "opencode", icon: "opencode", desc: "Open-source terminal agent that loads Agent Skills natively. MCP via its config.", badges: [SKILLS, MCP] },
     { name: "Zed", slug: "zed", icon: "zed", desc: "Editor with a built-in Agent Panel. Skills via the CLI, MCP via settings.json.", badges: [SKILLS, MCP] },
-    { name: "GitHub Copilot", slug: "github-copilot", icon: "copilot", desc: "Copilot agent mode in VS Code. MCP via .vscode/mcp.json.", badges: [SKILLS, MCP] },
+    { name: "GitHub Copilot", slug: "github-copilot", icon: "copilot", desc: "Copilot agent mode in VS Code. MCP via .vscode/mcp.json.", badges: [SKILLS, MCP], install: INSTALL.vscode },
     { name: "Devin Desktop", slug: "devin-desktop", icon: "devin", desc: "Cognition's desktop agent workspace and IDE. Skills via the CLI, MCP via its config file.", badges: [SKILLS, MCP] },
     { name: "Gemini CLI", slug: "gemini-cli", icon: "gemini", desc: "Google's open-source terminal agent. The extension bundles the skills and the remote MCP over OAuth.", badges: [EXTENSION, SKILLS, MCP] },
     { name: "Google Antigravity", slug: "google-antigravity", icon: "antigravity", desc: "Google's agent-first IDE. Skills via the CLI, MCP via the Antigravity MCP config.", badges: [SKILLS, MCP] },
     { name: "DeepSeek Harness", slug: "deepseek-harness", icon: "deepseek", desc: "One bundle installs the skills and the MCP server. Log in once from a session.", badges: [PLUGIN, SKILLS, MCP] },
-    { name: "Claude Desktop", slug: "claude-desktop", icon: "claude", desc: "Anthropic's desktop app. The marketplace plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP] },
+    { name: "Claude Desktop", slug: "claude-desktop", icon: "claude", desc: "Anthropic's desktop app. The marketplace plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP], install: INSTALL.claude },
     { name: "Grok", slug: "grok", icon: "grok", desc: "xAI's Grok Build agent. Skills via the Agent Skills CLI, MCP via grok mcp add.", badges: [SKILLS, MCP] },
   ];
 
@@ -123,13 +133,20 @@ export const AgentGrid = () => {
   return (
     <div className="u-grid u-grid--fixed3 u-agents">
       {AGENTS.map((a) => (
-        <a key={a.name} className="u-card u-card--stack" href={`/agent-resources/clients#${a.slug}`}>
+        <div key={a.name} className="u-card u-card--stack">
           <div className="u-card__head">
             <div className="u-card__brand-icon"><AgentIcon id={a.icon} /></div>
-            <div className="u-card__title">{a.name}</div>
+            <a className="u-card__title u-agent__link" href={`/agent-resources/clients#${a.slug}`}>{a.name}</a>
           </div>
           <div className="u-card__desc">{a.desc}</div>
-        </a>
+          <div className="u-agent__foot">
+            {a.install ? (
+              <a className="u-agent__action u-agent__action--install" href={a.install} target="_blank" rel="noopener noreferrer">Install ↗</a>
+            ) : (
+              <a className="u-agent__action" href={`/agent-resources/clients#${a.slug}`}>Setup guide →</a>
+            )}
+          </div>
+        </div>
       ))}
     </div>
   );
