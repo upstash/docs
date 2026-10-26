@@ -1,5 +1,5 @@
 // Agent grid for /agent-resources/overview. Each card links to its section on /agent-resources/clients;
-// agents with a one-click install link also get an Install button that goes straight to it.
+// every card has the same footer action: Install for agents with a one-click link, Setup guide otherwise.
 // Icons: Simple Icons (CC0, https://simpleicons.org) for brand marks and lobe-icons (MIT, https://github.com/lobehub/lobe-icons) for OpenAI, Gemini, Devin, Grok, and Antigravity.
 // Everything lives inside the exported component: Mintlify does not expose non-exported top-level consts to snippet components.
 
@@ -138,9 +138,13 @@ export const AgentGrid = () => {
             <a className="u-card__title u-agent__link" href={`/agent-resources/clients#${a.slug}`}>{a.name}</a>
           </div>
           <div className="u-card__desc">{a.desc}</div>
-          {a.install && (
-            <a className="u-agent__install" href={a.install} target="_blank" rel="noopener noreferrer">Install</a>
-          )}
+          <div className="u-agent__foot">
+            {a.install ? (
+              <a className="u-agent__action u-agent__action--install" href={a.install} target="_blank" rel="noopener noreferrer">Install ↗</a>
+            ) : (
+              <span className="u-agent__action">Setup guide →</span>
+            )}
+          </div>
         </div>
       ))}
     </div>
