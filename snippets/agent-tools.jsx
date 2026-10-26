@@ -61,17 +61,18 @@ export const AgentGrid = () => {
   const PLUGIN = "Plugin";
   const EXTENSION = "Extension";
 
-  // One-click install links. Cursor and VS Code use the same deeplinks as /agent-resources/clients;
-  // Claude opens the "Add custom connector" dialog prefilled with the remote MCP server.
+  // One-click install links. Cursor opens the Upstash plugin (skills + MCP) in the Cursor Marketplace;
+  // VS Code uses the same MCP deeplink as /agent-resources/clients; Claude opens the "Add custom connector"
+  // dialog prefilled with the remote MCP server.
   const INSTALL = {
     claude: "https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Upstash&connectorUrl=https%3A%2F%2Fmcp.upstash.com%2Fmcp",
-    cursor: "https://cursor.com/en/install-mcp?name=upstash&config=eyJ1cmwiOiJodHRwczovL21jcC51cHN0YXNoLmNvbS9tY3AifQ%3D%3D",
+    cursor: "https://cursor.com/marketplace/upstash",
     vscode: "https://insiders.vscode.dev/redirect?url=vscode%3Amcp%2Finstall%3F%7B%22name%22%3A%22upstash%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.upstash.com%2Fmcp%22%7D",
   };
 
   const AGENTS = [
     { name: "Claude Code", slug: "claude-code", icon: "claude", desc: "Anthropic's terminal and IDE agent. The marketplace plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP] },
-    { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. One-click MCP install button; skills via the Agent Skills CLI.", badges: [SKILLS, MCP], install: INSTALL.cursor },
+    { name: "Cursor", slug: "cursor", icon: "cursor", desc: "AI code editor. The Cursor Marketplace plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP], install: INSTALL.cursor },
     { name: "OpenAI Codex", slug: "openai-codex", icon: "openai", desc: "OpenAI's coding agent. The Codex plugin bundles the skills and the remote MCP over OAuth.", badges: [PLUGIN, SKILLS, MCP] },
     { name: "OpenCode", slug: "opencode", icon: "opencode", desc: "Open-source terminal agent that loads Agent Skills natively. MCP via its config.", badges: [SKILLS, MCP] },
     { name: "Zed", slug: "zed", icon: "zed", desc: "Editor with a built-in Agent Panel. Skills via the CLI, MCP via settings.json.", badges: [SKILLS, MCP] },
@@ -142,7 +143,7 @@ export const AgentGrid = () => {
             {a.install ? (
               <a className="u-agent__action u-agent__action--install" href={a.install} target="_blank" rel="noopener noreferrer">Install ↗</a>
             ) : (
-              <span className="u-agent__action">Setup guide →</span>
+              <a className="u-agent__action" href={`/agent-resources/clients#${a.slug}`}>Setup guide →</a>
             )}
           </div>
         </div>
