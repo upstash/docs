@@ -17,9 +17,9 @@ The `XACKDEL` command acknowledges and deletes stream entries atomically in a si
 
 <ParamField body="option" type="'KEEPREF' | 'keepref' | 'DELREF' | 'delref' | 'ACKED' | 'acked'" required>
   Deletion behavior (case-insensitive). Must come before the IDs:
-  - `KEEPREF`: Keep consumer group references
-  - `DELREF`: Delete consumer group references
-  - `ACKED`: Only acknowledge messages (don't delete)
+  - `KEEPREF`: Delete the entries but keep their references in other consumer groups' pending lists
+  - `DELREF`: Delete the entries and remove their references from every consumer group's pending list
+  - `ACKED`: Only delete entries that every consumer group has acknowledged
 </ParamField>
 
 <ParamField body="ids" type="...string[]" required>
@@ -29,7 +29,7 @@ The `XACKDEL` command acknowledges and deletes stream entries atomically in a si
 ## Response
 
 <ResponseField type="any[]" required>
-  An array indicating the result for each ID in the same order as provided.
+  An array with one result per ID, in the same order as provided: `1` if the entry was deleted, `-1` if it doesn't exist, `2` if it was kept because `ACKED` was given and some consumer group hasn't acknowledged it yet.
 </ResponseField>
 
 <RequestExample>
@@ -79,16 +79,15 @@ console.log(result); // Array of results for each ID
 ```
 
 ```ts With ACKED Option
-// Only acknowledge messages without deleting them
-// Useful when you want to mark as processed but keep for audit/debugging
+// Acknowledge for this group, but only delete the entry
+// once every other consumer group has acknowledged it too
 const result = await redis.xackdel(
   "mystream",
   "mygroup",
   "ACKED",
   "1638360173533-0",
 );
-console.log(result); // Array of results for each ID
-// Entry remains in stream but is acknowledged
+console.log(result); // [1] if deleted, [2] if another group still needs it
 ```
 
 ```ts Consumer Group Processing
@@ -107,7 +106,7 @@ await redis.xadd("orders", "*", { order_id: "124", status: "pending" });
 // Read messages as a consumer
 const messages = await redis.xreadgroup("processors", "consumer1", "orders", ">", {
   count: 2,
-}) as [string, [string, string[]][]][];
+}) as [string, [string, unknown[]][]][];
 
 // Process messages and acknowledge + delete them
 for (const [stream, entries] of messages) {
@@ -128,7 +127,7 @@ for (const [stream, entries] of messages) {
 // Read pending messages
 const pending = await redis.xreadgroup("tasks", "worker1", "task-queue", ">", {
   count: 10,
-}) as [string, [string, string[]][]][];
+}) as [string, [string, unknown[]][]][];
 
 if (pending && pending.length > 0) {
   const [stream, entries] = pending[0];
@@ -151,27 +150,6 @@ if (pending && pending.length > 0) {
     const result = await redis.xackdel("task-queue", "tasks", "DELREF", ...processedIds);
     console.log(`Results: ${result}`); // Array of results for each ID
   }
-}
-```
-
-```ts Audit Mode with ACKED
-// Process messages but keep them for audit/debugging purposes
-const messages = await redis.xreadgroup("audit", "auditor1", "events", ">", {
-  count: 5,
-}) as [string, [string, string[]][]][];
-
-for (const [stream, entries] of messages) {
-  const entryIds = entries.map(([id]) => id);
-  
-  // Process and acknowledge but don't delete
-  for (const [id, fields] of entries) {
-    // Audit the event...
-    console.log(`Auditing event ${JSON.stringify(fields)}`);
-  }
-  
-  // Acknowledge without deleting (keep for audit trail)
-  const result = await redis.xackdel("events", "audit", "ACKED", ...entryIds);
-  console.log(`Acknowledged ${result.length} events (kept in stream)`);
 }
 ```
 </RequestExample>
@@ -200,7 +178,7 @@ await redis.xackdel("mystream", "mygroup", "KEEPREF", "123-0");
 
 // With options for fine-grained control
 await redis.xackdel("mystream", "mygroup", "DELREF", "123-0"); // Complete cleanup
-await redis.xackdel("mystream", "mygroup", "ACKED", "123-0");  // Acknowledge only
+await redis.xackdel("mystream", "mygroup", "ACKED", "123-0");  // Delete once all groups acknowledged
 ```
 
 <Note>
