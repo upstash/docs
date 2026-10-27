@@ -12,9 +12,16 @@ const info = await bucket.info("reports/2026-01.pdf")  // record only
 const ok = await bucket.exists("reports/2026-01.pdf")  // boolean
 const page = await bucket.list({ prefix: "reports/" }) // one page of records
 ```
+
+```python Python
+res = bucket.get("reports/2026-01.pdf")     # record plus the bytes
+info = bucket.info("reports/2026-01.pdf")   # record only
+ok = bucket.exists("reports/2026-01.pdf")   # bool
+page = bucket.list(prefix="reports/")       # one page of records
+```
 </CodeGroup>
 
-The records these return are on [Types](/blob/reference/types#records). Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#get).
+The records these return are on [Types](/blob/reference/types#records). Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#get), [Python](/blob/sdks/py/bucket#get).
 
 ---
 
@@ -28,9 +35,17 @@ res.contentType  // 'application/pdf'
 res.metadata     // { owner: 'u7' }
 res.body         // ReadableStream<Uint8Array>
 ```
+
+```python Python
+res = bucket.get("reports/2026-01.pdf")
+
+res.content_type  # 'application/pdf'
+res.metadata      # {'owner': 'u7'}
+res.content       # bytes, read in full; bucket.stream() leaves them on the wire
+```
 </CodeGroup>
 
-`get` returns the object's record, with its content type and metadata, plus the body as a stream. Nothing is buffered for you. Reading the body in each SDK: [TypeScript](/blob/sdks/ts/bucket#get).
+`get` returns the object's record, with its content type and metadata, plus the body as a stream. Nothing is buffered for you. Reading the body in each SDK: [TypeScript](/blob/sdks/ts/bucket#get), [Python](/blob/sdks/py/bucket#get).
 
 A missing object throws a `BlobError` with code `not_found`, status 404. See [Errors](/blob/reference/errors).
 
@@ -49,6 +64,15 @@ info.etag         // '"9f3c..."'
 info.contentType  // 'application/pdf'
 info.metadata     // { owner: 'u7' }
 ```
+
+```python Python
+info = bucket.info("reports/2026-01.pdf")
+
+info.size          # 184302
+info.etag          # '"9f3c..."'
+info.content_type  # 'application/pdf'
+info.metadata      # {'owner': 'u7'}
+```
 </CodeGroup>
 
 One HEAD request. The same record as `get` without the bytes, so reading a 2 GB object's facts is cheap. A missing object throws `not_found`.
@@ -64,6 +88,11 @@ Metadata comes back from `get` and `info` only, with keys lowercased. See [Metad
 if (await bucket.exists("avatars/u7.png")) {
   // ...
 }
+```
+
+```python Python
+if bucket.exists("avatars/u7.png"):
+    ...
 ```
 </CodeGroup>
 
@@ -84,6 +113,18 @@ do {
   for (const blob of page.blobs) console.log(blob.path)
   cursor = page.cursor
 } while (cursor)
+```
+
+```python Python
+cursor = None
+
+while True:
+    page = bucket.list(prefix="avatars/", limit=1000, cursor=cursor)
+    for blob in page.blobs:
+        print(blob.path)
+    cursor = page.cursor
+    if not cursor:
+        break
 ```
 </CodeGroup>
 
@@ -110,6 +151,11 @@ The prefix is the only filter. There is no query by owner, type or date, so "thi
 await bucket.publicUrl("avatars/u7.png")
 // 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
 ```
+
+```python Python
+bucket.public_url("avatars/u7.png")
+# 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
+```
 </CodeGroup>
 
 Every record on a public bucket already carries its URL; the public URL call gives you one for any path. It returns nothing on a private bucket. An empty path, or one with a `.` or `..` segment, is rejected before any request is sent; see [Paths](/blob/bucket/writing#paths).
@@ -122,6 +168,11 @@ The URL itself is built from the token, but whether the bucket has a public host
 ```ts TypeScript
 const avatar = await bucket.info(`avatars/${user.id}.png`)
 avatar.versionedUrl // https://.../avatars/u7.png?v=%229f3c...%22
+```
+
+```python Python
+avatar = bucket.info(f"avatars/{user.id}.png")
+avatar.versioned_url  # https://.../avatars/u7.png?v=%229f3c...%22
 ```
 </CodeGroup>
 
@@ -144,6 +195,13 @@ blob.url          // undefined
 blob.versionedUrl // undefined
 await bucket.publicUrl("reports/2026-01.pdf")  // undefined
 ```
+
+```python Python
+blob = bucket.put("reports/2026-01.pdf", pdf)  # a bucket set to private in the console
+blob.url            # None
+blob.versioned_url  # None
+bucket.public_url("reports/2026-01.pdf")  # None
+```
 </CodeGroup>
 
 A private bucket has no public host, so no record carries a URL or versioned URL. Nothing in the code declares this: the SDK learns it from the backend when it fetches credentials, and objects are stored with `Cache-Control: private`. Reads go through signed read URLs.
@@ -159,9 +217,14 @@ const { url, expiresAt } = await bucket.signedReadUrl("reports/2026-01.pdf", {
   downloadAs: "Report Q3.pdf",
 })
 ```
+
+```python Python
+link = bucket.signed_read_url("reports/2026-01.pdf", expires_in="2m", download_as="Report Q3.pdf")
+link.url, link.expires_at
+```
 </CodeGroup>
 
-A time-limited URL anyone can GET, returned with the moment it expires. Use it on a private bucket, or for an object you do not want linked from a public page. Names and types: [TypeScript](/blob/sdks/ts/bucket#signedreadurl).
+A time-limited URL anyone can GET, returned with the moment it expires. Use it on a private bucket, or for an object you do not want linked from a public page. Names and types: [TypeScript](/blob/sdks/ts/bucket#signedreadurl), [Python](/blob/sdks/py/bucket#signed_read_url).
 
 All three options are optional.
 
@@ -181,6 +244,15 @@ if (!cached || cached.expiresAt < new Date()) {
   await cache.set(key, link)
 }
 ```
+
+```python Python
+from datetime import datetime, timezone
+
+link = cache.get(key)
+if link is None or link.expires_at < datetime.now(timezone.utc):
+    link = bucket.signed_read_url(path, expires_in="5m")
+    cache.set(key, link)
+```
 </CodeGroup>
 
 What you pass as expires-in is what you asked for. The expiry that comes back is what you got, and it can be sooner, because no link lives longer than 10 minutes. Cache the link until the returned expiry, never until a deadline you compute yourself. This applies to signed upload URLs too. The reason is on [How signing works](/blob/reference/signing#how-long-a-presigned-url-lives).
@@ -191,6 +263,10 @@ What you pass as expires-in is what you asked for. The expiry that comes back is
 ```ts TypeScript
 await bucket.signedReadUrl(path, { downloadAs: "café ☕.pdf" })
 ```
+
+```python Python
+bucket.signed_read_url(path, download_as="café ☕.pdf")
+```
 </CodeGroup>
 
 Sets `Content-Disposition: attachment`, so the browser saves the file under that name rather than rendering it. Unicode names arrive intact. The filename is signed into the URL, so it cannot be edited afterwards.
@@ -200,6 +276,10 @@ Sets `Content-Disposition: attachment`, so the browser saves the file under that
 <CodeGroup>
 ```ts TypeScript
 await bucket.signedReadUrl("exports/rows.bin", { contentType: "text/csv" })
+```
+
+```python Python
+bucket.signed_read_url("exports/rows.bin", content_type="text/csv")
 ```
 </CodeGroup>
 

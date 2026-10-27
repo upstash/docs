@@ -25,11 +25,35 @@ export const uploads = uploadHandler({
   },
 })
 ```
+
+```python Python
+from upstash_blob import AsyncUploadHandler, BeforeUploadResult, BlobError, unique_path
+
+
+async def authorize(args):
+    user = await get_user(args.request)
+    if user is None:
+        raise BlobError("unauthorized")  # 401, nothing is signed
+    return BeforeUploadResult(path=unique_path(f"{user.id}/{args.file.name}"), metadata={"owner": user.id})
+
+
+async def record(args):
+    await db.files.upsert(upload_id=args.upload_id, owner=args.metadata["owner"], path=args.path, url=args.url)
+    return {"path": args.path}
+
+
+uploads = AsyncUploadHandler(
+    content_types=["image/*", "application/pdf"],
+    max_size="20mb",
+    on_before_upload=authorize,
+    on_upload_complete=record,
+)
+```
 </CodeGroup>
 
 The handler runs a before-upload callback at the `begin` phase, before anything is signed, and a completion callback at the `end` phase, once the object exists. The PUTs in between go to storage, not to you. The phases are listed on [Types](/blob/reference/types#upload-phases).
 
-Option names, argument types and framework wiring: [TypeScript](/blob/sdks/ts/upload-handler).
+Option names, argument types and framework wiring: [TypeScript](/blob/sdks/ts/upload-handler), [Python](/blob/sdks/py/upload-handler).
 
 <Frame>
   <img className="block dark:hidden" src="/img/blob/client-upload-light.png" alt="Client upload flow" />
@@ -47,11 +71,22 @@ import { uploads } from "@/lib/uploads"
 
 export const { GET, POST } = uploads
 ```
+
+```python Python
+# app/main.py (FastAPI)
+from fastapi import FastAPI
+from upstash_blob.fastapi import upload_view
+
+from app.uploads import uploads
+
+app = FastAPI()
+app.add_api_route("/api/upload", upload_view(uploads), methods=["GET", "POST"])
+```
 </CodeGroup>
 
 The handler answers `GET` and `POST` at one URL. `POST` runs the upload phases and `GET` serves the route's [constraints](#the-get-endpoint). The [browser client](/blob/uploads/upload-client) assumes `/api/upload` and can be pointed anywhere else. It speaks the same protocol to every server SDK, so the frontend does not change with the backend language.
 
-Mounting in other frameworks: [TypeScript](/blob/sdks/ts/upload-handler#other-frameworks).
+Mounting in other frameworks: [TypeScript](/blob/sdks/ts/upload-handler#other-frameworks), [Python](/blob/sdks/py/upload-handler#mounting-it).
 
 If the bytes have to pass through your app instead, write an ordinary route that calls `put` and drive it with [`useServerUpload`](/blob/uploads/upload-client#useserverupload).
 
@@ -86,6 +121,15 @@ onBeforeUpload: async ({ ctx, route, request, file, input }) => {
   return { path: uniquePath(`${ctx.userId}/${file.name}`), metadata: { owner: ctx.userId } }
 }
 ```
+
+```python Python
+def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    # args.ctx, args.route, args.request, args.file, args.input
+    return BeforeUploadResult(
+        path=unique_path(f"{args.ctx.user_id}/{args.file.name}"),
+        metadata={"owner": args.ctx.user_id},
+    )
+```
 </CodeGroup>
 
 The before-upload callback runs at `begin`, before anything is signed and before any bytes exist. It decides whether the upload happens and where the object goes.
@@ -110,6 +154,11 @@ The declared file type is what the object is stored and served as. Whether the b
 ```ts TypeScript
 uniquePath("chat/Thread_42/Holiday Pic.PNG")
 // chat/Thread_42/Holiday Pic-7Kd2mQ9x.PNG
+```
+
+```python Python
+unique_path("chat/Thread_42/Holiday Pic.PNG")
+# chat/Thread_42/Holiday Pic-7Kd2mQ9x.PNG
 ```
 </CodeGroup>
 
@@ -138,6 +187,16 @@ onBeforeUpload: async ({ request, file }) => {
   return { path: uniquePath(`${user.id}/${file.name}`) }
 }
 ```
+
+```python Python
+async def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    user = await get_user(args.request)
+    if user is None:
+        raise BlobError("unauthorized")
+    if await over_quota(user):
+        raise BlobError("too_large", "you are out of space")
+    return BeforeUploadResult(path=unique_path(f"{user.id}/{args.file.name}"))
+```
 </CodeGroup>
 
 Refuse with a `BlobError`. Nothing is signed and no URL is handed out. The error reaches the browser with its code intact, so a hook can switch on `error.code` instead of status numbers. The codes are on [Errors](/blob/reference/errors).
@@ -154,6 +213,19 @@ onUploadComplete: async ({ uploadId, path, url, size, contentType, metadata, sta
   await db.files.upsert({ uploadId, owner: ctx.userId, path, url, size, contentType })
   return { path }
 }
+```
+
+```python Python
+async def record(args: UploadCompleteArgs) -> dict[str, str]:
+    await db.files.upsert(
+        upload_id=args.upload_id,
+        owner=args.ctx.user_id,
+        path=args.path,
+        url=args.url,
+        size=args.size,
+        content_type=args.content_type,
+    )
+    return {"path": args.path}
 ```
 </CodeGroup>
 
@@ -200,6 +272,17 @@ onUploadComplete: async ({ uploadId, path, url, metadata }) => {
   return { path }
 }
 ```
+
+```python Python
+async def record(args: UploadCompleteArgs) -> dict[str, str]:
+    try:
+        await db.files.upsert(upload_id=args.upload_id, owner=args.metadata["owner"], path=args.path, url=args.url)
+    except Exception:
+        logger.exception("[uploads] could not record %s", args.path)
+        # Raise only when losing the file is better than keeping an unrecorded one.
+        raise BlobError("not_ready", "could not record the upload, try again")
+    return {"path": args.path}
+```
 </CodeGroup>
 
 A browser that dies before `end` leaves an object no callback recorded. See [Abandoned uploads](/blob/uploads/abandoned-uploads).
@@ -214,6 +297,14 @@ onError: ({ ctx, route, request, error, file, path, metadata, state }) => {
   logger.warn({ route, path, user: ctx?.userId, error })
   if (error instanceof PaymentRequired) return new BlobError("forbidden", { message: "plan expired" })
 }
+```
+
+```python Python
+def on_error(args: UploadErrorArgs) -> BlobError | None:
+    logger.warning("upload refused: route=%s path=%s error=%r", args.route, args.path, args.error)
+    if isinstance(args.error, PaymentRequired):
+        return BlobError("forbidden", "plan expired")
+    return None
 ```
 </CodeGroup>
 
@@ -243,6 +334,25 @@ export const uploads = uploadHandler({
   },
 })
 ```
+
+```python Python
+uploads = AsyncUploadHandler(
+    context=require_user,  # raises BlobError("unauthorized") on a dead session
+    routes={
+        "avatar": UploadRoute(
+            on_before_upload=lambda args: BeforeUploadResult(
+                path=unique_path(f"avatars/{args.ctx.id}/{args.file.name}"),
+            ),
+            on_upload_complete=lambda args: db.users.update(args.ctx.id, avatar_url=args.url),
+        ),
+        "attachment": UploadRoute(
+            on_before_upload=lambda args: BeforeUploadResult(
+                path=unique_path(f"files/{args.ctx.id}/{args.file.name}"),
+            ),
+        ),
+    },
+)
+```
 </CodeGroup>
 
 Context runs once per POST, before the route is picked and before any body is read. Its value reaches every callback. It does not run for `GET`, which serves a public constraints document.
@@ -271,6 +381,27 @@ export const uploads = uploadHandler({
     },
   },
 })
+```
+
+```python Python
+uploads = AsyncUploadHandler(
+    max_size="20mb",
+    content_types=["image/*"],
+    context=require_user,
+    routes={
+        "avatar": UploadRoute(
+            max_size="2mb",
+            on_before_upload=lambda args: BeforeUploadResult(path=f"avatars/{args.ctx.id}", cache="revalidate"),
+        ),
+        "attachment": UploadRoute(
+            content_types=None,  # clears the handler's list for this route
+            multipart="50mb",
+            on_before_upload=lambda args: BeforeUploadResult(
+                path=unique_path(f"files/{args.ctx.id}/{args.file.name}"),
+            ),
+        ),
+    },
+)
 ```
 </CodeGroup>
 
@@ -305,6 +436,27 @@ const thread = uploadRoute<Session>()({
     db.messages.insert({ uploadId, threadId: state.threadId, name: state.name, owner: ctx.id, url }),
 })
 ```
+
+```python Python
+class Thread(BaseModel):
+    threadId: UUID
+
+
+thread = UploadRoute(
+    input=Thread,
+    on_before_upload=lambda args: BeforeUploadResult(
+        path=unique_path(f"chat/{args.input.threadId}/{args.file.name}"),
+        state={"thread_id": str(args.input.threadId), "name": args.file.name},
+    ),
+    on_upload_complete=lambda args: db.messages.insert(
+        upload_id=args.upload_id,
+        thread_id=args.state["thread_id"],
+        name=args.state["name"],
+        owner=args.ctx.id,
+        url=args.url,
+    ),
+)
+```
 </CodeGroup>
 
 ```tsx app/page.tsx
@@ -317,7 +469,7 @@ A route can take `input`, data the browser sends along with the file, and pass `
 - `input` is validated before the before-upload callback runs, and only the parsed value reaches it. A route with **no** schema refuses any `input` the browser sends with `invalid_input`. Validation failures are `invalid_input` too, with the issues joined as `path: message`, so a bad `threadId` reads `threadId: Invalid uuid`.
 - `state` is for values the callback already computed and does not want to look up again. It travels through the browser and is readable in devtools, so put a row id there, never a secret. See [The completion token](/blob/reference/signing#the-completion-token).
 
-How a route declares its schema and types its state: [TypeScript](/blob/sdks/ts/upload-handler#uploadroute).
+How a route declares its schema and types its state: [TypeScript](/blob/sdks/ts/upload-handler#uploadroute), [Python](/blob/sdks/py/upload-handler#input-and-state).
 
 ---
 

@@ -10,9 +10,14 @@ This page covers every way to write an object from your server: `put` for bytes 
 const blob = await bucket.put("reports/q3.pdf", pdf, { contentType: "application/pdf" })
 blob.url
 ```
+
+```python Python
+blob = bucket.put("reports/q3.pdf", pdf, content_type="application/pdf")
+blob.url
+```
 </CodeGroup>
 
-`bucket` is the client from [Connecting](/blob/bucket/connecting). Everything here runs on your server with the bucket token. Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#put).
+`bucket` is the client from [Connecting](/blob/bucket/connecting). Everything here runs on your server with the bucket token. Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#put), [Python](/blob/sdks/py/bucket#put).
 
 For files a user picks in the browser, do not proxy the bytes through your app. Use an [upload handler](/blob/uploads/upload-handler) instead.
 
@@ -44,7 +49,7 @@ Sizes are byte counts like `4096`, `'20mb'`, or `'32MiB'` ([Types](/blob/referen
 
 ### Bodies
 
-A body that carries its own length and content type, such as a file or an incoming request, needs nothing declared. One that carries neither, such as a stream, needs a size, or at least a max size. The body types each SDK accepts: [TypeScript](/blob/sdks/ts/bucket#bodies).
+A body that carries its own length and content type, such as a file or an incoming request, needs nothing declared. One that carries neither, such as a stream, needs a size, or at least a max size. The body types each SDK accepts: [TypeScript](/blob/sdks/ts/bucket#bodies), [Python](/blob/sdks/py/bucket#bodies).
 
 An incoming request with no body, or one that has already been read, is refused with `empty_body`.
 
@@ -64,6 +69,18 @@ await bucket.put("export.csv", stream, { maxSize: "10mb" })
 // Stream straight through, nothing buffered. The declared size must be exact.
 await bucket.put("export.csv", stream, { size: 5000 })
 ```
+
+```python Python
+bucket.put("export.csv", rows())
+# BlobError: Length required (pass size= or max_size= so the length is known
+# before the first byte)  -- code 'length_required', status 411
+
+# Buffer up to the cap. An iterable that runs past it raises too_large.
+bucket.put("export.csv", rows(), max_size="10mb")
+
+# Stream straight through, nothing buffered. The declared size must be exact.
+bucket.put("export.csv", rows(), size=5000)
+```
 </CodeGroup>
 
 Storage needs a content length before the first byte goes out, and a stream has none. Pass one of two options: a max size buffers up to that cap, and a stream that runs past it is cancelled with `too_large`; an exact size streams straight through with nothing buffered.
@@ -81,6 +98,11 @@ When proxying bytes through a route, keep the max size under the platform's own 
 await bucket.put("uploads/../secrets/key.pem", body)
 // TypeError: path may not contain "." or ".." segments
 ```
+
+```python Python
+bucket.put("uploads/../secrets/key.pem", body)
+# ValueError: path may not contain "." or ".." segments
+```
 </CodeGroup>
 
 A path is any non-empty string, with `/` as structure. It is percent-encoded for you, so spaces and unicode are fine. `.` and `..` segments are rejected, not normalized, by every method that takes a path.
@@ -97,6 +119,15 @@ const userId = "Alice_123"
 const filename = "Q3 Report.pdf"
 const path = uniquePath(`users/${userId}/${filename}`)
 // 'users/Alice_123/Q3 Report-3xK9mBqR.pdf'
+```
+
+```python Python
+from upstash_blob import unique_path
+
+user_id = "Alice_123"
+filename = "Q3 Report.pdf"
+path = unique_path(f"users/{user_id}/{filename}")
+# 'users/Alice_123/Q3 Report-3xK9mBqR.pdf'
 ```
 </CodeGroup>
 
@@ -131,6 +162,22 @@ await bucket.put("invoices/7.pdf", pdf, {
 const info = await bucket.info("invoices/7.pdf")
 info.metadata // { owner: 'u7', invoiceid: '2026-0042' }
 ```
+
+```python Python
+bucket.put(
+    "invoices/7.pdf",
+    pdf,
+    content_type="application/pdf",
+    metadata={"owner": "u7", "invoice-id": "2026-0042"},
+)
+
+info = bucket.info("invoices/7.pdf")
+info.metadata  # {'owner': 'u7', 'invoice-id': '2026-0042'}
+
+bucket.put("invoices/7.pdf", pdf, metadata={"invoiceId": "2026-0042"})
+# BlobError: Metadata key "invoiceId" must be lowercase (storage returns keys
+# lowercased; write "invoiceid")  -- code 'invalid_input', status 400
+```
 </CodeGroup>
 
 Metadata is a flat map of string keys to string values, stored as `x-amz-meta-*` headers. Three rules:
@@ -149,6 +196,18 @@ await bucket.put("a.txt", "x", { metadata: { note: "café" } })
 await bucket.put("a.txt", "x", { metadata: { note: encodeURIComponent("café") } })
 decodeURIComponent((await bucket.info("a.txt")).metadata.note!)  // 'café'
 ```
+
+```python Python
+from urllib.parse import quote, unquote
+
+bucket.put("a.txt", "x", metadata={"note": "café"})
+# BlobError: metadata.note has characters storage does not carry back unchanged
+# (metadata is printable ASCII; percent-encode anything else with urllib.parse.quote)
+# -- code 'invalid_input', status 400
+
+bucket.put("a.txt", "x", metadata={"note": quote("café")})
+unquote(bucket.info("a.txt").metadata["note"])  # 'café'
+```
 </CodeGroup>
 
 ---
@@ -166,6 +225,17 @@ const current = await bucket.info("u/7/profile.json")
 await bucket.put("u/7/profile.json", next, { ifUnchanged: current.etag })
 // throws conflict if somebody else wrote first
 ```
+
+```python Python
+# Refuse if anything is already at the path.
+bucket.put("u/7/profile.json", body, allow_overwrite=False)
+# raises already_exists, with e.etag and e.size of what is there
+
+# Refuse if the object changed since you read it.
+current = bucket.info("u/7/profile.json")
+bucket.put("u/7/profile.json", next_body, if_unchanged=current.etag)
+# raises conflict if somebody else wrote first
+```
 </CodeGroup>
 
 Turning allow-overwrite off refuses the write if anything is already at the path, with `already_exists` carrying the etag and size of what is there. If-unchanged takes an etag you read and refuses with `conflict` if somebody else wrote first. Both are enforced by storage, so there is no race window.
@@ -176,6 +246,11 @@ Both turn multipart off, so a conditional write of a large body goes up as one r
 ```ts TypeScript
 await bucket.put("big.bin", body, { allowOverwrite: false, multipart: true })
 // BlobError: Multipart: allowOverwrite: false and ifUnchanged are single-PUT only
+```
+
+```python Python
+bucket.put("big.bin", body, allow_overwrite=False, multipart=True)
+# BlobError: Multipart: allow_overwrite=False and if_unchanged are single-PUT only
 ```
 </CodeGroup>
 
@@ -194,6 +269,10 @@ await bucket.updateJson<Settings>("u/7.json", (prev) => ({
   theme: "dark",
 }))
 ```
+
+```python Python
+bucket.update_json("u/7.json", lambda prev: {**(prev or {}), "theme": "dark"})
+```
 </CodeGroup>
 
 The JSON update runs in the SDK, not in storage. It reads the document, calls your function with the parsed value, and writes the result back with if-unchanged. If somebody wrote in between, it pauses briefly, reads again and re-runs your function. After the maximum number of attempts it throws `conflict`.
@@ -204,7 +283,7 @@ The JSON update runs in the SDK, not in storage. It reads the document, calls yo
 
 ### Options
 
-Every option is optional. Names and types: [TypeScript](/blob/sdks/ts/bucket#updatejson).
+Every option is optional. Names and types: [TypeScript](/blob/sdks/ts/bucket#updatejson), [Python](/blob/sdks/py/bucket#update_json).
 
 | Option | Default | What it does |
 | --- | --- | --- |
@@ -221,6 +300,11 @@ Every option is optional. Names and types: [TypeScript](/blob/sdks/ts/bucket#upd
 const archived = await bucket.copy("tmp/9f3c", "archive/2026/report.pdf")
 const moved = await bucket.move("tmp/9f3c", "reports/q3.pdf", { contentType: "application/pdf" })
 ```
+
+```python Python
+archived = bucket.copy("tmp/9f3c", "archive/2026/report.pdf")
+moved = bucket.move("tmp/9f3c", "reports/q3.pdf", content_type="application/pdf")
+```
 </CodeGroup>
 
 `copy` runs inside storage, so the bytes never travel through your app. Storage has no rename, so `move` is a copy followed by a delete of the source. Both return the destination's record. A missing source throws `not_found`.
@@ -229,7 +313,7 @@ An existing destination is overwritten. There is no allow-overwrite option here 
 
 ### Options
 
-Every option is optional, and `move` takes the same ones as `copy`. Names and types: [TypeScript](/blob/sdks/ts/bucket#copy-and-move).
+Every option is optional, and `move` takes the same ones as `copy`. Names and types: [TypeScript](/blob/sdks/ts/bucket#copy-and-move), [Python](/blob/sdks/py/bucket#copy-and-move).
 
 | Option | Default | What it does |
 | --- | --- | --- |
@@ -248,6 +332,10 @@ A move is not atomic. If the copy lands and the delete fails, `move` throws `mov
 <CodeGroup>
 ```ts TypeScript
 await bucket.put("video.mp4", data, { multipart: "100mb" })
+```
+
+```python Python
+bucket.put("video.mp4", data, multipart="100mb")
 ```
 </CodeGroup>
 
@@ -271,9 +359,22 @@ const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
 
 await fetch(upload.url, { method: "PUT", headers: upload.headers, body: pdf })
 ```
+
+```python Python
+import httpx
+
+upload = bucket.signed_upload_url(
+    "u/7/report.pdf",
+    content_type="application/pdf",
+    size=len(pdf),
+    expires_in="10m",
+)
+
+httpx.put(upload.url, headers=upload.headers, content=pdf)
+```
 </CodeGroup>
 
-A signed upload URL comes back with the headers to send and when it expires: a URL somebody else can PUT exactly one object to. Use it for a CLI, a build step, or a server-to-server job whose bytes you do not want to relay. Names and types: [TypeScript](/blob/sdks/ts/bucket#signeduploadurl).
+A signed upload URL comes back with the headers to send and when it expires: a URL somebody else can PUT exactly one object to. Use it for a CLI, a build step, or a server-to-server job whose bytes you do not want to relay. Names and types: [TypeScript](/blob/sdks/ts/bucket#signeduploadurl), [Python](/blob/sdks/py/bucket#signed_upload_url).
 
 Every option is optional.
 

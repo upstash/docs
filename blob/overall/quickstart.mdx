@@ -8,7 +8,7 @@ import { AgentSetup } from "/snippets/agent-setup.jsx";
 
 <AgentSetup product="Blob" />
 
-Upstash Blob is S3-compatible object storage. Each server SDK has a bucket client and an upload handler, and `@upstash/blob` has React hooks that upload from the browser straight to storage. This page builds a working file picker on Next.js App Router, with the server in TypeScript. Other frameworks work the same way; see [Other frameworks](/blob/sdks/ts/upload-handler#other-frameworks).
+Upstash Blob is S3-compatible object storage. Each server SDK has a bucket client and an upload handler, and `@upstash/blob` has React hooks that upload from the browser straight to storage. This page builds a working file picker in React. The server code is Next.js App Router in TypeScript, or FastAPI in Python. Other frameworks work the same way; see [Other frameworks](/blob/sdks/ts/upload-handler#other-frameworks) in TypeScript and [Mounting it](/blob/sdks/py/upload-handler#mounting-it) in Python.
 
 ---
 
@@ -30,7 +30,17 @@ yarn add @upstash/blob
 ```bash bun
 bun add @upstash/blob
 ```
+
+```bash pip
+pip install upstash-blob
+```
+
+```bash uv
+uv add upstash-blob
+```
 </CodeGroup>
+
+`upstash-blob` is the Python server SDK. The browser side is `@upstash/blob` whichever language runs the server, so a Python app installs both.
 
 Create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment.
 
@@ -61,9 +71,23 @@ export async function saveReport(file: Blob) {
   return blob.url
 }
 ```
+
+```python Python
+# app/reports.py
+from pathlib import Path
+
+from upstash_blob import Bucket
+
+bucket = Bucket.from_env()
+
+
+def save_report(pdf: Path) -> str | None:
+    blob = bucket.put("reports/2026-01.pdf", pdf, content_type="application/pdf")
+    return blob.url
+```
 </CodeGroup>
 
-Bytes already on your server go to the bucket with `put`. The returned record's URL is the public object URL, not set on a private bucket. See [Writing](/blob/bucket/writing), and [TypeScript SDK](/blob/sdks/ts/overview) for setup details.
+Bytes already on your server go to the bucket with `put`. The returned record's URL is the public object URL, not set on a private bucket. See [Writing](/blob/bucket/writing), and the [TypeScript SDK](/blob/sdks/ts/overview) or [Python SDK](/blob/sdks/py/overview) for setup details.
 
 ---
 
@@ -90,6 +114,17 @@ export const uploads = uploadHandler({
   onBeforeUpload: ({ file }) => ({ path: `images/${file.name}` }),
 })
 ```
+
+```python Python
+# app/uploads.py
+from upstash_blob import AsyncUploadHandler, BeforeUploadResult
+
+uploads = AsyncUploadHandler(
+    max_size="20mb",
+    content_types=["image/*", "application/pdf"],
+    on_before_upload=lambda args: BeforeUploadResult(path=f"images/{args.file.name}"),
+)
+```
 </CodeGroup>
 
 The handler runs on your server. It decides who may upload, where the object goes, and what happens once it lands. It never sees the bytes.
@@ -106,6 +141,17 @@ This one accepts anyone. [Upload handler](/blob/uploads/upload-handler) adds the
 import { uploads } from "@/lib/uploads"
 
 export const { GET, POST } = uploads
+```
+
+```python Python
+# app/main.py (FastAPI)
+from fastapi import FastAPI
+from upstash_blob.fastapi import upload_view
+
+from app.uploads import uploads
+
+app = FastAPI()
+app.add_api_route("/api/upload", upload_view(uploads), methods=["GET", "POST"])
 ```
 </CodeGroup>
 
@@ -125,6 +171,8 @@ export const { useUpload } = uploadHooks<typeof uploads>()
 ```
 
 `uploadHooks<typeof uploads>()` reads the handler's type, so route names and completion data are checked at compile time. The `import type` is erased at build time and never pulls server code into the browser bundle.
+
+A Python handler has no type to bind to. Call `uploadHooks()` with no type parameter and pass the URL, `useUpload("/api/upload")`, in the next step. [FastAPI + React](/blob/recipes/fastapi-react) has the whole app, including the dev proxy that puts `/api` on the page's origin.
 
 </Step>
 
@@ -167,7 +215,7 @@ You get these without more code:
 - **Retries.** Failed parts back off and retry, and an expired signature is refreshed mid-upload.
 - **A picker that matches the server.** `accept` comes from the route's own `GET`, so an oversized file is refused before any request goes out. See [Constraints](/blob/uploads/constraints).
 - **Progress.** `percent`, `status` and `pending` read the same for one PUT or 200 parts.
-- **Types end to end.** Whatever `onUploadComplete` returns is `upload.blob.data` on the client.
+- **Types end to end.** With a TypeScript handler, whatever `onUploadComplete` returns is `upload.blob.data` on the client, typed.
 
 ---
 

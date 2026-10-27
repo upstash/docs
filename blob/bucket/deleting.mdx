@@ -11,9 +11,15 @@ await bucket.del("avatars/me.png")                   // one path
 await bucket.del(["a.png", "b.png", "c.png"])        // an array of paths
 await bucket.del({ prefix: "tmp/" })                 // everything under a prefix
 ```
+
+```python Python
+bucket.delete("avatars/me.png")                  # one path
+bucket.delete(["a.png", "b.png", "c.png"])       # a list of paths
+bucket.delete(prefix="tmp/")                      # everything under a prefix
+```
 </CodeGroup>
 
-All three shapes return nothing and treat "already gone" as success. They differ in how many requests they make and what they throw when storage refuses part of the work. Method signatures and the target type: [TypeScript](/blob/sdks/ts/bucket#del).
+All three shapes return nothing and treat "already gone" as success. They differ in how many requests they make and what they throw when storage refuses part of the work. Method signatures and the target type: [TypeScript](/blob/sdks/ts/bucket#del), [Python](/blob/sdks/py/bucket#delete).
 
 A target that is none of the three shapes is refused with `invalid_input`. A path with a `.` or `..` segment is rejected before any request is sent; see [Paths](/blob/bucket/writing#paths).
 
@@ -27,6 +33,11 @@ The upload handler also deletes on its own: a throw out of the completion callba
 ```ts TypeScript
 await bucket.del("drafts/9f3c.txt")
 await bucket.del("drafts/9f3c.txt")  // still no throw
+```
+
+```python Python
+bucket.delete("drafts/9f3c.txt")
+bucket.delete("drafts/9f3c.txt")  # still no raise
 ```
 </CodeGroup>
 
@@ -50,6 +61,15 @@ try {
   throw e
 }
 ```
+
+```python Python
+try:
+    bucket.delete(paths)
+except BlobError as e:
+    if e.code != "partial_delete":
+        raise
+    requeue(e.failed or [])  # the paths still in the bucket, verified one by one
+```
 </CodeGroup>
 
 Sent as batch deletes in chunks of 1000 paths, so a 5000-path list is five requests. A bad path fails the chunk it is in; earlier chunks have already run.
@@ -64,6 +84,10 @@ When storage reports keys as failed, the SDK re-checks each one and keeps only t
 ```ts TypeScript
 await bucket.del({ prefix: "users/7/tmp/" })
 ```
+
+```python Python
+bucket.delete(prefix="users/7/tmp/")
+```
 </CodeGroup>
 
 Pages through `list` at 1000 objects per page and batch-deletes each page as it goes. A prefix with 100,000 objects is 100 list requests and 100 batch deletes, run one after another. It is not atomic; objects written under the prefix while it runs may or may not be caught.
@@ -76,6 +100,10 @@ An empty prefix would match every object in the bucket, so it is refused with `i
 <CodeGroup>
 ```ts TypeScript
 await bucket.del({ prefix: "", all: true })
+```
+
+```python Python
+bucket.delete(prefix="", all=True)
 ```
 </CodeGroup>
 
@@ -99,6 +127,16 @@ try {
   throw e
 }
 ```
+
+```python Python
+try:
+    bucket.move("tmp/9f3c", "avatars/7.png")
+except BlobError as e:
+    if e.code != "move_left_a_copy":
+        raise
+    # avatars/7.png exists and is correct. tmp/9f3c is also still there.
+    bucket.delete("tmp/9f3c")  # retry the source delete, not the move
+```
 </CodeGroup>
 
 `move` is a copy followed by a delete, because storage has no rename. If the copy fails, nothing changed and you get the copy's error. If the copy succeeds and the delete fails, `move` throws `move_left_a_copy` and **keeps the destination**, so you have two objects rather than none. The original error is on the error's cause.
@@ -109,7 +147,7 @@ try {
 
 A multipart upload becomes an object only when it is completed. Until then its parts are billed storage that `list` cannot see, and the bucket cannot be deleted while one exists. A browser tab closed mid-upload leaves exactly this behind.
 
-`put` and a browser cancel abort their own uploads on failure. Anything else needs a sweep. The cron that runs it is on [Abandoned uploads](/blob/uploads/abandoned-uploads#sweeping-incomplete-multipart-uploads); the calls it uses are below. Signatures: [TypeScript](/blob/sdks/ts/bucket#multipart-cleanup).
+`put` and a browser cancel abort their own uploads on failure. Anything else needs a sweep. The cron that runs it is on [Abandoned uploads](/blob/uploads/abandoned-uploads#sweeping-incomplete-multipart-uploads); the calls it uses are below. Signatures: [TypeScript](/blob/sdks/ts/bucket#multipart-cleanup), [Python](/blob/sdks/py/bucket#multipart-cleanup).
 
 ### Listing incomplete uploads
 
@@ -117,6 +155,11 @@ A multipart upload becomes an object only when it is completed. Until then its p
 ```ts TypeScript
 const uploads = await bucket.listMultipartUploads({ prefix: "uploads/" })
 // [{ path: 'uploads/big.mp4', uploadId: 'ABC...', initiatedAt: Date }, ...]
+```
+
+```python Python
+uploads = bucket.list_multipart_uploads(prefix="uploads/")
+# [MultipartUpload(path='uploads/big.mp4', upload_id='ABC...', initiated_at=datetime(...)), ...]
 ```
 </CodeGroup>
 
@@ -134,6 +177,12 @@ Returns every upload started and neither completed nor aborted, paging internall
 ```ts TypeScript
 await bucket.abortMultipartUpload({ path: "uploads/big.mp4", uploadId: "ABC..." })
 ```
+
+```python Python
+from upstash_blob import MultipartUpload
+
+bucket.abort_multipart_upload(MultipartUpload(path="uploads/big.mp4", upload_id="ABC...", initiated_at=None))
+```
 </CodeGroup>
 
 Throws the upload away with every part that landed for it. An upload that is already gone counts as success. An empty upload id is refused with `invalid_input`.
@@ -149,6 +198,11 @@ const aborted = await bucket.abortStaleMultipartUploads({
   prefix: "uploads/",
 })
 // [{ path, uploadId, initiatedAt }, ...]
+```
+
+```python Python
+aborted = bucket.abort_stale_multipart_uploads(older_than="1d", prefix="uploads/")
+# [MultipartUpload(path, upload_id, initiated_at), ...]
 ```
 </CodeGroup>
 

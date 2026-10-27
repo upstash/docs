@@ -28,6 +28,15 @@ export const uploads = uploadHandler({
   onUploadComplete: async ({ path }) => recordFile(path),
 })
 ```
+
+```python Python
+# app/uploads.py
+uploads = AsyncUploadHandler(
+    multipart=True,
+    on_before_upload=lambda args: BeforeUploadResult(path=unique_path(f"uploads/{args.file.name}")),
+    on_upload_complete=lambda args: record_file(args.path),
+)
+```
 </CodeGroup>
 
 Set multipart on, on the handler or a route, and every upload uses parts, whatever its size. Nothing is stored until your handler completes the upload, so a closed tab always leaves an incomplete multipart upload, which the cron below cleans up. The single-PUT case disappears, and small files gain pause, resume and per-part retry.
@@ -49,6 +58,18 @@ export const GET = async () => {
   const aborted = await bucket.abortStaleMultipartUploads({ olderThan: "1d", prefix: "uploads/" })
   return Response.json({ aborted: aborted.length, paths: aborted.map((u) => u.path) })
 }
+```
+
+```python Python
+# app/cron.py
+from upstash_blob import Bucket
+
+bucket = Bucket.from_env()
+
+
+def sweep_uploads() -> dict:
+    aborted = bucket.abort_stale_multipart_uploads(older_than="1d", prefix="uploads/")
+    return {"aborted": len(aborted), "paths": [u.path for u in aborted]}
 ```
 </CodeGroup>
 
@@ -101,6 +122,48 @@ const attachment = uploadRoute()({
 
 export const uploads = uploadHandler({ routes: { attachment } })
 ```
+
+```python Python
+# app/uploads.py
+import uuid
+
+from upstash_blob import AsyncUploadHandler, BeforeUploadResult, BlobError, UploadRoute, unique_path
+
+from app.db import db
+
+
+async def begin_attachment(args):
+    user = await get_user(args.request)
+    if user is None:
+        raise BlobError("unauthorized")
+
+    row_id = str(uuid.uuid4())
+    path = unique_path(f"uploads/{user.id}/{args.file.name}")
+    await db.uploads.insert(id=row_id, owner=user.id, path=path, status="pending")
+
+    # state crosses in the completion token, so the callback can read it without a lookup.
+    return BeforeUploadResult(path=path, state={"row_id": row_id})
+
+
+async def finish_attachment(args):
+    await index_for_search(args.path, args.content_type)
+    await notify_owner(args.state["row_id"])
+
+    # Last. Everything above has to be done before the row stops looking abandoned.
+    await db.uploads.update(args.state["row_id"], status="ready", size=args.size, url=args.url)
+
+    return {"row_id": args.state["row_id"]}
+
+
+attachment = UploadRoute(
+    max_size="20mb",
+    content_types=["image/*", "application/pdf"],
+    on_before_upload=begin_attachment,
+    on_upload_complete=finish_attachment,
+)
+
+uploads = AsyncUploadHandler(routes={"attachment": attachment})
+```
 </CodeGroup>
 
 <Steps>
@@ -146,6 +209,29 @@ export const GET = async () => {
   return Response.json({ aborted: aborted.length, swept: rows.length })
 }
 ```
+
+```python Python
+# app/cron.py
+from upstash_blob import Bucket
+
+from app.db import db
+
+bucket = Bucket.from_env()
+OLDER_THAN = "1d"
+
+
+def sweep_uploads() -> dict:
+    aborted = bucket.abort_stale_multipart_uploads(older_than=OLDER_THAN, prefix="uploads/")
+
+    rows = db.uploads.find_pending(older_than=OLDER_THAN, limit=500)
+    if rows:
+        # delete does not raise for a path with nothing at it, so a PUT that never finished
+        # and parts the abort above just cleared are both covered by the same call.
+        bucket.delete([r.path for r in rows])
+        db.uploads.delete([r.id for r in rows])
+
+    return {"aborted": len(aborted), "swept": len(rows)}
+```
 </CodeGroup>
 
 Two things this example depends on:
@@ -163,6 +249,18 @@ const cutoff = Date.now() - 24 * 60 * 60 * 1000
 
 const orphans = page.blobs.filter((b) => !known.has(b.path) && b.uploadedAt.getTime() < cutoff)
 if (orphans.length) await bucket.del(orphans.map((b) => b.path))
+```
+
+```python Python
+from datetime import datetime, timedelta, timezone
+
+page = bucket.list(prefix="uploads/", limit=1000)
+known = set(recorded_paths())
+cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+
+orphans = [b.path for b in page.blobs if b.path not in known and b.uploaded_at < cutoff]
+if orphans:
+    bucket.delete(orphans)
 ```
 </CodeGroup>
 

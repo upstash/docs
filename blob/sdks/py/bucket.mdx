@@ -1,0 +1,483 @@
+---
+title: "Bucket API"
+description: "Every Bucket method in upstash-blob: put, get, stream, info, list, copy, move, delete, signed URLs and multipart cleanup."
+---
+
+The `Bucket` methods, their Python options and what they return. Each section links to the concept page with the behaviour and defaults.
+
+```python app/blob.py
+from upstash_blob import Bucket
+
+bucket = Bucket.from_env()
+```
+
+Building the client, and the async `AsyncBucket`, are on [Overview](/blob/sdks/py/overview#bucket-and-asyncbucket). Every method below exists on both, with the same arguments; on `AsyncBucket` it is awaited. Options are keyword-only.
+
+---
+
+## put
+
+```python
+put(path: str, body: PutBody, *, content_type=None, content_types=None, max_size=None,
+    cache=None, metadata=None, size=None, allow_overwrite=True, if_unchanged=None,
+    multipart=None) -> CompletedBlob
+```
+
+```python app/reports.py
+from pathlib import Path
+
+from app.blob import bucket
+
+
+def save_report(pdf: Path) -> str | None:
+    blob = bucket.put("reports/q3.pdf", pdf, content_type="application/pdf")
+    return blob.url
+```
+
+Every option is optional. Behaviour and defaults are on [Writing](/blob/bucket/writing#put).
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `content_type` | `str` | What the object is stored as. |
+| `content_types` | `Sequence[str]` | An allow list such as `["image/*", "application/pdf"]`. A bare string raises a `TypeError`. See [Constraints](/blob/uploads/constraints#content-types). |
+| `max_size` | `Size` | Refuses a larger body with `too_large`. |
+| `cache` | `CacheOption` | The `Cache-Control` this object is stored with. See [Caching](/blob/bucket/caching). |
+| `metadata` | `Mapping[str, str]` | Custom key-value pairs. A key with an uppercase letter is refused with `invalid_input` rather than lowercased for you. See [Metadata](/blob/bucket/writing#metadata). |
+| `size` | `Size` | The exact length in bytes, for an iterable whose size is not otherwise known. |
+| `allow_overwrite` | `bool` | `False` refuses the write if something is already at the path. See [Conditional writes](/blob/bucket/writing#conditional-writes). |
+| `if_unchanged` | `str` | An etag. The write fails with `conflict` if the object changed since you read it. |
+| `multipart` | `MultipartOption` | Where a body stops being one PUT. See [Large bodies](/blob/bucket/writing#large-bodies). |
+
+The result is a [`CompletedBlob`](#records):
+
+```python
+blob = bucket.put("avatars/7.png", data, content_type="image/png")
+
+blob.path           # 'avatars/7.png'
+blob.url            # 'https://b3f9a2c7d1e4.blob.upstash.io/avatars/7.png'
+blob.versioned_url  # '...?v=%22d41d8...%22'
+blob.size           # bytes stored
+blob.etag           # '"d41d8..."', what if_unchanged takes
+blob.uploaded_at    # datetime, UTC
+blob.content_type   # 'image/png'
+```
+
+### Bodies
+
+```python
+from pathlib import Path
+
+bucket.put("notes/1.md", "# Hello")                    # str, stored as UTF-8
+bucket.put("img/logo.png", Path("static/logo.png"))     # opened, read and closed for you
+with open("backups/db.tar", "rb") as f:
+    bucket.put("backups/db.tar", f)                      # read from where it stands
+```
+
+`PutBody` is one of these. If the body does not carry its own length or type, declare `size` or `content_type` yourself.
+
+| Body | Carries its length | Carries a content type |
+| --- | --- | --- |
+| `bytes`, `bytearray`, `memoryview` | Yes | No |
+| `str` | Yes, once UTF-8 encoded | No |
+| `pathlib.Path`, or any `os.PathLike` | Yes | Guessed from the file name |
+| Binary file object | When it is seekable: what is left from its position | Guessed from its `name`, when it has one |
+| Iterable of `bytes`, such as a generator | No | No |
+| Async iterable of `bytes`, async file object | No | No. `AsyncBucket` only. |
+
+An explicit `content_type` wins over a guess.
+
+- A `str` body is the text itself, never a file name. Wrap a file name in `Path(...)`.
+- A file object is not closed for you. A file opened in text mode, or an iterable that yields `str`, raises a `TypeError`. So does a body of any other type.
+- `AsyncBucket` reads a sync file object on a worker thread, so the event loop is never blocked on disk. An async file object, such as one from `aiofiles`, cannot report its length.
+- There is no request body type, so `put` never raises `empty_body`. An empty `bytes` stores a zero-byte object.
+
+### Framework uploads
+
+```python app/main.py
+from fastapi import FastAPI, UploadFile
+from upstash_blob import AsyncBucket
+
+app = FastAPI()
+bucket = AsyncBucket.from_env()
+
+
+@app.post("/api/avatar")
+async def avatar(file: UploadFile) -> dict[str, str | None]:
+    blob = await bucket.put(
+        f"avatars/{file.filename}",
+        file.file,  # the spooled file underneath: seekable, so it carries its length
+        content_type=file.content_type,
+        content_types=["image/*"],
+        max_size="5mb",
+    )
+    return {"url": blob.url}
+```
+
+A framework's uploaded file is a file object, but a type guessed from its `name` is not reliable: FastAPI's spooled file has no name, and on Flask `name` is the form field. Pass `content_type` from what the framework parsed: `file.content_type` on FastAPI's `UploadFile`, `f.mimetype` on Flask's `request.files[...]`, `f.content_type` on Django's `request.FILES[...]`.
+
+The bytes pass through your server here, under your platform's body limit. For anything large, use an [upload handler](/blob/sdks/py/upload-handler) instead.
+
+### Iterables
+
+```python
+# Buffer up to the cap. An iterable that runs past it raises too_large.
+bucket.put("export.csv", rows(), max_size="10mb")
+
+# Stream straight through, nothing buffered. The declared size must be exact.
+bucket.put("export.csv", rows(), size=5000)
+```
+
+An iterable with neither raises `length_required`. Why is on [Streams and unknown lengths](/blob/bucket/writing#streams-and-unknown-lengths). One that ends short of `size`, or runs past it, raises `invalid_input`.
+
+```python
+import httpx
+
+async with httpx.AsyncClient() as client, client.stream("GET", source_url) as response:
+    size = int(response.headers["content-length"])
+    await bucket.put("mirror/video.mp4", response.aiter_bytes(), size=size)
+```
+
+On `AsyncBucket`, an async iterable works the same way.
+
+---
+
+## unique_path
+
+```python
+unique_path(path: str) -> str
+```
+
+```python
+from upstash_blob import unique_path
+
+unique_path(f"users/{user_id}/{filename}")  # 'users/Alice_123/Q3 Report-3xK9mBqR.pdf'
+```
+
+Exported from `upstash_blob`. The suffix rules are on [Unique paths](/blob/bucket/writing#unique-paths).
+
+---
+
+## update_json
+
+```python
+update_json(path: str, fn: Callable[[Any], Any], *, max_attempts=6, cache=None,
+            metadata=None) -> CompletedBlob
+```
+
+```python
+def set_theme(prev: dict | None) -> dict:
+    return {**(prev or {}), "theme": "dark"}
+
+
+bucket.update_json("u/7.json", set_theme, max_attempts=10, metadata={"owner": "u7"}, cache="no-store")
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `max_attempts` | `int` | How many read-transform-write rounds to try before raising `conflict`. Anything but a positive `int` raises `invalid_input`. |
+| `cache` | `CacheOption` | The `Cache-Control` the rewritten object is stored with. |
+| `metadata` | `Mapping[str, str]` | Replaces the metadata on the object. |
+
+`fn` gets the parsed document, or `None`, and returns what `json.dumps` can write. On `Bucket` it is a plain function. On `AsyncBucket` it may also be `async def`. The result is a `CompletedBlob`, with `content_type` set to `application/json`.
+
+The loop and its defaults are on [Updating JSON](/blob/bucket/writing#updating-json).
+
+---
+
+## copy and move
+
+```python
+copy(src: str, dst: str, *, content_type=None, cache=None, metadata=None) -> BlobObject
+move(src: str, dst: str, *, content_type=None, cache=None, metadata=None) -> BlobObject
+```
+
+```python
+archived = bucket.copy("tmp/9f3c", "archive/2026/report.pdf")
+moved = bucket.move("tmp/9f3c", "reports/q3.pdf", content_type="application/pdf")
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `content_type` | `str` | What the destination is stored as. |
+| `cache` | `CacheOption` | The `Cache-Control` the destination is stored with. |
+| `metadata` | `Mapping[str, str]` | Replaces the metadata outright. |
+
+What carries over from the source is on [copy and move](/blob/bucket/writing#copy-and-move).
+
+---
+
+## signed_upload_url
+
+```python
+signed_upload_url(path: str, *, expires_in=None, content_type=None, cache=None,
+                  metadata=None, size=None, allow_overwrite=True) -> SignedUploadUrl
+```
+
+```python
+import httpx
+
+upload = bucket.signed_upload_url(
+    "u/7/report.pdf",
+    content_type="application/pdf",
+    size=len(pdf),
+    expires_in="10m",
+)
+
+httpx.put(upload.url, headers=upload.headers, content=pdf)
+```
+
+Returns a `SignedUploadUrl` with `url: str`, `headers: dict[str, str]` and `expires_at: datetime`. Send `headers` verbatim.
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `expires_in` | `Duration` | How long the link should live. |
+| `content_type` | `str` | The `Content-Type` the upload must send, and what the object is stored as. |
+| `cache` | `CacheOption` | The `Cache-Control` the object is stored with. |
+| `metadata` | `Mapping[str, str]` | Written as `x-amz-meta-*`, under the same rules as `put`. |
+| `size` | `Size` | Pins the body's exact length. |
+| `allow_overwrite` | `bool` | `False` refuses the upload if something is already at the path. |
+
+Defaults and lifetimes are on [Signed upload URLs](/blob/bucket/writing#signed-upload-urls).
+
+---
+
+## get
+
+```python
+get(path: str) -> BlobDownload
+```
+
+```python
+res = bucket.get("reports/2026-01.pdf")
+
+res.content_type  # 'application/pdf'
+res.size          # 184302
+res.etag          # '"9f3c..."'
+res.metadata      # {'owner': 'u7'}
+res.content       # bytes, the whole object
+```
+
+Unlike the TypeScript SDK, `get` reads the whole body into memory before it returns. `content` is `bytes`; `text()` decodes it, UTF-8 by default, and `json()` parses it:
+
+```python
+notes = bucket.get("notes/1.md").text()
+settings = bucket.get("u/7.json").json()
+```
+
+A missing object raises `not_found`. It never returns `None`. See [get](/blob/bucket/reading#get).
+
+### stream
+
+```python
+stream(path: str) -> ContextManager[BlobStream]
+```
+
+```python
+with bucket.stream("videos/intro.mp4") as video, open("intro.mp4", "wb") as out:
+    for chunk in video.iter_bytes():
+        out.write(chunk)
+```
+
+For an object too big to hold in memory, `stream()` is `get` with the body left on the wire. It is a context manager: the record is ready on entry, the bytes are read inside the block, and the connection is released on exit. A missing object raises `not_found` on entry.
+
+The `BlobStream` it yields has the same fields as `BlobDownload`, minus `content`, plus `iter_bytes(chunk_size=None)` and `read()`. On `AsyncBucket` it is an async context manager yielding an `AsyncBlobStream`:
+
+```python
+async with bucket.stream("videos/intro.mp4") as video:
+    async for chunk in video.aiter_bytes():
+        digest.update(chunk)
+```
+
+`AsyncBlobStream.read()` is awaited.
+
+---
+
+## info and exists
+
+```python
+info(path: str) -> BlobInfo
+exists(path: str) -> bool
+```
+
+```python
+info = bucket.info("reports/2026-01.pdf")
+
+info.size          # 184302
+info.etag          # '"9f3c..."'
+info.content_type  # 'application/pdf'
+info.metadata      # {'owner': 'u7'}
+info.uploaded_at   # datetime, UTC
+
+if bucket.exists("avatars/u7.png"):
+    ...
+```
+
+See [info](/blob/bucket/reading#info) and [exists](/blob/bucket/reading#exists).
+
+---
+
+## list
+
+```python
+list(*, prefix=None, limit=None, cursor=None) -> ListPage
+```
+
+```python
+cursor: str | None = None
+paths: list[str] = []
+
+while True:
+    page = bucket.list(prefix="avatars/", limit=1000, cursor=cursor)
+    paths += [blob.path for blob in page.blobs]
+    cursor = page.cursor
+    if not cursor:
+        break
+```
+
+Returns a `ListPage` with `blobs: list[BlobObject]` and `cursor: str | None`.
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `prefix` | `str` | Only keys starting with this. |
+| `limit` | `int` | Page size. |
+| `cursor` | `str` | The `cursor` from the previous page. |
+
+Defaults and paging are on [list](/blob/bucket/reading#list).
+
+---
+
+## public_url
+
+```python
+public_url(path: str) -> str | None
+```
+
+```python
+bucket.public_url("avatars/u7.png")
+# 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
+```
+
+`None` on a private bucket. An empty path, or one with a `.` or `..` segment, raises a `ValueError`. On `AsyncBucket` it is awaited, because the first call fetches credentials. See [Public URLs](/blob/bucket/reading#public-urls).
+
+---
+
+## signed_read_url
+
+```python
+signed_read_url(path: str, *, expires_in=None, download_as=None, content_type=None) -> SignedReadUrl
+```
+
+```python
+link = bucket.signed_read_url("reports/2026-01.pdf", expires_in="2m", download_as="Report Q3.pdf")
+
+link.url
+link.expires_at  # datetime, UTC
+```
+
+Returns a `SignedReadUrl` with `url: str` and `expires_at: datetime`. Cache the link until `expires_at`, never until a deadline you compute from `expires_in`.
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `expires_in` | `Duration` | How long to ask for. |
+| `download_as` | `str` | Save as this filename instead of displaying inline. |
+| `content_type` | `str` | What storage answers with as `Content-Type`, overriding what was stored. |
+
+Defaults and lifetimes are on [Signed read URLs](/blob/bucket/reading#signed-read-urls).
+
+---
+
+## delete
+
+```python
+delete(paths: str | Sequence[str] | None = None, *, prefix: str | None = None, all: bool = False) -> None
+```
+
+```python
+bucket.delete("avatars/me.png")                  # one path
+bucket.delete(["a.png", "b.png", "c.png"])       # a list of paths
+bucket.delete(prefix="tmp/")                      # everything under a prefix
+bucket.delete(prefix="", all=True)                # the whole bucket, on purpose
+```
+
+`del` is a Python keyword, so the method is `delete`. Pass a path or a list positionally, or `prefix=`, never both and never neither; anything else is refused with `invalid_input`. A path with a `.` or `..` segment raises a `ValueError`. What each shape does and raises is on [Deleting](/blob/bucket/deleting).
+
+```python
+from upstash_blob import BlobError
+
+try:
+    bucket.delete(paths)
+except BlobError as e:
+    if e.code != "partial_delete":
+        raise
+    requeue(e.failed or [])  # the paths still in the bucket
+```
+
+---
+
+## Multipart cleanup
+
+```python
+list_multipart_uploads(*, prefix=None) -> list[MultipartUpload]
+abort_multipart_upload(upload: MultipartUpload) -> None
+abort_stale_multipart_uploads(*, older_than: Duration, prefix=None) -> list[MultipartUpload]
+```
+
+```python
+uploads = bucket.list_multipart_uploads(prefix="uploads/")
+for upload in uploads:
+    bucket.abort_multipart_upload(upload)
+
+aborted = bucket.abort_stale_multipart_uploads(older_than="1d", prefix="uploads/")
+```
+
+`MultipartUpload` is a dataclass with `path: str`, `upload_id: str` and `initiated_at: datetime | None`. `initiated_at` is `None` when storage sent a date that does not parse, and such an upload is never treated as stale.
+
+`abort_multipart_upload` takes the record, not two strings, because a swapped pair would abort nothing and report success. Anything else is refused with `invalid_input`. To abort an upload whose id you stored from an [upload handler](/blob/sdks/py/upload-handler#on_upload_complete), build the record:
+
+```python
+from upstash_blob import MultipartUpload
+
+bucket.abort_multipart_upload(
+    MultipartUpload(path=row.path, upload_id=row.multipart_upload_id, initiated_at=None)
+)
+```
+
+`older_than` is required. See [Incomplete multipart uploads](/blob/bucket/deleting#incomplete-multipart-uploads).
+
+---
+
+## s3
+
+```python
+s3() -> S3Config
+```
+
+Short-lived credentials for boto3 or any S3 client. See [Using an S3 client](/blob/sdks/py/overview#using-an-s3-client).
+
+---
+
+## Records
+
+Records are frozen dataclasses. They nest. What each field means is on [Records](/blob/reference/types#records).
+
+| Type | Fields | Returned by |
+| --- | --- | --- |
+| `BlobObject` | `path`, `url`, `versioned_url`, `size`, `etag`, `uploaded_at` | `list()`, `copy()`, `move()` |
+| `CompletedBlob` | `BlobObject` plus `content_type` | `put()`, `update_json()`, `on_upload_complete` |
+| `BlobInfo` | `BlobObject` plus `content_type` and `metadata` | `info()` |
+| `BlobDownload` | `BlobInfo` plus `content: bytes`, `text()`, `json()` | `get()` |
+| `BlobStream` | `BlobInfo` plus `iter_bytes()`, `read()` | `stream()` on `Bucket` |
+| `AsyncBlobStream` | `BlobInfo` plus `aiter_bytes()`, `read()` | `stream()` on `AsyncBucket` |
+
+| Field | Type |
+| --- | --- |
+| `path` | `str` |
+| `url` | `str \| None` |
+| `versioned_url` | `str \| None` |
+| `size` | `int` |
+| `etag` | `str` |
+| `uploaded_at` | `datetime`, timezone-aware UTC |
+| `content_type` | `str` |
+| `metadata` | `dict[str, str]` |
+
+All of them are exported from `upstash_blob`.
