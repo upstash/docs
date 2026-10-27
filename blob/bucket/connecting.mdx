@@ -1,15 +1,19 @@
 ---
 title: "Connecting"
-description: "Build a Bucket client from environment variables, on Node, on Cloudflare Workers, or through an S3 client."
+description: "Build a bucket client from the bucket token, on any platform, and reach storage through an S3 client."
 ---
 
-This page covers creating the `Bucket` client, the options it takes, and running it on platforms without `process.env`.
+This page covers creating the bucket client from its token, how it retries, what it sends as telemetry, and reaching storage through an S3 client.
 
-```ts lib/blob.ts
+<CodeGroup>
+```ts TypeScript
 import { Bucket } from "@upstash/blob"
 
 export const bucket = Bucket.fromEnv() // reads UPSTASH_BLOB_TOKEN
 ```
+</CodeGroup>
+
+Client options and their types: [TypeScript](/blob/sdks/ts/overview#the-bucket-client).
 
 Create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment:
 
@@ -17,91 +21,60 @@ Create a bucket in the [Upstash Console](https://console.upstash.com) and put it
 UPSTASH_BLOB_TOKEN=...
 ```
 
+Every SDK reads `UPSTASH_BLOB_TOKEN` by default and also takes a token directly, for a token under another variable or a platform without environment variables, such as Cloudflare Workers.
+
 The token is a bearer secret. Anything holding it can read and write the whole bucket. Keep it server side, never in `NEXT_PUBLIC_`, `VITE_`, or any other variable your bundler inlines into client code.
 
 ---
 
 ## Options
 
-```ts lib/blob.ts
-import { Bucket } from "@upstash/blob"
+| Option | Default | Description |
+| --- | --- | --- |
+| Token | `UPSTASH_BLOB_TOKEN` | The bucket token. |
+| Cache | `'1h'` | The default `Cache-Control` for every object this client stores. A per-call cache overrides it. See [Caching](/blob/bucket/caching). |
+| Telemetry | on | See [Telemetry](#telemetry). |
+| Retry | 2 retries | Off, or a retry count and backoff. See [Retries](#retries). |
 
-export const bucket = new Bucket({
-  token: process.env.UPSTASH_BLOB_TOKEN!,
-  cache: "immutable",
-  enableTelemetry: false,
-})
-```
+Constructing a client per request is fine. Credentials are cached per token, so two clients built from the same token share one.
 
-`Bucket.fromEnv()` is the same constructor with `token` read from `UPSTASH_BLOB_TOKEN`. It takes the same options minus the token, and a variable name when the token lives somewhere else:
-
-```ts
-Bucket.fromEnv({ cache: "immutable" })
-Bucket.fromEnv("REPORTS_BUCKET_TOKEN", { cache: "immutable" })
-```
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `token` | `string` | required | The bucket token. |
-| `cache` | `CacheOption` | `'1h'` | The default `Cache-Control` for every object this client stores. A per-call `cache` overrides it. See [Caching](/blob/bucket/caching). |
-| `enableTelemetry` | `boolean` | `true` | See [Telemetry](#telemetry). |
-| `retry` | `RetryConfig` | 2 retries | `false`, or `{ retries, backoff }`. See [Retries](#retries). |
+### Public or private
 
 Whether the bucket is public or private is a console setting, not an option: the SDK learns it from the backend on the first request. See [Private buckets](/blob/bucket/reading#private-buckets).
-
-Constructing a `Bucket` per request is fine. Credentials are cached per token, so two clients built from the same token share one.
-
----
-
-## Cloudflare Workers
-
-There is no `process.env` on Workers, so `Bucket.fromEnv()` throws. Pass the token from the request's `env`:
-
-```ts src/index.ts
-import { Bucket } from "@upstash/blob"
-
-export default {
-  async fetch(request: Request, env: { UPSTASH_BLOB_TOKEN: string }) {
-    const bucket = new Bucket({ token: env.UPSTASH_BLOB_TOKEN })
-    await bucket.put("hits.txt", "1")
-    return new Response("ok")
-  },
-}
-```
-
-An [upload handler](/blob/uploads/upload-handler#the-bucket) on Workers needs the same thing: build the bucket from `env` and pass it as `bucket:`.
 
 ---
 
 ## Retries
 
-A request that fails with a 5xx, a 429 or a dropped connection is sent again if it can be: reads, deletes, copies, multipart parts and signing calls. A `put()` that goes up as one PUT streams its body, so it is sent once, and so are the POSTs that create and complete a multipart upload and a batch delete. When the credential service asks the SDK to wait, it waits up to 10 seconds and asks again, three times.
-
-```ts
+<CodeGroup>
+```ts TypeScript
 new Bucket({ token, retry: false }) // every request once
 new Bucket({ token, retry: { retries: 5, backoff: (n) => n * 500 } })
 ```
+</CodeGroup>
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `retries` | `number` | `2`, and `3` for credentials | Retries after the first attempt, for every request this client makes. |
-| `backoff` | `(retryCount: number) => number` | full jitter, doubling from 200 ms, capped at 4 s; 2 s for credentials | Milliseconds before retry `retryCount`, counted from 0. A `Retry-After` from the service wins over it. |
+A request that fails with a 5xx, a 429 or a dropped connection is sent again if it can be: reads, deletes, copies, multipart parts and signing calls. A `put` that goes up as one PUT streams its body, so it is sent once, and so are the POSTs that create and complete a multipart upload and a batch delete. When the credential service asks the SDK to wait, it waits up to 10 seconds and asks again, three times.
 
-Clients built from the same token share one credential cache, so a credential fetch already in progress keeps the `retry` of the client that started it. An expired temporary credential is not a failure: the SDK fetches a new one and sends the request once more, even with `retry: false`, unless its body was a stream. Browser uploads retry on their own budget; see [Retries](/blob/uploads/large-files#retries).
+| Setting | Default | Description |
+| --- | --- | --- |
+| Retries | `2`, and `3` for credentials | Retries after the first attempt, for every request this client makes. |
+| Backoff | full jitter, doubling from 200 ms, capped at 4 s; 2 s for credentials | Milliseconds before each retry, counted from 0. A `Retry-After` from the service wins over it. |
+
+Clients built from the same token share one credential cache, so a credential fetch already in progress keeps the retry setting of the client that started it. An expired temporary credential is not a failure: the SDK fetches a new one and sends the request once more, even with retries off, unless its body was a stream. Browser uploads retry on their own budget; see [Retries](/blob/uploads/large-files#retries).
 
 ---
 
 ## Telemetry
 
-The SDK sends its version, runtime and platform as headers on credential and signing requests to Upstash. Turn it off with `UPSTASH_DISABLE_TELEMETRY` in the environment (any value), or `enableTelemetry: false` on the `Bucket`.
+The SDK sends its version, runtime and platform as headers on credential and signing requests to Upstash. Turn it off with `UPSTASH_DISABLE_TELEMETRY` in the environment (any value), or with the telemetry option on the client.
 
 ---
 
 ## Using an S3 client
 
-```ts
+<CodeGroup>
+```ts TypeScript
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3"
-import { bucket } from "@/lib/blob"
 
 const { endpoint, region, bucket: name, credentials } = bucket.s3()
 const s3 = new S3Client({ endpoint, region, credentials })
@@ -110,13 +83,14 @@ await s3.send(
   new GetObjectCommand({ Bucket: name, Key: "reports/q3.pdf", Range: "bytes=0-1023" }),
 )
 ```
+</CodeGroup>
 
-Buckets are backed by Cloudflare R2 and are S3-compatible. `bucket.s3()` returns a config for `@aws-sdk/client-s3`, for anything the SDK does not wrap: byte ranges, conditional GETs, delimiters and common prefixes, object tagging.
+Buckets are backed by Cloudflare R2 and are S3-compatible. The client's `s3()` returns a config for an S3 client, for anything the SDK does not wrap: byte ranges, conditional GETs, delimiters and common prefixes, object tagging. The credentials in it are short-lived; see [Minting temporary credentials](/blob/reference/signing#minting-temporary-credentials).
 
-`endpoint` and `credentials` are async providers rather than values. Pass them through as they come, so the aws-sdk can pick up a fresh credential when the old one expires.
+Wiring it into an S3 client: [TypeScript](/blob/sdks/ts/overview#using-an-s3-client).
 
 <Warning>
-Do not presign URLs with this client. A presigned URL carries the credential, which reads and writes the whole bucket until it expires. Use [`signedReadUrl`](/blob/bucket/reading#signedreadurl) and [`signedUploadUrl`](/blob/bucket/writing#signed-upload-urls), which Upstash signs for one object; see [Who signs a URL](/blob/reference/signing#who-signs-a-url).
+Do not presign URLs with this client. A presigned URL carries the credential, which reads and writes the whole bucket until it expires. Use [signed read URLs](/blob/bucket/reading#signed-read-urls) and [signed upload URLs](/blob/bucket/writing#signed-upload-urls), which Upstash signs for one object; see [Who signs a URL](/blob/reference/signing#who-signs-a-url).
 </Warning>
 
 ---

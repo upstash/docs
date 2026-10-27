@@ -5,7 +5,11 @@ description: "Multipart uploads from the browser, with progress, pause, resume, 
 
 Files under the multipart threshold go up as a single presigned PUT. Files over it are cut into parts, which is what makes pause, resume and per-part retry possible. This page covers where the threshold sits, what changes on each side, and how the browser runs a multipart upload.
 
-```ts lib/uploads.ts
+The browser side is the [browser client](/blob/uploads/upload-client), the same whichever server SDK runs the upload route. The threshold and part sizing apply to server writes in every SDK too.
+
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
 import { uploadHandler, uniquePath } from "@upstash/blob"
 
 export const uploads = uploadHandler({
@@ -13,12 +17,13 @@ export const uploads = uploadHandler({
   onBeforeUpload: ({ file }) => ({ path: uniquePath(`uploads/${file.name}`) }),
 })
 ```
+</CodeGroup>
 
 ---
 
 ## The multipart threshold
 
-The default is **16 MB decimal**, 16,000,000 bytes. A 16,000,000 byte body is a single PUT; 16,000,001 is multipart. [Size options](/blob/reference/types#size) accept decimal units such as `MB` and explicit binary units such as `MiB`, always in bytes. `bucket.put()` on your server and a direct browser upload use the same threshold.
+The default is **16 MB decimal**, 16,000,000 bytes. A 16,000,000 byte body is a single PUT; 16,000,001 is multipart. [Size options](/blob/reference/types#size) accept decimal units such as `MB` and explicit binary units such as `MiB`, always in bytes. A server `put` and a direct browser upload use the same threshold.
 
 |                                        | Under the threshold                            | Over the threshold                                                                  |
 | -------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -37,7 +42,9 @@ Parts are not free. A single PUT is one round trip; a multipart upload is three 
 
 ## Changing the threshold
 
-```ts lib/uploads.ts
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
 export const uploads = uploadHandler({
   multipart: "100mb",
   routes: {
@@ -52,19 +59,23 @@ export const uploads = uploadHandler({
   },
 })
 ```
+</CodeGroup>
 
-```ts lib/videos.ts
+<CodeGroup>
+```ts TypeScript
+// lib/videos.ts
 await bucket.put("videos/clip.mp4", file, { multipart: true })
 await bucket.put("logs/today.ndjson", stream, { size, multipart: "50mb" })
 ```
+</CodeGroup>
 
-`multipart` takes a size, `true` or `false`. A size becomes the threshold for that handler, route or write; `true` always uses parts; `false` never does. On a handler it is the default for every route, and a route overrides it.
+The multipart option takes a size, or on or off. A size becomes the threshold for that handler, route or write; on always uses parts; off never does. On a handler it is the default for every route, and a route overrides it.
 
-- `multipart: false` on a body over the single-PUT ceiling of about 5 GiB throws `too_large`.
-- On `bucket.put()`, `allowOverwrite: false` and `ifUnchanged` are single-PUT only; see [Conditional writes](/blob/bucket/writing#conditional-writes).
+- Multipart off on a body over the single-PUT ceiling of about 5 GiB throws `too_large`.
+- On a server `put`, conditional writes are single-PUT only; see [Conditional writes](/blob/bucket/writing#conditional-writes).
 - An unparseable size (`'100 megs'`) throws at startup, where the option is written.
 
-`multipart: true` costs no extra browser requests, only two extra round trips between your server and storage.
+Multipart always on costs no extra browser requests, only two extra round trips between your server and storage.
 
 ---
 
@@ -72,14 +83,17 @@ await bucket.put("logs/today.ndjson", stream, { size, multipart: "50mb" })
 
 For a 32 MiB file, use an explicit binary unit or its byte count. `"32MB"` is only 32,000,000 bytes, below the 33,554,432-byte file size.
 
-```ts lib/uploads.ts
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
 export const uploads = uploadHandler({
   constraints: { maxSize: "32MiB" }, // also accepts 33_554_432
   onBeforeUpload: ({ file }) => ({ path: uniquePath(`uploads/${file.name}`) }),
 })
 ```
+</CodeGroup>
 
-The default 16 MB threshold makes this a multipart upload. `maxSize` sets the file limit; `multipart` chooses when to split an accepted file into parts.
+The default 16 MB threshold makes this a multipart upload. The max size sets the file limit; the multipart option chooses when to split an accepted file into parts.
 
 ---
 
@@ -116,7 +130,7 @@ Every record carries the same fields on either side of the threshold:
 | `pending` | not settled: `queued`, `uploading`, `finishing` or `paused`                     |
 | `stalled` | every in-flight part is waiting on a backoff                                    |
 
-`percent` is capped at 99 because 100 means stored, not sent. It stays there through status `finishing`, while your `onUploadComplete` runs. Render that state so the bar does not look stuck.
+`percent` is capped at 99 because 100 means stored, not sent. It stays there through status `finishing`, while your completion callback runs. Render that state so the bar does not look stuck.
 
 A failed part's bytes are subtracted from `loaded` again, because they were never stored.
 
@@ -152,7 +166,7 @@ A single PUT cannot pause, since stopping it would throw its bytes away. While `
 
 A closed tab is not a canceled upload. When an upload starts, the client remembers it in `localStorage`, keyed by the route, the file name, the size and its last-modified time.
 
-**The user picking the same file again resumes it.** There is no API to call. On a match the SDK asks your server which parts landed and sends only the missing ones. `onBeforeUpload` does not run again, so a row it inserted is not written twice.
+**The user picking the same file again resumes it.** There is no API to call. On a match the SDK asks your server which parts landed and sends only the missing ones. The before-upload callback does not run again, so a row it inserted is not written twice.
 
 - **The browser is not trusted about what landed.** Your server reads it back from storage.
 - **A mismatch is a fresh upload, never an error.** A different file, a different size, or an expired upload starts over.
@@ -179,7 +193,7 @@ When the retry budget runs out the record settles as `error` with a `BlobError`.
 - **A dropped connection gets twenty.** A phone changing cell towers outlives a shorter budget.
 - **A request that failed without sending a byte gets three.** That is almost always CORS, which retrying does not fix, and the error says so.
 - **A part that goes 60 seconds with no progress is treated as failed.** That is silence, not total time, so a slow large part is fine.
-- **Calls to your own route get three attempts**, except `begin`, which is never retried because it runs `onBeforeUpload`.
+- **Calls to your own route get three attempts**, except `begin`, which is never retried because it runs the before-upload callback.
 </Accordion>
 
 ---
@@ -188,13 +202,15 @@ When the retry budget runs out the record settles as `error` with a `BlobError`.
 
 `cancel()` aborts the parts in flight and tells your route to abort the multipart upload, so the parts stop costing storage. For a single PUT, it deletes the object if the bytes already landed and they belong to this upload.
 
-From status `finishing` only the local task is canceled. Your `onUploadComplete` may already have written a row, so deleting the object at that point could remove a file your app thinks it has.
+From status `finishing` only the local task is canceled. Your completion callback may already have written a row, so deleting the object at that point could remove a file your app thinks it has.
 
 ---
 
 ## Large writes from the server
 
-```ts lib/backup.ts
+<CodeGroup>
+```ts TypeScript
+// lib/backup.ts
 import { Bucket } from "@upstash/blob"
 
 const bucket = Bucket.fromEnv()
@@ -205,8 +221,9 @@ export async function archive(stream: ReadableStream<Uint8Array>, size: number) 
   return await bucket.put("backups/2026-01.tar", stream, { size })
 }
 ```
+</CodeGroup>
 
-`bucket.put()` uses the same threshold and the same `multipart` option. Over the threshold it sends four parts at a time, fewer for bodies over about 3 GB to bound the memory held by buffered parts. A failed part cancels the others and aborts the upload rather than leaving billed parts behind. An unknown-length stream with neither `size` nor `maxSize` throws `length_required`; see [Streams and unknown lengths](/blob/bucket/writing#streams-and-unknown-lengths).
+A server `put` uses the same threshold and the same multipart option. Over the threshold it sends four parts at a time, fewer for bodies over about 3 GB to bound the memory held by buffered parts. A failed part cancels the others and aborts the upload rather than leaving billed parts behind. An unknown-length stream with neither a size nor a max size throws `length_required`; see [Streams and unknown lengths](/blob/bucket/writing#streams-and-unknown-lengths).
 
 ---
 

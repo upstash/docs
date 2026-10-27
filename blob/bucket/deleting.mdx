@@ -1,48 +1,45 @@
 ---
 title: "Deleting"
-description: "Delete one path, an array or a prefix, and clear out incomplete multipart uploads."
+description: "Delete one path, a list or a prefix, and clear out incomplete multipart uploads."
 ---
 
-This page covers `del`, which deletes one path, a list of paths, or everything under a prefix, and the calls that clean up multipart uploads that were never completed.
+This page covers deleting one path, a list of paths, or everything under a prefix, and the calls that clean up multipart uploads that were never completed.
 
-```ts
-import { bucket } from "@/lib/blob"
-
+<CodeGroup>
+```ts TypeScript
 await bucket.del("avatars/me.png")                   // one path
 await bucket.del(["a.png", "b.png", "c.png"])        // an array of paths
 await bucket.del({ prefix: "tmp/" })                 // everything under a prefix
 ```
+</CodeGroup>
 
-All three shapes resolve to `Promise<void>` and treat "already gone" as success. They differ in how many requests they make and what they throw when storage refuses part of the work.
+All three shapes return nothing and treat "already gone" as success. They differ in how many requests they make and what they throw when storage refuses part of the work. Method signatures and the target type: [TypeScript](/blob/sdks/ts/bucket#del).
 
-```ts
-type DeleteTarget = string | string[] | { prefix: string; all?: boolean }
-```
+A target that is none of the three shapes is refused with `invalid_input`. A path with a `.` or `..` segment is refused too; see [Paths](/blob/bucket/writing#paths).
 
-Anything else is refused with `invalid_input`. A path with a `.` or `..` segment throws a `TypeError`; see [Paths](/blob/bucket/writing#paths).
-
-The upload handler also deletes on its own: a throw out of `onUploadComplete`, or a `cancel()` from the browser, removes the object that upload wrote. See [onUploadComplete](/blob/uploads/upload-handler#onuploadcomplete).
+The upload handler also deletes on its own: a throw out of the completion callback, or a cancel from the browser, removes the object that upload wrote. See [Recording the upload](/blob/uploads/upload-handler#recording-the-upload).
 
 ---
 
 ## One path
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.del("drafts/9f3c.txt")
 await bucket.del("drafts/9f3c.txt")  // still no throw
 ```
+</CodeGroup>
 
 One `DELETE` request. A 404 counts as success, so a delete is safe to run from a retried job or an at-least-once queue consumer. Any other failure throws; see [Errors](/blob/reference/errors#what-storage-errors-map-to).
 
-`del` never says whether anything was there. To find out, call `bucket.exists(path)` first.
+A delete never says whether anything was there. To find out, call `exists` first.
 
 ---
 
-## An array
+## A list of paths
 
-```ts
-import { BlobError } from "@upstash/blob"
-
+<CodeGroup>
+```ts TypeScript
 try {
   await bucket.del(paths)
 } catch (e) {
@@ -53,42 +50,44 @@ try {
   throw e
 }
 ```
+</CodeGroup>
 
-Sent as batch deletes in chunks of 1000 paths, so a 5000-path array is five requests. A bad path fails the chunk it is in; earlier chunks have already run.
+Sent as batch deletes in chunks of 1000 paths, so a 5000-path list is five requests. A bad path fails the chunk it is in; earlier chunks have already run.
 
-When storage reports keys as failed, the SDK re-checks each one and keeps only the paths still there. If any survive, `del` throws `partial_delete` with them in `failed`. Everything not in `failed` was deleted. To recover, retry with `e.failed`.
-
-Use `BlobError.is(e)`, never `instanceof`. See [Errors](/blob/reference/errors).
+When storage reports keys as failed, the SDK re-checks each one and keeps only the paths still there. If any survive, the delete throws `partial_delete` with them as its failed paths. Everything not in that list was deleted. To recover, retry with those paths.
 
 ---
 
 ## A prefix
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.del({ prefix: "users/7/tmp/" })
 ```
+</CodeGroup>
 
-Pages through `list()` at 1000 objects per page and batch-deletes each page as it goes. A prefix with 100,000 objects is 100 list requests and 100 batch deletes, run one after another. It is not atomic; objects written under the prefix while it runs may or may not be caught.
+Pages through `list` at 1000 objects per page and batch-deletes each page as it goes. A prefix with 100,000 objects is 100 list requests and 100 batch deletes, run one after another. It is not atomic; objects written under the prefix while it runs may or may not be caught.
 
-Failures work as for an array. Survivors from every page are collected and thrown as `partial_delete`.
+Failures work as for a list. Survivors from every page are collected and thrown as `partial_delete`.
 
 <Warning>
-`del({ prefix: '' })` would match every object in the bucket, so an empty prefix is refused with `invalid_input`. This protects against an unset variable or an empty form field. To wipe the bucket on purpose, say so:
+An empty prefix would match every object in the bucket, so it is refused with `invalid_input`. This protects against an unset variable or an empty form field. To wipe the bucket on purpose, say so with the all flag:
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.del({ prefix: "", all: true })
 ```
+</CodeGroup>
 
-`all` is only consulted for the empty prefix.
+The all flag is only consulted for the empty prefix.
 </Warning>
 
 ---
 
 ## `move` leaves a copy on failure
 
-```ts
-import { BlobError } from "@upstash/blob"
-
+<CodeGroup>
+```ts TypeScript
 try {
   await bucket.move("tmp/9f3c", "avatars/7.png")
 } catch (e) {
@@ -100,56 +99,63 @@ try {
   throw e
 }
 ```
+</CodeGroup>
 
-`move` is a copy followed by a delete, because storage has no rename. If the copy fails, nothing changed and you get the copy's error. If the copy succeeds and the delete fails, `move` throws `move_left_a_copy` and **keeps the destination**, so you have two objects rather than none. The original error is on `cause`.
+`move` is a copy followed by a delete, because storage has no rename. If the copy fails, nothing changed and you get the copy's error. If the copy succeeds and the delete fails, `move` throws `move_left_a_copy` and **keeps the destination**, so you have two objects rather than none. The original error is on the error's cause.
 
 ---
 
 ## Incomplete multipart uploads
 
-A multipart upload becomes an object only when it is completed. Until then its parts are billed storage that `list()` cannot see, and the bucket cannot be deleted while one exists. A browser tab closed mid-upload leaves exactly this behind.
+A multipart upload becomes an object only when it is completed. Until then its parts are billed storage that `list` cannot see, and the bucket cannot be deleted while one exists. A browser tab closed mid-upload leaves exactly this behind.
 
-`bucket.put()` and a browser `cancel()` abort their own uploads on failure. Anything else needs a sweep. The cron that runs it is on [Abandoned uploads](/blob/uploads/abandoned-uploads#sweeping-incomplete-multipart-uploads); the calls it uses are below.
+`put` and a browser cancel abort their own uploads on failure. Anything else needs a sweep. The cron that runs it is on [Abandoned uploads](/blob/uploads/abandoned-uploads#sweeping-incomplete-multipart-uploads); the calls it uses are below. Signatures: [TypeScript](/blob/sdks/ts/bucket#multipart-cleanup).
 
-### listMultipartUploads
+### Listing incomplete uploads
 
-```ts
+<CodeGroup>
+```ts TypeScript
 const uploads = await bucket.listMultipartUploads({ prefix: "uploads/" })
 // [{ path: 'uploads/big.mp4', uploadId: 'ABC...', initiatedAt: Date }, ...]
 ```
+</CodeGroup>
 
-Returns every upload started and neither completed nor aborted, paging internally until it has them all. `prefix` is optional.
+Returns every upload started and neither completed nor aborted, paging internally until it has them all. The prefix is optional.
 
 | Field | Meaning |
 | --- | --- |
-| `path` | The key the upload was started for. Nothing is stored there yet. |
-| `uploadId` | Storage's id for the upload, needed to abort it. |
-| `initiatedAt` | When it was started. What "stale" is measured against. |
+| Path | The key the upload was started for. Nothing is stored there yet. |
+| Upload id | Storage's id for the upload, needed to abort it. |
+| Initiated at | When it was started. What "stale" is measured against. |
 
-### abortMultipartUpload
+### Aborting one upload
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.abortMultipartUpload({ path: "uploads/big.mp4", uploadId: "ABC..." })
 ```
+</CodeGroup>
 
-Throws the upload away with every part that landed for it. An upload that is already gone counts as success. An empty `uploadId` is refused with `invalid_input`.
+Throws the upload away with every part that landed for it. An upload that is already gone counts as success. An empty upload id is refused with `invalid_input`.
 
-`onUploadComplete` receives `multipartUploadId` for exactly this pair. Store it with your row and you can abort a specific upload later without listing the bucket. It is `undefined` for a single PUT.
+The completion callback receives the multipart upload id for exactly this pair. Store it with your row and you can abort a specific upload later without listing the bucket. It is not set for a single PUT.
 
-### abortStaleMultipartUploads
+### Aborting stale uploads
 
-```ts
+<CodeGroup>
+```ts TypeScript
 const aborted = await bucket.abortStaleMultipartUploads({
   olderThan: "1d",
   prefix: "uploads/",
 })
 // [{ path, uploadId, initiatedAt }, ...]
 ```
+</CodeGroup>
 
-List plus abort in one call, meant for a cron. `olderThan` is required, a [Duration](/blob/reference/types#duration). Only uploads started longer ago than that are touched, so a window longer than your slowest upload never aborts one still running. A day is a reasonable default.
+List plus abort in one call, meant for a cron. The older-than window is required, a [Duration](/blob/reference/types#duration). Only uploads started longer ago than that are touched, so a window longer than your slowest upload never aborts one still running. A day is a reasonable default.
 
 <Note>
-An abandoned upload **under** the multipart threshold is not a multipart upload. It is an ordinary stored object that `list()` can see, and none of the calls above can find it. See [Abandoned uploads](/blob/uploads/abandoned-uploads).
+An abandoned upload **under** the multipart threshold is not a multipart upload. It is an ordinary stored object that `list` can see, and none of the calls above can find it. See [Abandoned uploads](/blob/uploads/abandoned-uploads).
 </Note>
 
 ---
@@ -158,8 +164,8 @@ An abandoned upload **under** the multipart threshold is not a multipart upload.
 
 | Code | Raised by |
 | --- | --- |
-| `partial_delete` | An array or prefix delete where objects survived. `failed` lists them. |
+| `partial_delete` | A list or prefix delete where objects survived. The error lists them. |
 | `move_left_a_copy` | `move`, when the source delete failed. |
-| `invalid_input` | A bad `DeleteTarget`, an empty prefix without `all`, an empty `uploadId`. |
+| `invalid_input` | A bad delete target, an empty prefix without the all flag, an empty upload id. |
 
-`del` never raises `not_found`. Statuses and extra fields are on [Errors](/blob/reference/errors#the-codes).
+A delete never raises `not_found`. Statuses and extra fields are on [Errors](/blob/reference/errors#the-codes).

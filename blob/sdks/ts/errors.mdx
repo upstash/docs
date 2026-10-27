@@ -1,0 +1,114 @@
+---
+title: "Errors"
+description: "BlobError in TypeScript: BlobError.is(), the fields it carries, and throwing one from an upload handler."
+---
+
+```ts lib/avatar.ts
+import { BlobError, Bucket } from "@upstash/blob"
+
+const bucket = Bucket.fromEnv()
+
+export async function avatar(path: string) {
+  try {
+    return await bucket.info(path)
+  } catch (e) {
+    if (BlobError.is(e) && e.code === "not_found") return null
+    throw e
+  }
+}
+```
+
+Everything the SDK throws is a `BlobError`. The same class and codes are used on the server, in the browser, and inside the React hooks. The codes, their statuses and when each one is raised are on [Errors](/blob/reference/errors).
+
+`BlobError` is exported from all three entrypoints: `@upstash/blob`, `@upstash/blob/browser` and `@upstash/blob/react`.
+
+---
+
+## Use `BlobError.is()`, not `instanceof`
+
+```ts
+if (BlobError.is(e)) {
+  e.code    // BlobErrorCode
+  e.status  // number
+  e.message // string
+}
+```
+
+<Warning>
+  An ESM copy and a CJS copy of the class are two different classes, so `instanceof` can return
+  false for an error that genuinely is one. `BlobError.is()` checks a `Symbol.for` marker instead,
+  which is shared across every copy of the package in the process.
+</Warning>
+
+`is()` is a type guard, so the fields are typed after it.
+
+---
+
+## Fields
+
+```ts
+try {
+  await bucket.del(["a.png", "b.png", "c.png"])
+} catch (e) {
+  if (!BlobError.is(e)) throw e
+  if (e.code === "partial_delete") await queueForRetry(e.failed ?? [])
+  if (e.code === "rate_limited") await sleep((e.retryAfter ?? 1) * 1000)
+}
+```
+
+| Field | Type | Set by |
+| ----- | ---- | ------ |
+| `code` | `BlobErrorCode` | Always. One of the [codes](/blob/reference/errors#the-codes). |
+| `status` | `number` | Always. |
+| `message` | `string` | Always. See [Messages](/blob/reference/errors#messages). |
+| `hint` | `string \| undefined` | Any code. See [Hints](/blob/reference/errors#hints-fold-into-the-message). |
+| `failed` | `string[] \| undefined` | `partial_delete`: the paths that survived the delete. |
+| `etag` | `string \| undefined` | `already_exists`: the etag of what is already there. |
+| `size` | `number \| undefined` | `already_exists`: the size of what is already there. |
+| `retryAfter` | `number \| undefined` | `mint_backoff` and `rate_limited`: seconds the service asked the caller to wait. |
+| `cause` | `unknown` | The underlying error, when there was one. Standard `Error.cause`. |
+
+`BlobErrorCode` and `BlobErrorOptions` are exported as types from `@upstash/blob`. `BlobErrorCode` is also exported from `/browser` and `/react`.
+
+### Built-in hints
+
+```ts
+new BlobError("length_required").message
+// 'Length required (pass { size } or { maxSize } so the length is known before the first byte)'
+```
+
+| Code | Built-in hint |
+| ---- | ------------- |
+| `signature_mismatch` | the upload did not match what was authorized, usually a different size or content type |
+| `length_required` | pass `{ size }` or `{ maxSize }` so the length is known before the first byte |
+
+How a hint folds into the message is on [Hints fold into the message](/blob/reference/errors#hints-fold-into-the-message).
+
+---
+
+## Throwing one
+
+```ts
+new BlobError("not_found").message                         // 'Not found'
+new BlobError("forbidden", "not your thread").message       // 'Not your thread'
+new BlobError("too_large", { message: "you are out of space" })
+```
+
+`new BlobError(code, options?)` takes a message string, or `{ message, hint, status, failed, etag, size, retryAfter, cause }`. Throw one from an upload handler callback to refuse an upload with that code; see [Refusing](/blob/uploads/upload-handler#refusing).
+
+---
+
+## Bad options are a `TypeError`
+
+An unparseable `'5mbit'`, a missing `token`, a route with no `onBeforeUpload`: those throw a `TypeError` where the option is written, not a `BlobError` per request. So does a path with a `.` or `..` segment.
+
+---
+
+## Cancel is an `AbortError`
+
+```ts
+const record = start({ file })
+record?.cancel()          // status becomes 'canceled', error stays undefined
+```
+
+A canceled browser upload rejects with an `AbortError`, not a `BlobError`. See [Errors the browser raises on its own](/blob/reference/errors#errors-the-browser-raises-on-its-own).
