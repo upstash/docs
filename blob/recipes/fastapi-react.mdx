@@ -1,0 +1,317 @@
+---
+title: "FastAPI + React Uploads"
+description: "A FastAPI backend serving useUpload from @upstash/blob/react: direct browser uploads, one row per file, signed in users only."
+---
+
+A React app whose backend is Python: users pick files, the bytes go from the browser straight to storage, and FastAPI only decides who may upload and records what landed.
+
+Three choices make that work:
+
+- **An `AsyncUploadHandler` mounted on FastAPI.** It speaks the same protocol as the TypeScript handler, so `useUpload` from `@upstash/blob/react` works against it unchanged.
+- **One auth check for every route.** `require_user` is both the handler's `context` and the FastAPI dependency on the other endpoints, and `owner` binds each upload to the user who began it.
+- **One origin.** Vite proxies `/api` to FastAPI in development, and FastAPI serves the built app in production, so the session cookie reaches the handler with no CORS setup.
+
+This recipe uses a public bucket. If you have not created one yet, start with the [Quickstart](/blob/overall/quickstart).
+
+---
+
+## Setup
+
+```bash
+pip install upstash-blob fastapi uvicorn
+npm create vite@latest web -- --template react-ts
+cd web && npm install @upstash/blob
+```
+
+```bash .env
+UPSTASH_BLOB_TOKEN=...
+```
+
+The backend lives in `app/`, the React app in `web/`.
+
+---
+
+## The handler
+
+```python app/blob.py
+from upstash_blob import AsyncBucket
+
+bucket = AsyncBucket.from_env()
+```
+
+```python app/auth.py
+from dataclasses import dataclass
+
+from fastapi import HTTPException, Request
+
+from app.db import db
+
+
+@dataclass
+class User:
+    id: str
+
+
+async def require_user(request: Request) -> User:
+    user = await db.users.from_session(request.cookies.get("session"))
+    if user is None:
+        raise HTTPException(status_code=401, detail="sign in to upload")
+    return user
+```
+
+```python app/uploads.py
+import logging
+
+from upstash_blob import (
+    AsyncUploadHandler,
+    BeforeUploadArgs,
+    BeforeUploadResult,
+    BlobError,
+    UploadCompleteArgs,
+    unique_path,
+)
+
+from app.auth import User, require_user
+from app.blob import bucket
+from app.db import db
+
+logger = logging.getLogger(__name__)
+
+
+def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    user: User = args.ctx
+    return BeforeUploadResult(path=unique_path(f"files/{user.id}/{args.file.name}"))
+
+
+async def record(args: UploadCompleteArgs) -> dict[str, str]:
+    try:
+        # The browser retries this request on a flaky network, so upsert on upload_id.
+        await db.files.upsert(
+            id=args.upload_id,
+            owner=args.ctx.id,
+            name=args.file.name,
+            path=args.path,
+            url=args.url,
+            size=args.size,
+            content_type=args.content_type,
+        )
+    except Exception:
+        # A raise here deletes the object, so make it a deliberate refusal the user can retry from.
+        logger.exception("could not record %s", args.path)
+        raise BlobError("not_ready", "could not save the file, try again")
+    return {"id": args.upload_id}
+
+
+uploads = AsyncUploadHandler(
+    bucket=bucket,
+    content_types=["image/*", "application/pdf"],
+    max_size="25mb",
+    context=require_user,
+    owner=lambda user: user.id,
+    on_before_upload=authorize,
+    on_upload_complete=record,
+)
+```
+
+The handler takes images and PDFs up to 25 MB and refuses anything else before a byte is uploaded. It runs on FastAPI's event loop, so it is an `AsyncUploadHandler` over an `AsyncBucket`; see [Sync or async](/blob/sdks/py/upload-handler#sync-or-async).
+
+`require_user` runs on every POST to the route. Its `HTTPException(401)` reaches the browser as a `BlobError` with code `unauthorized`, so the React side can tell a dead session from a refused file. `owner` signs the user id into each upload, so a second signed-in user holding the completion token cannot finish or cancel it. See [context](/blob/sdks/py/upload-handler#context) and [owner](/blob/sdks/py/upload-handler#owner).
+
+`unique_path` adds a random suffix to the filename, so two uploads of `photo.png` are two objects. `args.file.name` is the original filename, and the completion callback is the only place it survives, so the row stores it.
+
+A raise out of `record` deletes the object, so the `except` turns a database failure into a refusal the user can retry from. `not_ready` is the 503 code, the one that means try again. See [Retries and throws](/blob/uploads/upload-handler#retries-and-throws).
+
+---
+
+## The routes
+
+```python app/main.py
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from upstash_blob.fastapi import upload_view
+
+from app.auth import User, require_user
+from app.blob import bucket
+from app.db import db
+from app.uploads import uploads
+
+app = FastAPI()
+app.add_api_route("/api/upload", upload_view(uploads), methods=["GET", "POST"])
+
+
+@app.get("/api/files")
+async def list_files(user: User = Depends(require_user)) -> list[dict]:
+    return await db.files.for_owner(user.id)
+
+
+@app.delete("/api/files/{file_id}", status_code=204)
+async def delete_file(file_id: str, user: User = Depends(require_user)) -> None:
+    row = await db.files.get(file_id, owner=user.id)
+    if row is None:
+        raise HTTPException(status_code=404)
+    await db.files.delete(file_id)
+    await bucket.delete(row["path"])
+
+
+# Last, so the API routes above match first.
+app.mount("/", StaticFiles(directory="web/dist", html=True), name="web")
+```
+
+```bash
+uvicorn app.main:app --port 8000
+```
+
+`/api/upload` is where the hooks look by default. `GET` serves the route's limits to the file picker and `POST` runs the upload. `/api/files` reads your rows, never `bucket.list()`: the bucket cannot answer "which files are this user's", and your table can.
+
+Delete the row first, then the object. The list stops showing the file immediately, and if the second step fails the leftover is an object nobody links to rather than a link that 404s. `delete` treats an already missing object as success, so it is safe to retry.
+
+---
+
+## The proxy
+
+```ts web/vite.config.ts
+import react from "@vitejs/plugin-react"
+import { defineConfig } from "vite"
+
+export default defineConfig({
+  plugins: [react()],
+  server: { proxy: { "/api": "http://localhost:8000" } },
+})
+```
+
+In development the page is served by Vite on port 5173, and every `/api` request is forwarded to FastAPI. The browser sees one origin, so the session cookie is sent with each upload request. In production, `npm run build` writes `web/dist`, which `app/main.py` serves.
+
+A frontend on another origin needs CORS on FastAPI, and either a cookie that crosses origins or a token in [`headers`](/blob/uploads/upload-client#headers).
+
+---
+
+## The picker
+
+```tsx web/src/FilePicker.tsx
+import { formatBytes, useUpload } from "@upstash/blob/react"
+
+export function FilePicker({ onUploaded }: { onUploaded: () => void }) {
+  const { start, uploads, accept, constraints } = useUpload("/api/upload", { onDone: onUploaded })
+
+  return (
+    <>
+      <input type="file" multiple accept={accept} onChange={(e) => start({ files: e.target.files })} />
+      {constraints?.maxSize !== undefined && <p>Images and PDFs, up to {formatBytes(constraints.maxSize)}</p>}
+
+      <ul>
+        {uploads.map((u) => (
+          <li key={u.id}>
+            {u.file.name}
+            {u.pending && <progress value={u.percent} max={100} />}
+            {u.status === "error" && <span role="alert">{u.error.message}</span>}
+            {u.pending && <button onClick={() => u.cancel()}>Cancel</button>}
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+```
+
+`useUpload` is imported straight from `@upstash/blob/react`, with the handler's URL. There is no `uploadHooks<typeof uploads>` here: that type comes from a TypeScript handler. So `upload.blob.data` is `unknown`, and the list is refreshed from `/api/files` in `onDone` rather than read off the record. See [With a server in another language](/blob/uploads/upload-client#with-a-server-in-another-language).
+
+`accept` and `constraints` come from the route's `GET`, so the file dialog offers only images and PDFs and the page shows the same limit the server enforces. A file over 25 MB is refused in the browser before any request. Files over the [multipart threshold](/blob/uploads/large-files#the-multipart-threshold) go up in parts, with no change on either side.
+
+---
+
+## Showing files
+
+```ts web/src/api.ts
+export interface StoredFile {
+  id: string
+  name: string
+  url: string
+  size: number
+  content_type: string
+}
+
+export async function listFiles(): Promise<StoredFile[]> {
+  const res = await fetch("/api/files")
+  if (!res.ok) throw new Error(`could not load files: ${res.status}`)
+  return res.json()
+}
+
+export async function deleteFile(id: string): Promise<void> {
+  await fetch(`/api/files/${id}`, { method: "DELETE" })
+}
+```
+
+```tsx web/src/App.tsx
+import { useCallback, useEffect, useState } from "react"
+import { deleteFile, listFiles, type StoredFile } from "./api"
+import { FilePicker } from "./FilePicker"
+
+export function App() {
+  const [files, setFiles] = useState<StoredFile[]>([])
+  const refresh = useCallback(() => {
+    listFiles().then(setFiles)
+  }, [])
+  useEffect(refresh, [refresh])
+
+  return (
+    <main>
+      <FilePicker onUploaded={refresh} />
+      <ul>
+        {files.map((f) => (
+          <li key={f.id}>
+            <a href={f.url} target="_blank">{f.name}</a>
+            <button onClick={() => deleteFile(f.id).then(refresh)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+    </main>
+  )
+}
+```
+
+`url` is the public URL, which is right for a public bucket. If a file must not be readable by anyone holding its URL, put it on a private bucket and return a [signed read URL](/blob/sdks/py/bucket#signed_read_url) from `/api/files` instead.
+
+---
+
+## Cleanup
+
+A user can close the tab halfway through an upload, and nothing tells your server. Under the multipart threshold that leaves a stored object with no row; over it, unfinished parts. A daily job clears the parts:
+
+```python app/cron.py
+import asyncio
+
+from app.blob import bucket
+
+
+async def sweep() -> None:
+    aborted = await bucket.abort_stale_multipart_uploads(older_than="1d", prefix="files/")
+    print(f"aborted {len(aborted)} incomplete uploads")
+
+
+if __name__ == "__main__":
+    asyncio.run(sweep())
+```
+
+[Abandoned uploads](/blob/uploads/abandoned-uploads) has the single-PUT half: a pending row written in the before-upload callback, or `multipart=True` on the handler so every upload leaves parts rather than an object.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Python upload handler" href="/blob/sdks/py/upload-handler">
+    Options, callbacks, routes, `input` and `owner`.
+  </Card>
+
+  <Card title="Upload client" href="/blob/uploads/upload-client">
+    `useUpload`, the record it renders, and the non-React client.
+  </Card>
+
+  <Card title="Constraints" href="/blob/uploads/constraints">
+    What `image/*` expands to, and why SVG is not in it.
+  </Card>
+
+  <Card title="File attachments" href="/blob/recipes/attachments">
+    Many files per thread, with a validated `input`.
+  </Card>
+</CardGroup>
