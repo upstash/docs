@@ -96227,6 +96227,46 @@ Declare the fields you want to search by meaning as `HYBRID`:
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const index = await redis.search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema: s.object({
+    name: s.string(),
+    description: s.hybrid(),
+    category: s.keyword(),
+    price: s.number("F64"),
+  }),
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+index = redis.search.create_index(
+    name="products",
+    data_type="json",
+    prefixes="product:",
+    schema={
+        "name": "TEXT",
+        "description": "HYBRID",
+        "category": "KEYWORD",
+        "price": {"type": "F64", "fast": True},
+    },
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description HYBRID category KEYWORD price F64 FAST
@@ -96240,6 +96280,28 @@ SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description HY
 Write documents as usual. Search indexes them and creates their embeddings:
 
 <Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.json.set("product:1", "$", { name: "Studio Headphones", description: "Over-ear headphones with active noise cancelling", category: "audio", price: 199 });
+await redis.json.set("product:2", "$", { name: "Travel Earplugs", description: "Soft foam earplugs that keep airplane cabin sound out", category: "travel", price: 9 });
+await redis.json.set("product:3", "$", { name: "Sport Earbuds", description: "Sweat-proof wireless earbuds for running", category: "sports", price: 79 });
+
+// Wait until the documents are indexed
+await index.waitIndexing();
+```
+</Tab>
+
+<Tab title="Python">
+```python
+redis.json.set("product:1", "$", {"name": "Studio Headphones", "description": "Over-ear headphones with active noise cancelling", "category": "audio", "price": 199})
+redis.json.set("product:2", "$", {"name": "Travel Earplugs", "description": "Soft foam earplugs that keep airplane cabin sound out", "category": "travel", "price": 9})
+redis.json.set("product:3", "$", {"name": "Sport Earbuds", "description": "Sweat-proof wireless earbuds for running", "category": "sports", "price": 79})
+
+# Wait until the documents are indexed
+index.wait_indexing()
+```
+</Tab>
 
 <Tab title="Redis CLI">
 ```bash
@@ -96262,6 +96324,38 @@ text. This query can find the earplugs, even though their description does not c
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: { $ann: { field: "description", query: "block noise on a flight" } },
+});
+
+// Search by meaning within one category
+await index.query({
+  filter: {
+    $ann: { field: "description", query: "headphones for running", filter: { category: "sports" } },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(filter={"$ann": {"field": "description", "query": "block noise on a flight"}})
+
+# Search by meaning within one category
+index.query(
+    filter={
+        "$ann": {
+            "field": "description",
+            "query": "headphones for running",
+            "filter": {"category": "sports"},
+        }
+    }
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.QUERY products '{"$ann": {"field": "description", "query": "block noise on a flight"}}'
@@ -96280,6 +96374,36 @@ their results into one list. Documents that rank high in both come first:
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: {
+    $rrf: {
+      retrievers: [
+        { description: "noise cancelling" },
+        { $ann: { field: "description", query: "noise cancelling" } },
+      ],
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(
+    filter={
+        "$rrf": {
+            "retrievers": [
+                {"description": "noise cancelling"},
+                {"$ann": {"field": "description", "query": "noise cancelling"}},
+            ]
+        }
+    }
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling"}, {"$ann": {"field": "description", "query": "noise cancelling"}}]}}'
@@ -96292,6 +96416,36 @@ To give one side more influence, set its weight. A full-text query takes a weigh
 [`$standard`](/docs/redis/search/retrievers/standard):
 
 <Tabs>
+
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: {
+    $rrf: {
+      retrievers: [
+        { $standard: { query: { description: "noise cancelling" }, weight: 2 } },
+        { $ann: { field: "description", query: "noise cancelling" } },
+      ],
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(
+    filter={
+        "$rrf": {
+            "retrievers": [
+                {"$standard": {"query": {"description": "noise cancelling"}, "weight": 2}},
+                {"$ann": {"field": "description", "query": "noise cancelling"}},
+            ]
+        }
+    }
+)
+```
+</Tab>
 
 <Tab title="Redis CLI">
 ```bash
@@ -99113,6 +99267,64 @@ document that full-text queries do not find yet.
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+// Search by meaning
+await index.query({
+  filter: { $ann: { field: "description", query: "something to block noise on a flight" } },
+});
+
+// Search by meaning within cheap sports products
+await index.query({
+  filter: {
+    $ann: {
+      field: "description",
+      query: "headphones for running",
+      filter: { category: "sports", price: { $lt: 100 } },
+    },
+  },
+});
+
+// Use the most accurate profile, and return keys and scores only
+await index.query({
+  filter: { $ann: { field: "description", query: "headphones for running", profile: "precise" } },
+  select: {},
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Search by meaning
+index.query(
+    filter={"$ann": {"field": "description", "query": "something to block noise on a flight"}}
+)
+
+# Search by meaning within cheap sports products
+index.query(
+    filter={
+        "$ann": {
+            "field": "description",
+            "query": "headphones for running",
+            "filter": {"category": "sports", "price": {"$lt": 100}},
+        }
+    }
+)
+
+# Use the most accurate profile, and return keys and scores only
+index.query(
+    filter={
+        "$ann": {
+            "field": "description",
+            "query": "headphones for running",
+            "profile": "precise",
+        }
+    },
+    select={},
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # Search by meaning
@@ -99146,6 +99358,50 @@ match. Retrievers decide how those documents are found and ranked.
 | [`$standard`](./standard) | Runs one query. Use it inside `$rrf` to set the weight of a query. |
 
 <Tabs>
+
+<Tab title="TypeScript">
+```ts
+// Search a HYBRID field by meaning
+await index.query({
+  filter: { $ann: { field: "description", query: "something to block noise on a flight" } },
+});
+
+// Merge a full-text query and a semantic search
+
+await index.query({
+  filter: {
+    $rrf: {
+      retrievers: [
+        { description: "noise cancelling headphones" },
+        { $ann: { field: "description", query: "noise cancelling headphones" } },
+      ],
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Search a HYBRID field by meaning
+index.query(
+    filter={"$ann": {"field": "description", "query": "something to block noise on a flight"}}
+)
+
+# Merge a full-text query and a semantic search
+
+index.query(
+    filter={
+        "$rrf": {
+            "retrievers": [
+                {"description": "noise cancelling headphones"},
+                {"$ann": {"field": "description", "query": "noise cancelling headphones"}},
+            ]
+        }
+    }
+)
+```
+</Tab>
 
 <Tab title="Redis CLI">
 ```bash
@@ -99255,6 +99511,36 @@ Merge a full-text query and a semantic search on the same field:
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: {
+    $rrf: {
+      retrievers: [
+        { description: "noise cancelling headphones" },
+        { $ann: { field: "description", query: "noise cancelling headphones" } },
+      ],
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(
+    filter={
+        "$rrf": {
+            "retrievers": [
+                {"description": "noise cancelling headphones"},
+                {"$ann": {"field": "description", "query": "noise cancelling headphones"}},
+            ]
+        }
+    }
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling headphones"}, {"$ann": {"field": "description", "query": "noise cancelling headphones"}}]}}'
@@ -99268,6 +99554,36 @@ SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancellin
 Give the full-text query twice the weight of the semantic search:
 
 <Tabs>
+
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: {
+    $rrf: {
+      retrievers: [
+        { $standard: { query: { description: "noise cancelling headphones" }, weight: 2 } },
+        { $ann: { field: "description", query: "noise cancelling headphones", weight: 1 } },
+      ],
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(
+    filter={
+        "$rrf": {
+            "retrievers": [
+                {"$standard": {"query": {"description": "noise cancelling headphones"}, "weight": 2}},
+                {"$ann": {"field": "description", "query": "noise cancelling headphones", "weight": 1}},
+            ]
+        }
+    }
+)
+```
+</Tab>
 
 <Tab title="Redis CLI">
 ```bash
@@ -99283,6 +99599,26 @@ SEARCH.QUERY products '{"$rrf": {"retrievers": [{"$standard": {"query": {"descri
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: {
+    $rrf: { retrievers: [{ name: "wireless headphones" }, { description: "bluetooth" }] },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(
+    filter={
+        "$rrf": {"retrievers": [{"name": "wireless headphones"}, {"description": "bluetooth"}]}
+    }
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.QUERY products '{"$rrf": {"retrievers": [{"name": "wireless headphones"}, {"description": "bluetooth"}]}}'
@@ -99296,6 +99632,46 @@ SEARCH.QUERY products '{"$rrf": {"retrievers": [{"name": "wireless headphones"},
 Set `window` and keep it the same on every page:
 
 <Tabs>
+
+<Tab title="TypeScript">
+```ts
+const filter = {
+  $rrf: {
+    retrievers: [
+      { description: "headphones" },
+      { $ann: { field: "description", query: "headphones" } },
+    ],
+    window: 100,
+  },
+};
+
+// Page 1
+await index.query({ filter, limit: 10 });
+
+// Page 2
+await index.query({ filter, limit: 10, offset: 10 });
+```
+</Tab>
+
+<Tab title="Python">
+```python
+query = {
+    "$rrf": {
+        "retrievers": [
+            {"description": "headphones"},
+            {"$ann": {"field": "description", "query": "headphones"}},
+        ],
+        "window": 100,
+    }
+}
+
+# Page 1
+index.query(filter=query, limit=10)
+
+# Page 2
+index.query(filter=query, limit=10, offset=10)
+```
+</Tab>
 
 <Tab title="Redis CLI">
 ```bash
@@ -99346,6 +99722,44 @@ These two `$rrf` retrievers give the same results:
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+// Give the name match twice the weight of the description match
+await index.query({
+  filter: {
+    $rrf: {
+      retrievers: [
+        { $standard: { query: { name: "headphones" }, weight: 2 } },
+        { description: "headphones" },
+      ],
+    },
+  },
+});
+
+// Same as index.query({ filter: { name: "headphones" } })
+await index.query({ filter: { $standard: { query: { name: "headphones" } } } });
+```
+</Tab>
+
+<Tab title="Python">
+```python
+# Give the name match twice the weight of the description match
+index.query(
+    filter={
+        "$rrf": {
+            "retrievers": [
+                {"$standard": {"query": {"name": "headphones"}, "weight": 2}},
+                {"description": "headphones"},
+            ]
+        }
+    }
+)
+
+# Same as index.query(filter={"name": "headphones"})
+index.query(filter={"$standard": {"query": {"name": "headphones"}}})
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 # Give the name match twice the weight of the description match
@@ -99379,7 +99793,7 @@ import { Redis, s } from "@upstash/redis"
 | `s.date()`    | `DATE`                        | Date/time field                                           | Yes           | Yes             | Yes                                | No                                      |
 | `s.boolean()` | `BOOL`                        | Boolean field                                             | Yes           | No              | No                                 | No                                      |
 | `s.facet()`   | `FACET`                       | Hierarchical path-based field                             | No            | No              | No                                 | No (only `$eq`, `$in`)                  |
-| -             | `HYBRID`                      | Full-text field that also supports semantic search        | No            | Yes             | No                                 | `$smart`, `$phrase`, `$fuzzy`, `$regex` |
+| `s.hybrid()`  | `HYBRID`                      | Full-text field that also supports semantic search        | No            | Yes             | No                                 | `$smart`, `$phrase`, `$fuzzy`, `$regex` |
 
 <Note>
 In the TypeScript SDK, `s.number()` defaults to `F64`. You can specify `s.number("U64")` or
@@ -99637,6 +100051,26 @@ on a `TEXT` field.
 `HYBRID` fields accept the `NOSTEM` and `FROM` options.
 
 <Tabs>
+
+<Tab title="TypeScript">
+```ts
+const schema = s.object({
+  name: s.string(),
+  description: s.hybrid(),
+  // Options: s.hybrid().noStem().from("body")
+})
+```
+</Tab>
+
+<Tab title="Python">
+```python
+schema = {
+    "name": "TEXT",
+    "description": "HYBRID",
+    # Options: {"type": "HYBRID", "no_stem": True, "alias": "body"}
+}
+```
+</Tab>
 
 <Tab title="Redis CLI">
 ```bash
