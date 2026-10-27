@@ -4524,9 +4524,21 @@ What it returns:
 | `cache` | `CacheOption` | the bucket default | The `Cache-Control` this object is stored with. See [Caching](/docs/blob/bucket/caching). |
 | `metadata` | `Record<string, string>` | none | Signed into the upload and handed back to `onUploadComplete`. |
 | `constraints` | `{ contentTypes?, maxSize? }` | the route's | Narrows this one upload's limits. |
-| `state` | `TState` | `undefined` | Anything computed here that `onUploadComplete` and `onError` should get without a lookup. Needs [`uploadRoute()`](#uploadroute). |
+| `state` | `TState` | `undefined` | Anything computed here that `onUploadComplete` and `onError` should get without a lookup, typed from what this callback returns in a handler without `routes`, written above `onUploadComplete`. With `routes`, give each route that needs it an [`uploadRoute()`](#uploadroute). |
 
 `file` is what the browser declared, and `file.type` is what the object is stored and served as. Whether the bytes match is checked separately; see [Byte sniffing](/docs/blob/uploads/constraints#byte-sniffing).
+
+<Accordion title="Write onBeforeUpload above onUploadComplete">
+```ts lib/uploads.ts
+// Fine: onBeforeUpload first.
+uploadHandler({ onBeforeUpload: ({ file }) => ({ path: file.name, state: { name: file.name } }), onUploadComplete: ({ state }) => state.name })
+
+// Fine: annotated, so the order stops mattering.
+uploadHandler({ onUploadComplete: ({ state }) => state.name, onBeforeUpload: ({ file }: BeforeUploadArgs) => ({ path: file.name, state: { name: file.name } }) })
+```
+
+In a handler without `routes`, write `onBeforeUpload` **above** `onUploadComplete`, or annotate its parameter. When `onBeforeUpload` is written below with an unannotated parameter, TypeScript fixes `state` to `undefined` first and reports the error on `onBeforeUpload`: `{ name: string } is not assignable to undefined`.
+</Accordion>
 
 ### Paths
 
@@ -4772,7 +4784,7 @@ const { start } = useUpload("thread")
 start({ file, input: { threadId } }) // input is required here, and its shape is checked
 ```
 
-Use `uploadRoute()` when a route needs an `input` schema for data the browser sends along with the file, or a typed `state` passed from `onBeforeUpload` to `onUploadComplete`. A plain route object cannot type either. It is curried so the `ctx` type can be named, and it is written outside the `routes` map.
+Use `uploadRoute()` when a route needs an `input` schema for data the browser sends along with the file, or a typed `state` passed from `onBeforeUpload` to `onUploadComplete`. A plain route object cannot type either. A handler without `routes` types `state` from its own `onBeforeUpload`, written above its `onUploadComplete`; with `routes`, each route that needs it takes an `uploadRoute()`. It is curried so the `ctx` type can be named, and it is written outside the `routes` map.
 
 * `input` is validated before `onBeforeUpload` runs, and only the parsed value reaches it. A route with **no** schema refuses any `input` the browser sends with `invalid_input`. Validation failures are `invalid_input` too, with the issues joined as `path: message`, so a bad `threadId` reads `threadId: Invalid uuid`.
 * `state` is for values the callback already computed and does not want to look up again. It travels through the browser and is readable in devtools, so put a row id there, never a secret.
