@@ -18,7 +18,7 @@ This recipe uses a public bucket. If you have not created one yet, start with th
 ## Setup
 
 ```bash
-pip install upstash-blob fastapi uvicorn
+pip install upstash-blob fastapi "uvicorn[standard]"
 npm create vite@latest web -- --template react-ts
 cd web && npm install @upstash/blob
 ```
@@ -126,6 +126,8 @@ A raise out of `record` deletes the object, so the `except` turns a database fai
 ## The routes
 
 ```python app/main.py
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from upstash_blob.fastapi import upload_view
@@ -153,17 +155,18 @@ async def delete_file(file_id: str, user: User = Depends(require_user)) -> None:
     await bucket.delete(row["path"])
 
 
-# Last, so the API routes above match first.
-app.mount("/", StaticFiles(directory="web/dist", html=True), name="web")
+# Last, so the API routes above match first. web/dist exists once you run npm run build.
+if Path("web/dist").is_dir():
+    app.mount("/", StaticFiles(directory="web/dist", html=True), name="web")
 ```
 
 ```bash
-uvicorn app.main:app --port 8000
+uvicorn app.main:app --env-file .env --port 8000
 ```
 
 `/api/upload` is where the hooks look by default. `GET` serves the route's limits to the file picker and `POST` runs the upload. `/api/files` reads your rows, never `bucket.list()`: the bucket cannot answer "which files are this user's", and your table can.
 
-Delete the row first, then the object. The list stops showing the file immediately, and if the second step fails the leftover is an object nobody links to rather than a link that 404s. `delete` treats an already missing object as success, so it is safe to retry.
+Delete the row first, then the object. The list stops showing the file immediately, and if the second step fails the leftover is an object nobody links to rather than a link that 404s. A retried `DELETE` finds no row and returns 404, so clear such leftovers in a sweep that compares `bucket.list(prefix="files/")` with your table.
 
 ---
 

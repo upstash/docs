@@ -47,8 +47,8 @@ try:
 except BlobError as e:
     if e.code == "partial_delete":
         queue_for_retry(e.failed or [])
-    elif e.code == "rate_limited":
-        time.sleep(e.retry_after or 1)
+    elif e.code == "mint_backoff":
+        retry_later(after=e.retry_after)
     else:
         raise
 ```
@@ -62,7 +62,7 @@ except BlobError as e:
 | `failed` | `list[str] \| None` | `partial_delete`: the paths that survived the delete. |
 | `etag` | `str \| None` | `already_exists`: the etag of what is already there. |
 | `size` | `int \| None` | `already_exists`: the size of what is already there. |
-| `retry_after` | `float \| None` | `mint_backoff` and `rate_limited`: seconds the service asked the caller to wait. |
+| `retry_after` | `float \| None` | `mint_backoff`: seconds the credential service asked the caller to wait. On another code, only when you set it yourself. |
 | `reason` | `str \| None` | A refusal from Upstash meant for the bucket owner, such as a suspended or read-only bucket. Never in `message` or `to_dict()`. |
 
 The underlying error, when there was one, is the standard `__cause__`, set with `raise ... from`. A `move_left_a_copy` carries the failed delete there.
@@ -120,7 +120,7 @@ A `BlobError` also survives `pickle`, so it crosses a process pool or a task que
 
 ## Bad options raise TypeError or ValueError
 
-A wrong type raises a `TypeError` and a value that does not parse raises a `ValueError`, where the option is written, never a `BlobError`:
+A wrong type raises a `TypeError` and a value that does not parse raises a `ValueError`, where the option is written:
 
 | Mistake | Raises |
 | --- | --- |
@@ -130,6 +130,9 @@ A wrong type raises a `TypeError` and a value that does not parse raises a `Valu
 | A path that is empty or has a `.` or `..` segment, on any `Bucket` method | `ValueError` |
 | An upload handler with no `on_before_upload`, an empty `routes`, a bad route name | `TypeError`, when the handler is built |
 | A body of an unsupported type, or one that yields `str` | `TypeError` |
+| `cache="forever"` on `Bucket(...)` | `ValueError`, from each call that stores an object |
+
+Two option mistakes raise a `BlobError` instead. A `content_types` list that is empty, or holds an entry that is not a `type/subtype` or one of `image/*`, `video/*` and `audio/*`, raises `invalid_content_type_pattern`, on a `put` or when a handler is built. A `content_type` that is not a media type raises `invalid_input`.
 
 The upload handler turns the path errors into `invalid_input`, since a path built from the browser's filename can be the client's doing. A few handler mistakes only show up while a request runs, and raise a `TypeError` that the framework answers as a 500:
 
