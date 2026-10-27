@@ -9,7 +9,9 @@ The filter is a JSON object naming index fields and the values to match, so `'{"
 
 Results come back ordered by relevance score by default. `ORDERBY` sorts by a `FAST` field instead, `LIMIT` and `OFFSET` page through the matches, `SELECT` and `NOCONTENT` cut the payload down to the fields you need, `HIGHLIGHT` wraps the matched terms in tags for display, and `SCOREFUNC` blends numeric fields such as popularity or recency into the relevance score.
 
-For multi-value `TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields, a document matches when any indexed array element satisfies the condition. Phrase queries on `TEXT` stay within one array element. `HIGHLIGHT` preserves the stored array shape in the response, marking matching string elements while leaving other elements unchanged. See [Multi-value queries](/redis/search/querying#multi-value-fields) for examples.
+For multi-value `TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields, a document matches when any indexed array element satisfies the condition. Phrase queries on `TEXT` stay within one array element. `HIGHLIGHT` preserves the stored array shape in the response, marking matching string elements while leaving other elements unchanged. See [Multi-value queries](/redis/search/querying#multi-value-fields) for examples.
+
+The query can also be a retriever. `$ann` searches `HYBRID` fields by meaning, and `$rrf` merges the results of several retrievers into one list. With `$ann`, results are ordered by similarity. With `$rrf`, they are ordered by the merged score. See [Retrievers](/redis/search/retrievers/overview) for details.
 
 See [Querying and filtering](/redis/search/querying) for the full filter syntax and worked examples, and [`SEARCH.COUNT`](/redis/commands/search/search-count) when you only need the number of matches.
 
@@ -46,6 +48,8 @@ SEARCH.QUERY <name> '<query>'
 | `SCOREFUNC` | Adjust relevance scores using one or more `FAST` numeric fields. `FACTOR` defaults to `1`, `MISSING` to `0`, `MODIFIER` to `NONE`, `SCOREMODE` to `SUM`, and `COMBINEMODE` to `SUM`. | Disabled |
 <Warning>
   `NOCONTENT` cannot be combined with `SELECT` or `HIGHLIGHT`. `SCOREFUNC` cannot be combined with `ORDERBY`. Inside `MULTI` or `EVAL`, the command requires `NOCONTENT`.
+
+  `ORDERBY` cannot be used with `$rrf` or `$ann`. `SCOREFUNC` and `HIGHLIGHT` cannot be used with `$ann` at the root of the query. With `$rrf`, `LIMIT` cannot be larger than the `$rrf` `window`, and `OFFSET` requires an explicit `window`. See [Query Options](/redis/search/retrievers/overview#query-options) and [`$rrf` paging](/redis/search/retrievers/rrf#paging).
 </Warning>
 
 See [Querying and filtering](/redis/search/querying) for the JSON filter operators and detailed query examples.
@@ -55,7 +59,7 @@ See [Querying and filtering](/redis/search/querying) for the JSON filter operato
 Returns an array of `[key, score, content]` results, or `null` if the index does not exist:
 
 - `key` is the Redis key of the matching document.
-- `score` is the floating-point relevance score.
+- `score` is the floating-point relevance score. With `$ann`, it is the similarity score. With `$rrf`, it is the merged score.
 - `content` is an array of field-value pairs. JSON indexes return `[["$", "<json_string>"]]`; hash indexes return `[["field", "value"], ...]`.
 
 When `NOCONTENT` is used, each result is `[key, score]`. When `SELECT` is used, only fields that exist in the document appear in the content. For an index created with `ON STREAM`, `key` is the entry ID of the matching stream entry.
@@ -77,6 +81,9 @@ A highlighted multi-valued field keeps its array form in the reply. Highlighting
 
 ```bash
 SEARCH.QUERY products '{"name": "wireless"}' LIMIT 10 OFFSET 0
+
+# Merge a full-text query and a semantic search on a HYBRID field
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "wireless"}, {"$ann": {"field": "description", "query": "wireless"}}]}}' LIMIT 10
 ```
 
 </Accordion>

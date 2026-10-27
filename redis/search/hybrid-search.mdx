@@ -1,0 +1,111 @@
+---
+title: Hybrid Search
+description: Combine full-text and semantic search with HYBRID fields and retrievers.
+---
+
+Full-text search finds documents that contain the words of your query. Semantic search finds documents
+with a similar meaning, even when they use different words. Hybrid search runs both and merges the
+results into one list.
+
+Hybrid search has two parts:
+
+- `HYBRID` fields are indexed for both full-text and semantic search.
+- [Retrievers](/redis/search/retrievers/overview) run the searches. [`$ann`](/redis/search/retrievers/ann)
+  runs a semantic search, and [`$rrf`](/redis/search/retrievers/rrf) merges the results of several
+  retrievers into one list.
+
+## Hybrid fields
+
+A `HYBRID` field is a `TEXT` field that also stores a vector embedding. Full-text queries work on it
+the same way as on a `TEXT` field, and `$ann` searches its embeddings by meaning. See
+[Hybrid Fields](/redis/search/schema-definition#hybrid-fields) for the field options.
+
+- An index can have more than one `HYBRID` field.
+- If the text of a document cannot be embedded, the document is still searchable by its text.
+- `HYBRID` fields work with JSON, hash, string, and stream indexes.
+
+## Create an index
+
+Declare the fields you want to search by meaning as `HYBRID`:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description HYBRID category KEYWORD price F64 FAST
+```
+</Tab>
+
+</Tabs>
+
+## Add documents
+
+Write documents as usual. Search indexes them and creates their embeddings:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+JSON.SET product:1 $ '{"name": "Studio Headphones", "description": "Over-ear headphones with active noise cancelling", "category": "audio", "price": 199}'
+JSON.SET product:2 $ '{"name": "Travel Earplugs", "description": "Soft foam earplugs that keep airplane cabin sound out", "category": "travel", "price": 9}'
+JSON.SET product:3 $ '{"name": "Sport Earbuds", "description": "Sweat-proof wireless earbuds for running", "category": "sports", "price": 79}'
+
+# Wait until the documents are indexed
+SEARCH.WAITINDEXING products
+```
+</Tab>
+
+</Tabs>
+
+## Search by meaning
+
+Use [`$ann`](/redis/search/retrievers/ann) to find the documents that are closest in meaning to a
+text. This query can find the earplugs, even though their description does not contain the word
+"noise":
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "block noise on a flight"}}'
+
+# Search by meaning within one category
+SEARCH.QUERY products '{"$ann": {"field": "description", "query": "headphones for running", "filter": {"category": "sports"}}}'
+```
+</Tab>
+
+</Tabs>
+
+## Combine full-text and semantic search
+
+Use [`$rrf`](/redis/search/retrievers/rrf) to run a full-text query and a semantic search, and merge
+their results into one list. Documents that rank high in both come first:
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling"}, {"$ann": {"field": "description", "query": "noise cancelling"}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+To give one side more influence, set its weight. A full-text query takes a weight when you wrap it in
+[`$standard`](/redis/search/retrievers/standard):
+
+<Tabs>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.QUERY products '{"$rrf": {"retrievers": [{"$standard": {"query": {"description": "noise cancelling"}, "weight": 2}}, {"$ann": {"field": "description", "query": "noise cancelling"}}]}}'
+```
+</Tab>
+
+</Tabs>
+
+## Next steps
+
+- See [Retrievers](/redis/search/retrievers/overview) for all retriever parameters and rules.
+- See [Schema Definition](/redis/search/schema-definition#hybrid-fields) for field types and options.
+- See [`SEARCH.QUERY`](/redis/commands/search/search-query) for all query options.
