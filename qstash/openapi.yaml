@@ -59,6 +59,23 @@ components:
           type: string
           description: Error message
 
+    DLQBulkActionCreated:
+      type: object
+      required:
+        - actionId
+        - total
+      example:
+        actionId: action_...
+        total: 42
+      properties:
+        actionId:
+          type: string
+          description: ID used to check the background action's progress.
+        total:
+          type: integer
+          format: int64
+          description: Number of DLQ messages matching the filters when the action was created.
+
     Message:
       type: object
       properties:
@@ -554,7 +571,7 @@ components:
           description: The ID of the bulk action.
         kind:
           type: string
-          enum: [cancel]
+          enum: [cancel, dlq_delete, dlq_retry]
           description: The kind of the bulk action.
         state:
           type: string
@@ -569,7 +586,7 @@ components:
         total:
           type: integer
           format: int64
-          description: The number of in-progress messages that matched the filter when the bulk action was created.
+          description: The number of messages that matched the filter when the bulk action was created.
         processed:
           type: integer
           format: int64
@@ -589,10 +606,163 @@ components:
             items:
               type: string
           description: |
-            The filter the bulk action was created with. Keys are the filter parameter names of the bulk cancel request, such as `queueName`, `label` or `fromDate`, and values are the given values.
+            The filter the bulk action was created with. Keys are the request's filter parameter names, such as `queueName`, `label` or `fromDate`, and values are the given values.
           example:
             queueName: [my-queue]
             label: [label_1, label_2]
+  parameters:
+    DLQOverrideMethod:
+      name: Upstash-Method
+      in: header
+      schema:
+        type: string
+        enum: [GET, POST, PUT, PATCH, DELETE]
+      description: Override the HTTP method used to deliver each retried message.
+    DLQOverrideTimeout:
+      name: Upstash-Timeout
+      in: header
+      schema:
+        type: string
+      description: Override the delivery timeout for each retried message, such as `30s` or `2m`.
+    DLQOverrideRetries:
+      name: Upstash-Retries
+      in: header
+      schema:
+        type: integer
+      description: Override the number of delivery retries for each retried message. Use `0` to disable retries.
+    DLQOverrideRetryDelay:
+      name: Upstash-Retry-Delay
+      in: header
+      schema:
+        type: string
+      description: Override the retry delay expression for each retried message.
+    DLQOverrideDelay:
+      name: Upstash-Delay
+      in: header
+      schema:
+        type: string
+      description: Delay each retried message's delivery. Format is `<value><unit>`, such as `10s` or `5m`.
+    DLQOverrideNotBefore:
+      name: Upstash-Not-Before
+      in: header
+      schema:
+        type: integer
+      description: Delay delivery until this Unix timestamp in seconds. Takes precedence over `Upstash-Delay`.
+    DLQOverrideLabel:
+      name: Upstash-Label
+      in: header
+      schema:
+        type: string
+      description: Override the labels on each retried message. Use a comma-separated list for multiple labels.
+    DLQOverrideFlowControlKey:
+      name: Upstash-Flow-Control-Key
+      in: header
+      schema:
+        type: string
+      description: Override the flow control key for each retried message. Set `Upstash-Flow-Control-Value` to define its limits.
+    DLQOverrideFlowControlValue:
+      name: Upstash-Flow-Control-Value
+      in: header
+      schema:
+        type: string
+      description: Override the flow control limits in the format `parallelism=<value>, rate=<value>, period=<value>`.
+    DLQOverrideCallback:
+      name: Upstash-Callback
+      in: header
+      schema:
+        type: string
+      description: Override the success or failure callback URL for each retried message.
+    DLQOverrideFailureCallback:
+      name: Upstash-Failure-Callback
+      in: header
+      schema:
+        type: string
+      description: Override the failure callback URL for each retried message.
+    DLQMessageIdFilter:
+      name: messageId
+      in: query
+      schema:
+        type: string
+      description: Filter by message ID.
+    DLQUrlFilter:
+      name: url
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by destination URL. Supports multiple values.
+    DLQTopicNameFilter:
+      name: topicName
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by URL Group name. Supports multiple values.
+    DLQScheduleIdFilter:
+      name: scheduleId
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by schedule ID. Supports multiple values.
+    DLQQueueNameFilter:
+      name: queueName
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by queue name. Supports multiple values.
+    DLQResponseStatusFilter:
+      name: responseStatus
+      in: query
+      schema:
+        type: array
+        items:
+          type: integer
+      description: Filter by the last delivery attempt's HTTP response status. Supports multiple values.
+    DLQFromDateFilter:
+      name: fromDate
+      in: query
+      schema:
+        type: integer
+        format: int64
+      description: Inclusive start of the DLQ date range, in Unix milliseconds.
+    DLQToDateFilter:
+      name: toDate
+      in: query
+      schema:
+        type: integer
+        format: int64
+      description: Inclusive end of the DLQ date range, in Unix milliseconds.
+    DLQCallerIpFilter:
+      name: callerIp
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by publisher IP address. Supports multiple values.
+    DLQLabelFilter:
+      name: label
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by message label. Supports multiple values.
+    DLQFlowControlKeyFilter:
+      name: flowControlKey
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by flow control key. Supports multiple values.
+
 paths:
   /v2/publish/{destination}:
     post:
@@ -1427,12 +1597,6 @@ paths:
           - Sending the same filters again while an identical bulk action is still in progress does not start a new one. The in-progress bulk action is returned instead.
           - Up to 1000 bulk actions can be in progress at the same time. Beyond that, a `412` is returned.
 
-          <Info>
-          For multi-value filters, a message matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. 
-          
-          Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
-          </Info>
-          
       parameters:
         - name: messageIds
           in: query
@@ -1594,12 +1758,12 @@ paths:
   /v2/bulkActions:
     get:
       summary: List Bulk Actions
-      description: List the bulk actions created by filter-based message cancels
+      description: List all created bulk actions
       tags:
         - Bulk Actions
       x-mint:
         content: |
-          A bulk action is created for every filter-based [bulk cancel](/qstash/api-reference/messages/bulk-cancel-messages) request, and tracks the progress of the cancellation running in the background.
+          Bulk actions track filter-based [message cancels](/qstash/api-reference/messages/bulk-cancel-messages) and DLQ [delete bulk actions](/qstash/api-reference/dlq/delete/delete-bulk-action) or [retry bulk actions](/qstash/api-reference/dlq/retry/retry-bulk-action).
 
           Bulk actions are kept for 7 days after they are created.
 
@@ -1664,7 +1828,7 @@ paths:
           required: true
           schema:
             type: string
-          description: The ID of the bulk action, as returned by a filter-based bulk cancel with `async=true`.
+          description: The ID returned by a filter-based bulk cancel or asynchronous DLQ action.
       responses:
         '200':
           description: Bulk action details
@@ -2394,13 +2558,6 @@ paths:
       description: List and paginate through all messages currently in the DLQ
       tags:
         - DLQ
-      x-mint:
-        content: |
-          <Info>
-            For multi-value filters, a message matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. 
-            
-            Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
-          </Info>
       parameters:
         - name: cursor
           in: query
@@ -2504,25 +2661,23 @@ paths:
                     items:
                       $ref: '#/components/schemas/DLQMessage'
     delete:
-      summary: Bulk Delete DLQ messages
-      description: Delete multiple messages from the DLQ
+      summary: Delete Sync Bulk
+      description: Delete one page of messages from the DLQ and use the returned cursor to continue
       tags:
         - DLQ
       x-mint:
+        href: /qstash/api-reference/dlq/delete/delete-pagination-api
+        metadata:
+          title: Sync Bulk
+          sidebarTitle: Sync Bulk
+          description: Delete DLQ Messages with Pagination
         content: |
-          <Info>
-            For multi-value filters, a message matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. 
-            
-            Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
-          </Info>
+          <Warning>
+            The synchronous pagination API is deprecated. It’s recommended to use Async Bulk endpoint to process all matching entries in a bulk action.
+          </Warning>
+
+          This paginated request processes at most `count` matching messages and returns a `cursor` for the next page.
       parameters:
-        - name: dlqIds
-          in: query
-          schema:
-            type: array
-            items:
-              type: string
-          description: List of DLQ IDs to delete. If provided, other filters are ignored.
         - name: cursor
           in: query
           schema:
@@ -2594,12 +2749,7 @@ paths:
             items:
               type: string
           description: |
-            Filter DLQ messages by label. Supports multiple values. You can pass multiple values to match messages with any of the given labels (OR logic).
-
-            Examples:
-            - `label=my_label`
-            - `label=label_1&label=label_2`
-            - `label=label_1,label_2`
+            Filter DLQ messages by label. Supports multiple values.
         - name: flowControlKey
           in: query
           schema:
@@ -2630,6 +2780,103 @@ paths:
                   deleted:
                     type: integer
                     description: The number of messages that were deleted.
+  /v2/dlq/bulkDelete:
+    post:
+      summary: Delete Async Bulk
+      description: Create a bulk action that deletes every QStash DLQ message matching the query filters. Omit all filters to delete the entire DLQ.
+      tags:
+        - DLQ
+      x-mint:
+        href: /qstash/api-reference/dlq/delete/delete-bulk-action
+        metadata:
+          title: Async Bulk
+          sidebarTitle: Async Bulk
+          description: Delete all matching QStash DLQ messages in a bulk action.
+        content: |
+          The request returns after creating the action. Use its `actionId` with [Get a Bulk Action](/qstash/api-reference/bulk-actions/get-a-bulk-action) to check progress.
+
+          Identical filters submitted while an action is already in-progress return the existing action.
+
+      parameters:
+        - $ref: '#/components/parameters/DLQMessageIdFilter'
+        - $ref: '#/components/parameters/DLQUrlFilter'
+        - $ref: '#/components/parameters/DLQTopicNameFilter'
+        - $ref: '#/components/parameters/DLQScheduleIdFilter'
+        - $ref: '#/components/parameters/DLQQueueNameFilter'
+        - $ref: '#/components/parameters/DLQResponseStatusFilter'
+        - $ref: '#/components/parameters/DLQFromDateFilter'
+        - $ref: '#/components/parameters/DLQToDateFilter'
+        - $ref: '#/components/parameters/DLQCallerIpFilter'
+        - $ref: '#/components/parameters/DLQLabelFilter'
+        - $ref: '#/components/parameters/DLQFlowControlKeyFilter'
+      responses:
+        '200':
+          description: The background action was created or an identical in-progress action was returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQBulkActionCreated'
+        '412':
+          description: Too many bulk actions are already in progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/dlq/bulkRetry:
+    post:
+      summary: Retry Async Bulk
+      description: Create a bulk action that retries every QStash DLQ message matching the query filters. Omit all filters to retry the entire DLQ.
+      tags:
+        - DLQ
+      x-mint:
+        href: /qstash/api-reference/dlq/retry/retry-bulk-action
+        metadata:
+          title: Async Bulk
+          sidebarTitle: Async Bulk
+          description: Retry all matching QStash DLQ messages in a bulk action.
+        content: |
+          Each retry creates a new message with the original body and headers, then removes the original DLQ entry.
+
+          The request returns after creating the action. Use its `actionId` with [Get a Bulk Action](/qstash/api-reference/bulk-actions/get-a-bulk-action) to check progress.
+
+          Identical filters submitted while an action is already in-progress return the existing action.
+
+      parameters:
+        - $ref: '#/components/parameters/DLQMessageIdFilter'
+        - $ref: '#/components/parameters/DLQUrlFilter'
+        - $ref: '#/components/parameters/DLQTopicNameFilter'
+        - $ref: '#/components/parameters/DLQScheduleIdFilter'
+        - $ref: '#/components/parameters/DLQQueueNameFilter'
+        - $ref: '#/components/parameters/DLQResponseStatusFilter'
+        - $ref: '#/components/parameters/DLQFromDateFilter'
+        - $ref: '#/components/parameters/DLQToDateFilter'
+        - $ref: '#/components/parameters/DLQCallerIpFilter'
+        - $ref: '#/components/parameters/DLQLabelFilter'
+        - $ref: '#/components/parameters/DLQFlowControlKeyFilter'
+        - $ref: '#/components/parameters/DLQOverrideMethod'
+        - $ref: '#/components/parameters/DLQOverrideTimeout'
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideNotBefore'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideCallback'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
+      responses:
+        '200':
+          description: The background action was created or an identical in-progress action was returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQBulkActionCreated'
+        '412':
+          description: Too many bulk actions are already in progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v2/dlq/{dlqId}:
     get:
       summary: Get a DLQ message
@@ -2660,10 +2907,16 @@ paths:
                 $ref: '#/components/schemas/Error'
 
     delete:
-      summary: Delete a DLQ message
+      summary: Delete Single ID
       description: Manually remove a message from the DLQ
       tags:
         - DLQ
+      x-mint:
+        href: /qstash/api-reference/dlq/delete/delete-single-id
+        metadata:
+          title: Single ID
+          sidebarTitle: Single ID
+          description: Delete one QStash DLQ message by its DLQ ID.
       parameters:
         - name: dlqId
           in: path
@@ -2684,21 +2937,19 @@ paths:
                 $ref: '#/components/schemas/Error'
   /v2/dlq/retry/{dlqId}:
     post:
-      summary: Retry a DLQ message
+      summary: Retry Single ID
       description: Retry delivery of a message from the DLQ
       tags:
         - DLQ
       x-mint: 
+        href: /qstash/api-reference/dlq/retry/retry-single-id
+        metadata:
+          title: Single ID
+          sidebarTitle: Single ID
+          description: Retry one QStash DLQ message by its DLQ ID.
         content: |
           When a DLQ message is retried, a new message with the same body and headers is created and scheduled for delivery.
           The original DLQ message is then removed from the DLQ.
-
-          <Note> 
-            You can pass all configuration headers to override the configuration of the original message.
-
-            For example, if the retry count of the original message is 5, you can set it to 0 for the retried message by passing `Upstash-Retries: 0 ` header to this request. 
-            Check out publish documentation for complete list of configuration options you can pass.
-          </Note>
       parameters:
         - name: dlqId
           in: path
@@ -2707,6 +2958,17 @@ paths:
             type: string
           description: |
             The DLQ ID of the message you want to retry.
+        - $ref: '#/components/parameters/DLQOverrideMethod'
+        - $ref: '#/components/parameters/DLQOverrideTimeout'
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideNotBefore'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideCallback'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
       responses:
         '201':
           description: Message retry initiated successfully
@@ -2723,35 +2985,39 @@ paths:
                 $ref: '#/components/schemas/Error'  
   /v2/dlq/retry:
     post:
-      summary: Bulk Retry DLQ messages
-      description: Retry delivery of multiple messages from the DLQ
+      summary: Retry Sync Bulk
+      description: Retry one page of DLQ messages and use the returned cursor to continue
       tags:
         - DLQ
       x-mint: 
+        href: /qstash/api-reference/dlq/retry/retry-pagination-api
+        metadata:
+          title: Sync Bulk
+          sidebarTitle: Sync Bulk
+          description: Resume Failed Messages with Pagination
         content: |
+          <Warning>
+            The synchronous pagination API is deprecated. It’s recommended to use Async Bulk endpoint to process all matching entries in a bulk action.
+          </Warning>
+
+          This paginated request processes at most `count` matching messages and returns a `cursor` for the next page.
+
           When DLQ messages are retried, new messages with the same body and headers are created and scheduled for delivery.
           The original DLQ messages are then removed from the DLQ.
 
-          <Note> 
-            You can pass all configuration headers to override the configuration of the original messages.
-
-            For example, if the retry count of the original messages is 5, you can set it to 0 for the retried messages by passing `Upstash-Retries: 0 ` header to this request.
-            Check out publish documentation for complete list of configuration options you can pass.
-          </Note>
-
-          <Info>
-            For multi-value filters, a message matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. 
-            
-            Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
-          </Info>
       parameters:
-        - name: dlqIds
+        - name: cursor
           in: query
           schema:
-            type: array
-            items:
-              type: string
-          description: List of DLQ IDs to retry. If provided, other filters are ignored.
+            type: string
+          description: Cursor returned by the previous page. Omit for the first page.
+        - name: count
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 100
+          description: Maximum number of messages to retry in this request.
         - name: messageId
           in: query
           schema:
@@ -2818,12 +3084,7 @@ paths:
             items:
               type: string
           description: |
-            Filter DLQ messages by label. Supports multiple values. You can pass multiple values to match messages with any of the given labels (OR logic).
-
-            Examples:
-            - `label=my_label`
-            - `label=label_1&label=label_2`
-            - `label=label_1,label_2`
+            Filter DLQ messages by label. Supports multiple values.
         - name: flowControlKey
           in: query
           schema:
@@ -2831,9 +3092,20 @@ paths:
             items:
               type: string
           description: Filter DLQ messages by Flow Control Key. Supports multiple values.
+        - $ref: '#/components/parameters/DLQOverrideMethod'
+        - $ref: '#/components/parameters/DLQOverrideTimeout'
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideNotBefore'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideCallback'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
       responses:
-        '201':
-          description: Messages retry initiated successfully
+        '200':
+          description: Messages retried successfully
           content:
             application/json:
               schema:
