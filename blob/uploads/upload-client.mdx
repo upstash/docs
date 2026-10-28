@@ -67,7 +67,7 @@ export const { useUpload } = uploadHooks({ endpoint: "/api/upload" })
 const avatar = useUpload("avatar") // POSTs to /api/upload?route=avatar
 ```
 
-`uploadHooks<typeof uploads>` needs the handler's TypeScript type. When the handler is written with another server SDK, such as [Python](/blob/sdks/py/upload-handler#mounting-it), call `uploadHooks()` with no type parameter, or import `useUpload` from `@upstash/blob/react` directly. The unbound hook takes a route name, which resolves against `endpoint`, or the handler's URL. Route names are not checked at compile time, and `upload.blob.data` is `unknown`.
+`uploadHooks<typeof uploads>` needs the handler's TypeScript type. When the handler is written with another server SDK, such as [Python](/blob/sdks/py/upload-handler#mounting-it) or [Go](/blob/sdks/go/upload-handler#mounting-it), call `uploadHooks()` with no type parameter, or import `useUpload` from `@upstash/blob/react` directly. The unbound hook takes a route name, which resolves against `endpoint`, or the handler's URL. Route names are not checked at compile time, and `upload.blob.data` is `unknown`.
 
 ---
 
@@ -212,6 +212,35 @@ async def avatar(file: UploadFile):
     except BlobError as e:
         return JSONResponse(e.to_dict(), status_code=e.status)  # decoded by useServerUpload
     return {"url": blob.versioned_url}
+```
+
+```go Go
+// avatar.go (net/http)
+func avatar(w http.ResponseWriter, r *http.Request) {
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "file field required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	b, err := bucket.Put(r.Context(), "avatars/"+userID, file, &blob.PutOptions{
+		ContentType:  header.Header.Get("Content-Type"),
+		ContentTypes: []string{"image/png"},
+		MaxSize:      2 * blob.MB,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	var be *blob.Error
+	if errors.As(err, &be) {
+		w.WriteHeader(be.Status)
+		json.NewEncoder(w).Encode(be) // decoded by useServerUpload
+		return
+	} else if err != nil {
+		http.Error(w, "upload failed", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"url": b.VersionedURL})
+}
 ```
 </CodeGroup>
 

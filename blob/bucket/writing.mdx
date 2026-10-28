@@ -15,9 +15,16 @@ blob.url
 blob = bucket.put("reports/q3.pdf", pdf, content_type="application/pdf")
 blob.url
 ```
+
+```go Go
+b, err := bucket.Put(ctx, "reports/q3.pdf", pdf, &blob.PutOptions{
+	ContentType: "application/pdf",
+})
+b.URL
+```
 </CodeGroup>
 
-`bucket` is the client from [Connecting](/blob/bucket/connecting). Everything here runs on your server with the bucket token. Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#put), [Python](/blob/sdks/py/bucket#put).
+`bucket` is the client from [Connecting](/blob/bucket/connecting). Everything here runs on your server with the bucket token. Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#put), [Python](/blob/sdks/py/bucket#put), [Go](/blob/sdks/go/bucket#put).
 
 For files a user picks in the browser, do not proxy the bytes through your app. Use an [upload handler](/blob/uploads/upload-handler) instead.
 
@@ -49,9 +56,9 @@ Sizes are byte counts like `4096`, `'20mb'`, or `'32MiB'` ([Types](/blob/referen
 
 ### Bodies
 
-A body that carries its own length and content type, such as a file or an incoming request, needs nothing declared. One that carries neither, such as a stream, needs a size, or at least a max size. The body types each SDK accepts: [TypeScript](/blob/sdks/ts/bucket#bodies), [Python](/blob/sdks/py/bucket#bodies).
+A body that carries its own length and content type, such as a file or an incoming request, needs nothing declared. In Go a request body is a plain reader that needs a size or a max size. One that carries neither, such as a stream, needs a size, or at least a max size. The body types each SDK accepts: [TypeScript](/blob/sdks/ts/bucket#bodies), [Python](/blob/sdks/py/bucket#bodies), [Go](/blob/sdks/go/bucket#bodies).
 
-An incoming request with no body, or one that has already been read, is refused with `empty_body`.
+An incoming request with no body, or one that has already been read, is refused with `empty_body`. Python and Go have no request body type, so their `put` never returns it.
 
 ---
 
@@ -81,6 +88,18 @@ bucket.put("export.csv", rows(), max_size="10mb")
 # Stream straight through, nothing buffered. The declared size must be exact.
 bucket.put("export.csv", rows(), size=5000)
 ```
+
+```go Go
+bucket.Put(ctx, "export.csv", pr, nil)
+// *blob.Error: Length required (pass Size or MaxSize so the length is known
+// before the first byte)  -- code length_required, status 411
+
+// Buffer up to the cap. A reader that runs past it fails with too_large.
+bucket.Put(ctx, "export.csv", pr, &blob.PutOptions{MaxSize: 10 * blob.MB})
+
+// Stream straight through, nothing buffered. The declared size must be exact.
+bucket.Put(ctx, "export.csv", pr, &blob.PutOptions{Size: 5000})
+```
 </CodeGroup>
 
 Storage needs a content length before the first byte goes out, and a stream has none. Pass one of two options: a max size buffers up to that cap, and a stream that runs past it is cancelled with `too_large`; an exact size streams straight through with nothing buffered.
@@ -102,6 +121,12 @@ await bucket.put("uploads/../secrets/key.pem", body)
 ```python Python
 bucket.put("uploads/../secrets/key.pem", body)
 # ValueError: path may not contain "." or ".." segments
+```
+
+```go Go
+bucket.Put(ctx, "uploads/../secrets/key.pem", body, nil)
+// *blob.Error: Path may not contain "." or ".." segments:
+// uploads/../secrets/key.pem -- code invalid_input, status 400
 ```
 </CodeGroup>
 
@@ -128,6 +153,13 @@ user_id = "Alice_123"
 filename = "Q3 Report.pdf"
 path = unique_path(f"users/{user_id}/{filename}")
 # 'users/Alice_123/Q3 Report-3xK9mBqR.pdf'
+```
+
+```go Go
+userID := "Alice_123"
+filename := "Q3 Report.pdf"
+path := blob.UniquePath("users/" + userID + "/" + filename)
+// "users/Alice_123/Q3 Report-3xK9mBqR.pdf"
 ```
 </CodeGroup>
 
@@ -178,6 +210,22 @@ bucket.put("invoices/7.pdf", pdf, metadata={"invoiceId": "2026-0042"})
 # BlobError: Metadata key "invoiceId" must be lowercase (storage returns keys
 # lowercased; write "invoiceid")  -- code 'invalid_input', status 400
 ```
+
+```go Go
+bucket.Put(ctx, "invoices/7.pdf", pdf, &blob.PutOptions{
+	ContentType: "application/pdf",
+	Metadata:    map[string]string{"owner": "u7", "invoice-id": "2026-0042"},
+})
+
+info, err := bucket.Info(ctx, "invoices/7.pdf")
+info.Metadata // map[invoice-id:2026-0042 owner:u7]
+
+bucket.Put(ctx, "invoices/7.pdf", pdf, &blob.PutOptions{
+	Metadata: map[string]string{"invoiceId": "2026-0042"},
+})
+// *blob.Error: Metadata key "invoiceId" must be lowercase (storage returns keys
+// lowercased; write "invoiceid")  -- code invalid_input, status 400
+```
 </CodeGroup>
 
 Metadata is a flat map of string keys to string values, stored as `x-amz-meta-*` headers. Three rules:
@@ -208,6 +256,24 @@ bucket.put("a.txt", "x", metadata={"note": "café"})
 bucket.put("a.txt", "x", metadata={"note": quote("café")})
 unquote(bucket.info("a.txt").metadata["note"])  # 'café'
 ```
+
+```go Go
+bucket.Put(ctx, "a.txt", strings.NewReader("x"), &blob.PutOptions{
+	Metadata: map[string]string{"note": "café"},
+})
+// *blob.Error: metadata.note has characters storage does not carry
+// back unchanged (metadata is printable ASCII; percent-encode anything
+// else with url.QueryEscape) -- code invalid_input, status 400
+
+bucket.Put(ctx, "a.txt", strings.NewReader("x"), &blob.PutOptions{
+	Metadata: map[string]string{"note": url.QueryEscape("café")},
+})
+info, err := bucket.Info(ctx, "a.txt")
+if err != nil {
+	return err
+}
+note, err := url.QueryUnescape(info.Metadata["note"]) // "café"
+```
 </CodeGroup>
 
 ---
@@ -236,6 +302,22 @@ current = bucket.info("u/7/profile.json")
 bucket.put("u/7/profile.json", next_body, if_unchanged=current.etag)
 # raises conflict if somebody else wrote first
 ```
+
+```go Go
+// Refuse if anything is already at the path.
+bucket.Put(ctx, "u/7/profile.json", body, &blob.PutOptions{NoOverwrite: true})
+// returns already_exists, with ETag and Size of what is there
+
+// Refuse if the object changed since you read it.
+current, err := bucket.Info(ctx, "u/7/profile.json")
+if err != nil {
+	return err
+}
+bucket.Put(ctx, "u/7/profile.json", next, &blob.PutOptions{
+	IfUnchanged: current.ETag,
+})
+// returns conflict if somebody else wrote first
+```
 </CodeGroup>
 
 Turning allow-overwrite off refuses the write if anything is already at the path, with `already_exists` carrying the etag and size of what is there. If-unchanged takes an etag you read and refuses with `conflict` if somebody else wrote first. Both are enforced by storage, so there is no race window.
@@ -251,6 +333,14 @@ await bucket.put("big.bin", body, { allowOverwrite: false, multipart: true })
 ```python Python
 bucket.put("big.bin", body, allow_overwrite=False, multipart=True)
 # BlobError: Multipart: allow_overwrite=False and if_unchanged are single-PUT only
+```
+
+```go Go
+bucket.Put(ctx, "big.bin", body, &blob.PutOptions{
+	NoOverwrite: true,
+	Multipart:   blob.MultipartAlways,
+})
+// *blob.Error: Multipart: NoOverwrite and IfUnchanged are single-PUT only
 ```
 </CodeGroup>
 
@@ -273,17 +363,33 @@ await bucket.updateJson<Settings>("u/7.json", (prev) => ({
 ```python Python
 bucket.update_json("u/7.json", lambda prev: {**(prev or {}), "theme": "dark"})
 ```
+
+```go Go
+type Settings struct {
+	Theme string `json:"theme"`
+}
+
+setDark := func(prev *Settings) (Settings, error) {
+	next := Settings{}
+	if prev != nil {
+		next = *prev
+	}
+	next.Theme = "dark"
+	return next, nil
+}
+blob.UpdateJSON(ctx, bucket, "u/7.json", setDark, nil)
+```
 </CodeGroup>
 
 The JSON update runs in the SDK, not in storage. It reads the document, calls your function with the parsed value, and writes the result back with if-unchanged. If somebody wrote in between, it pauses briefly, reads again and re-runs your function. After the maximum number of attempts it throws `conflict`.
 
-- Your function gets null (`None` in Python) when there is nothing to read. An empty object reads as null too.
+- Your function gets null (`None` in Python, `nil` in Go) when there is nothing to read. An empty object reads as null too.
 - It may be async (in Python, only on `AsyncBucket`). It runs on every attempt, so keep it a pure transform.
 - The object is written as `application/json`. Existing metadata is carried over unless you pass your own.
 
 ### Options
 
-Every option is optional. Names and types: [TypeScript](/blob/sdks/ts/bucket#updatejson), [Python](/blob/sdks/py/bucket#update_json).
+Every option is optional. Names and types: [TypeScript](/blob/sdks/ts/bucket#updatejson), [Python](/blob/sdks/py/bucket#update_json), [Go](/blob/sdks/go/bucket#updatejson).
 
 | Option | Default | What it does |
 | --- | --- | --- |
@@ -305,6 +411,13 @@ const moved = await bucket.move("tmp/9f3c", "reports/q3.pdf", { contentType: "ap
 archived = bucket.copy("tmp/9f3c", "archive/2026/report.pdf")
 moved = bucket.move("tmp/9f3c", "reports/q3.pdf", content_type="application/pdf")
 ```
+
+```go Go
+archived, err := bucket.Copy(ctx, "tmp/9f3c", "archive/2026/report.pdf", nil)
+moved, err := bucket.Move(ctx, "tmp/9f3c", "reports/q3.pdf", &blob.CopyOptions{
+	ContentType: "application/pdf",
+})
+```
 </CodeGroup>
 
 `copy` runs inside storage, so the bytes never travel through your app. Storage has no rename, so `move` is a copy followed by a delete of the source. Both return the destination's record. A missing source throws `not_found`.
@@ -313,7 +426,7 @@ An existing destination is overwritten. There is no allow-overwrite option here 
 
 ### Options
 
-Every option is optional, and `move` takes the same ones as `copy`. Names and types: [TypeScript](/blob/sdks/ts/bucket#copy-and-move), [Python](/blob/sdks/py/bucket#copy-and-move).
+Every option is optional, and `move` takes the same ones as `copy`. Names and types: [TypeScript](/blob/sdks/ts/bucket#copy-and-move), [Python](/blob/sdks/py/bucket#copy-and-move), [Go](/blob/sdks/go/bucket#copy-and-move).
 
 | Option | Default | What it does |
 | --- | --- | --- |
@@ -336,6 +449,12 @@ await bucket.put("video.mp4", data, { multipart: "100mb" })
 
 ```python Python
 bucket.put("video.mp4", data, multipart="100mb")
+```
+
+```go Go
+bucket.Put(ctx, "video.mp4", bytes.NewReader(data), &blob.PutOptions{
+	Multipart: blob.MultipartOver(100 * blob.MB),
+})
 ```
 </CodeGroup>
 
@@ -372,9 +491,38 @@ upload = bucket.signed_upload_url(
 
 httpx.put(upload.url, headers=upload.headers, content=pdf)
 ```
+
+```go Go
+up, err := bucket.SignedUploadURL(ctx, "u/7/report.pdf",
+	&blob.SignedUploadURLOptions{
+		ContentType: "application/pdf",
+		Size:        int64(len(data)),
+		ExpiresIn:   10 * time.Minute,
+	})
+if err != nil {
+	return err
+}
+
+body := bytes.NewReader(data)
+req, _ := http.NewRequestWithContext(ctx, http.MethodPut, up.URL, body)
+for k, v := range up.Headers {
+	if k != "content-length" { // net/http takes the length from the body
+		req.Header.Set(k, v)
+	}
+}
+res, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
+res.Body.Close()
+if res.StatusCode != http.StatusOK {
+	// a 403 means a header was changed or dropped
+	return fmt.Errorf("upload refused: %s", res.Status)
+}
+```
 </CodeGroup>
 
-A signed upload URL comes back with the headers to send and when it expires: a URL somebody else can PUT exactly one object to. Use it for a CLI, a build step, or a server-to-server job whose bytes you do not want to relay. Names and types: [TypeScript](/blob/sdks/ts/bucket#signeduploadurl), [Python](/blob/sdks/py/bucket#signed_upload_url).
+A signed upload URL comes back with the headers to send and when it expires: a URL somebody else can PUT exactly one object to. Use it for a CLI, a build step, or a server-to-server job whose bytes you do not want to relay. Names and types: [TypeScript](/blob/sdks/ts/bucket#signeduploadurl), [Python](/blob/sdks/py/bucket#signed_upload_url), [Go](/blob/sdks/go/bucket#signeduploadurl).
 
 Every option is optional.
 

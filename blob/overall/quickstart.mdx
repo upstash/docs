@@ -8,7 +8,7 @@ import { AgentSetup } from "/snippets/agent-setup.jsx";
 
 <AgentSetup product="Blob" />
 
-Upstash Blob is S3-compatible object storage. Each server SDK has a bucket client and an upload handler, and `@upstash/blob` has React hooks that upload from the browser straight to storage. This page builds a working file picker in React. The server code is Next.js App Router in TypeScript, or FastAPI in Python. Other frameworks work the same way; see [Other frameworks](/blob/sdks/ts/upload-handler#other-frameworks) in TypeScript and [Mounting it](/blob/sdks/py/upload-handler#mounting-it) in Python.
+Upstash Blob is S3-compatible object storage. Each server SDK has a bucket client and an upload handler, and `@upstash/blob` has React hooks that upload from the browser straight to storage. This page builds a working file picker in React. The server code is Next.js App Router in TypeScript, FastAPI in Python, or `net/http` in Go. Other frameworks work the same way; see [Other frameworks](/blob/sdks/ts/upload-handler#other-frameworks) in TypeScript, [Mounting it](/blob/sdks/py/upload-handler#mounting-it) in Python and [Mounting it](/blob/sdks/go/upload-handler#mounting-it) in Go.
 
 ---
 
@@ -38,9 +38,13 @@ pip install upstash-blob
 ```bash uv
 uv add upstash-blob
 ```
+
+```bash go
+go get github.com/upstash/blob-go
+```
 </CodeGroup>
 
-`upstash-blob` is the Python server SDK. The browser side is `@upstash/blob` whichever language runs the server, so a Python app installs both.
+`upstash-blob` is the Python server SDK and `github.com/upstash/blob-go` the Go one. The browser side is `@upstash/blob` whichever language runs the server, so a Python or Go app installs both.
 
 Create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment.
 
@@ -85,9 +89,33 @@ def save_report(pdf: Path) -> str | None:
     blob = bucket.put("reports/2026-01.pdf", pdf, content_type="application/pdf")
     return blob.url
 ```
+
+```go Go
+// reports.go
+package reports
+
+import (
+	"context"
+	"os"
+
+	blob "github.com/upstash/blob-go"
+)
+
+func SaveReport(
+	ctx context.Context, bucket *blob.Bucket, pdf *os.File,
+) (string, error) {
+	b, err := bucket.Put(ctx, "reports/2026-01.pdf", pdf, &blob.PutOptions{
+		ContentType: "application/pdf",
+	})
+	if err != nil {
+		return "", err
+	}
+	return b.URL, nil
+}
+```
 </CodeGroup>
 
-Bytes already on your server go to the bucket with `put`. The returned record's URL is the public object URL, not set on a private bucket. See [Writing](/blob/bucket/writing), and the [TypeScript SDK](/blob/sdks/ts/overview) or [Python SDK](/blob/sdks/py/overview) for setup details.
+Bytes already on your server go to the bucket with `put`. The returned record's URL is the public object URL, not set on a private bucket. See [Writing](/blob/bucket/writing), and the [TypeScript SDK](/blob/sdks/ts/overview), [Python SDK](/blob/sdks/py/overview) or [Go SDK](/blob/sdks/go/overview) for setup details.
 
 ---
 
@@ -125,6 +153,20 @@ uploads = AsyncUploadHandler(
     on_before_upload=lambda args: BeforeUploadResult(path=f"images/{args.file.name}"),
 )
 ```
+
+```go Go
+// uploads.go
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
+	MaxSize:      20 * blob.MB,
+	ContentTypes: []string{"image/*", "application/pdf"},
+
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[struct{}],
+	) (blob.BeforeUploadResult, error) {
+		return blob.BeforeUploadResult{Path: "images/" + a.File.Name}, nil
+	},
+})
+```
 </CodeGroup>
 
 The handler runs on your server. It decides who may upload, where the object goes, and what happens once it lands. It never sees the bytes.
@@ -153,6 +195,12 @@ from app.uploads import uploads
 app = FastAPI()
 app.add_api_route("/api/upload", upload_view(uploads), methods=["GET", "POST"])
 ```
+
+```go Go
+// main.go
+http.Handle("/api/upload", uploads)
+log.Fatal(http.ListenAndServe(":8080", nil))
+```
 </CodeGroup>
 
 `POST` runs the upload and `GET` serves the route's constraints. The hooks look at `/api/upload` by default, so nothing else has to name a URL.
@@ -172,7 +220,7 @@ export const { useUpload } = uploadHooks<typeof uploads>()
 
 `uploadHooks<typeof uploads>()` reads the handler's type, so route names and completion data are checked at compile time. The `import type` is erased at build time and never pulls server code into the browser bundle.
 
-A Python handler has no type to bind to. Call `uploadHooks()` with no type parameter and pass the URL, `useUpload("/api/upload")`, in the next step. [FastAPI + React](/blob/recipes/fastapi-react) has the whole app, including the dev proxy that puts `/api` on the page's origin.
+A Python or Go handler has no type to bind to. Call `uploadHooks()` with no type parameter and pass the URL, `useUpload("/api/upload")`, in the next step. [FastAPI + React](/blob/recipes/fastapi-react) has the whole app, including the dev proxy that puts `/api` on the page's origin.
 
 </Step>
 
