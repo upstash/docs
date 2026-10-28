@@ -78,9 +78,9 @@ The body is any `io.Reader`. What `Put` can learn from it decides whether it nee
 | --- | --- | --- | --- |
 | `*bytes.Reader`, `*strings.Reader`, `*bytes.Buffer` | Yes | No | Yes |
 | A regular `*os.File` | Yes: what is left from its offset | From its extension | Yes |
-| Any other `io.ReaderAt` that is also an `io.Seeker`, such as a `multipart.File` | Yes: what is left from its offset | No | Yes |
+| Any other `io.ReaderAt` that is also an `io.Seeker`, such as a `multipart.File`, but not a non-regular file | Yes: what is left from its offset | No | Yes |
 | Any other `io.Seeker` | Yes | No | No, sent once |
-| Any other `io.Reader`, such as a request body, a pipe or a `gzip.Reader` | No: declare `Size` or `MaxSize` | No | Under `MaxSize` yes; under `Size` no |
+| Any other `io.Reader`, such as a request body, `os.Stdin`, a pipe or a `gzip.Reader` | No: declare `Size` or `MaxSize` | No | Under `MaxSize` yes; under `Size` no |
 | `nil` | Zero bytes | No | Yes |
 
 The Retried column is for a single PUT. A body over the [multipart threshold](/blob/uploads/large-files#the-multipart-threshold) goes up in parts, each buffered and retried on its own, whatever the body type.
@@ -235,14 +235,14 @@ func (b *Bucket) SignedUploadURL(ctx context.Context, path string, opts *SignedU
 ```go
 up, err := bucket.SignedUploadURL(ctx, "u/7/report.pdf", &blob.SignedUploadURLOptions{
 	ContentType: "application/pdf",
-	Size:        int64(len(pdf)),
+	Size:        int64(len(data)),
 	ExpiresIn:   10 * time.Minute,
 })
 if err != nil {
 	return err
 }
 
-req, _ := http.NewRequestWithContext(ctx, http.MethodPut, up.URL, bytes.NewReader(pdf))
+req, _ := http.NewRequestWithContext(ctx, http.MethodPut, up.URL, bytes.NewReader(data))
 for k, v := range up.Headers {
 	if k != "content-length" {
 		req.Header.Set(k, v)
@@ -442,6 +442,9 @@ func (b *Bucket) AbortStaleMultipartUploads(ctx context.Context, olderThan time.
 
 ```go
 uploads, err := bucket.ListMultipartUploads(ctx, "uploads/")
+if err != nil {
+	return err
+}
 for _, u := range uploads {
 	if err := bucket.AbortMultipartUpload(ctx, u); err != nil {
 		return err

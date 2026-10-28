@@ -54,9 +54,9 @@ Sizes are byte counts like `4096`, `'20mb'`, or `'32MiB'` ([Types](/blob/referen
 
 ### Bodies
 
-A body that carries its own length and content type, such as a file or an incoming request, needs nothing declared. One that carries neither, such as a stream, needs a size, or at least a max size. The body types each SDK accepts: [TypeScript](/blob/sdks/ts/bucket#bodies), [Python](/blob/sdks/py/bucket#bodies), [Go](/blob/sdks/go/bucket#bodies).
+A body that carries its own length and content type, such as a file or an incoming request, needs nothing declared. In Go a request body is a plain reader that needs a size or a max size. One that carries neither, such as a stream, needs a size, or at least a max size. The body types each SDK accepts: [TypeScript](/blob/sdks/ts/bucket#bodies), [Python](/blob/sdks/py/bucket#bodies), [Go](/blob/sdks/go/bucket#bodies).
 
-An incoming request with no body, or one that has already been read, is refused with `empty_body`.
+An incoming request with no body, or one that has already been read, is refused with `empty_body`. Python and Go have no request body type, so they never return it.
 
 ---
 
@@ -299,6 +299,9 @@ bucket.Put(ctx, "u/7/profile.json", body, &blob.PutOptions{NoOverwrite: true})
 
 // Refuse if the object changed since you read it.
 current, err := bucket.Info(ctx, "u/7/profile.json")
+if err != nil {
+	return err
+}
 bucket.Put(ctx, "u/7/profile.json", next, &blob.PutOptions{IfUnchanged: current.ETag})
 // returns conflict if somebody else wrote first
 ```
@@ -430,7 +433,7 @@ bucket.put("video.mp4", data, multipart="100mb")
 ```
 
 ```go Go
-bucket.Put(ctx, "video.mp4", data, &blob.PutOptions{Multipart: blob.MultipartOver(100 * blob.MB)})
+bucket.Put(ctx, "video.mp4", bytes.NewReader(data), &blob.PutOptions{Multipart: blob.MultipartOver(100 * blob.MB)})
 ```
 </CodeGroup>
 
@@ -471,11 +474,11 @@ httpx.put(upload.url, headers=upload.headers, content=pdf)
 ```go Go
 up, err := bucket.SignedUploadURL(ctx, "u/7/report.pdf", &blob.SignedUploadURLOptions{
 	ContentType: "application/pdf",
-	Size:        int64(len(pdf)),
+	Size:        int64(len(data)),
 	ExpiresIn:   10 * time.Minute,
 })
 
-req, _ := http.NewRequestWithContext(ctx, http.MethodPut, up.URL, bytes.NewReader(pdf))
+req, _ := http.NewRequestWithContext(ctx, http.MethodPut, up.URL, bytes.NewReader(data))
 for k, v := range up.Headers {
 	if k != "content-length" { // net/http takes the length from the body
 		req.Header.Set(k, v)
