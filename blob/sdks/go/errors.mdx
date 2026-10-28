@@ -1,0 +1,152 @@
+---
+title: "Errors"
+description: "*blob.Error in Go: matching codes with errors.As, errors.Is and HasCode, its fields, its JSON, and what is returned as a plain error."
+---
+
+```go avatar.go
+func avatar(ctx context.Context, path string) (*blob.BlobInfo, error) {
+	info, err := bucket.Info(ctx, path)
+	if blob.HasCode(err, blob.CodeNotFound) {
+		return nil, nil
+	}
+	return info, err
+}
+```
+
+Every failure the SDK reports on purpose is a `*blob.Error`. Its codes are the ones the TypeScript SDK and the browser client use, so an error returned from your Go handler reaches a React hook with its code intact. The codes, their statuses and when each one is returned are on [Errors](/blob/reference/errors).
+
+---
+
+## Matching it
+
+```go
+_, err := bucket.Put(ctx, path, body, &blob.PutOptions{MaxSize: 5 * blob.MB})
+
+var be *blob.Error
+if errors.As(err, &be) {
+	be.Code    // blob.ErrorCode, e.g. blob.CodeTooLarge ("too_large")
+	be.Status  // int, e.g. 413
+	be.Message // string, the same as be.Error()
+}
+
+errors.Is(err, blob.ErrTooLarge)         // true for any too_large
+blob.HasCode(err, blob.CodeTooLarge)     // the same, for any code
+```
+
+Three ways to ask, all of which look through wrapped errors:
+
+- `errors.As(err, &be)` gives you the `*blob.Error` and its fields.
+- `errors.Is(err, blob.ErrNotFound)` compares the code only. The sentinels are `ErrNotFound`, `ErrAlreadyExists`, `ErrConflict`, `ErrTooLarge`, `ErrInvalidInput`, `ErrUnauthorized`, `ErrForbidden` and `ErrContentTypeDenied`.
+- `blob.HasCode(err, code)` works for every code, including the ones without a sentinel.
+
+`ErrorCode` is a `string` type, and every code has a constant: `CodeNotFound`, `CodePartialDelete`, `CodeMintBackoff`, and so on.
+
+A canceled or expired `ctx` is returned as the context's own error, not a `*blob.Error`, so `errors.Is(err, context.Canceled)` finds it.
+
+---
+
+## Fields
+
+```go
+err := bucket.DeleteMany(ctx, []string{"a.png", "b.png", "c.png"})
+
+var be *blob.Error
+switch {
+case errors.As(err, &be) && be.Code == blob.CodePartialDelete:
+	queueForRetry(be.Failed)
+case errors.As(err, &be) && be.Code == blob.CodeMintBackoff:
+	retryLater(be.RetryAfter)
+case err != nil:
+	return err
+}
+```
+
+| Field | Type | Set by |
+| ----- | ---- | ------ |
+| `Code` | `ErrorCode` | Always. One of the [codes](/blob/reference/errors#the-codes). |
+| `Status` | `int` | Always. |
+| `Message` | `string` | Always. See [Messages](/blob/reference/errors#messages). |
+| `Hint` | `string` | Any code. See [Hints](/blob/reference/errors#hints-fold-into-the-message). |
+| `Failed` | `[]string` | `partial_delete`: the paths that survived the delete. |
+| `ETag` | `string` | `already_exists`: the etag of what is already there. |
+| `Size` | `*int64` | `already_exists`: the size of what is already there. |
+| `RetryAfter` | `time.Duration` | `mint_backoff`: how long the credential service asked the caller to wait. On another code, only when you set it yourself. |
+
+The underlying error, when there was one, is the wrapped cause that `errors.Unwrap` returns: a network error, storage's own message, or the reason Upstash refused to sign for a suspended or read-only bucket. A `move_left_a_copy` wraps the failed delete. The cause is never in `Message` or the JSON.
+
+### Built-in hints
+
+```go
+blob.NewError(blob.CodeLengthRequired, blob.ErrorOptions{}).Message
+// "Length required (pass Size or MaxSize so the length is known before the first byte)"
+```
+
+| Code | Built-in hint |
+| ---- | ------------- |
+| `signature_mismatch` | the upload did not match what was authorized, usually a different size or content type |
+| `length_required` | pass Size or MaxSize so the length is known before the first byte |
+
+How a hint folds into the message is on [Hints fold into the message](/blob/reference/errors#hints-fold-into-the-message).
+
+---
+
+## Returning one
+
+```go
+blob.NewError(blob.CodeNotFound, blob.ErrorOptions{}).Message                            // "Not found"
+blob.NewError(blob.CodeForbidden, blob.ErrorOptions{Message: "not your thread"}).Message // "Not your thread"
+blob.NewError(blob.CodeTooLarge, blob.ErrorOptions{Message: "you are out of space"})
+blob.NewError(blob.CodeRateLimited, blob.ErrorOptions{RetryAfter: 30 * time.Second})
+```
+
+`NewError(code, ErrorOptions)` builds one the way the SDK does: the code's default message and hint, the message sentence-cased with the hint folded in, and the code's status unless `Status` is set. `ErrorOptions` has `Message`, `Hint`, `Status`, `Failed`, `ETag`, `Size`, `RetryAfter` and `Cause`. Return one from an upload handler callback to refuse an upload with that code; see [Refusing](/blob/sdks/go/upload-handler#refusing).
+
+`blob.ErrorFromStatus(status, opts)` picks the code for a bare HTTP status, through the table on [What reaches the browser](/blob/reference/errors#what-reaches-the-browser-in-order), falling back to `request_failed`.
+
+### Answering with one
+
+```go
+json.Marshal(blob.NewError(blob.CodeTooLarge, blob.ErrorOptions{Message: "cat.png is 3.1 MB, over the 2 MB limit"}))
+// {"code":"too_large","message":"cat.png is 3.1 MB, over the 2 MB limit","status":413}
+```
+
+A `*blob.Error` encodes to the JSON body an upload route answers a refusal with, and what the browser client rebuilds into its own `BlobError`. `hint`, `failed`, `etag`, `size` and `retryAfter` (in seconds) are included when they are set. The cause never is.
+
+The handler writes this body for you. Write it yourself to answer with a `*blob.Error` from a route of your own, such as one that calls `Put` for [`useServerUpload`](/blob/uploads/upload-client#useserverupload):
+
+```go upload.go
+func writeError(w http.ResponseWriter, err error) {
+	var be *blob.Error
+	if !errors.As(err, &be) {
+		be = blob.NewError(blob.CodeRequestFailed, blob.ErrorOptions{})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(be.Status)
+	json.NewEncoder(w).Encode(be)
+}
+```
+
+---
+
+## Bad options are returned where they are written
+
+A mistake comes back as an error from the call that takes the option, and the kind of error says when to expect it:
+
+| Mistake | Returns |
+| --- | --- |
+| `NewBucketFromEnv()` with the variable unset, an empty or malformed token, `Retry.Retries` below 0 | A plain error, from the constructor |
+| `Cache: "forever"` on `Options` | `invalid_input`, from the constructor |
+| An upload handler with no `OnBeforeUpload`, an empty non-nil `Routes`, a bad route name, a negative `MaxSize`, no token | A plain error, from `NewUploadHandler` |
+| A path that is empty or has a `.` or `..` segment, on any `Bucket` method | `invalid_input` |
+| A negative `Size`, `MaxSize`, `ExpiresIn` or `olderThan`, a bad `Cache` on a call | `invalid_input` |
+| `blob.ParseSize("5mbit")` | `invalid_input` |
+| A `ContentTypes` list that is empty, or holds an entry that is not a `type/subtype` or one of `image/*`, `video/*` and `audio/*` | `invalid_content_type_pattern`, on a `Put` or from `NewUploadHandler` |
+| A `ContentType` that is not a media type, on a signed URL | `invalid_input` |
+
+The plain errors start with `blob:` and are meant to stop your program at startup. `NewUploadHandler` wraps a `*blob.Error` from its options, so `errors.As` still finds it.
+
+A few handler mistakes only show up while a request runs. They are logged on the handler's `Logger` and answered as a 500:
+
+- `OnBeforeUpload` returned an empty `Path`, or a `State` that `encoding/json` cannot encode.
+- `OnBeforeUpload` returned `ContentTypes` or a `MaxSize` wider than the route's; see [Narrowing per user](/blob/uploads/constraints#narrowing-per-user).
+- `OnUploadComplete` returned a value that `encoding/json` cannot encode. The object is kept.

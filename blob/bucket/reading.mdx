@@ -19,9 +19,16 @@ info = bucket.info("reports/2026-01.pdf")   # record only
 ok = bucket.exists("reports/2026-01.pdf")   # bool
 page = bucket.list(prefix="reports/")       # one page of records
 ```
+
+```go Go
+res, err := bucket.Get(ctx, "reports/2026-01.pdf")       // record plus body stream; close it
+info, err := bucket.Info(ctx, "reports/2026-01.pdf")     // record only
+ok, err := bucket.Exists(ctx, "reports/2026-01.pdf")     // bool
+page, err := bucket.List(ctx, &blob.ListOptions{Prefix: "reports/"}) // one page of records
+```
 </CodeGroup>
 
-The records these return are on [Types](/blob/reference/types#records). Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#get), [Python](/blob/sdks/py/bucket#get).
+The records these return are on [Types](/blob/reference/types#records). Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#get), [Python](/blob/sdks/py/bucket#get), [Go](/blob/sdks/go/bucket#get).
 
 ---
 
@@ -43,9 +50,18 @@ res.content_type  # 'application/pdf'
 res.metadata      # {'owner': 'u7'}
 res.content       # bytes, read in full; bucket.stream() leaves them on the wire
 ```
+
+```go Go
+res, err := bucket.Get(ctx, "reports/2026-01.pdf")
+defer res.Body.Close()
+
+res.ContentType // "application/pdf"
+res.Metadata    // map[owner:u7]
+res.Body        // io.ReadCloser
+```
 </CodeGroup>
 
-`get` returns the object's record, with its content type and metadata, plus the body. In TypeScript the body is a stream and nothing is buffered for you; Python's `get` reads it in full, and `stream()` does not. Reading the body in each SDK: [TypeScript](/blob/sdks/ts/bucket#get), [Python](/blob/sdks/py/bucket#get).
+`get` returns the object's record, with its content type and metadata, plus the body. In TypeScript and Go the body is a stream and nothing is buffered for you; Python's `get` reads it in full, and `stream()` does not. Reading the body in each SDK: [TypeScript](/blob/sdks/ts/bucket#get), [Python](/blob/sdks/py/bucket#get), [Go](/blob/sdks/go/bucket#get).
 
 A missing object throws a `BlobError` with code `not_found`, status 404. See [Errors](/blob/reference/errors).
 
@@ -73,6 +89,15 @@ info.etag          # '"9f3c..."'
 info.content_type  # 'application/pdf'
 info.metadata      # {'owner': 'u7'}
 ```
+
+```go Go
+info, err := bucket.Info(ctx, "reports/2026-01.pdf")
+
+info.Size        // 184302
+info.ETag        // "\"9f3c...\""
+info.ContentType // "application/pdf"
+info.Metadata    // map[owner:u7]
+```
 </CodeGroup>
 
 One HEAD request. The same record as `get` without the bytes, so reading a 2 GB object's facts is cheap. A missing object throws `not_found`.
@@ -93,6 +118,13 @@ if (await bucket.exists("avatars/u7.png")) {
 ```python Python
 if bucket.exists("avatars/u7.png"):
     ...
+```
+
+```go Go
+ok, err := bucket.Exists(ctx, "avatars/u7.png")
+if ok {
+	// ...
+}
 ```
 </CodeGroup>
 
@@ -126,6 +158,24 @@ while True:
     if not cursor:
         break
 ```
+
+```go Go
+cursor := ""
+
+for {
+	page, err := bucket.List(ctx, &blob.ListOptions{Prefix: "avatars/", Limit: 1000, Cursor: cursor})
+	if err != nil {
+		return err
+	}
+	for _, b := range page.Blobs {
+		fmt.Println(b.Path)
+	}
+	if page.Cursor == "" {
+		break
+	}
+	cursor = page.Cursor
+}
+```
 </CodeGroup>
 
 `list` returns one page of records and a cursor. The cursor is set only while more remains; pass it back for the next page. A full walk loops until it is unset.
@@ -156,6 +206,11 @@ await bucket.publicUrl("avatars/u7.png")
 bucket.public_url("avatars/u7.png")
 # 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
 ```
+
+```go Go
+bucket.PublicURL(ctx, "avatars/u7.png")
+// "https://b0f3a91c24d.blob.upstash.io/avatars/u7.png"
+```
 </CodeGroup>
 
 Every record on a public bucket already carries its URL; the public URL call gives you one for any path. It returns nothing on a private bucket. An empty path, or one with a `.` or `..` segment, is rejected before any request is sent; see [Paths](/blob/bucket/writing#paths).
@@ -173,6 +228,11 @@ avatar.versionedUrl // https://.../avatars/u7.png?v=%229f3c...%22
 ```python Python
 avatar = bucket.info(f"avatars/{user.id}.png")
 avatar.versioned_url  # https://.../avatars/u7.png?v=%229f3c...%22
+```
+
+```go Go
+avatar, err := bucket.Info(ctx, "avatars/"+user.ID+".png")
+avatar.VersionedURL // https://.../avatars/u7.png?v=%229f3c...%22
 ```
 </CodeGroup>
 
@@ -202,6 +262,13 @@ blob.url            # None
 blob.versioned_url  # None
 bucket.public_url("reports/2026-01.pdf")  # None
 ```
+
+```go Go
+b, err := bucket.Put(ctx, "reports/2026-01.pdf", pdf, nil) // a bucket set to private in the console
+b.URL          // ""
+b.VersionedURL // ""
+bucket.PublicURL(ctx, "reports/2026-01.pdf") // ""
+```
 </CodeGroup>
 
 A private bucket has no public host, so no record carries a URL or versioned URL. Nothing in the code declares this: the SDK learns it from the backend when it fetches credentials, and objects are stored with `Cache-Control: private`. Reads go through signed read URLs.
@@ -222,9 +289,18 @@ const { url, expiresAt } = await bucket.signedReadUrl("reports/2026-01.pdf", {
 link = bucket.signed_read_url("reports/2026-01.pdf", expires_in="2m", download_as="Report Q3.pdf")
 link.url, link.expires_at
 ```
+
+```go Go
+link, err := bucket.SignedReadURL(ctx, "reports/2026-01.pdf", &blob.SignedReadURLOptions{
+	ExpiresIn:  2 * time.Minute,
+	DownloadAs: "Report Q3.pdf",
+})
+link.URL       // the link
+link.ExpiresAt // when it stops working
+```
 </CodeGroup>
 
-A time-limited URL anyone can GET, returned with the moment it expires. Use it on a private bucket, or for an object you do not want linked from a public page. Names and types: [TypeScript](/blob/sdks/ts/bucket#signedreadurl), [Python](/blob/sdks/py/bucket#signed_read_url).
+A time-limited URL anyone can GET, returned with the moment it expires. Use it on a private bucket, or for an object you do not want linked from a public page. Names and types: [TypeScript](/blob/sdks/ts/bucket#signedreadurl), [Python](/blob/sdks/py/bucket#signed_read_url), [Go](/blob/sdks/go/bucket#signedreadurl).
 
 All three options are optional.
 
@@ -253,6 +329,18 @@ if link is None or link.expires_at < datetime.now(timezone.utc):
     link = bucket.signed_read_url(path, expires_in="5m")
     cache.set(key, link)
 ```
+
+```go Go
+link, ok := cache.Get(key)
+if !ok || link.ExpiresAt.Before(time.Now()) {
+	fresh, err := bucket.SignedReadURL(ctx, path, &blob.SignedReadURLOptions{ExpiresIn: 5 * time.Minute})
+	if err != nil {
+		return err
+	}
+	link = fresh
+	cache.Set(key, link)
+}
+```
 </CodeGroup>
 
 What you pass as expires-in is what you asked for. The expiry that comes back is what you got, and it can be sooner, because no link lives longer than 10 minutes. Cache the link until the returned expiry, never until a deadline you compute yourself. This applies to signed upload URLs too. The reason is on [How signing works](/blob/reference/signing#how-long-a-presigned-url-lives).
@@ -267,6 +355,10 @@ await bucket.signedReadUrl(path, { downloadAs: "café ☕.pdf" })
 ```python Python
 bucket.signed_read_url(path, download_as="café ☕.pdf")
 ```
+
+```go Go
+bucket.SignedReadURL(ctx, path, &blob.SignedReadURLOptions{DownloadAs: "café ☕.pdf"})
+```
 </CodeGroup>
 
 Sets `Content-Disposition: attachment`, so the browser saves the file under that name rather than rendering it. Unicode names arrive intact. The filename is signed into the URL, so it cannot be edited afterwards.
@@ -280,6 +372,10 @@ await bucket.signedReadUrl("exports/rows.bin", { contentType: "text/csv" })
 
 ```python Python
 bucket.signed_read_url("exports/rows.bin", content_type="text/csv")
+```
+
+```go Go
+bucket.SignedReadURL(ctx, "exports/rows.bin", &blob.SignedReadURLOptions{ContentType: "text/csv"})
 ```
 </CodeGroup>
 

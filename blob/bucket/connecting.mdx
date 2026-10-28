@@ -17,9 +17,15 @@ from upstash_blob import Bucket
 
 bucket = Bucket.from_env()  # reads UPSTASH_BLOB_TOKEN
 ```
+
+```go Go
+import blob "github.com/upstash/blob-go"
+
+bucket, err := blob.NewBucketFromEnv() // reads UPSTASH_BLOB_TOKEN
+```
 </CodeGroup>
 
-Client options and their types: [TypeScript](/blob/sdks/ts/overview#the-bucket-client), [Python](/blob/sdks/py/overview#the-bucket-client).
+Client options and their types: [TypeScript](/blob/sdks/ts/overview#the-bucket-client), [Python](/blob/sdks/py/overview#the-bucket-client), [Go](/blob/sdks/go/overview#the-bucket-client).
 
 Create a bucket in the [Upstash Console](https://console.upstash.com) and put its token in your environment:
 
@@ -62,9 +68,17 @@ new Bucket({ token, retry: { retries: 5, backoff: (n) => n * 500 } })
 Bucket(token, retry=False)  # every request once
 Bucket(token, retry={"retries": 5, "backoff": lambda n: n * 500})
 ```
+
+```go Go
+blob.NewBucketWith(blob.Options{Token: token, Retry: blob.RetryConfig{Disabled: true}}) // every request once
+blob.NewBucketWith(blob.Options{Token: token, Retry: blob.RetryConfig{
+	Retries: 5,
+	Backoff: func(n int) time.Duration { return time.Duration(n) * 500 * time.Millisecond },
+}})
+```
 </CodeGroup>
 
-A request that fails with a 5xx, a 429 or a dropped connection is sent again if it can be: reads, deletes, copies, multipart parts and signing calls. A `put` that goes up as one PUT with a streamed body is sent once, since a stream cannot be read twice. In TypeScript every body is streamed; in Python a body held in memory is retried: `bytes`, a `str`, or one buffered under `max_size`. The POSTs that create and complete a multipart upload and a batch delete are sent once. When the credential service asks the SDK to wait, it waits up to 10 seconds and asks again, three times.
+A request that fails with a 5xx, a 429 or a dropped connection is sent again if it can be: reads, deletes, copies, multipart parts and signing calls. A `put` that goes up as one PUT with a streamed body is sent once, since a stream cannot be read twice. In TypeScript every body is streamed; in Python a body held in memory is retried: `bytes`, a `str`, or one buffered under `max_size`. In Go a body that can be read again is retried: a `*bytes.Reader`, a `*strings.Reader`, a regular file, or one buffered under `MaxSize`; see [Bodies](/blob/sdks/go/bucket#bodies). The POSTs that create and complete a multipart upload and a batch delete are sent once. When the credential service asks the SDK to wait, it waits up to 10 seconds and asks again, three times.
 
 | Setting | Default | Description |
 | --- | --- | --- |
@@ -103,11 +117,24 @@ s3 = boto3.client("s3", **cfg.client_kwargs())
 
 s3.get_object(Bucket=cfg.bucket, Key="reports/q3.pdf", Range="bytes=0-1023")
 ```
+
+```go Go
+cfg, err := bucket.S3(ctx)
+client := s3.New(s3.Options{
+	Region:       cfg.Region,
+	BaseEndpoint: aws.String(cfg.Endpoint),
+	Credentials:  credentials, // refreshed from bucket.S3, see the Go SDK page
+})
+
+client.GetObject(ctx, &s3.GetObjectInput{
+	Bucket: aws.String(cfg.Bucket), Key: aws.String("reports/q3.pdf"), Range: aws.String("bytes=0-1023"),
+})
+```
 </CodeGroup>
 
 Buckets are backed by Cloudflare R2 and are S3-compatible. The client's `s3()` returns a config for an S3 client, for anything the SDK does not wrap: byte ranges, conditional GETs, delimiters and common prefixes, object tagging. The credentials in it are short-lived; see [Minting temporary credentials](/blob/reference/signing#minting-temporary-credentials).
 
-Wiring it into an S3 client: [TypeScript](/blob/sdks/ts/overview#using-an-s3-client), [Python](/blob/sdks/py/overview#using-an-s3-client).
+Wiring it into an S3 client: [TypeScript](/blob/sdks/ts/overview#using-an-s3-client), [Python](/blob/sdks/py/overview#using-an-s3-client), [Go](/blob/sdks/go/overview#using-an-s3-client).
 
 <Warning>
 Do not presign URLs with this client. A presigned URL carries the credential, which reads and writes the whole bucket until it expires. Use [signed read URLs](/blob/bucket/reading#signed-read-urls) and [signed upload URLs](/blob/bucket/writing#signed-upload-urls), which Upstash signs for one object; see [Who signs a URL](/blob/reference/signing#who-signs-a-url).

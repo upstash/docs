@@ -1,0 +1,489 @@
+---
+title: "Bucket API"
+description: "Every Bucket method in blob-go: Put, Get, Info, List, Copy, Move, Delete, signed URLs and multipart cleanup."
+---
+
+The `Bucket` methods, their Go options and what they return. Each section links to the concept page with the behaviour and defaults.
+
+```go blob.go
+bucket, err := blob.NewBucketFromEnv()
+```
+
+Building the client is on [Overview](/blob/sdks/go/overview#the-bucket-client). Every method takes a `context.Context` first. Options come as a pointer to a struct; pass `nil` for none.
+
+---
+
+## Put
+
+```go
+func (b *Bucket) Put(ctx context.Context, path string, body io.Reader, opts *PutOptions) (*CompletedBlob, error)
+```
+
+```go reports.go
+func saveReport(ctx context.Context, path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	b, err := bucket.Put(ctx, "reports/q3.pdf", f, &blob.PutOptions{ContentType: "application/pdf"})
+	if err != nil {
+		return "", err
+	}
+	return b.URL, nil
+}
+```
+
+Every field is optional. Behaviour and defaults are on [Writing](/blob/bucket/writing#put).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ContentType` | `string` | What the object is stored as. |
+| `ContentTypes` | `[]string` | An allow list such as `[]string{"image/*", "application/pdf"}`. A non-nil empty slice is refused with `invalid_content_type_pattern`. See [Constraints](/blob/uploads/constraints#content-types). |
+| `MaxSize` | `int64` | Refuses a larger body with `too_large`. Zero is no limit. |
+| `Cache` | `string` | The `Cache-Control` this object is stored with. See [Caching](/blob/bucket/caching). |
+| `Metadata` | `map[string]string` | Custom key-value pairs. A key with an uppercase letter is refused with `invalid_input` rather than lowercased for you. See [Metadata](/blob/bucket/writing#metadata). |
+| `Size` | `int64` | The exact length in bytes, for a reader whose length is not otherwise known. Ignored for a body `Put` can measure. |
+| `NoOverwrite` | `bool` | Refuses the write if something is already at the path. See [Conditional writes](/blob/bucket/writing#conditional-writes). |
+| `IfUnchanged` | `string` | An etag. The write fails with `conflict` if the object changed since you read it. |
+| `Multipart` | `blob.Multipart` | Where a body stops being one PUT. See [Large bodies](/blob/bucket/writing#large-bodies). |
+
+The result is a [`*CompletedBlob`](#records):
+
+```go
+b, err := bucket.Put(ctx, "avatars/7.png", bytes.NewReader(data), &blob.PutOptions{ContentType: "image/png"})
+
+b.Path         // "avatars/7.png"
+b.URL          // "https://b3f9a2c7d1e4.blob.upstash.io/avatars/7.png"
+b.VersionedURL // "...?v=%22d41d8...%22"
+b.Size         // bytes stored
+b.ETag         // "\"d41d8...\"", what IfUnchanged takes
+b.UploadedAt   // time.Time
+b.ContentType  // "image/png"
+```
+
+### Bodies
+
+```go
+bucket.Put(ctx, "notes/1.md", strings.NewReader("# Hello"), nil)
+
+f, _ := os.Open("backups/db.tar") // read from its current offset, not closed for you
+bucket.Put(ctx, "backups/db.tar", f, nil)
+```
+
+The body is any `io.Reader`. What `Put` can learn from it decides whether it needs a declared size, and whether a failed request can be sent again:
+
+| Body | Carries its length | Carries a content type | Retried |
+| --- | --- | --- | --- |
+| `*bytes.Reader`, `*strings.Reader`, `*bytes.Buffer` | Yes | No | Yes |
+| A regular `*os.File` | Yes: what is left from its offset | From its extension | Yes |
+| Any other `io.ReaderAt` that is also an `io.Seeker`, such as a `multipart.File` | Yes: what is left from its offset | No | Yes |
+| Any other `io.Seeker` | Yes | No | No, sent once |
+| Any other `io.Reader`, such as a request body, a pipe or a `gzip.Reader` | No: declare `Size` or `MaxSize` | No | Under `MaxSize` yes; under `Size` no |
+| `nil` | Zero bytes | No | Yes |
+
+An explicit `ContentType` wins over the extension. Without either, the object is stored as `application/octet-stream`.
+
+- `Put` never closes the body.
+- A `*bytes.Buffer` is read in place, not drained.
+- There is no request body type, so `Put` never returns `empty_body`. A zero-length body stores a zero-byte object.
+
+### Request bodies
+
+```go upload.go
+func avatar(w http.ResponseWriter, r *http.Request) {
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "expected a file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	b, err := bucket.Put(r.Context(), blob.UniquePath("avatars/"+header.Filename), file, &blob.PutOptions{
+		ContentType:  header.Header.Get("Content-Type"),
+		ContentTypes: []string{"image/*"},
+		MaxSize:      5 * blob.MB,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"url": b.URL})
+}
+```
+
+A `multipart.File` from `r.FormFile` is measured and read in place. Pass the content type from the form part's header: a `multipart.File` has no name for `Put` to read one from.
+
+A raw request body has no length `Put` can read. Pass `r.ContentLength` as `Size` only when it is known; a chunked request reports `-1`, which is refused:
+
+```go
+opts := &blob.PutOptions{ContentType: r.Header.Get("Content-Type"), MaxSize: 10 * blob.MB}
+if r.ContentLength > 0 {
+	opts.Size = r.ContentLength // streamed through; otherwise buffered up to MaxSize
+}
+b, err := bucket.Put(r.Context(), path, r.Body, opts)
+```
+
+The bytes pass through your server here, under your platform's body limit. For anything large, use an [upload handler](/blob/sdks/go/upload-handler) instead. `writeError` is on [Errors](/blob/sdks/go/errors#answering-with-one).
+
+### Streams
+
+```go
+// Buffer up to the cap. A reader that runs past it fails with too_large.
+bucket.Put(ctx, "export.csv", pr, &blob.PutOptions{MaxSize: 10 * blob.MB})
+
+// Stream straight through, nothing buffered. The declared size must be exact.
+bucket.Put(ctx, "export.csv", pr, &blob.PutOptions{Size: 5000})
+```
+
+A reader with neither fails with `length_required`. Why is on [Streams and unknown lengths](/blob/bucket/writing#streams-and-unknown-lengths). One that ends short of `Size`, or runs past it, fails with `invalid_input`.
+
+```go
+res, err := http.Get(sourceURL)
+if err != nil {
+	return err
+}
+defer res.Body.Close()
+if res.ContentLength < 0 {
+	return fmt.Errorf("%s sent no length", sourceURL)
+}
+_, err = bucket.Put(ctx, "mirror/video.mp4", res.Body, &blob.PutOptions{Size: res.ContentLength})
+```
+
+`res.ContentLength` is `-1` when the length is unknown: a chunked response, or one Go's transport decompressed for you. A negative `Size` is refused with `invalid_input`, so check it first, or fall back to `MaxSize`.
+
+---
+
+## UniquePath
+
+```go
+func UniquePath(path string) string
+```
+
+```go
+blob.UniquePath("users/" + userID + "/" + filename) // "users/Alice_123/Q3 Report-3xK9mBqR.pdf"
+```
+
+A package function. The suffix rules are on [Unique paths](/blob/bucket/writing#unique-paths).
+
+---
+
+## UpdateJSON
+
+```go
+func UpdateJSON[T any](ctx context.Context, b *Bucket, path string, fn func(prev *T) (T, error), opts *UpdateJSONOptions) (*BlobObject, error)
+```
+
+```go
+type Settings struct {
+	Theme string `json:"theme"`
+}
+
+_, err := blob.UpdateJSON(ctx, bucket, "u/7.json", func(prev *Settings) (Settings, error) {
+	next := Settings{}
+	if prev != nil {
+		next = *prev
+	}
+	next.Theme = "dark"
+	return next, nil
+}, &blob.UpdateJSONOptions{MaxAttempts: 10, Metadata: map[string]string{"owner": "u7"}, Cache: blob.CacheNoStore})
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `MaxAttempts` | `int` | How many read-transform-write rounds to try before failing with `conflict`. Zero is 6; a negative count is `invalid_input`. |
+| `Cache` | `string` | The `Cache-Control` the rewritten object is stored with. |
+| `Metadata` | `map[string]string` | Replaces the metadata on the object. Nil keeps it. |
+
+A package function rather than a method, since Go methods cannot take a type parameter. The document is decoded into a `T` with `encoding/json`, and the result encoded the same way. `fn` gets `nil` when nothing is stored, the object is empty, or it holds JSON `null`. An error from `fn` is returned as is, with nothing written. A stored document that is not JSON fails with `invalid_input`.
+
+The loop and its defaults are on [Updating JSON](/blob/bucket/writing#updating-json).
+
+---
+
+## Copy and Move
+
+```go
+func (b *Bucket) Copy(ctx context.Context, from, to string, opts *CopyOptions) (*BlobObject, error)
+func (b *Bucket) Move(ctx context.Context, from, to string, opts *CopyOptions) (*BlobObject, error)
+```
+
+```go
+archived, err := bucket.Copy(ctx, "tmp/9f3c", "archive/2026/report.pdf", nil)
+moved, err := bucket.Move(ctx, "tmp/9f3c", "reports/q3.pdf", &blob.CopyOptions{ContentType: "application/pdf"})
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ContentType` | `string` | What the destination is stored as. |
+| `Cache` | `string` | The `Cache-Control` the destination is stored with. |
+| `Metadata` | `map[string]string` | Replaces the metadata outright. Nil keeps the source's; an empty non-nil map stores none. |
+
+What carries over from the source is on [copy and move](/blob/bucket/writing#copy-and-move). A move onto its own path only applies the options.
+
+---
+
+## SignedUploadURL
+
+```go
+func (b *Bucket) SignedUploadURL(ctx context.Context, path string, opts *SignedUploadURLOptions) (*SignedUploadURL, error)
+```
+
+```go
+up, err := bucket.SignedUploadURL(ctx, "u/7/report.pdf", &blob.SignedUploadURLOptions{
+	ContentType: "application/pdf",
+	Size:        int64(len(pdf)),
+	ExpiresIn:   10 * time.Minute,
+})
+if err != nil {
+	return err
+}
+
+req, _ := http.NewRequestWithContext(ctx, http.MethodPut, up.URL, bytes.NewReader(pdf))
+for k, v := range up.Headers {
+	if k != "content-length" {
+		req.Header.Set(k, v)
+	}
+}
+res, err := http.DefaultClient.Do(req)
+```
+
+Returns a `*SignedUploadURL` with `URL string`, `Headers map[string]string` and `ExpiresAt time.Time`. Send `Headers` verbatim, except that `net/http` takes the length from `Request.ContentLength`, not from a header: a `*bytes.Reader` body sets it for you, and an `*os.File` body does not.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ExpiresIn` | `time.Duration` | How long the link should live. Zero is the default. |
+| `ContentType` | `string` | The `Content-Type` the upload must send, and what the object is stored as. |
+| `Cache` | `string` | The `Cache-Control` the object is stored with. |
+| `Metadata` | `map[string]string` | Written as `x-amz-meta-*`, under the same rules as `Put`. |
+| `Size` | `int64` | Pins the body's exact length. Zero leaves it open. |
+| `NoOverwrite` | `bool` | Refuses the upload if something is already at the path. |
+
+Defaults and lifetimes are on [Signed upload URLs](/blob/bucket/writing#signed-upload-urls).
+
+---
+
+## Get
+
+```go
+func (b *Bucket) Get(ctx context.Context, path string) (*BlobDownload, error)
+```
+
+```go
+res, err := bucket.Get(ctx, "reports/2026-01.pdf")
+if err != nil {
+	return err
+}
+defer res.Body.Close()
+
+res.ContentType // "application/pdf"
+res.Size        // 184302
+res.ETag        // "\"9f3c...\""
+res.Metadata    // map[owner:u7]
+io.Copy(w, res.Body)
+```
+
+`Body` is the response stream: nothing is buffered, and you must close it. `io.ReadAll(res.Body)` reads it in full.
+
+A missing object fails with `not_found`. It never returns a nil download with a nil error. See [get](/blob/bucket/reading#get).
+
+---
+
+## Info and Exists
+
+```go
+func (b *Bucket) Info(ctx context.Context, path string) (*BlobInfo, error)
+func (b *Bucket) Exists(ctx context.Context, path string) (bool, error)
+```
+
+```go
+info, err := bucket.Info(ctx, "reports/2026-01.pdf")
+
+info.Size        // 184302
+info.ETag        // "\"9f3c...\""
+info.ContentType // "application/pdf"
+info.Metadata    // map[owner:u7]
+info.UploadedAt  // time.Time
+
+ok, err := bucket.Exists(ctx, "avatars/u7.png")
+```
+
+See [info](/blob/bucket/reading#info) and [exists](/blob/bucket/reading#exists).
+
+---
+
+## List
+
+```go
+func (b *Bucket) List(ctx context.Context, opts *ListOptions) (*ListPage, error)
+```
+
+```go
+var paths []string
+cursor := ""
+
+for {
+	page, err := bucket.List(ctx, &blob.ListOptions{Prefix: "avatars/", Limit: 1000, Cursor: cursor})
+	if err != nil {
+		return err
+	}
+	for _, b := range page.Blobs {
+		paths = append(paths, b.Path)
+	}
+	if page.Cursor == "" {
+		break
+	}
+	cursor = page.Cursor
+}
+```
+
+Returns a `*ListPage` with `Blobs []BlobObject` and `Cursor string`, which is `""` on the last page.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Prefix` | `string` | Only keys starting with this. |
+| `Limit` | `int` | Page size. Zero lets storage pick. |
+| `Cursor` | `string` | The `Cursor` from the previous page. |
+
+Defaults and paging are on [list](/blob/bucket/reading#list).
+
+---
+
+## PublicURL
+
+```go
+func (b *Bucket) PublicURL(ctx context.Context, path string) (string, error)
+```
+
+```go
+u, err := bucket.PublicURL(ctx, "avatars/u7.png")
+// "https://b0f3a91c24d.blob.upstash.io/avatars/u7.png"
+```
+
+`""` on a private bucket. An empty path, or one with a `.` or `..` segment, is refused with `invalid_input`. It takes a context because the first call fetches credentials. See [Public URLs](/blob/bucket/reading#public-urls).
+
+---
+
+## SignedReadURL
+
+```go
+func (b *Bucket) SignedReadURL(ctx context.Context, path string, opts *SignedReadURLOptions) (*SignedURL, error)
+```
+
+```go
+link, err := bucket.SignedReadURL(ctx, "reports/2026-01.pdf", &blob.SignedReadURLOptions{
+	ExpiresIn:  2 * time.Minute,
+	DownloadAs: "Report Q3.pdf",
+})
+
+link.URL
+link.ExpiresAt // time.Time
+```
+
+Returns a `*SignedURL` with `URL string` and `ExpiresAt time.Time`. Cache the link until `ExpiresAt`, never until a deadline you compute from `ExpiresIn`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ExpiresIn` | `time.Duration` | How long to ask for. Zero is the default. |
+| `DownloadAs` | `string` | Save as this filename instead of displaying inline. |
+| `ContentType` | `string` | What storage answers with as `Content-Type`, overriding what was stored. |
+
+Defaults and lifetimes are on [Signed read URLs](/blob/bucket/reading#signed-read-urls).
+
+---
+
+## Delete
+
+```go
+func (b *Bucket) Delete(ctx context.Context, path string) error
+func (b *Bucket) DeleteMany(ctx context.Context, paths []string) error
+func (b *Bucket) DeletePrefix(ctx context.Context, prefix string) error
+func (b *Bucket) DeleteAll(ctx context.Context) error
+```
+
+```go
+bucket.Delete(ctx, "avatars/me.png")                         // one path
+bucket.DeleteMany(ctx, []string{"a.png", "b.png", "c.png"})  // a list of paths
+bucket.DeletePrefix(ctx, "tmp/")                             // everything under a prefix
+bucket.DeleteAll(ctx)                                        // the whole bucket, on purpose
+```
+
+Each shape is its own method. `DeletePrefix("")` is refused with `invalid_input`; `DeleteAll` is how to say you mean it. `DeleteMany` checks every path before the first request, so a bad path deletes nothing. What each shape does and returns is on [Deleting](/blob/bucket/deleting).
+
+```go
+err := bucket.DeleteMany(ctx, paths)
+var be *blob.Error
+if errors.As(err, &be) && be.Code == blob.CodePartialDelete {
+	requeue(be.Failed) // the paths still in the bucket
+} else if err != nil {
+	return err
+}
+```
+
+---
+
+## Multipart cleanup
+
+```go
+func (b *Bucket) ListMultipartUploads(ctx context.Context, prefix string) ([]MultipartUpload, error)
+func (b *Bucket) AbortMultipartUpload(ctx context.Context, upload MultipartUpload) error
+func (b *Bucket) AbortStaleMultipartUploads(ctx context.Context, olderThan time.Duration, prefix string) ([]MultipartUpload, error)
+```
+
+```go
+uploads, err := bucket.ListMultipartUploads(ctx, "uploads/")
+for _, u := range uploads {
+	if err := bucket.AbortMultipartUpload(ctx, u); err != nil {
+		return err
+	}
+}
+
+aborted, err := bucket.AbortStaleMultipartUploads(ctx, 24*time.Hour, "uploads/")
+```
+
+`MultipartUpload` is a struct with `Path string`, `UploadID string` and `InitiatedAt time.Time`. Pass `""` as the prefix for the whole bucket.
+
+`AbortMultipartUpload` takes the record, not two strings, because a swapped pair would abort nothing and report success. An empty `UploadID` is refused with `invalid_input`. To abort an upload whose id you stored from an [upload handler](/blob/sdks/go/upload-handler#onuploadcomplete), build the record:
+
+```go
+bucket.AbortMultipartUpload(ctx, blob.MultipartUpload{Path: row.Path, UploadID: row.MultipartUploadID})
+```
+
+`olderThan` is the window from [Aborting stale uploads](/blob/bucket/deleting#aborting-stale-uploads). Zero aborts every incomplete upload under the prefix, including ones still running. If an abort fails partway, the uploads already aborted are returned along with the error.
+
+---
+
+## S3
+
+```go
+func (b *Bucket) S3(ctx context.Context) (*S3Credentials, error)
+```
+
+Short-lived credentials for the AWS SDK or any S3 client. See [Using an S3 client](/blob/sdks/go/overview#using-an-s3-client).
+
+---
+
+## Records
+
+Records are structs. They nest by embedding, so a `*CompletedBlob` has every `BlobObject` field directly. What each field means is on [Records](/blob/reference/types#records).
+
+| Type | Fields | Returned by |
+| --- | --- | --- |
+| `BlobObject` | `Path`, `URL`, `VersionedURL`, `Size`, `ETag`, `UploadedAt` | `List`, `Copy`, `Move`, `UpdateJSON` |
+| `CompletedBlob` | `BlobObject` plus `ContentType` | `Put`, `OnUploadComplete` |
+| `BlobInfo` | `BlobObject` plus `ContentType` and `Metadata` | `Info` |
+| `BlobDownload` | `BlobInfo` plus `Body io.ReadCloser` | `Get` |
+
+| Field | Type |
+| --- | --- |
+| `Path` | `string` |
+| `URL` | `string`, `""` on a private bucket |
+| `VersionedURL` | `string`, `""` when `URL` is |
+| `Size` | `int64` |
+| `ETag` | `string` |
+| `UploadedAt` | `time.Time` |
+| `ContentType` | `string` |
+| `Metadata` | `map[string]string` |
+
+Records encode to JSON with the field names the TypeScript SDK uses (`path`, `url`, `versionedUrl`, `uploadedAt`, ...), so one can be returned from your own route as is.

@@ -41,6 +41,19 @@ uploads = AsyncUploadHandler(
     on_upload_complete=record,
 )
 ```
+
+```go Go
+// uploads.go
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
+	Multipart: blob.MultipartAlways,
+	OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+		return blob.BeforeUploadResult{Path: blob.UniquePath("uploads/" + a.File.Name)}, nil
+	},
+	OnUploadComplete: func(a blob.UploadCompleteArgs[struct{}]) (any, error) {
+		return nil, recordFile(a.Request.Context(), a.Path)
+	},
+})
+```
 </CodeGroup>
 
 Set multipart on, on the handler or a route, and every upload uses parts, whatever its size. Nothing is stored until your handler completes the upload, so a closed tab always leaves an incomplete multipart upload, which the cron below cleans up. The single-PUT case disappears, and small files gain pause, resume and per-part retry.
@@ -74,6 +87,22 @@ bucket = Bucket.from_env()
 def sweep_uploads() -> dict:
     aborted = bucket.abort_stale_multipart_uploads(older_than="1d", prefix="uploads/")
     return {"aborted": len(aborted), "paths": [u.path for u in aborted]}
+```
+
+```go Go
+// cron.go
+func sweepUploads(w http.ResponseWriter, r *http.Request) {
+	aborted, err := bucket.AbortStaleMultipartUploads(r.Context(), 24*time.Hour, "uploads/")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	paths := make([]string, len(aborted))
+	for i, u := range aborted {
+		paths[i] = u.Path
+	}
+	json.NewEncoder(w).Encode(map[string]any{"aborted": len(aborted), "paths": paths})
+}
 ```
 </CodeGroup>
 
@@ -168,6 +197,58 @@ attachment = UploadRoute(
 
 uploads = AsyncUploadHandler(routes={"attachment": attachment})
 ```
+
+```go Go
+// uploads.go
+type pending struct {
+	RowID string `json:"rowId"`
+}
+
+attachment := blob.UploadRoute[struct{}]{
+	ContentTypes: []string{"image/*", "application/pdf"},
+	MaxSize:      20 * blob.MB,
+
+	OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+		user := getUser(a.Request)
+		if user == nil {
+			return blob.BeforeUploadResult{}, blob.NewError(blob.CodeUnauthorized, blob.ErrorOptions{})
+		}
+
+		rowID := uuid.NewString()
+		path := blob.UniquePath("uploads/" + user.ID + "/" + a.File.Name)
+		if err := db.InsertPendingUpload(a.Request.Context(), rowID, user.ID, path); err != nil {
+			return blob.BeforeUploadResult{}, err
+		}
+
+		// State crosses in the completion token, so the callback can read it without a lookup.
+		return blob.BeforeUploadResult{Path: path, State: pending{RowID: rowID}}, nil
+	},
+
+	OnUploadComplete: func(a blob.UploadCompleteArgs[struct{}]) (any, error) {
+		var s pending
+		if err := json.Unmarshal(a.State, &s); err != nil {
+			return nil, err
+		}
+		ctx := a.Request.Context()
+		if err := indexForSearch(ctx, a.Path, a.ContentType); err != nil {
+			return nil, err
+		}
+		if err := notifyOwner(ctx, s.RowID); err != nil {
+			return nil, err
+		}
+
+		// Last. Everything above has to be done before the row stops looking abandoned.
+		if err := db.MarkUploadReady(ctx, s.RowID, a.Size, a.URL); err != nil {
+			return nil, err
+		}
+		return map[string]string{"rowId": s.RowID}, nil
+	},
+}
+
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
+	Routes: map[string]blob.UploadRoute[struct{}]{"attachment": attachment},
+})
+```
 </CodeGroup>
 
 <Steps>
@@ -236,6 +317,39 @@ def sweep_uploads() -> dict:
 
     return {"aborted": len(aborted), "swept": len(rows)}
 ```
+
+```go Go
+// cron.go
+const olderThan = 24 * time.Hour
+
+func sweepUploads(ctx context.Context) (aborted, swept int, err error) {
+	stale, err := bucket.AbortStaleMultipartUploads(ctx, olderThan, "uploads/")
+	if err != nil {
+		return 0, 0, err
+	}
+
+	rows, err := db.FindPendingUploads(ctx, olderThan, 500)
+	if err != nil {
+		return len(stale), 0, err
+	}
+	if len(rows) > 0 {
+		paths := make([]string, len(rows))
+		ids := make([]string, len(rows))
+		for i, r := range rows {
+			paths[i], ids[i] = r.Path, r.ID
+		}
+		// DeleteMany does not fail for a path with nothing at it, so a PUT that never finished
+		// and parts the abort above just cleared are both covered by the same call.
+		if err := bucket.DeleteMany(ctx, paths); err != nil {
+			return len(stale), 0, err
+		}
+		if err := db.DeleteUploads(ctx, ids); err != nil {
+			return len(stale), 0, err
+		}
+	}
+	return len(stale), len(rows), nil
+}
+```
 </CodeGroup>
 
 Two things this example depends on:
@@ -265,6 +379,22 @@ cutoff = datetime.now(timezone.utc) - timedelta(days=1)
 orphans = [b.path for b in page.blobs if b.path not in known and b.uploaded_at < cutoff]
 if orphans:
     bucket.delete(orphans)
+```
+
+```go Go
+page, err := bucket.List(ctx, &blob.ListOptions{Prefix: "uploads/", Limit: 1000})
+known := recordedPaths() // map[string]bool
+cutoff := time.Now().Add(-24 * time.Hour)
+
+var orphans []string
+for _, b := range page.Blobs {
+	if !known[b.Path] && b.UploadedAt.Before(cutoff) {
+		orphans = append(orphans, b.Path)
+	}
+}
+if len(orphans) > 0 {
+	err = bucket.DeleteMany(ctx, orphans)
+}
 ```
 </CodeGroup>
 

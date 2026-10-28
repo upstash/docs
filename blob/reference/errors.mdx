@@ -21,11 +21,19 @@ except BlobError as e:
         return None
     raise
 ```
+
+```go Go
+info, err := bucket.Info(ctx, path)
+if blob.HasCode(err, blob.CodeNotFound) {
+	return nil, nil
+}
+return info, err
+```
 </CodeGroup>
 
-Every failure the SDK reports is a `BlobError`. Most bad options and arguments are a `TypeError` instead, or a `ValueError` in Python; see [TypeScript](/blob/sdks/ts/errors#bad-options-are-a-typeerror), [Python](/blob/sdks/py/errors#bad-options-raise-typeerror-or-valueerror). It carries a `code` from a fixed list, a `status`, and a `message` you can show to a user. The same codes are used by every server SDK, in the browser, and inside the React hooks, so an error raised on your server reaches the browser with its code intact.
+Every failure the SDK reports is a `BlobError`. Most bad options and arguments are a `TypeError` instead, a `ValueError` in Python, or a plain error in Go; see [TypeScript](/blob/sdks/ts/errors#bad-options-are-a-typeerror), [Python](/blob/sdks/py/errors#bad-options-raise-typeerror-or-valueerror), [Go](/blob/sdks/go/errors#bad-options-are-returned-where-they-are-written). It carries a `code` from a fixed list, a `status`, and a `message` you can show to a user. The same codes are used by every server SDK, in the browser, and inside the React hooks, so an error raised on your server reaches the browser with its code intact.
 
-Catching it and reading its fields: [TypeScript](/blob/sdks/ts/errors), [Python](/blob/sdks/py/errors).
+Catching it and reading its fields: [TypeScript](/blob/sdks/ts/errors), [Python](/blob/sdks/py/errors), [Go](/blob/sdks/go/errors).
 
 ---
 
@@ -54,13 +62,13 @@ The status is what an upload route answers with.
 | `invalid_content_type_pattern` | 500 | `invalid content type pattern` | A content types entry that is not a `type/subtype` or one of `image/*`, `video/*`, `audio/*`. An empty list throws this too. |
 | `request_failed` | 500 | `request failed` | Everything else. This is the one code whose status the thrower sets, so it also carries 502 and 503. |
 
-Bad option values are not in this list. An unparseable `'5mbit'`, a missing token, a route with no before-upload callback: those throw where the option is written, at startup, not as a `BlobError` per request. What they throw in each SDK: [TypeScript](/blob/sdks/ts/errors#bad-options-are-a-typeerror), [Python](/blob/sdks/py/errors#bad-options-raise-typeerror-or-valueerror).
+Bad option values are not in this list. An unparseable `'5mbit'`, a missing token, a route with no before-upload callback: those throw where the option is written, at startup, not as a `BlobError` per request. What they throw in each SDK: [TypeScript](/blob/sdks/ts/errors#bad-options-are-a-typeerror), [Python](/blob/sdks/py/errors#bad-options-raise-typeerror-or-valueerror), [Go](/blob/sdks/go/errors#bad-options-are-returned-where-they-are-written).
 
 ---
 
 ## Extra fields
 
-Some codes carry extra details. Their names and types in each SDK: [TypeScript](/blob/sdks/ts/errors#fields), [Python](/blob/sdks/py/errors#fields).
+Some codes carry extra details. Their names and types in each SDK: [TypeScript](/blob/sdks/ts/errors#fields), [Python](/blob/sdks/py/errors#fields), [Go](/blob/sdks/go/errors#fields).
 
 | Detail | Set by |
 | ------ | ------ |
@@ -89,6 +97,13 @@ BlobError("forbidden", "not your thread").message  # 'Not your thread'
 BlobError("too_large", "cat.png is 3.1 MB, over the 2 MB limit").message
 # 'cat.png is 3.1 MB, over the 2 MB limit'
 ```
+
+```go Go
+blob.NewError(blob.CodeNotFound, blob.ErrorOptions{}).Message                            // "Not found"
+blob.NewError(blob.CodeForbidden, blob.ErrorOptions{Message: "not your thread"}).Message // "Not your thread"
+blob.NewError(blob.CodeTooLarge, blob.ErrorOptions{Message: "cat.png is 3.1 MB, over the 2 MB limit"}).Message
+// "cat.png is 3.1 MB, over the 2 MB limit"
+```
 </CodeGroup>
 
 Messages are sentence-cased, so an app can print the message directly. A message that opens with an identifier, like a MIME type or a file name, keeps that identifier's case.
@@ -107,11 +122,16 @@ new BlobError("length_required").message
 BlobError("length_required").message
 # 'Length required (pass size= or max_size= so the length is known before the first byte)'
 ```
+
+```go Go
+blob.NewError(blob.CodeLengthRequired, blob.ErrorOptions{}).Message
+// "Length required (pass Size or MaxSize so the length is known before the first byte)"
+```
 </CodeGroup>
 
 A hint is appended to the message in parentheses, so printing the message alone is enough. The hint is still there separately if you want to lay it out yourself. A message that already contains its hint is not doubled.
 
-`signature_mismatch` and `length_required` have a built-in hint. Its text in each SDK: [TypeScript](/blob/sdks/ts/errors#built-in-hints), [Python](/blob/sdks/py/errors#built-in-hints).
+`signature_mismatch` and `length_required` have a built-in hint. Its text in each SDK: [TypeScript](/blob/sdks/ts/errors#built-in-hints), [Python](/blob/sdks/py/errors#built-in-hints), [Go](/blob/sdks/go/errors#built-in-hints).
 
 ---
 
@@ -161,6 +181,8 @@ A route runs its [error callback](/blob/uploads/upload-handler#handling-errors) 
 1. **A `BlobError` is answered as itself**, at its own status, with its hint, failed paths, etag, size and retry-after when they are set.
 2. **An app error carrying a `status` between 400 and 599 is mapped through the table below.** This is how an auth check that throws its own 401 reaches the browser as `unauthorized`.
 3. **Anything else is treated as your bug and rethrown**, so your framework logs it with its stack rather than masking it as a generic 500.
+
+In Go the status in case 2 comes from a `StatusCode() int` method on the error, and case 3 has nothing to rethrow to: the handler logs the error on its `Logger` and answers a 500 with no detail. See [Refusing](/blob/sdks/go/upload-handler#refusing).
 
 | Status | Code |
 | ------ | ---- |
@@ -273,6 +295,15 @@ except BlobError as e:
     if e.code == "mint_backoff":
         return retry_after_seconds(e.retry_after or 10)
     raise
+```
+
+```go Go
+_, err := bucket.Put(ctx, "u/7/report.pdf", body, nil)
+var be *blob.Error
+if errors.As(err, &be) && be.Code == blob.CodeMintBackoff {
+	return retryAfter(be.RetryAfter)
+}
+return err
 ```
 </CodeGroup>
 

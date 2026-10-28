@@ -27,6 +27,16 @@ uploads = AsyncUploadHandler(
     on_before_upload=lambda args: BeforeUploadResult(path=unique_path(f"uploads/{args.file.name}")),
 )
 ```
+
+```go Go
+// uploads.go
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
+	Multipart: blob.MultipartOver(100 * blob.MB), // everything up to 100 MB goes up as one PUT
+	OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+		return blob.BeforeUploadResult{Path: blob.UniquePath("uploads/" + a.File.Name)}, nil
+	},
+})
+```
 </CodeGroup>
 
 ---
@@ -86,6 +96,27 @@ uploads = AsyncUploadHandler(
     },
 )
 ```
+
+```go Go
+// uploads.go
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
+	Multipart: blob.MultipartOver(100 * blob.MB),
+	Routes: map[string]blob.UploadRoute[struct{}]{
+		"avatar": {
+			Multipart: blob.MultipartNever, // never parts
+			OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+				return blob.BeforeUploadResult{Path: blob.UniquePath("avatars/" + a.File.Name)}, nil
+			},
+		},
+		"video": {
+			Multipart: blob.MultipartAlways, // always parts
+			OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+				return blob.BeforeUploadResult{Path: blob.UniquePath("videos/" + a.File.Name)}, nil
+			},
+		},
+	},
+})
+```
 </CodeGroup>
 
 <CodeGroup>
@@ -100,9 +131,15 @@ await bucket.put("logs/today.ndjson", stream, { size, multipart: "50mb" })
 bucket.put("videos/clip.mp4", Path("clip.mp4"), multipart=True)
 bucket.put("logs/today.ndjson", lines(), size=size, multipart="50mb")
 ```
+
+```go Go
+// videos.go
+bucket.Put(ctx, "videos/clip.mp4", clip, &blob.PutOptions{Multipart: blob.MultipartAlways})
+bucket.Put(ctx, "logs/today.ndjson", lines, &blob.PutOptions{Size: size, Multipart: blob.MultipartOver(50 * blob.MB)})
+```
 </CodeGroup>
 
-The multipart option takes a size, or a switch. A size becomes the threshold for that handler, route or write. Set it on to always use parts, or off to never use them. On a handler it is the default for every route, and a route overrides it.
+The multipart option takes a size, or a switch. In Go those are `blob.MultipartOver(size)`, `blob.MultipartAlways` and `blob.MultipartNever`. A size becomes the threshold for that handler, route or write. Set it on to always use parts, or off to never use them. On a handler it is the default for every route, and a route overrides it.
 
 - Multipart off on a body over the single-PUT ceiling of about 5 GiB throws `too_large`.
 - On a server `put`, conditional writes are single-PUT only; see [Conditional writes](/blob/bucket/writing#conditional-writes).
@@ -131,6 +168,16 @@ uploads = AsyncUploadHandler(
     max_size="32MiB",  # also accepts 33_554_432
     on_before_upload=lambda args: BeforeUploadResult(path=unique_path(f"uploads/{args.file.name}")),
 )
+```
+
+```go Go
+// uploads.go
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
+	MaxSize: 32 * blob.MiB, // 33_554_432
+	OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+		return blob.BeforeUploadResult{Path: blob.UniquePath("uploads/" + a.File.Name)}, nil
+	},
+})
 ```
 </CodeGroup>
 
@@ -276,6 +323,15 @@ def archive(chunks: Iterable[bytes], size: int) -> CompletedBlob:
     # An iterable has no length of its own: without size, put() needs max_size
     # to buffer it, and raises length_required with neither.
     return bucket.put("backups/2026-01.tar", chunks, size=size)
+```
+
+```go Go
+// backup.go
+func archive(ctx context.Context, bucket *blob.Bucket, r io.Reader, size int64) (*blob.CompletedBlob, error) {
+	// A plain io.Reader has no length of its own: without Size, Put needs MaxSize
+	// to buffer it, and returns length_required with neither.
+	return bucket.Put(ctx, "backups/2026-01.tar", r, &blob.PutOptions{Size: size})
+}
 ```
 </CodeGroup>
 

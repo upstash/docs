@@ -17,11 +17,17 @@ bucket.delete("avatars/me.png")                  # one path
 bucket.delete(["a.png", "b.png", "c.png"])       # a list of paths
 bucket.delete(prefix="tmp/")                      # everything under a prefix
 ```
+
+```go Go
+bucket.Delete(ctx, "avatars/me.png")                        // one path
+bucket.DeleteMany(ctx, []string{"a.png", "b.png", "c.png"}) // a slice of paths
+bucket.DeletePrefix(ctx, "tmp/")                            // everything under a prefix
+```
 </CodeGroup>
 
-All three shapes return nothing and treat "already gone" as success. They differ in how many requests they make and what they throw when storage refuses part of the work. Method signatures and the target type: [TypeScript](/blob/sdks/ts/bucket#del), [Python](/blob/sdks/py/bucket#delete).
+All three shapes return nothing and treat "already gone" as success. They differ in how many requests they make and what they throw when storage refuses part of the work. Method signatures and the target type: [TypeScript](/blob/sdks/ts/bucket#del), [Python](/blob/sdks/py/bucket#delete), [Go](/blob/sdks/go/bucket#delete).
 
-A target that is none of the three shapes is refused with `invalid_input`. In Python that is passing both or neither of paths and `prefix=`; any other iterable, a dict included, is read as a list of paths. A path with a `.` or `..` segment is rejected before any request is sent; see [Paths](/blob/bucket/writing#paths).
+A target that is none of the three shapes is refused with `invalid_input`. In Python that is passing both or neither of paths and `prefix=`; any other iterable, a dict included, is read as a list of paths. Go has a method per shape, so there is no target to get wrong. A path with a `.` or `..` segment is rejected before any request is sent; see [Paths](/blob/bucket/writing#paths).
 
 The upload handler also deletes on its own: a throw out of the completion callback, or a cancel from the browser, removes the object that upload wrote. See [Recording the upload](/blob/uploads/upload-handler#recording-the-upload).
 
@@ -38,6 +44,11 @@ await bucket.del("drafts/9f3c.txt")  // still no throw
 ```python Python
 bucket.delete("drafts/9f3c.txt")
 bucket.delete("drafts/9f3c.txt")  # still no raise
+```
+
+```go Go
+bucket.Delete(ctx, "drafts/9f3c.txt")
+bucket.Delete(ctx, "drafts/9f3c.txt") // still nil
 ```
 </CodeGroup>
 
@@ -70,9 +81,20 @@ except BlobError as e:
         raise
     requeue(e.failed or [])  # the paths still in the bucket, verified one by one
 ```
+
+```go Go
+err := bucket.DeleteMany(ctx, paths)
+var be *blob.Error
+if errors.As(err, &be) && be.Code == blob.CodePartialDelete {
+	return requeue(be.Failed) // the paths still in the bucket, verified one by one
+}
+if err != nil {
+	return err
+}
+```
 </CodeGroup>
 
-Sent as batch deletes in chunks of 1000 paths, so a 5000-path list is five requests. In TypeScript a bad path fails the chunk it is in, and earlier chunks have already run. Python checks every path before the first request, so nothing is deleted.
+Sent as batch deletes in chunks of 1000 paths, so a 5000-path list is five requests. In TypeScript a bad path fails the chunk it is in, and earlier chunks have already run. Python and Go check every path before the first request, so nothing is deleted.
 
 When storage reports keys as failed, the SDK re-checks each one and keeps only the paths still there. If any survive, the delete throws `partial_delete` with them as its failed paths. Everything not in that list was deleted. To recover, retry with those paths.
 
@@ -88,6 +110,10 @@ await bucket.del({ prefix: "users/7/tmp/" })
 ```python Python
 bucket.delete(prefix="users/7/tmp/")
 ```
+
+```go Go
+bucket.DeletePrefix(ctx, "users/7/tmp/")
+```
 </CodeGroup>
 
 Pages through `list` at 1000 objects per page and batch-deletes each page as it goes. A prefix with 100,000 objects is 100 list requests and 100 batch deletes, run one after another. It is not atomic; objects written under the prefix while it runs may or may not be caught.
@@ -95,7 +121,7 @@ Pages through `list` at 1000 objects per page and batch-deletes each page as it 
 Failures work as for a list. Survivors from every page are collected and thrown as `partial_delete`.
 
 <Warning>
-An empty prefix would match every object in the bucket, so it is refused with `invalid_input`. This protects against an unset variable or an empty form field. To wipe the bucket on purpose, say so with the all flag:
+An empty prefix would match every object in the bucket, so it is refused with `invalid_input`. This protects against an unset variable or an empty form field. To wipe the bucket on purpose, say so with the all flag, or in Go with `DeleteAll`:
 
 <CodeGroup>
 ```ts TypeScript
@@ -104,6 +130,10 @@ await bucket.del({ prefix: "", all: true })
 
 ```python Python
 bucket.delete(prefix="", all=True)
+```
+
+```go Go
+bucket.DeleteAll(ctx)
 ```
 </CodeGroup>
 
@@ -137,6 +167,17 @@ except BlobError as e:
     # avatars/7.png exists and is correct. tmp/9f3c is also still there.
     bucket.delete("tmp/9f3c")  # retry the source delete, not the move
 ```
+
+```go Go
+_, err := bucket.Move(ctx, "tmp/9f3c", "avatars/7.png", nil)
+if blob.HasCode(err, blob.CodeMoveLeftACopy) {
+	// avatars/7.png exists and is correct. tmp/9f3c is also still there.
+	return bucket.Delete(ctx, "tmp/9f3c") // retry the source delete, not the move
+}
+if err != nil {
+	return err
+}
+```
 </CodeGroup>
 
 `move` is a copy followed by a delete, because storage has no rename. If the copy fails, nothing changed and you get the copy's error. If the copy succeeds and the delete fails, `move` throws `move_left_a_copy` and **keeps the destination**, so you have two objects rather than none. The original error is on the error's cause.
@@ -147,7 +188,7 @@ except BlobError as e:
 
 A multipart upload becomes an object only when it is completed. Until then its parts are billed storage that `list` cannot see, and the bucket cannot be deleted while one exists. A browser tab closed mid-upload leaves exactly this behind.
 
-`put` and a browser cancel abort their own uploads on failure. Anything else needs a sweep. The cron that runs it is on [Abandoned uploads](/blob/uploads/abandoned-uploads#sweeping-incomplete-multipart-uploads); the calls it uses are below. Signatures: [TypeScript](/blob/sdks/ts/bucket#multipart-cleanup), [Python](/blob/sdks/py/bucket#multipart-cleanup).
+`put` and a browser cancel abort their own uploads on failure. Anything else needs a sweep. The cron that runs it is on [Abandoned uploads](/blob/uploads/abandoned-uploads#sweeping-incomplete-multipart-uploads); the calls it uses are below. Signatures: [TypeScript](/blob/sdks/ts/bucket#multipart-cleanup), [Python](/blob/sdks/py/bucket#multipart-cleanup), [Go](/blob/sdks/go/bucket#multipart-cleanup).
 
 ### Listing incomplete uploads
 
@@ -160,6 +201,11 @@ const uploads = await bucket.listMultipartUploads({ prefix: "uploads/" })
 ```python Python
 uploads = bucket.list_multipart_uploads(prefix="uploads/")
 # [MultipartUpload(path='uploads/big.mp4', upload_id='ABC...', initiated_at=datetime(...)), ...]
+```
+
+```go Go
+uploads, err := bucket.ListMultipartUploads(ctx, "uploads/")
+// [{Path: "uploads/big.mp4", UploadID: "ABC...", InitiatedAt: time.Time}, ...]
 ```
 </CodeGroup>
 
@@ -183,6 +229,10 @@ from upstash_blob import MultipartUpload
 
 bucket.abort_multipart_upload(MultipartUpload(path="uploads/big.mp4", upload_id="ABC...", initiated_at=None))
 ```
+
+```go Go
+bucket.AbortMultipartUpload(ctx, blob.MultipartUpload{Path: "uploads/big.mp4", UploadID: "ABC..."})
+```
 </CodeGroup>
 
 Throws the upload away with every part that landed for it. An upload that is already gone counts as success. An empty upload id is refused with `invalid_input`.
@@ -204,9 +254,14 @@ const aborted = await bucket.abortStaleMultipartUploads({
 aborted = bucket.abort_stale_multipart_uploads(older_than="1d", prefix="uploads/")
 # [MultipartUpload(path, upload_id, initiated_at), ...]
 ```
+
+```go Go
+aborted, err := bucket.AbortStaleMultipartUploads(ctx, 24*time.Hour, "uploads/")
+// [{Path, UploadID, InitiatedAt}, ...]
+```
 </CodeGroup>
 
-List plus abort in one call, meant for a cron. The older-than window is required, a [Duration](/blob/reference/types#duration). Only uploads started longer ago than that are touched, so a window longer than your slowest upload never aborts one still running. A day is a reasonable default.
+List plus abort in one call, meant for a cron. The older-than window is required, a [Duration](/blob/reference/types#duration). In Go it is a `time.Duration`, and zero aborts every incomplete upload under the prefix. Only uploads started longer ago than that are touched, so a window longer than your slowest upload never aborts one still running. A day is a reasonable default.
 
 <Note>
 An abandoned upload **under** the multipart threshold is not a multipart upload. It is an ordinary stored object that `list` can see, and none of the calls above can find it. See [Abandoned uploads](/blob/uploads/abandoned-uploads).
