@@ -83,6 +83,8 @@ The body is any `io.Reader`. What `Put` can learn from it decides whether it nee
 | Any other `io.Reader`, such as a request body, a pipe or a `gzip.Reader` | No: declare `Size` or `MaxSize` | No | Under `MaxSize` yes; under `Size` no |
 | `nil` | Zero bytes | No | Yes |
 
+The Retried column is for a single PUT. A body over the [multipart threshold](/blob/uploads/large-files#the-multipart-threshold) goes up in parts, each buffered and retried on its own, whatever the body type.
+
 An explicit `ContentType` wins over the extension. Without either, the object is stored as `application/octet-stream`.
 
 - `Put` never closes the body.
@@ -145,13 +147,13 @@ if err != nil {
 	return err
 }
 defer res.Body.Close()
-if res.ContentLength < 0 {
-	return fmt.Errorf("%s sent no length", sourceURL)
+if res.StatusCode != http.StatusOK || res.ContentLength <= 0 {
+	return fmt.Errorf("%s: %s, length %d", sourceURL, res.Status, res.ContentLength)
 }
 _, err = bucket.Put(ctx, "mirror/video.mp4", res.Body, &blob.PutOptions{Size: res.ContentLength})
 ```
 
-`res.ContentLength` is `-1` when the length is unknown: a chunked response, or one Go's transport decompressed for you. A negative `Size` is refused with `invalid_input`, so check it first, or fall back to `MaxSize`.
+`res.ContentLength` is `-1` when the length is unknown: a chunked response, or one Go's transport decompressed for you. A negative `Size` is refused with `invalid_input` and a zero one counts as unset, so check it first, or fall back to `MaxSize`.
 
 ---
 
@@ -247,6 +249,13 @@ for k, v := range up.Headers {
 	}
 }
 res, err := http.DefaultClient.Do(req)
+if err != nil {
+	return err
+}
+res.Body.Close()
+if res.StatusCode != http.StatusOK {
+	return fmt.Errorf("upload refused: %s", res.Status) // a 403 means a header was changed or dropped
+}
 ```
 
 Returns a `*SignedUploadURL` with `URL string`, `Headers map[string]string` and `ExpiresAt time.Time`. Send `Headers` verbatim, except that `net/http` takes the length from `Request.ContentLength`, not from a header: a `*bytes.Reader` body sets it for you, and an `*os.File` body does not.
