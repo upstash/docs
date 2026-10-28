@@ -15,12 +15,18 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
 	Context: func(r *http.Request) (*User, error) {
 		user := sessionUser(r)
 		if user == nil {
-			return nil, blob.NewError(blob.CodeUnauthorized, blob.ErrorOptions{}) // 401, nothing is signed
+			// 401, nothing is signed
+			return nil, blob.NewError(
+				blob.CodeUnauthorized,
+				blob.ErrorOptions{},
+			)
 		}
 		return user, nil
 	},
 
-	OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[*User],
+	) (blob.BeforeUploadResult, error) {
 		return blob.BeforeUploadResult{
 			Path:     blob.UniquePath(a.Ctx.ID + "/" + a.File.Name),
 			Metadata: map[string]string{"owner": a.Ctx.ID},
@@ -28,7 +34,12 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
 	},
 
 	OnUploadComplete: func(a blob.UploadCompleteArgs[*User]) (any, error) {
-		err := db.UpsertFile(a.Request.Context(), File{UploadID: a.UploadID, Owner: a.Metadata["owner"], Path: a.Path, URL: a.URL})
+		err := db.UpsertFile(a.Request.Context(), File{
+			UploadID: a.UploadID,
+			Owner:    a.Metadata["owner"],
+			Path:     a.Path,
+			URL:      a.URL,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -88,8 +99,11 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
 	OnBeforeUpload:   authorize,
 	OnUploadComplete: record,
 	OnError:          logRefusal,
-	Routes:           map[string]blob.UploadRoute[*User]{"avatar": avatar, "attachment": attachment},
-	Logger:           slog.Default(),
+	Routes: map[string]blob.UploadRoute[*User]{
+		"avatar":     avatar,
+		"attachment": attachment,
+	},
+	Logger: slog.Default(),
 })
 ```
 
@@ -115,12 +129,18 @@ Everything except `Routes`, `Endpoint`, `Context` and `Logger` is a default each
 ### The bucket
 
 ```go uploads.go
-media, err := blob.NewBucketWith(blob.Options{Token: os.Getenv("MEDIA_BLOB_TOKEN"), Cache: blob.CacheImmutable})
+media, err := blob.NewBucketWith(blob.Options{
+	Token: os.Getenv("MEDIA_BLOB_TOKEN"),
+	Cache: blob.CacheImmutable,
+})
 if err != nil {
 	log.Fatal(err)
 }
 
-uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{Bucket: media, OnBeforeUpload: authorize})
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
+	Bucket:         media,
+	OnBeforeUpload: authorize,
+})
 ```
 
 What the handler uses with no `Bucket` is on [Handler options](/blob/uploads/upload-handler#handler-options). Routes that fall back to `UPSTASH_BLOB_TOKEN` share one bucket. Pass `Bucket` when the token lives under another variable or the bucket needs `Cache`.
@@ -130,7 +150,9 @@ What the handler uses with no `Bucket` is on [Handler options](/blob/uploads/upl
 ## OnBeforeUpload
 
 ```go uploads.go
-func authorize(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
+func authorize(
+	a blob.BeforeUploadArgs[*User],
+) (blob.BeforeUploadResult, error) {
 	return blob.BeforeUploadResult{
 		Path:     blob.UniquePath(a.Ctx.ID + "/" + a.File.Name),
 		Metadata: map[string]string{"owner": a.Ctx.ID},
@@ -164,11 +186,17 @@ What each field does is on [Authorizing an upload](/blob/uploads/upload-handler#
 ### Refusing
 
 ```go uploads.go
-func authorize(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
+func authorize(
+	a blob.BeforeUploadArgs[*User],
+) (blob.BeforeUploadResult, error) {
 	if overQuota(a.Ctx) {
-		return blob.BeforeUploadResult{}, blob.NewError(blob.CodeTooLarge, blob.ErrorOptions{Message: "you are out of space"})
+		return blob.BeforeUploadResult{}, blob.NewError(
+			blob.CodeTooLarge,
+			blob.ErrorOptions{Message: "you are out of space"},
+		)
 	}
-	return blob.BeforeUploadResult{Path: blob.UniquePath(a.Ctx.ID + "/" + a.File.Name)}, nil
+	path := blob.UniquePath(a.Ctx.ID + "/" + a.File.Name)
+	return blob.BeforeUploadResult{Path: path}, nil
 }
 ```
 
@@ -184,7 +212,8 @@ func (e httpError) Error() string   { return e.msg }
 func (e httpError) StatusCode() int { return e.status }
 
 return blob.BeforeUploadResult{}, httpError{401, "sign in to upload"}
-// reaches the browser as BlobError code 'unauthorized', message 'Sign in to upload'
+// reaches the browser as BlobError code 'unauthorized',
+// message 'Sign in to upload'
 ```
 
 Any other error is logged on `Logger` and answered as a 500 with no detail.
@@ -245,7 +274,10 @@ func logRefusal(a blob.UploadErrorArgs[*User]) error {
 	slog.Warn("upload refused", "route", a.Route, "path", a.Path, "err", a.Err)
 	var expired PaymentRequired
 	if errors.As(a.Err, &expired) {
-		return blob.NewError(blob.CodeForbidden, blob.ErrorOptions{Message: "plan expired"})
+		return blob.NewError(
+			blob.CodeForbidden,
+			blob.ErrorOptions{Message: "plan expired"},
+		)
 	}
 	return nil
 }
@@ -282,13 +314,18 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
 	Context: requireUser,
 	Routes: map[string]blob.UploadRoute[*User]{
 		"avatar": {
-			OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
 				return blob.BeforeUploadResult{Path: "avatars/" + a.Ctx.ID}, nil
 			},
 		},
 		"attachment": {
-			OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
-				return blob.BeforeUploadResult{Path: blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)}, nil
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				path := blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)
+				return blob.BeforeUploadResult{Path: path}, nil
 			},
 		},
 	},
@@ -309,15 +346,24 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
 	Routes: map[string]blob.UploadRoute[*User]{
 		"avatar": {
 			MaxSize: 2 * blob.MB,
-			OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
-				return blob.BeforeUploadResult{Path: "avatars/" + a.Ctx.ID, Cache: blob.CacheRevalidate}, nil
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				return blob.BeforeUploadResult{
+					Path:  "avatars/" + a.Ctx.ID,
+					Cache: blob.CacheRevalidate,
+				}, nil
 			},
 		},
 		"attachment": {
-			ContentTypes: []string{}, // clears the handler's list for this route
+			// clears the handler's list for this route
+			ContentTypes: []string{},
 			Multipart:    blob.MultipartOver(50 * blob.MB),
-			OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
-				return blob.BeforeUploadResult{Path: blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)}, nil
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				path := blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)
+				return blob.BeforeUploadResult{Path: path}, nil
 			},
 			OnUploadComplete: recordFile,
 		},
@@ -349,10 +395,15 @@ type threadState struct {
 thread := blob.UploadRoute[*User]{
 	Input: blob.JSONInput[Thread](),
 
-	OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[*User],
+	) (blob.BeforeUploadResult, error) {
 		t := a.Input.(Thread)
 		if _, err := uuid.Parse(t.ThreadID); err != nil {
-			return blob.BeforeUploadResult{}, blob.NewError(blob.CodeInvalidInput, blob.ErrorOptions{Message: "the threadId is not a UUID"})
+			return blob.BeforeUploadResult{}, blob.NewError(
+				blob.CodeInvalidInput,
+				blob.ErrorOptions{Message: "the threadId is not a UUID"},
+			)
 		}
 		return blob.BeforeUploadResult{
 			Path:  blob.UniquePath("chat/" + t.ThreadID + "/" + a.File.Name),
@@ -365,7 +416,10 @@ thread := blob.UploadRoute[*User]{
 		if err := json.Unmarshal(a.State, &s); err != nil {
 			return nil, err
 		}
-		return nil, db.InsertMessage(a.Request.Context(), a.UploadID, s.ThreadID, s.Name, a.Ctx.ID, a.URL)
+		ctx := a.Request.Context()
+		return nil, db.InsertMessage(
+			ctx, a.UploadID, s.ThreadID, s.Name, a.Ctx.ID, a.URL,
+		)
 	},
 }
 ```

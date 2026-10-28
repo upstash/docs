@@ -82,11 +82,21 @@ A multipart upload that fails or is canceled aborts itself on its way out, on a 
 ### Retries
 
 ```go
-blob.NewBucketWith(blob.Options{Token: token, Retry: blob.RetryConfig{Disabled: true}}) // every request once
-blob.NewBucketWith(blob.Options{Token: token, Retry: blob.RetryConfig{
-	Retries: 5,
-	Backoff: func(n int) time.Duration { return time.Duration(n) * 500 * time.Millisecond },
-}})
+// every request once
+blob.NewBucketWith(blob.Options{
+	Token: token,
+	Retry: blob.RetryConfig{Disabled: true},
+})
+
+blob.NewBucketWith(blob.Options{
+	Token: token,
+	Retry: blob.RetryConfig{
+		Retries: 5,
+		Backoff: func(n int) time.Duration {
+			return time.Duration(n) * 500 * time.Millisecond
+		},
+	},
+})
 ```
 
 | Field | Type | Description |
@@ -107,6 +117,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+refresh := func(ctx context.Context) (aws.Credentials, error) {
+	c, err := bucket.S3(ctx)
+	if err != nil {
+		return aws.Credentials{}, err
+	}
+	return aws.Credentials{
+		AccessKeyID:     c.AccessKeyID,
+		SecretAccessKey: c.SecretAccessKey,
+		SessionToken:    c.SessionToken,
+		CanExpire:       true,
+		Expires:         c.Expires,
+	}, nil
+}
+
 cfg, err := bucket.S3(ctx)
 if err != nil {
 	return err
@@ -114,19 +138,7 @@ if err != nil {
 client := s3.New(s3.Options{
 	Region:       cfg.Region,
 	BaseEndpoint: aws.String(cfg.Endpoint),
-	Credentials: aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-		c, err := bucket.S3(ctx)
-		if err != nil {
-			return aws.Credentials{}, err
-		}
-		return aws.Credentials{
-			AccessKeyID:     c.AccessKeyID,
-			SecretAccessKey: c.SecretAccessKey,
-			SessionToken:    c.SessionToken,
-			CanExpire:       true,
-			Expires:         c.Expires,
-		}, nil
-	})),
+	Credentials:  aws.NewCredentialsCache(aws.CredentialsProviderFunc(refresh)),
 })
 
 out, err := client.GetObject(ctx, &s3.GetObjectInput{
@@ -154,8 +166,11 @@ What an S3 client is for, and why it must not presign, is on [Using an S3 client
 `KB`, `MB`, `GB` and `TB` are powers of 1,000, and `KiB`, `MiB`, `GiB` and `TiB` powers of 1,024. `32 * blob.MB` refuses a 32 MiB file.
 
 ```go
-bucket.SignedReadURL(ctx, "reports/q3.pdf", &blob.SignedReadURLOptions{ExpiresIn: 2 * time.Minute})
-bucket.Put(ctx, "avatars/7.png", bytes.NewReader(data), &blob.PutOptions{Cache: "7d"}) // public, max-age=604800
+bucket.SignedReadURL(ctx, "reports/q3.pdf", &blob.SignedReadURLOptions{
+	ExpiresIn: 2 * time.Minute,
+})
+// Cache-Control: public, max-age=604800
+bucket.Put(ctx, "avatars/7.png", file, &blob.PutOptions{Cache: "7d"})
 bucket.Put(ctx, "export.csv", rows, &blob.PutOptions{MaxSize: 10 * blob.MiB})
 ```
 

@@ -55,10 +55,16 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
 	ContentTypes: []string{"image/*", "application/pdf"},
 	MaxSize:      20 * blob.MB,
 
-	OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[struct{}],
+	) (blob.BeforeUploadResult, error) {
 		user := getUser(a.Request)
 		if user == nil {
-			return blob.BeforeUploadResult{}, blob.NewError(blob.CodeUnauthorized, blob.ErrorOptions{}) // 401, nothing is signed
+			// 401, nothing is signed
+			return blob.BeforeUploadResult{}, blob.NewError(
+				blob.CodeUnauthorized,
+				blob.ErrorOptions{},
+			)
 		}
 		return blob.BeforeUploadResult{
 			Path:     blob.UniquePath(user.ID + "/" + a.File.Name),
@@ -67,7 +73,12 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
 	},
 
 	OnUploadComplete: func(a blob.UploadCompleteArgs[struct{}]) (any, error) {
-		err := db.UpsertFile(a.Request.Context(), File{UploadID: a.UploadID, Owner: a.Metadata["owner"], Path: a.Path, URL: a.URL})
+		err := db.UpsertFile(a.Request.Context(), File{
+			UploadID: a.UploadID,
+			Owner:    a.Metadata["owner"],
+			Path:     a.Path,
+			URL:      a.URL,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +174,9 @@ def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
 ```
 
 ```go Go
-func authorize(a blob.BeforeUploadArgs[*Session]) (blob.BeforeUploadResult, error) {
+func authorize(
+	a blob.BeforeUploadArgs[*Session],
+) (blob.BeforeUploadResult, error) {
 	// a.Ctx, a.Route, a.Request, a.File, a.Input
 	return blob.BeforeUploadResult{
 		Path:     blob.UniquePath(a.Ctx.UserID + "/" + a.File.Name),
@@ -245,15 +258,24 @@ async def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
 ```
 
 ```go Go
-func authorize(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+func authorize(
+	a blob.BeforeUploadArgs[struct{}],
+) (blob.BeforeUploadResult, error) {
 	user := getUser(a.Request)
 	if user == nil {
-		return blob.BeforeUploadResult{}, blob.NewError(blob.CodeUnauthorized, blob.ErrorOptions{})
+		return blob.BeforeUploadResult{}, blob.NewError(
+			blob.CodeUnauthorized,
+			blob.ErrorOptions{},
+		)
 	}
 	if overQuota(user) {
-		return blob.BeforeUploadResult{}, blob.NewError(blob.CodeTooLarge, blob.ErrorOptions{Message: "you are out of space"})
+		return blob.BeforeUploadResult{}, blob.NewError(
+			blob.CodeTooLarge,
+			blob.ErrorOptions{Message: "you are out of space"},
+		)
 	}
-	return blob.BeforeUploadResult{Path: blob.UniquePath(user.ID + "/" + a.File.Name)}, nil
+	path := blob.UniquePath(user.ID + "/" + a.File.Name)
+	return blob.BeforeUploadResult{Path: path}, nil
 }
 ```
 </CodeGroup>
@@ -362,11 +384,19 @@ async def record(args: UploadCompleteArgs) -> dict[str, str]:
 
 ```go Go
 func record(a blob.UploadCompleteArgs[struct{}]) (any, error) {
-	err := db.UpsertFile(a.Request.Context(), File{UploadID: a.UploadID, Owner: a.Metadata["owner"], Path: a.Path, URL: a.URL})
+	err := db.UpsertFile(a.Request.Context(), File{
+		UploadID: a.UploadID,
+		Owner:    a.Metadata["owner"],
+		Path:     a.Path,
+		URL:      a.URL,
+	})
 	if err != nil {
 		slog.Error("[uploads] could not record", "path", a.Path, "err", err)
-		// Return an error only when losing the file is better than keeping an unrecorded one.
-		return nil, blob.NewError(blob.CodeNotReady, blob.ErrorOptions{Message: "could not record the upload, try again"})
+		// Return an error only when losing the file is better than
+		// keeping an unrecorded one.
+		return nil, blob.NewError(blob.CodeNotReady, blob.ErrorOptions{
+			Message: "could not record the upload, try again",
+		})
 	}
 	return map[string]string{"path": a.Path}, nil
 }
@@ -400,7 +430,10 @@ func onError(a blob.UploadErrorArgs[*Session]) error {
 	slog.Warn("upload refused", "route", a.Route, "path", a.Path, "err", a.Err)
 	var expired PaymentRequired
 	if errors.As(a.Err, &expired) {
-		return blob.NewError(blob.CodeForbidden, blob.ErrorOptions{Message: "plan expired"})
+		return blob.NewError(
+			blob.CodeForbidden,
+			blob.ErrorOptions{Message: "plan expired"},
+		)
 	}
 	return nil
 }
@@ -459,20 +492,30 @@ uploads = AsyncUploadHandler(
 
 ```go Go
 uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
-	Context: requireUser, // returns an unauthorized *blob.Error on a dead session
+	// returns an unauthorized *blob.Error on a dead session
+	Context: requireUser,
 
 	Routes: map[string]blob.UploadRoute[*User]{
 		"avatar": {
-			OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
-				return blob.BeforeUploadResult{Path: blob.UniquePath("avatars/" + a.Ctx.ID + "/" + a.File.Name)}, nil
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				name := a.Ctx.ID + "/" + a.File.Name
+				path := blob.UniquePath("avatars/" + name)
+				return blob.BeforeUploadResult{Path: path}, nil
 			},
-			OnUploadComplete: func(a blob.UploadCompleteArgs[*User]) (any, error) {
+			OnUploadComplete: func(
+				a blob.UploadCompleteArgs[*User],
+			) (any, error) {
 				return nil, db.SetAvatar(a.Request.Context(), a.Ctx.ID, a.URL)
 			},
 		},
 		"attachment": {
-			OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
-				return blob.BeforeUploadResult{Path: blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)}, nil
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				path := blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)
+				return blob.BeforeUploadResult{Path: path}, nil
 			},
 		},
 	},
@@ -538,15 +581,24 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
 	Routes: map[string]blob.UploadRoute[*User]{
 		"avatar": {
 			MaxSize: 2 * blob.MB,
-			OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
-				return blob.BeforeUploadResult{Path: "avatars/" + a.Ctx.ID, Cache: blob.CacheRevalidate}, nil
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				return blob.BeforeUploadResult{
+					Path:  "avatars/" + a.Ctx.ID,
+					Cache: blob.CacheRevalidate,
+				}, nil
 			},
 		},
 		"attachment": {
-			ContentTypes: []string{}, // clears the handler's list for this route
+			// clears the handler's list for this route
+			ContentTypes: []string{},
 			Multipart:    blob.MultipartOver(50 * blob.MB),
-			OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
-				return blob.BeforeUploadResult{Path: blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)}, nil
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				path := blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)
+				return blob.BeforeUploadResult{Path: path}, nil
 			},
 		},
 	},
@@ -624,10 +676,15 @@ type threadState struct {
 thread := blob.UploadRoute[*User]{
 	Input: blob.JSONInput[Thread](),
 
-	OnBeforeUpload: func(a blob.BeforeUploadArgs[*User]) (blob.BeforeUploadResult, error) {
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[*User],
+	) (blob.BeforeUploadResult, error) {
 		t := a.Input.(Thread)
 		if _, err := uuid.Parse(t.ThreadID); err != nil {
-			return blob.BeforeUploadResult{}, blob.NewError(blob.CodeInvalidInput, blob.ErrorOptions{Message: "the threadId is not a UUID"})
+			return blob.BeforeUploadResult{}, blob.NewError(
+				blob.CodeInvalidInput,
+				blob.ErrorOptions{Message: "the threadId is not a UUID"},
+			)
 		}
 		return blob.BeforeUploadResult{
 			Path:  blob.UniquePath("chat/" + t.ThreadID + "/" + a.File.Name),
@@ -640,7 +697,10 @@ thread := blob.UploadRoute[*User]{
 		if err := json.Unmarshal(a.State, &s); err != nil {
 			return nil, err
 		}
-		return nil, db.InsertMessage(a.Request.Context(), a.UploadID, s.ThreadID, s.Name, a.Ctx.ID, a.URL)
+		ctx := a.Request.Context()
+		return nil, db.InsertMessage(
+			ctx, a.UploadID, s.ThreadID, s.Name, a.Ctx.ID, a.URL,
+		)
 	},
 }
 ```

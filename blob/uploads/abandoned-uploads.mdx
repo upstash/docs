@@ -46,8 +46,11 @@ uploads = AsyncUploadHandler(
 // uploads.go
 uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
 	Multipart: blob.MultipartAlways,
-	OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
-		return blob.BeforeUploadResult{Path: blob.UniquePath("uploads/" + a.File.Name)}, nil
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[struct{}],
+	) (blob.BeforeUploadResult, error) {
+		path := blob.UniquePath("uploads/" + a.File.Name)
+		return blob.BeforeUploadResult{Path: path}, nil
 	},
 	OnUploadComplete: func(a blob.UploadCompleteArgs[struct{}]) (any, error) {
 		return nil, recordFile(a.Request.Context(), a.Path)
@@ -92,7 +95,9 @@ def sweep_uploads() -> dict:
 ```go Go
 // cron.go
 func sweepUploads(w http.ResponseWriter, r *http.Request) {
-	aborted, err := bucket.AbortStaleMultipartUploads(r.Context(), 24*time.Hour, "uploads/")
+	aborted, err := bucket.AbortStaleMultipartUploads(
+		r.Context(), 24*time.Hour, "uploads/",
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -101,7 +106,10 @@ func sweepUploads(w http.ResponseWriter, r *http.Request) {
 	for i, u := range aborted {
 		paths[i] = u.Path
 	}
-	json.NewEncoder(w).Encode(map[string]any{"aborted": len(aborted), "paths": paths})
+	json.NewEncoder(w).Encode(map[string]any{
+		"aborted": len(aborted),
+		"paths":   paths,
+	})
 }
 ```
 </CodeGroup>
@@ -208,20 +216,31 @@ attachment := blob.UploadRoute[struct{}]{
 	ContentTypes: []string{"image/*", "application/pdf"},
 	MaxSize:      20 * blob.MB,
 
-	OnBeforeUpload: func(a blob.BeforeUploadArgs[struct{}]) (blob.BeforeUploadResult, error) {
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[struct{}],
+	) (blob.BeforeUploadResult, error) {
 		user := getUser(a.Request)
 		if user == nil {
-			return blob.BeforeUploadResult{}, blob.NewError(blob.CodeUnauthorized, blob.ErrorOptions{})
+			return blob.BeforeUploadResult{}, blob.NewError(
+				blob.CodeUnauthorized,
+				blob.ErrorOptions{},
+			)
 		}
 
 		rowID := uuid.NewString()
 		path := blob.UniquePath("uploads/" + user.ID + "/" + a.File.Name)
-		if err := db.InsertPendingUpload(a.Request.Context(), rowID, user.ID, path); err != nil {
+		ctx := a.Request.Context()
+		err := db.InsertPendingUpload(ctx, rowID, user.ID, path)
+		if err != nil {
 			return blob.BeforeUploadResult{}, err
 		}
 
-		// State crosses in the completion token, so the callback can read it without a lookup.
-		return blob.BeforeUploadResult{Path: path, State: pending{RowID: rowID}}, nil
+		// State crosses in the completion token, so the callback can read
+		// it without a lookup.
+		return blob.BeforeUploadResult{
+			Path:  path,
+			State: pending{RowID: rowID},
+		}, nil
 	},
 
 	OnUploadComplete: func(a blob.UploadCompleteArgs[struct{}]) (any, error) {
@@ -237,7 +256,8 @@ attachment := blob.UploadRoute[struct{}]{
 			return nil, err
 		}
 
-		// Last. Everything above has to be done before the row stops looking abandoned.
+		// Last. Everything above has to be done before the row stops
+		// looking abandoned.
 		if err := db.MarkUploadReady(ctx, s.RowID, a.Size, a.URL); err != nil {
 			return nil, err
 		}
@@ -338,8 +358,9 @@ func sweepUploads(ctx context.Context) (aborted, swept int, err error) {
 		for i, r := range rows {
 			paths[i], ids[i] = r.Path, r.ID
 		}
-		// DeleteMany does not fail for a path with nothing at it, so a PUT that never finished
-		// and parts the abort above just cleared are both covered by the same call.
+		// DeleteMany does not fail for a path with nothing at it, so a PUT
+		// that never finished and parts the abort above just cleared are
+		// both covered by the same call.
 		if err := bucket.DeleteMany(ctx, paths); err != nil {
 			return len(stale), 0, err
 		}
@@ -382,7 +403,8 @@ if orphans:
 ```
 
 ```go Go
-page, err := bucket.List(ctx, &blob.ListOptions{Prefix: "uploads/", Limit: 1000})
+opts := &blob.ListOptions{Prefix: "uploads/", Limit: 1000}
+page, err := bucket.List(ctx, opts)
 if err != nil {
 	return err
 }

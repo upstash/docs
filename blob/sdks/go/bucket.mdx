@@ -16,7 +16,9 @@ Building the client is on [Overview](/blob/sdks/go/overview#the-bucket-client). 
 ## Put
 
 ```go
-func (b *Bucket) Put(ctx context.Context, path string, body io.Reader, opts *PutOptions) (*CompletedBlob, error)
+func (b *Bucket) Put(
+	ctx context.Context, path string, body io.Reader, opts *PutOptions,
+) (*CompletedBlob, error)
 ```
 
 ```go reports.go
@@ -27,7 +29,9 @@ func saveReport(ctx context.Context, path string) (string, error) {
 	}
 	defer f.Close()
 
-	b, err := bucket.Put(ctx, "reports/q3.pdf", f, &blob.PutOptions{ContentType: "application/pdf"})
+	b, err := bucket.Put(ctx, "reports/q3.pdf", f, &blob.PutOptions{
+		ContentType: "application/pdf",
+	})
 	if err != nil {
 		return "", err
 	}
@@ -52,7 +56,9 @@ Every field is optional. Behaviour and defaults are on [Writing](/blob/bucket/wr
 The result is a [`*CompletedBlob`](#records):
 
 ```go
-b, err := bucket.Put(ctx, "avatars/7.png", bytes.NewReader(data), &blob.PutOptions{ContentType: "image/png"})
+body := bytes.NewReader(data)
+opts := &blob.PutOptions{ContentType: "image/png"}
+b, err := bucket.Put(ctx, "avatars/7.png", body, opts)
 
 b.Path         // "avatars/7.png"
 b.URL          // "https://b3f9a2c7d1e4.blob.upstash.io/avatars/7.png"
@@ -106,7 +112,8 @@ func avatar(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	b, err := bucket.Put(r.Context(), blob.UniquePath("avatars/"+header.Filename), file, &blob.PutOptions{
+	path := blob.UniquePath("avatars/" + header.Filename)
+	b, err := bucket.Put(r.Context(), path, file, &blob.PutOptions{
 		ContentType:  header.Header.Get("Content-Type"),
 		ContentTypes: []string{"image/*"},
 		MaxSize:      5 * blob.MB,
@@ -124,9 +131,13 @@ A `multipart.File` from `r.FormFile` is measured and read in place. Pass the con
 A raw request body has no length `Put` can read. Pass `r.ContentLength` as `Size` only when it is known; a chunked request reports `-1`, which is refused:
 
 ```go
-opts := &blob.PutOptions{ContentType: r.Header.Get("Content-Type"), MaxSize: 10 * blob.MB}
+opts := &blob.PutOptions{
+	ContentType: r.Header.Get("Content-Type"),
+	MaxSize:     10 * blob.MB,
+}
 if r.ContentLength > 0 {
-	opts.Size = r.ContentLength // streamed through; otherwise buffered up to MaxSize
+	// streamed through; otherwise buffered up to MaxSize
+	opts.Size = r.ContentLength
 }
 b, err := bucket.Put(r.Context(), path, r.Body, opts)
 ```
@@ -152,9 +163,11 @@ if err != nil {
 }
 defer res.Body.Close()
 if res.StatusCode != http.StatusOK || res.ContentLength <= 0 {
-	return fmt.Errorf("%s: %s, length %d", sourceURL, res.Status, res.ContentLength)
+	return fmt.Errorf("%s: %s, length %d",
+		sourceURL, res.Status, res.ContentLength)
 }
-_, err = bucket.Put(ctx, "mirror/video.mp4", res.Body, &blob.PutOptions{Size: res.ContentLength})
+opts := &blob.PutOptions{Size: res.ContentLength}
+_, err = bucket.Put(ctx, "mirror/video.mp4", res.Body, opts)
 ```
 
 `res.ContentLength` is `-1` when the length is unknown: a chunked response, or one Go's transport decompressed for you. A negative `Size` is refused with `invalid_input` and a zero one counts as unset, so check it first, or fall back to `MaxSize`.
@@ -168,7 +181,8 @@ func UniquePath(path string) string
 ```
 
 ```go
-blob.UniquePath("users/" + userID + "/" + filename) // "users/Alice_123/Q3 Report-3xK9mBqR.pdf"
+blob.UniquePath("users/" + userID + "/" + filename)
+// "users/Alice_123/Q3 Report-3xK9mBqR.pdf"
 ```
 
 A package function. The suffix rules are on [Unique paths](/blob/bucket/writing#unique-paths).
@@ -178,7 +192,10 @@ A package function. The suffix rules are on [Unique paths](/blob/bucket/writing#
 ## UpdateJSON
 
 ```go
-func UpdateJSON[T any](ctx context.Context, b *Bucket, path string, fn func(prev *T) (T, error), opts *UpdateJSONOptions) (*BlobObject, error)
+func UpdateJSON[T any](
+	ctx context.Context, b *Bucket, path string,
+	fn func(prev *T) (T, error), opts *UpdateJSONOptions,
+) (*BlobObject, error)
 ```
 
 ```go
@@ -186,14 +203,20 @@ type Settings struct {
 	Theme string `json:"theme"`
 }
 
-_, err := blob.UpdateJSON(ctx, bucket, "u/7.json", func(prev *Settings) (Settings, error) {
+setDark := func(prev *Settings) (Settings, error) {
 	next := Settings{}
 	if prev != nil {
 		next = *prev
 	}
 	next.Theme = "dark"
 	return next, nil
-}, &blob.UpdateJSONOptions{MaxAttempts: 10, Metadata: map[string]string{"owner": "u7"}, Cache: blob.CacheNoStore})
+}
+opts := &blob.UpdateJSONOptions{
+	MaxAttempts: 10,
+	Metadata:    map[string]string{"owner": "u7"},
+	Cache:       blob.CacheNoStore,
+}
+_, err := blob.UpdateJSON(ctx, bucket, "u/7.json", setDark, opts)
 ```
 
 | Field | Type | Description |
@@ -211,13 +234,20 @@ The loop and its defaults are on [Updating JSON](/blob/bucket/writing#updating-j
 ## Copy and Move
 
 ```go
-func (b *Bucket) Copy(ctx context.Context, from, to string, opts *CopyOptions) (*BlobObject, error)
-func (b *Bucket) Move(ctx context.Context, from, to string, opts *CopyOptions) (*BlobObject, error)
+func (b *Bucket) Copy(
+	ctx context.Context, from, to string, opts *CopyOptions,
+) (*BlobObject, error)
+
+func (b *Bucket) Move(
+	ctx context.Context, from, to string, opts *CopyOptions,
+) (*BlobObject, error)
 ```
 
 ```go
 archived, err := bucket.Copy(ctx, "tmp/9f3c", "archive/2026/report.pdf", nil)
-moved, err := bucket.Move(ctx, "tmp/9f3c", "reports/q3.pdf", &blob.CopyOptions{ContentType: "application/pdf"})
+moved, err := bucket.Move(ctx, "tmp/9f3c", "reports/q3.pdf", &blob.CopyOptions{
+	ContentType: "application/pdf",
+})
 ```
 
 | Field | Type | Description |
@@ -233,20 +263,24 @@ What carries over from the source is on [copy and move](/blob/bucket/writing#cop
 ## SignedUploadURL
 
 ```go
-func (b *Bucket) SignedUploadURL(ctx context.Context, path string, opts *SignedUploadURLOptions) (*SignedUploadURL, error)
+func (b *Bucket) SignedUploadURL(
+	ctx context.Context, path string, opts *SignedUploadURLOptions,
+) (*SignedUploadURL, error)
 ```
 
 ```go
-up, err := bucket.SignedUploadURL(ctx, "u/7/report.pdf", &blob.SignedUploadURLOptions{
-	ContentType: "application/pdf",
-	Size:        int64(len(data)),
-	ExpiresIn:   10 * time.Minute,
-})
+up, err := bucket.SignedUploadURL(ctx, "u/7/report.pdf",
+	&blob.SignedUploadURLOptions{
+		ContentType: "application/pdf",
+		Size:        int64(len(data)),
+		ExpiresIn:   10 * time.Minute,
+	})
 if err != nil {
 	return err
 }
 
-req, _ := http.NewRequestWithContext(ctx, http.MethodPut, up.URL, bytes.NewReader(data))
+body := bytes.NewReader(data)
+req, _ := http.NewRequestWithContext(ctx, http.MethodPut, up.URL, body)
 for k, v := range up.Headers {
 	if k != "content-length" {
 		req.Header.Set(k, v)
@@ -258,7 +292,8 @@ if err != nil {
 }
 res.Body.Close()
 if res.StatusCode != http.StatusOK {
-	return fmt.Errorf("upload refused: %s", res.Status) // a 403 means a header was changed or dropped
+	// a 403 means a header was changed or dropped
+	return fmt.Errorf("upload refused: %s", res.Status)
 }
 ```
 
@@ -337,7 +372,11 @@ var paths []string
 cursor := ""
 
 for {
-	page, err := bucket.List(ctx, &blob.ListOptions{Prefix: "avatars/", Limit: 1000, Cursor: cursor})
+	page, err := bucket.List(ctx, &blob.ListOptions{
+		Prefix: "avatars/",
+		Limit:  1000,
+		Cursor: cursor,
+	})
 	if err != nil {
 		return err
 	}
@@ -381,14 +420,17 @@ u, err := bucket.PublicURL(ctx, "avatars/u7.png")
 ## SignedReadURL
 
 ```go
-func (b *Bucket) SignedReadURL(ctx context.Context, path string, opts *SignedReadURLOptions) (*SignedURL, error)
+func (b *Bucket) SignedReadURL(
+	ctx context.Context, path string, opts *SignedReadURLOptions,
+) (*SignedURL, error)
 ```
 
 ```go
-link, err := bucket.SignedReadURL(ctx, "reports/2026-01.pdf", &blob.SignedReadURLOptions{
-	ExpiresIn:  2 * time.Minute,
-	DownloadAs: "Report Q3.pdf",
-})
+link, err := bucket.SignedReadURL(ctx, "reports/2026-01.pdf",
+	&blob.SignedReadURLOptions{
+		ExpiresIn:  2 * time.Minute,
+		DownloadAs: "Report Q3.pdf",
+	})
 
 link.URL
 link.ExpiresAt // time.Time
@@ -416,10 +458,14 @@ func (b *Bucket) DeleteAll(ctx context.Context) error
 ```
 
 ```go
-bucket.Delete(ctx, "avatars/me.png")                         // one path
-bucket.DeleteMany(ctx, []string{"a.png", "b.png", "c.png"})  // a list of paths
-bucket.DeletePrefix(ctx, "tmp/")                             // everything under a prefix
-bucket.DeleteAll(ctx)                                        // the whole bucket, on purpose
+// one path
+bucket.Delete(ctx, "avatars/me.png")
+// a list of paths
+bucket.DeleteMany(ctx, []string{"a.png", "b.png", "c.png"})
+// everything under a prefix
+bucket.DeletePrefix(ctx, "tmp/")
+// the whole bucket, on purpose
+bucket.DeleteAll(ctx)
 ```
 
 Each shape is its own method. `DeletePrefix("")` is refused with `invalid_input`; `DeleteAll` is how to say you mean it. `DeleteMany` checks every path before the first request, so a bad path deletes nothing. What each shape does and returns is on [Deleting](/blob/bucket/deleting).
@@ -439,9 +485,17 @@ if errors.As(err, &be) && be.Code == blob.CodePartialDelete {
 ## Multipart cleanup
 
 ```go
-func (b *Bucket) ListMultipartUploads(ctx context.Context, prefix string) ([]MultipartUpload, error)
-func (b *Bucket) AbortMultipartUpload(ctx context.Context, upload MultipartUpload) error
-func (b *Bucket) AbortStaleMultipartUploads(ctx context.Context, olderThan time.Duration, prefix string) ([]MultipartUpload, error)
+func (b *Bucket) ListMultipartUploads(
+	ctx context.Context, prefix string,
+) ([]MultipartUpload, error)
+
+func (b *Bucket) AbortMultipartUpload(
+	ctx context.Context, upload MultipartUpload,
+) error
+
+func (b *Bucket) AbortStaleMultipartUploads(
+	ctx context.Context, olderThan time.Duration, prefix string,
+) ([]MultipartUpload, error)
 ```
 
 ```go
@@ -463,7 +517,10 @@ aborted, err := bucket.AbortStaleMultipartUploads(ctx, 24*time.Hour, "uploads/")
 `AbortMultipartUpload` takes the record, not two strings, because a swapped pair would abort nothing and report success. An empty `UploadID` is refused with `invalid_input`. To abort an upload whose id you stored from an [upload handler](/blob/sdks/go/upload-handler#onuploadcomplete), build the record:
 
 ```go
-bucket.AbortMultipartUpload(ctx, blob.MultipartUpload{Path: row.Path, UploadID: row.MultipartUploadID})
+bucket.AbortMultipartUpload(ctx, blob.MultipartUpload{
+	Path:     row.Path,
+	UploadID: row.MultipartUploadID,
+})
 ```
 
 `olderThan` is the window from [Aborting stale uploads](/blob/bucket/deleting#aborting-stale-uploads). Zero aborts every incomplete upload under the prefix, including ones still running. If an abort fails partway, the uploads already aborted are returned along with the error.
