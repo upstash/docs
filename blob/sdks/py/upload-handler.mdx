@@ -185,7 +185,6 @@ uploads = AsyncUploadHandler(
     multipart="100mb",
     endpoint="/api/upload",
     context=require_user,
-    owner=lambda user: user.id,
     input=Thread,
     on_before_upload=authorize,
     on_upload_complete=record,
@@ -202,7 +201,6 @@ uploads = AsyncUploadHandler(
 | `multipart` | `MultipartOption` | Where an upload stops being one PUT. See [Large files](/blob/uploads/large-files#changing-the-threshold). |
 | `endpoint` | `str` | Where the handler is mounted. Only needed to separate two handlers on one bucket. |
 | `context` | `Callable[[request], Any]` | Runs once per POST. Its value is `args.ctx` in every callback. Without it, `ctx` is `None`. See [context](#context). |
-| `owner` | `Callable[[ctx], Any]` | Binds each upload to who began it. Python only. See [owner](#owner). |
 | `input` | pydantic model, `TypeAdapter`, or callable | Validates what the browser sends as `input` before `on_before_upload` runs. Every route inherits it. See [Input and state](#input-and-state). |
 | `on_before_upload` | `Callable[[BeforeUploadArgs], BeforeUploadResult]` | Required, here or on every route. See [on_before_upload](#on_before_upload). |
 | `on_upload_complete` | `Callable[[UploadCompleteArgs], Any]` | What it returns becomes `upload.blob.data`. See [on_upload_complete](#on_upload_complete). |
@@ -211,7 +209,7 @@ uploads = AsyncUploadHandler(
 
 There is no `constraints` object: `content_types` and `max_size` are options of their own, on the handler, on a route, and on what `on_before_upload` returns.
 
-Everything except `routes`, `endpoint`, `context` and `owner` is a default each route inherits; see [Multiple routes](/blob/uploads/upload-handler#multiple-routes). Bad options raise where they are written, at startup: a `ValueError` for an unparseable size, a `TypeError` for an invalid route name, an empty `routes`, a missing `on_before_upload`, or a missing token. See [Bad options](/blob/sdks/py/errors#bad-options-raise-typeerror-or-valueerror).
+Everything except `routes`, `endpoint` and `context` is a default each route inherits; see [Multiple routes](/blob/uploads/upload-handler#multiple-routes). Bad options raise where they are written, at startup: a `ValueError` for an unparseable size, a `TypeError` for an invalid route name, an empty `routes`, a missing `on_before_upload`, or a missing token. See [Bad options](/blob/sdks/py/errors#bad-options-raise-typeerror-or-valueerror).
 
 ### The bucket
 
@@ -381,23 +379,6 @@ uploads = AsyncUploadHandler(
 ```
 
 `context` takes the framework's request. Its return value, awaited on `AsyncUploadHandler`, is `args.ctx` in every callback. When it runs is on [Context](/blob/uploads/upload-handler#context).
-
-### owner
-
-```python app/uploads.py
-uploads = AsyncUploadHandler(
-    context=require_user,
-    owner=lambda user: user.id,
-    on_before_upload=authorize,
-)
-```
-
-`owner` reads `ctx` and returns who the upload belongs to. Its value, as a string, is signed into the [completion token](/blob/reference/signing#the-completion-token) at `begin`. Every later request for that upload, `parts`, `end` and `cancel`, must produce the same owner or it is refused with `forbidden` before storage or any callback is touched. So one signed-in user cannot finish, re-sign or cancel an upload somebody else began, even holding its token.
-
-- `owner` needs `context`. Without one it raises a `TypeError` at startup.
-- A return of `None` or `""` is `unauthorized`. A `bool` raises a `TypeError`, since `True` would make every user the same owner.
-
-The TypeScript handler has no `owner`.
 
 ---
 
