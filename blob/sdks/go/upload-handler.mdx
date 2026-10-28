@@ -104,7 +104,7 @@ uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
 | `Input` | `func(json.RawMessage) (any, error)` | Validates what the browser sends as `input` before `OnBeforeUpload` runs. See [Input and state](#input-and-state). |
 | `OnBeforeUpload` | `func(BeforeUploadArgs[C]) (BeforeUploadResult, error)` | Required, here or on every route. See [OnBeforeUpload](#onbeforeupload). |
 | `OnUploadComplete` | `func(UploadCompleteArgs[C]) (any, error)` | What it returns becomes `upload.blob.data`. See [OnUploadComplete](#onuploadcomplete). |
-| `OnError` | `func(UploadErrorArgs[C]) error` | Sees every refusal. See [OnError](#onerror). |
+| `OnError` | `func(UploadErrorArgs[C]) error` | Sees every refusal except a 405 and a completion result that cannot be encoded. See [OnError](#onerror). |
 | `Routes` | `map[string]UploadRoute[C]` | Mounts several routes at this one endpoint. See [Routes](#routes). |
 | `Logger` | `*slog.Logger` | Receives what a response cannot carry: an object a refusal could not delete, an error answered as a 500, a [CORS warning](#cors-check). Nil is `slog.Default()`. |
 
@@ -159,7 +159,7 @@ It returns a `BeforeUploadResult`:
 | `MaxSize` | `int64` | Narrows this one upload's limit. |
 | `State` | `any` | Anything computed here that `OnUploadComplete` and `OnError` should get without a lookup. It is encoded with `encoding/json`. See [Input and state](#input-and-state). |
 
-What each field does is on [Authorizing an upload](/blob/uploads/upload-handler#authorizing-an-upload). A path with a `.` or `..` segment is refused with `invalid_input`, since a filename from the browser can put one there.
+What each field does is on [Authorizing an upload](/blob/uploads/upload-handler#authorizing-an-upload). A path with a `.` or `..` segment, an empty segment (`a//b`, a leading `/`) or a control character is refused with `invalid_input`, since a filename from the browser can put one there.
 
 ### Refusing
 
@@ -243,7 +243,7 @@ During `end`, `a.Request.Context()` is not canceled when the browser disconnects
 ```go uploads.go
 func logRefusal(a blob.UploadErrorArgs[*User]) error {
 	slog.Warn("upload refused", "route", a.Route, "path", a.Path, "err", a.Err)
-	var expired PlanExpired
+	var expired PaymentRequired
 	if errors.As(a.Err, &expired) {
 		return blob.NewError(blob.CodeForbidden, blob.ErrorOptions{Message: "plan expired"})
 	}
