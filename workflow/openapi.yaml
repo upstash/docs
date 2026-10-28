@@ -41,6 +41,23 @@ components:
           type: string
           description: Error message
 
+    DLQBulkActionCreated:
+      type: object
+      required:
+        - actionId
+        - total
+      example:
+        actionId: action_...
+        total: 42
+      properties:
+        actionId:
+          type: string
+          description: ID used to check the background action's progress.
+        total:
+          type: integer
+          format: int64
+          description: Number of failed workflow runs matching the filters when the action was created.
+
     FlowControlKey:
       type: object
       properties:
@@ -494,7 +511,7 @@ components:
           description: The ID of the bulk action.
         kind:
           type: string
-          enum: [cancel]
+          enum: [cancel, dlq_delete, dlq_resume, dlq_restart]
           description: The kind of the bulk action.
         state:
           type: string
@@ -509,7 +526,7 @@ components:
         total:
           type: integer
           format: int64
-          description: The number of in-progress workflow runs that matched the filter when the bulk action was created.
+          description: The number of workflow runs that matched the filter when the bulk action was created.
         processed:
           type: integer
           format: int64
@@ -529,10 +546,121 @@ components:
             items:
               type: string
           description: |
-            The filter the bulk action was created with. Keys are the filter parameter names of the bulk cancel request, such as `workflowUrl`, `label` or `fromDate`, and values are the given values.
+            The filter the bulk action was created with. Keys are the request's filter parameter names, such as `workflowUrl`, `label` or `fromDate`, and values are the given values.
           example:
-            workflowUrl: [https://example.com/api/workflow]
+            workflowUrl: ["https://example.com/api/workflow"]
             label: [label_1, label_2]
+
+  parameters:
+    DLQOverrideRetries:
+      name: Upstash-Retries
+      in: header
+      schema:
+        type: integer
+      description: Override the number of retries for the workflow steps.
+    DLQOverrideDelay:
+      name: Upstash-Delay
+      in: header
+      schema:
+        type: string
+      description: Override the delay before executing the workflow. Format is `<value><unit>` (for example, `10s` or `5m`).
+    DLQOverrideRetryDelay:
+      name: Upstash-Retry-Delay
+      in: header
+      schema:
+        type: string
+      description: Override the retry delay expression for the workflow steps.
+    DLQOverrideFlowControlKey:
+      name: Upstash-Flow-Control-Key
+      in: header
+      schema:
+        type: string
+      description: Override the flow control key for the workflow.
+    DLQOverrideFlowControlValue:
+      name: Upstash-Flow-Control-Value
+      in: header
+      schema:
+        type: string
+      description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
+    DLQOverrideLabel:
+      name: Upstash-Label
+      in: header
+      schema:
+        type: string
+      description: Override the workflow labels. Use a comma-separated list for multiple labels, such as `label_1,label_2`.
+    DLQOverrideFailureCallback:
+      name: Upstash-Failure-Callback
+      in: header
+      schema:
+        type: string
+      description: Override the failure callback URL for the workflow.
+    DLQFromDateFilter:
+      name: fromDate
+      in: query
+      schema:
+        type: integer
+        format: int64
+      description: Inclusive start of the DLQ date range, in Unix milliseconds.
+    DLQToDateFilter:
+      name: toDate
+      in: query
+      schema:
+        type: integer
+        format: int64
+      description: Inclusive end of the DLQ date range, in Unix milliseconds.
+    DLQWorkflowUrlFilter:
+      name: workflowUrl
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by workflow URL. Supports multiple values.
+    DLQWorkflowRunIdFilter:
+      name: workflowRunId
+      in: query
+      schema:
+        type: string
+      description: Filter by workflow run ID.
+    DLQWorkflowCreatedAtFilter:
+      name: workflowCreatedAt
+      in: query
+      schema:
+        type: integer
+        format: int64
+      description: Filter by workflow creation time, in Unix milliseconds.
+    DLQLabelFilter:
+      name: label
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by workflow label. Supports multiple values.
+    DLQFailureFunctionStateFilter:
+      name: failureFunctionState
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by failure function state. Supports multiple values.
+    DLQCallerIpFilter:
+      name: callerIp
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by publisher IP address. Supports multiple values.
+    DLQFlowControlKeyFilter:
+      name: flowControlKey
+      in: query
+      schema:
+        type: array
+        items:
+          type: string
+      description: Filter by flow control key. Supports multiple values.
 
 paths:
   /v2/trigger/{workflowUrl}:
@@ -835,7 +963,6 @@ paths:
           - Sending the same filters again while an identical bulk action is still in progress does not start a new one. The in-progress bulk action is returned instead.
           - Up to 1000 bulk actions can be in progress at the same time. Beyond that, a `412` is returned.
 
-          For multi-value filters, a workflow run matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
       parameters:
         - in: query
           name: workflowRunIds
@@ -898,12 +1025,7 @@ paths:
             items:
               type: string
           description: |
-            Optional label to filter workflow runs to cancel. Supports multiple values. You can pass multiple values to match workflow runs with any of the given labels (OR logic).
-
-            Examples:
-            - `label=my_label`
-            - `label=label_1&label=label_2`
-            - `label=label_1,label_2`
+            Optional label to filter workflow runs to cancel. Supports multiple values.
         - in: query
           name: host
           required: false
@@ -1017,12 +1139,12 @@ paths:
   /v2/workflows/bulkActions:
     get:
       summary: List Bulk Actions
-      description: List the bulk actions created by filter-based workflow run cancels
+      description: List all created bulk actions
       tags:
         - Bulk Actions
       x-mint:
         content: |
-          A bulk action is created for every filter-based [bulk cancel](/workflow/api-reference/runs/bulk-cancel-workflow-runs) request, and tracks the progress of the cancellation running in the background.
+          Bulk actions track filter-based [workflow run cancels](/workflow/api-reference/runs/bulk-cancel-workflow-runs) and DLQ [deletes](/workflow/api-reference/dlq/delete/delete-bulk-action), [resumes](/workflow/api-reference/dlq/resume/resume-bulk-action), and [restarts](/workflow/api-reference/dlq/restart/restart-bulk-action).
 
           Bulk actions are kept for 7 days after they are created.
 
@@ -1087,7 +1209,7 @@ paths:
           required: true
           schema:
             type: string
-          description: The ID of the bulk action, as returned by a filter-based bulk cancel with `async=true`.
+          description: The ID returned by a filter-based bulk cancel or asynchronous DLQ action.
       responses:
         "200":
           description: Bulk action details
@@ -1215,11 +1337,7 @@ paths:
           style: form
           explode: true
           description: |
-            Filter workflow run by label. Supports multi-value filtering. You can pass multiple values to match workflow runs with any of the given labels (OR logic).
-
-            Examples:
-            - `label=my_label`
-            - `label=label_1&label=label_2`
+            Filter workflow run by label. Supports multi-value filtering.
         - in: query
           name: flowControlKey
           required: false
@@ -1286,13 +1404,6 @@ paths:
         Failed workflows end up in the DLQ after exhausting all retry attempts. You can filter,
         paginate, and inspect these failures to understand what went wrong and decide whether to
         resume, restart, or delete them.
-      x-mint:
-        content: |
-          <Info>
-            For multi-value filters, a workflow run matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. 
-            
-            Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
-          </Info>
       parameters:
         - in: query
           name: cursor
@@ -1351,12 +1462,7 @@ paths:
             items:
               type: string
           description: |
-            Filter by label assigned to the workflow run. Supports multiple values. You can pass multiple values to match workflow runs with any of the given labels (OR logic).
-
-            Examples:
-            - `label=my_label`
-            - `label=label_1&label=label_2`
-            - `label=label_1,label_2`
+            Filter by label assigned to the workflow run. Supports multiple values.
         - in: query
           name: failureFunctionState
           required: false
@@ -1426,30 +1532,23 @@ paths:
     delete:
       tags:
         - DLQ
-      summary: Bulk Delete Failed Workflow Runs
+      summary: Delete Sync Bulk
       description: |
         Delete multiple failed workflow runs from the DLQ.
 
         When a workflow run fails, it is moved to the DLQ. You can manually remove a failed workflow run from the DLQ using this endpoint. This is useful for cleaning up failed runs that you no longer wish to retry or analyze.
 
-        You can either specify specific DLQ IDs to delete, or use filters to delete matching workflows.
-        When using filters without DLQ IDs, the operation supports pagination via cursor.
       x-mint:
+        href: /workflow/api-reference/dlq/delete/delete-pagination-api
+        metadata:
+          title: Sync Bulk
+          sidebarTitle: Sync Bulk
+          description: Delete Failed Workflow Runs with Pagination
         content: |
-          <Info>
-            For multi-value filters, a workflow run matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. 
-            
-            Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
-          </Info>
+          <Warning>
+            The synchronous pagination API is deprecated. It’s recommended to use Async Bulk endpoint to process all matching entries in a bulk action.
+          </Warning>
       parameters:
-        - in: query
-          name: dlqIds
-          required: false
-          schema:
-            type: array
-            items:
-              type: string
-          description: List of specific DLQ IDs to delete. If provided, other filters are ignored.
         - in: query
           name: cursor
           required: false
@@ -1505,12 +1604,7 @@ paths:
             items:
               type: string
           description: |
-            Filter by label assigned to the workflow run. Supports multiple values. You can pass multiple values to match workflow runs with any of the given labels (OR logic).
-
-            Examples:
-            - `label=my_label`
-            - `label=label_1&label=label_2`
-            - `label=label_1,label_2`
+            Filter by label assigned to the workflow run. Supports multiple values.
         - in: query
           name: failureFunctionState
           required: false
@@ -1557,7 +1651,7 @@ paths:
                     description: The number of workflow runs that were deleted.
                   cursor:
                     type: string
-                    description: Pagination cursor for the next batch. Only present when using filters without DLQ IDs.
+                    description: Pagination cursor for the next batch, when more results remain.
         "400":
           description: Bad Request
           content:
@@ -1576,6 +1670,141 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v2/workflows/dlq/bulkDelete:
+    post:
+      tags:
+        - DLQ
+      summary: Delete Async Bulk
+      description: Create a bulk action that deletes every failed workflow run matching the query filters.
+      x-mint:
+        href: /workflow/api-reference/dlq/delete/delete-bulk-action
+        metadata:
+          title: Async Bulk
+          sidebarTitle: Async Bulk
+          description: Delete all matching failed Workflow runs in a bulk action.
+        content: |
+          The request returns after creating the action. Use its `actionId` with [Get a Bulk Action](/workflow/api-reference/bulk-actions/get-a-bulk-action) to check progress.
+
+          Identical filters submitted while an action is already in-progress return the existing action.
+
+      parameters:
+        - $ref: '#/components/parameters/DLQFromDateFilter'
+        - $ref: '#/components/parameters/DLQToDateFilter'
+        - $ref: '#/components/parameters/DLQWorkflowUrlFilter'
+        - $ref: '#/components/parameters/DLQWorkflowRunIdFilter'
+        - $ref: '#/components/parameters/DLQWorkflowCreatedAtFilter'
+        - $ref: '#/components/parameters/DLQLabelFilter'
+        - $ref: '#/components/parameters/DLQFailureFunctionStateFilter'
+        - $ref: '#/components/parameters/DLQCallerIpFilter'
+        - $ref: '#/components/parameters/DLQFlowControlKeyFilter'
+      responses:
+        '200':
+          description: The background action was created or an identical in-progress action was returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQBulkActionCreated'
+        '412':
+          description: Too many bulk actions are already in progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/workflows/dlq/bulkResume:
+    post:
+      tags:
+        - DLQ
+      summary: Resume Async Bulk
+      description: Create a bulk action that resumes every failed workflow run matching the query filters. Omit all filters to resume the entire Workflow DLQ.
+      x-mint:
+        href: /workflow/api-reference/dlq/resume/resume-bulk-action
+        metadata:
+          title: Async Bulk
+          sidebarTitle: Async Bulk
+          description: Resume all matching failed Workflow runs in a bulk action.
+        content: |
+          The request returns after creating the action. Use its `actionId` with [Get a Bulk Action](/workflow/api-reference/bulk-actions/get-a-bulk-action) to check progress. Each run continues from its failed step.
+
+          Identical filters submitted while an action is already in-progress return the existing action.
+
+      parameters:
+        - $ref: '#/components/parameters/DLQFromDateFilter'
+        - $ref: '#/components/parameters/DLQToDateFilter'
+        - $ref: '#/components/parameters/DLQWorkflowUrlFilter'
+        - $ref: '#/components/parameters/DLQWorkflowRunIdFilter'
+        - $ref: '#/components/parameters/DLQWorkflowCreatedAtFilter'
+        - $ref: '#/components/parameters/DLQLabelFilter'
+        - $ref: '#/components/parameters/DLQFailureFunctionStateFilter'
+        - $ref: '#/components/parameters/DLQCallerIpFilter'
+        - $ref: '#/components/parameters/DLQFlowControlKeyFilter'
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
+      responses:
+        '200':
+          description: The background action was created or an identical in-progress action was returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQBulkActionCreated'
+        '412':
+          description: Too many bulk actions are already in progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v2/workflows/dlq/bulkRestart:
+    post:
+      tags:
+        - DLQ
+      summary: Restart Async Bulk
+      description: Create a bulk action that restarts every failed workflow run matching the query filters.
+      x-mint:
+        href: /workflow/api-reference/dlq/restart/restart-bulk-action
+        metadata:
+          title: Async Bulk
+          sidebarTitle: Async Bulk
+          description: Restart all matching failed Workflow runs in a bulk action.
+        content: |
+          Each restarted run begins at its first step.
+
+          The request returns after creating the action. Use its `actionId` with [Get a Bulk Action](/workflow/api-reference/bulk-actions/get-a-bulk-action) to check progress.
+
+          Identical filters submitted while an action is already in-progress return the existing action.
+      parameters:
+        - $ref: '#/components/parameters/DLQFromDateFilter'
+        - $ref: '#/components/parameters/DLQToDateFilter'
+        - $ref: '#/components/parameters/DLQWorkflowUrlFilter'
+        - $ref: '#/components/parameters/DLQWorkflowRunIdFilter'
+        - $ref: '#/components/parameters/DLQWorkflowCreatedAtFilter'
+        - $ref: '#/components/parameters/DLQLabelFilter'
+        - $ref: '#/components/parameters/DLQFailureFunctionStateFilter'
+        - $ref: '#/components/parameters/DLQCallerIpFilter'
+        - $ref: '#/components/parameters/DLQFlowControlKeyFilter'
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
+      responses:
+        '200':
+          description: The background action was created or an identical in-progress action was returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DLQBulkActionCreated'
+        '412':
+          description: Too many bulk actions are already in progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v2/workflows/dlq/{dlqId}:
     get:
       tags:
@@ -1624,12 +1853,18 @@ paths:
     delete:
       tags:
         - DLQ
-      summary: Delete Failed Workflow Run
+      summary: Delete Single ID
       description: |
         Delete a specific failed workflow run from the DLQ.
 
         Use this endpoint to remove a workflow from the DLQ after you have addressed the issue
         or determined that the workflow should not be retried.
+      x-mint:
+        href: /workflow/api-reference/dlq/delete/delete-single-id
+        metadata:
+          title: Single ID
+          sidebarTitle: Single ID
+          description: Delete one failed Workflow run by its DLQ ID.
       parameters:
         - in: path
           name: dlqId
@@ -1664,8 +1899,13 @@ paths:
     post:
       tags:
         - DLQ
-      summary: Resume Workflow from DLQ
+      summary: Resume Single ID
       x-mint:
+        href: /workflow/api-reference/dlq/resume/resume-single-id
+        metadata:
+          title: Single ID
+          sidebarTitle: Single ID
+          description: Resume one failed Workflow run by its DLQ ID.
         content: |
           When a workflow run fails, it's automatically moved to the DLQ (Dead Letter Queue) where it can be analyzed and resumed. 
           The resume feature allows you to continue a failed workflow run from exactly where it failed, without re-executing successfully completed steps.
@@ -1689,53 +1929,13 @@ paths:
           schema:
             type: string
           description: The DLQ ID of the workflow run to resume.
-        - in: header
-          name: Upstash-Retries
-          required: false
-          schema:
-            type: integer
-          description: Override the number of retries for the remaining workflow steps.
-        - in: header
-          name: Upstash-Delay
-          required: false
-          schema:
-            type: string
-          description: Override the delay before executing the next workflow step. Format is `<value><unit>` (e.g., "10s", "5m").
-        - in: header
-          name: Upstash-Retry-Delay
-          required: false
-          schema:
-            type: string
-          description: Override the retry delay expression for the remaining workflow steps.
-        - in: header
-          name: Upstash-Flow-Control-Key
-          required: false
-          schema:
-            type: string
-          description: Override the flow control key for the remaining workflow steps.
-        - in: header
-          name: Upstash-Flow-Control-Value
-          required: false
-          schema:
-            type: string
-          description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
-        - in: header
-          name: Upstash-Label
-          required: false
-          schema:
-            type: string
-          description: |
-            Override the label(s) for the remaining workflow steps.
-
-            You can assign multiple labels by providing a comma-separated list.
-
-            Example: `label_1,label_2`
-        - in: header
-          name: Upstash-Failure-Callback
-          required: false
-          schema:
-            type: string
-          description: Override the failure callback URL for the remaining workflow steps.
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
       responses:
         "200":
           description: Workflow resumed successfully
@@ -1779,7 +1979,7 @@ paths:
     post:
       tags:
         - DLQ
-      summary: Bulk Resume Workflows from DLQ
+      summary: Resume Sync Bulk
       description: |
         When a workflow run fails, it's automatically moved to the DLQ (Dead Letter Queue) where it can be analyzed and resumed. 
           The resume feature allows you to continue a failed workflow run from exactly where it failed, without re-executing successfully completed steps.
@@ -1789,6 +1989,7 @@ paths:
           When a workflow is resumed, it continues execution from the last failed step. A new workflow run ID is generated,
           but the workflow maintains the state and results from previously completed steps.
 
+          This request processes one page and returns a cursor for the next page. For all matching runs in a bulk action, use [Async Bulk](/workflow/api-reference/dlq/resume/resume-bulk-action).
           <Note>
             You can make changes to the workflow code as long as these changes come after the failed steps. 
             However, making changes before the failed step will break the code and is not allowed.
@@ -1796,21 +1997,17 @@ paths:
             For more details, check out [Handle workflow route code changes](/workflow/howto/changes) page.
           </Note>
       x-mint:
+        href: /workflow/api-reference/dlq/resume/resume-pagination-api
+        metadata:
+          title: Sync Bulk
+          sidebarTitle: Sync Bulk
+          description: Resume Failed Workflow Runs with Pagination
         content: |
-          <Info>
-            For multi-value filters, a workflow run matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. 
-            
-            Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
-          </Info>
+          <Warning>
+            The synchronous pagination API is deprecated. It’s recommended to use Async Bulk endpoint to process all matching entries in a bulk action.
+          </Warning>
+
       parameters:
-        - in: query
-          name: dlqIds
-          required: false
-          schema:
-            type: array
-            items:
-              type: string
-          description: List of specific DLQ IDs to resume. If provided, other filters are ignored.
         - in: query
           name: cursor
           required: false
@@ -1822,7 +2019,7 @@ paths:
           required: false
           schema:
             type: integer
-          description: Maximum number of workflows to resume. If not provided, all matching workflows will be resumed.
+          description: Maximum number of workflows to resume in this page. Defaults to 100.
         - in: query
           name: fromDate
           required: false
@@ -1904,53 +2101,13 @@ paths:
             items:
               type: string
           description: Filter workflows by Flow Control Key. Supports multiple values.
-        - in: header
-          name: Upstash-Retries
-          required: false
-          schema:
-            type: integer
-          description: Override the number of retries for the remaining workflow steps.
-        - in: header
-          name: Upstash-Delay
-          required: false
-          schema:
-            type: string
-          description: Override the delay before executing the next workflow step. Format is `<value><unit>` (e.g., "10s", "5m").
-        - in: header
-          name: Upstash-Retry-Delay
-          required: false
-          schema:
-            type: string
-          description: Override the retry delay expression for the remaining workflow steps.
-        - in: header
-          name: Upstash-Flow-Control-Key
-          required: false
-          schema:
-            type: string
-          description: Override the flow control key for the remaining workflow steps.
-        - in: header
-          name: Upstash-Flow-Control-Value
-          required: false
-          schema:
-            type: string
-          description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
-        - in: header
-          name: Upstash-Label
-          required: false
-          schema:
-            type: string
-          description: |
-            Override the label(s) for the remaining workflow steps.
-
-            You can assign multiple labels by providing a comma-separated list.
-
-            Example: `label_1,label_2`
-        - in: header
-          name: Upstash-Failure-Callback
-          required: false
-          schema:
-            type: string
-          description: Override the failure callback URL for the remaining workflow steps.
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
       responses:
         "200":
           description: Workflows resumed successfully
@@ -2003,12 +2160,18 @@ paths:
     post:
       tags:
         - DLQ
-      summary: Restart Workflow from DLQ
+      summary: Restart Single ID
       description: |
         Restart a failed workflow run from the DLQ. The workflow will start from the beginning.
 
         Unlike resume, which continues from where the workflow failed, restart executes the entire workflow
         from the first step. A new workflow run ID is generated and all steps will be executed again.
+      x-mint:
+        href: /workflow/api-reference/dlq/restart/restart-single-id
+        metadata:
+          title: Single ID
+          sidebarTitle: Single ID
+          description: Restart one failed Workflow run by its DLQ ID.
       parameters:
         - in: path
           name: dlqId
@@ -2016,53 +2179,13 @@ paths:
           schema:
             type: string
           description: The DLQ ID of the workflow run to restart.
-        - in: header
-          name: Upstash-Retries
-          required: false
-          schema:
-            type: integer
-          description: Override the number of retries for the workflow steps.
-        - in: header
-          name: Upstash-Delay
-          required: false
-          schema:
-            type: string
-          description: Override the delay before executing the workflow. Format is `<value><unit>` (e.g., "10s", "5m").
-        - in: header
-          name: Upstash-Retry-Delay
-          required: false
-          schema:
-            type: string
-          description: Override the retry delay expression for the workflow steps.
-        - in: header
-          name: Upstash-Flow-Control-Key
-          required: false
-          schema:
-            type: string
-          description: Override the flow control key for the workflow.
-        - in: header
-          name: Upstash-Flow-Control-Value
-          required: false
-          schema:
-            type: string
-          description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
-        - in: header
-          name: Upstash-Label
-          required: false
-          schema:
-            type: string
-          description: |
-            Override the label(s) for the workflow.
-
-            You can assign multiple labels by providing a comma-separated list.
-
-            Example: `label_1,label_2`
-        - in: header
-          name: Upstash-Failure-Callback
-          required: false
-          schema:
-            type: string
-          description: Override the failure callback URL for the workflow.
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
       responses:
         "200":
           description: Workflow restarted successfully
@@ -2106,7 +2229,7 @@ paths:
     post:
       tags:
         - DLQ
-      summary: Bulk Restart Workflows from DLQ
+      summary: Restart Sync Bulk
       description: |
         Restart multiple failed workflow runs from the DLQ. Each workflow will start from the beginning.
 
@@ -2115,22 +2238,19 @@ paths:
 
         A maximum of 50 workflow runs can be restarted per request. If more runs are available, a cursor is returned, which can be used in subsequent requests to continue the operation. When no cursor is returned, all entries have been processed.
         Each restarted workflow run is assigned a new random Run ID.
+        For all matching runs in a bulk action, use [Async Bulk](/workflow/api-reference/dlq/restart/restart-bulk-action).
+        To restart specific entries, use [Multiple IDs](/workflow/api-reference/dlq/restart/restart-list-of-ids).
       x-mint:
+        href: /workflow/api-reference/dlq/restart/restart-pagination-api
+        metadata:
+          title: Sync Bulk
+          sidebarTitle: Sync Bulk
+          description: Restart Failed Workflow Runs with Pagination
         content: |
-          <Info>
-            For multi-value filters, a workflow run matches if its value equals any of the given values (OR logic), and multiple filters are combined with AND logic. 
-            
-            Multiple values can be passed either by repeating the query parameter (`label=label_1&label=label_2`) or as a single comma-separated value (`label=label_1,label_2`).
-          </Info>
+          <Warning>
+            The synchronous pagination API is deprecated. It’s recommended to use Async Bulk endpoint to process all matching entries in a bulk action.
+          </Warning>
       parameters:
-        - in: query
-          name: dlqIds
-          required: false
-          schema:
-            type: array
-            items:
-              type: string
-          description: List of specific DLQ IDs to restart. If provided, other filters are ignored.
         - in: query
           name: cursor
           required: false
@@ -2142,7 +2262,7 @@ paths:
           required: false
           schema:
             type: integer
-          description: Maximum number of workflows to restart. If not provided, all matching workflows will be restarted.
+          description: Maximum number of workflows to restart in this page (up to 50).
         - in: query
           name: fromDate
           required: false
@@ -2224,53 +2344,13 @@ paths:
             items:
               type: string
           description: Filter workflows by Flow Control Key. Supports multiple values.
-        - in: header
-          name: Upstash-Retries
-          required: false
-          schema:
-            type: integer
-          description: Override the number of retries for the workflow steps.
-        - in: header
-          name: Upstash-Delay
-          required: false
-          schema:
-            type: string
-          description: Override the delay before executing the workflows. Format is `<value><unit>` (e.g., "10s", "5m").
-        - in: header
-          name: Upstash-Retry-Delay
-          required: false
-          schema:
-            type: string
-          description: Override the retry delay expression for the workflow steps.
-        - in: header
-          name: Upstash-Flow-Control-Key
-          required: false
-          schema:
-            type: string
-          description: Override the flow control key for the workflows.
-        - in: header
-          name: Upstash-Flow-Control-Value
-          required: false
-          schema:
-            type: string
-          description: Override the flow control configuration in the format `parallelism=<value>, rate=<value>, period=<value>`.
-        - in: header
-          name: Upstash-Label
-          required: false
-          schema:
-            type: string
-          description: |
-            Override the label(s) for the workflows.
-
-            You can assign multiple labels by providing a comma-separated list.
-
-            Example: `label_1,label_2`
-        - in: header
-          name: Upstash-Failure-Callback
-          required: false
-          schema:
-            type: string
-          description: Override the failure callback URL for the workflows.
+        - $ref: '#/components/parameters/DLQOverrideRetries'
+        - $ref: '#/components/parameters/DLQOverrideDelay'
+        - $ref: '#/components/parameters/DLQOverrideRetryDelay'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlKey'
+        - $ref: '#/components/parameters/DLQOverrideFlowControlValue'
+        - $ref: '#/components/parameters/DLQOverrideLabel'
+        - $ref: '#/components/parameters/DLQOverrideFailureCallback'
       responses:
         "200":
           description: Workflows restarted successfully
@@ -2324,12 +2404,14 @@ paths:
       tags:
         - DLQ
       summary: Retry Failure Callback
-      description: |
-        If the failure callback for a workflow run has failed, you can use this endpoint to manually trigger the failure callback again. 
-        This is useful for ensuring that your system is notified of workflow failures even if the original callback attempt did not succeed.
+      x-mint:
+        content: |
+          If the failure callback for a workflow run has failed, you can use this endpoint to manually trigger the failure callback again.
+          This is useful for ensuring that your system is notified of workflow failures even if the original callback attempt did not succeed.
 
-        The state of the failure callback for each workflow run is included in the DLQ message response as failureCallbackInfo.state. 
-        You can filter for all workflow runs with a failed failure callback by using the failureCallbackState filter when listing workflow runs in the DLQ with the `/v2/workflows/dlq` endpoint.
+          The state of the failure callback for each workflow run is included in the DLQ message response as failureCallbackInfo.state.
+          You can filter for all workflow runs with a failed failure callback by using the failureCallbackState filter when listing workflow runs in the DLQ with the `/v2/workflows/dlq` endpoint.
+
       parameters:
         - in: path
           name: dlqId
@@ -2380,14 +2462,15 @@ paths:
       tags:
         - DLQ
       summary: Cancel In-Progress Failure Callback
-      description: |
-        Cancel an in-progress failure callback for a failed workflow.
+      x-mint:
+        content: |
+          Cancel an in-progress failure callback for a failed workflow.
 
-        When you retry a failed failure callback using the POST endpoint, it enters an in-progress state.
-        This endpoint allows you to cancel that in-progress callback before it completes.
+          When you retry a failed failure callback using the POST endpoint, it enters an in-progress state.
+          This endpoint allows you to cancel that in-progress callback before it completes.
 
-        The callback must be in an in-progress state. If there's no in-progress callback,
-        the request will fail with a 400 error.
+          The callback must be in an in-progress state. If there's no in-progress callback,
+          the request will fail with a 400 error.
       parameters:
         - in: path
           name: dlqId
