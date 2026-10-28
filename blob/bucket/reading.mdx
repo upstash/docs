@@ -3,39 +3,49 @@ title: "Reading"
 description: "get, info, exists and list, public URLs, and signed read URLs on a private bucket."
 ---
 
-This page covers reading objects from your server: `get` for the bytes, `info` for the facts, `exists` for a boolean, `list` for a page of keys, and `signedReadUrl` for a link that reads a private object without going through your server.
+This page covers reading objects from your server: `get` for the bytes, `info` for the facts, `exists` for a boolean, `list` for a page of keys, and signed read URLs for a link that reads a private object without going through your server.
 
-```ts
-import { bucket } from "@/lib/blob"
-
+<CodeGroup>
+```ts TypeScript
 const res = await bucket.get("reports/2026-01.pdf")    // record plus body stream
 const info = await bucket.info("reports/2026-01.pdf")  // record only
 const ok = await bucket.exists("reports/2026-01.pdf")  // boolean
 const page = await bucket.list({ prefix: "reports/" }) // one page of records
 ```
 
-The records these return (`BlobObject`, `BlobInfo`, `BlobDownload`) are on [Types](/blob/reference/types#records).
+```python Python
+res = bucket.get("reports/2026-01.pdf")     # record plus the bytes
+info = bucket.info("reports/2026-01.pdf")   # record only
+ok = bucket.exists("reports/2026-01.pdf")   # bool
+page = bucket.list(prefix="reports/")       # one page of records
+```
+</CodeGroup>
+
+The records these return are on [Types](/blob/reference/types#records). Method signatures and option types: [TypeScript](/blob/sdks/ts/bucket#get), [Python](/blob/sdks/py/bucket#get).
 
 ---
 
 ## get
 
-```ts
+<CodeGroup>
+```ts TypeScript
 const res = await bucket.get("reports/2026-01.pdf")
 
 res.contentType  // 'application/pdf'
-res.size         // 184_302
-res.etag         // '"9f3c..."'
 res.metadata     // { owner: 'u7' }
 res.body         // ReadableStream<Uint8Array>
 ```
 
-`body` is a stream and nothing is buffered for you. Wrap it in a `Response` for the usual conversions:
+```python Python
+res = bucket.get("reports/2026-01.pdf")
 
-```ts
-const text = await new Response((await bucket.get("notes/1.md")).body).text()
-const buffer = await new Response((await bucket.get("img/1.png")).body).arrayBuffer()
+res.content_type  # 'application/pdf'
+res.metadata      # {'owner': 'u7'}
+res.content       # bytes, read in full; bucket.stream() leaves them on the wire
 ```
+</CodeGroup>
+
+`get` returns the object's record, with its content type and metadata, plus the body. In TypeScript the body is a stream and nothing is buffered for you; Python's `get` reads it in full, and `stream()` does not. Reading the body in each SDK: [TypeScript](/blob/sdks/ts/bucket#get), [Python](/blob/sdks/py/bucket#get).
 
 A missing object throws a `BlobError` with code `not_found`, status 404. See [Errors](/blob/reference/errors).
 
@@ -45,91 +55,132 @@ There is no range option. For byte ranges, use an [S3 client](/blob/bucket/conne
 
 ## info
 
-```ts
+<CodeGroup>
+```ts TypeScript
 const info = await bucket.info("reports/2026-01.pdf")
 
 info.size         // 184_302
 info.etag         // '"9f3c..."'
 info.contentType  // 'application/pdf'
 info.metadata     // { owner: 'u7' }
-info.uploadedAt   // Date
 ```
+
+```python Python
+info = bucket.info("reports/2026-01.pdf")
+
+info.size          # 184302
+info.etag          # '"9f3c..."'
+info.content_type  # 'application/pdf'
+info.metadata      # {'owner': 'u7'}
+```
+</CodeGroup>
 
 One HEAD request. The same record as `get` without the bytes, so reading a 2 GB object's facts is cheap. A missing object throws `not_found`.
 
-`metadata` comes back from `get` and `info` only, with keys lowercased. See [Metadata](/blob/bucket/writing#metadata).
+Metadata comes back from `get` and `info` only, with keys lowercased. See [Metadata](/blob/bucket/writing#metadata).
 
 ---
 
 ## exists
 
-```ts
+<CodeGroup>
+```ts TypeScript
 if (await bucket.exists("avatars/u7.png")) {
   // ...
 }
 ```
 
-The same HEAD request as `info`, answering `false` instead of throwing.
+```python Python
+if bucket.exists("avatars/u7.png"):
+    ...
+```
+</CodeGroup>
 
-If you need the etag, size or metadata anyway, call `info()` and catch `not_found` instead of making two round trips.
+The same HEAD request as `info`, answering false instead of throwing.
+
+If you need the etag, size or metadata anyway, call `info` and catch `not_found` instead of making two round trips.
 
 ---
 
 ## list
 
-```ts
-const page = await bucket.list({ prefix: "avatars/", limit: 100 })
-
-page.blobs  // BlobObject[]
-page.cursor // string | undefined, set only while more remains
-```
-
-All three are optional.
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `prefix` | `string` | none, the whole bucket | Only keys starting with this. |
-| `limit` | `number` | storage picks, at most 1000 | Page size, clamped to 1 to 1000. |
-| `cursor` | `string` | none, the first page | The `cursor` from the previous page. |
-
-A full walk is a `do ... while`:
-
-```ts
+<CodeGroup>
+```ts TypeScript
 let cursor: string | undefined
-const paths: string[] = []
 
 do {
   const page = await bucket.list({ prefix: "avatars/", limit: 1000, cursor })
-  for (const blob of page.blobs) paths.push(blob.path)
+  for (const blob of page.blobs) console.log(blob.path)
   cursor = page.cursor
 } while (cursor)
 ```
 
-Each entry is a `BlobObject`: path, size, etag, timestamp and URLs. There is no `contentType` or `metadata`; reading those is one `info()` per object.
+```python Python
+cursor = None
 
-`prefix` is the only filter. There is no query by owner, type or date, so "this user's files" has to be a prefix you chose at upload time. An app that needs to query its files should keep its own table and treat the bucket as storage, not an index.
+while True:
+    page = bucket.list(prefix="avatars/", limit=1000, cursor=cursor)
+    for blob in page.blobs:
+        print(blob.path)
+    cursor = page.cursor
+    if not cursor:
+        break
+```
+</CodeGroup>
+
+`list` returns one page of records and a cursor. The cursor is set only while more remains; pass it back for the next page. A full walk loops until it is unset.
+
+All three options are optional.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| Prefix | none, the whole bucket | Only keys starting with this. |
+| Limit | storage picks, at most 1000 | Page size, clamped to 1 to 1000. |
+| Cursor | none, the first page | The cursor from the previous page. |
+
+Each entry carries path, size, etag, timestamp and URLs. There is no content type or metadata; reading those is one `info` per object.
+
+The prefix is the only filter. There is no query by owner, type or date, so "this user's files" has to be a prefix you chose at upload time. An app that needs to query its files should keep its own table and treat the bucket as storage, not an index.
 
 ---
 
 ## Public URLs
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.publicUrl("avatars/u7.png")
 // 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
 ```
 
-Every record on a public bucket already carries `url`; `publicUrl` gives you one for any path. It returns `undefined` on a private bucket and throws a `TypeError` for an empty path or one with a `.` or `..` segment.
+```python Python
+bucket.public_url("avatars/u7.png")
+# 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
+```
+</CodeGroup>
+
+Every record on a public bucket already carries its URL; the public URL call gives you one for any path. It returns nothing on a private bucket. An empty path, or one with a `.` or `..` segment, is rejected before any request is sent; see [Paths](/blob/bucket/writing#paths).
 
 The URL itself is built from the token, but whether the bucket has a public host at all is known only to the backend, so the first call on a fresh client fetches credentials. They are cached, so every call after that is local.
 
-### versionedUrl
+### Versioned URLs
 
-```tsx
+<CodeGroup>
+```ts TypeScript
 const avatar = await bucket.info(`avatars/${user.id}.png`)
-<img src={avatar.versionedUrl} />  // https://.../avatars/u7.png?v=%229f3c...%22
+avatar.versionedUrl // https://.../avatars/u7.png?v=%229f3c...%22
 ```
 
-`versionedUrl` is `${url}?v=${etag}`, so it changes whenever the content does. Use it for a stable path that gets overwritten: if `avatars/u7.png` is replaced every time the user picks a new picture, `url` never changes and caches keep serving the old bytes.
+```python Python
+avatar = bucket.info(f"avatars/{user.id}.png")
+avatar.versioned_url  # https://.../avatars/u7.png?v=%229f3c...%22
+```
+</CodeGroup>
+
+```tsx
+<img src={avatar.versionedUrl} />
+```
+
+The versioned URL is the URL with `?v=<etag>` appended, so it changes whenever the content does. Use it for a stable path that gets overwritten: if `avatars/u7.png` is replaced every time the user picks a new picture, the plain URL never changes and caches keep serving the old bytes.
 
 Pair it with `cache: 'immutable'` at upload. See [Caching](/blob/bucket/caching#immutable-plus-a-versioned-url).
 
@@ -137,41 +188,56 @@ Pair it with `cache: 'immutable'` at upload. See [Caching](/blob/bucket/caching#
 
 ## Private buckets
 
-```ts
-const bucket = Bucket.fromEnv()  // a bucket set to private in the console
-
-const blob = await bucket.put("reports/2026-01.pdf", pdf)
+<CodeGroup>
+```ts TypeScript
+const blob = await bucket.put("reports/2026-01.pdf", pdf) // a bucket set to private in the console
 blob.url          // undefined
 blob.versionedUrl // undefined
 await bucket.publicUrl("reports/2026-01.pdf")  // undefined
 ```
 
-A private bucket has no public host, so `url` and `versionedUrl` are `undefined` on every record. Nothing in the code declares this: the SDK learns it from the backend when it fetches credentials, and objects are stored with `Cache-Control: private`. Reads go through `signedReadUrl()`.
+```python Python
+blob = bucket.put("reports/2026-01.pdf", pdf)  # a bucket set to private in the console
+blob.url            # None
+blob.versioned_url  # None
+bucket.public_url("reports/2026-01.pdf")  # None
+```
+</CodeGroup>
+
+A private bucket has no public host, so no record carries a URL or versioned URL. Nothing in the code declares this: the SDK learns it from the backend when it fetches credentials, and objects are stored with `Cache-Control: private`. Reads go through signed read URLs.
 
 ---
 
-## signedReadUrl
+## Signed read URLs
 
-```ts
+<CodeGroup>
+```ts TypeScript
 const { url, expiresAt } = await bucket.signedReadUrl("reports/2026-01.pdf", {
   expiresIn: "2m",
   downloadAs: "Report Q3.pdf",
 })
 ```
 
-A time-limited URL anyone can GET. Use it on a private bucket, or for an object you do not want linked from a public page.
+```python Python
+link = bucket.signed_read_url("reports/2026-01.pdf", expires_in="2m", download_as="Report Q3.pdf")
+link.url, link.expires_at
+```
+</CodeGroup>
 
-All three are optional.
+A time-limited URL anyone can GET, returned with the moment it expires. Use it on a private bucket, or for an object you do not want linked from a public page. Names and types: [TypeScript](/blob/sdks/ts/bucket#signedreadurl), [Python](/blob/sdks/py/bucket#signed_read_url).
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `expiresIn` | `Duration` | `'5m'` | How long to ask for, at most `'10m'`. `'2m'`, `'10m'`, or a bare number of seconds. A longer ask gets 10 minutes. |
-| `downloadAs` | `string` | none, displayed inline | Save as this filename instead of displaying inline. |
-| `contentType` | `string` | the stored type | What storage answers with as `Content-Type`, overriding what was stored. |
+All three options are optional.
 
-### Use `expiresAt`, not `expiresIn`
+| Option | Default | Description |
+| --- | --- | --- |
+| Expires in | `'5m'` | How long to ask for, at most `'10m'`. `'2m'`, `'10m'`, or a bare number of seconds. A longer ask gets 10 minutes. |
+| Download as | none, displayed inline | Save as this filename instead of displaying inline. |
+| Content type | the stored type | What storage answers with as `Content-Type`, overriding what was stored. |
 
-```ts
+### Use the returned expiry
+
+<CodeGroup>
+```ts TypeScript
 const cached = await cache.get(key)
 if (!cached || cached.expiresAt < new Date()) {
   const link = await bucket.signedReadUrl(path, { expiresIn: "5m" })
@@ -179,23 +245,45 @@ if (!cached || cached.expiresAt < new Date()) {
 }
 ```
 
-`expiresIn` is what you asked for. `expiresAt` is what you got, and it can be sooner, because no link lives longer than 10 minutes. Cache the link until `expiresAt`, never until a deadline you compute yourself. This applies to `signedUploadUrl` too. The reason is on [How signing works](/blob/reference/signing#how-long-a-presigned-url-lives).
+```python Python
+from datetime import datetime, timezone
 
-### downloadAs
+link = cache.get(key)
+if link is None or link.expires_at < datetime.now(timezone.utc):
+    link = bucket.signed_read_url(path, expires_in="5m")
+    cache.set(key, link)
+```
+</CodeGroup>
 
-```ts
+What you pass as expires-in is what you asked for. The expiry that comes back is what you got, and it can be sooner, because no link lives longer than 10 minutes. Cache the link until the returned expiry, never until a deadline you compute yourself. This applies to signed upload URLs too. The reason is on [How signing works](/blob/reference/signing#how-long-a-presigned-url-lives).
+
+### Download filename
+
+<CodeGroup>
+```ts TypeScript
 await bucket.signedReadUrl(path, { downloadAs: "café ☕.pdf" })
 ```
 
+```python Python
+bucket.signed_read_url(path, download_as="café ☕.pdf")
+```
+</CodeGroup>
+
 Sets `Content-Disposition: attachment`, so the browser saves the file under that name rather than rendering it. Unicode names arrive intact. The filename is signed into the URL, so it cannot be edited afterwards.
 
-### contentType
+### Content type override
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.signedReadUrl("exports/rows.bin", { contentType: "text/csv" })
 ```
 
-Overrides what storage answers with, without rewriting the object. Throws `invalid_input` if it is not a valid media type.
+```python Python
+bucket.signed_read_url("exports/rows.bin", content_type="text/csv")
+```
+</CodeGroup>
+
+Overrides what storage answers with, without rewriting the object. Refused with `invalid_input` if it is not a valid media type.
 
 ---
 
@@ -207,7 +295,7 @@ Overrides what storage answers with, without rewriting the object. Throws `inval
   </Card>
 
   <Card title="Caching" href="/blob/bucket/caching">
-    What `Cache-Control` an object is stored with, and pairing it with `versionedUrl`.
+    What `Cache-Control` an object is stored with, and pairing it with a versioned URL.
   </Card>
 
   <Card title="Deleting" href="/blob/bucket/deleting">
@@ -215,6 +303,6 @@ Overrides what storage answers with, without rewriting the object. Throws `inval
   </Card>
 
   <Card title="Errors" href="/blob/reference/errors">
-    `BlobError`, the code list, and `BlobError.is`.
+    The error codes, what reaches the browser, and platform body limits.
   </Card>
 </CardGroup>

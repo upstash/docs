@@ -1,0 +1,199 @@
+---
+title: "Python SDK"
+sidebarTitle: "Overview"
+description: "Install upstash-blob, pick Bucket or AsyncBucket, and build a client for your server."
+---
+
+`upstash-blob` is the Python SDK. It has a sync `Bucket` and an async `AsyncBucket`, and an upload handler for each that serves the [browser client](/blob/uploads/upload-client), so a React app can upload straight to storage through a Python backend.
+
+This section is the Python reference: names, types, and framework wiring. What each call does, its defaults and its limits are on the concept pages it links to.
+
+---
+
+## Install
+
+<CodeGroup>
+```bash pip
+pip install upstash-blob
+```
+
+```bash uv
+uv add upstash-blob
+```
+
+```bash poetry
+poetry add upstash-blob
+```
+</CodeGroup>
+
+It needs Python 3.10 or later, and its one dependency is `httpx`. FastAPI, Django, Flask, pydantic and boto3 are not pulled in; the modules that use them import them only when you do.
+
+---
+
+## Modules
+
+| Import | Exports |
+| --- | --- |
+| `upstash_blob` | `Bucket`, `AsyncBucket`, `UploadHandler`, `AsyncUploadHandler`, `UploadRoute`, `BeforeUploadResult`, `unique_path`, `BlobError`, `format_bytes`, and the types |
+| `upstash_blob.fastapi` | `upload_view`, for an `AsyncUploadHandler` on FastAPI or Starlette |
+| `upstash_blob.django` | `upload_view`, for either handler |
+| `upstash_blob.flask` | `upload_view`, for an `UploadHandler` |
+
+There is no Python browser client. The browser runs `@upstash/blob/react` or `@upstash/blob/browser`, which speak the same protocol to a Python handler as to a TypeScript one; see [With a server in another language](/blob/uploads/upload-client#with-a-server-in-another-language).
+
+---
+
+## Bucket and AsyncBucket
+
+<CodeGroup>
+```python Sync
+from upstash_blob import Bucket
+
+bucket = Bucket.from_env()  # reads UPSTASH_BLOB_TOKEN
+blob = bucket.put("notes/1.md", "# Hello")
+```
+
+```python Async
+from upstash_blob import AsyncBucket
+
+bucket = AsyncBucket.from_env()  # reads UPSTASH_BLOB_TOKEN
+blob = await bucket.put("notes/1.md", "# Hello")
+```
+</CodeGroup>
+
+The two have the same methods, options and records. Every `AsyncBucket` method is awaited, including `public_url()` and `s3()`, except `stream()`, which is `async with` and yields an `AsyncBlobStream`. Its `put` also takes async iterables as a body. Use `AsyncBucket` under FastAPI, Starlette or any other asyncio code, and `Bucket` everywhere else.
+
+Each bucket holds an `httpx` client with its own connection pool. A bucket built once at import lives as long as the process and needs no closing. One you build for a single job closes with a context manager:
+
+<CodeGroup>
+```python Sync
+with Bucket.from_env() as bucket:
+    bucket.put("exports/today.csv", rows)
+```
+
+```python Async
+async with AsyncBucket.from_env() as bucket:
+    await bucket.put("exports/today.csv", rows)
+```
+</CodeGroup>
+
+`close()` and `await aclose()` do the same by hand.
+
+---
+
+## The Bucket client
+
+```python app/blob.py
+import os
+
+from upstash_blob import Bucket
+
+bucket = Bucket(
+    os.environ["UPSTASH_BLOB_TOKEN"],
+    cache="immutable",
+    enable_telemetry=False,
+)
+```
+
+`Bucket.from_env()` is the same constructor with the token read from `UPSTASH_BLOB_TOKEN`. It takes the same keyword options, and a variable name when the token lives somewhere else:
+
+```python
+Bucket.from_env(cache="immutable")
+Bucket.from_env("REPORTS_BUCKET_TOKEN", cache="immutable")
+```
+
+An unset or empty variable raises a `TypeError` when the bucket is built, not on the first request.
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `token` | `str` | Required, and the only positional argument. See [Connecting](/blob/bucket/connecting). |
+| `cache` | `CacheOption` | The default `Cache-Control` for every object this client stores. A per-call `cache` overrides it. See [Caching](/blob/bucket/caching). |
+| `enable_telemetry` | `bool` | `False` turns telemetry off for this client. See [Telemetry](/blob/bucket/connecting#telemetry). |
+| `retry` | `RetryConfig \| Literal[False]` | `False`, or `{"retries": ..., "backoff": ...}`. See [Retries](#retries). |
+| `http_client` | `httpx.Client` / `httpx.AsyncClient` | Sends every request, for a proxy or custom timeouts. A client you pass is never closed by the bucket. |
+
+`AsyncBucket` takes an `httpx.AsyncClient`; `Bucket` takes an `httpx.Client`.
+
+There is no visibility option. Whether the bucket is public or private is a console setting; see [Connecting](/blob/bucket/connecting#public-or-private).
+
+### Retries
+
+```python
+Bucket(token, retry=False)  # every request once
+Bucket(token, retry={"retries": 5, "backoff": lambda n: n * 500})
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `retries` | `int` | Retries after the first attempt, for every request this client makes. |
+| `backoff` | `Callable[[int], float]` | Milliseconds before retry `n`, counted from 0. A `Retry-After` from the service wins over it. |
+
+`RetryConfig` is the `TypedDict` for this shape. An unknown key, a negative count or a backoff that is not callable raises a `TypeError` when the bucket is built. Which requests are retried, and the default budget and backoff, are on [Retries](/blob/bucket/connecting#retries).
+
+---
+
+## Using an S3 client
+
+```python
+import boto3
+
+from app.blob import bucket
+
+cfg = bucket.s3()
+s3 = boto3.client("s3", **cfg.client_kwargs())
+
+s3.get_object(Bucket=cfg.bucket, Key="reports/q3.pdf", Range="bytes=0-1023")
+```
+
+`bucket.s3()` returns an `S3Config` with the endpoint, region, bucket name and a short-lived credential. `client_kwargs()` is what `boto3.client("s3", ...)` takes. On `AsyncBucket`, `s3()` is awaited.
+
+Unlike the TypeScript config, the credential is a fixed value, not a provider: boto3 cannot refresh it. It stops working at `cfg.expires_at`, so build a new client from a fresh `bucket.s3()` before then.
+
+What an S3 client is for, and why it must not presign, is on [Using an S3 client](/blob/bucket/connecting#using-an-s3-client).
+
+---
+
+## Option types
+
+| Type | Python | Grammar |
+| --- | --- | --- |
+| `Size` | `int \| str` | [Size](/blob/reference/types#size) |
+| `Duration` | `int \| float \| str \| timedelta` | [Duration](/blob/reference/types#duration). A `timedelta` counts as its total seconds. |
+| `CacheOption` | `Duration \| Literal["immutable", "revalidate", "no-store"]` | [CacheOption](/blob/reference/types#cacheoption). A raw header is a `str`. |
+| `MultipartOption` | `bool \| Size` | [Changing the threshold](/blob/uploads/large-files#changing-the-threshold) |
+
+All four are exported from `upstash_blob`.
+
+```python
+from datetime import timedelta
+
+bucket.signed_read_url("reports/q3.pdf", expires_in=timedelta(minutes=2))
+bucket.put("avatars/7.png", data, cache=timedelta(days=7))  # public, max-age=604800
+bucket.put("export.csv", chunks, max_size="10MiB")
+```
+
+A value of the wrong type, such as a `bool` size, raises a `TypeError`. A string that does not parse, such as `"5mbit"`, raises a `ValueError` naming the option. Both are raised by the call that takes the option, except a `cache` on the client, which is checked on each call that stores an object. See [Bad options](/blob/sdks/py/errors#bad-options-raise-typeerror-or-valueerror).
+
+Every size the SDK returns is an `int` of bytes. `format_bytes(2_400_000)` is `'2.4 MB'`, the same text the browser client shows.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Bucket API" href="/blob/sdks/py/bucket">
+    Every `Bucket` method, its options and the records it returns.
+  </Card>
+
+  <Card title="Upload handler" href="/blob/sdks/py/upload-handler">
+    `UploadHandler` options, callbacks, and mounting it in FastAPI, Django and Flask.
+  </Card>
+
+  <Card title="Errors" href="/blob/sdks/py/errors">
+    `BlobError`, the fields it carries, and what raises something else.
+  </Card>
+
+  <Card title="FastAPI + React" href="/blob/recipes/fastapi-react">
+    A Python backend serving `useUpload`, end to end.
+  </Card>
+</CardGroup>

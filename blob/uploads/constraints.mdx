@@ -1,11 +1,13 @@
 ---
 title: "Constraints"
-description: "maxSize, contentTypes and byte sniffing, enforced on your server before anything is signed."
+description: "Max size, content types and byte sniffing, enforced on your server before anything is signed."
 ---
 
 Constraints are the two limits an upload route enforces before it signs anything: how big a file may be, and what type it may be.
 
-```ts lib/uploads.ts
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
 import { uploadHandler, uniquePath } from "@upstash/blob"
 
 export const uploads = uploadHandler({
@@ -14,21 +16,43 @@ export const uploads = uploadHandler({
 })
 ```
 
-They are checked at `begin`, from the name, type and size the browser declared, before `onBeforeUpload` runs. A refused file leaves nothing behind: no presigned URL, no row, no multipart upload.
+```python Python
+# app/uploads.py
+from upstash_blob import AsyncUploadHandler, BeforeUploadResult, unique_path
 
-Omitting `constraints` accepts any type at any size.
+uploads = AsyncUploadHandler(
+    max_size="20mb",
+    content_types=["image/*", "application/pdf"],
+    on_before_upload=lambda args: BeforeUploadResult(path=unique_path(f"uploads/{args.file.name}")),
+)
+```
+</CodeGroup>
+
+They are checked at `begin`, from the name, type and size the browser declared, before the [before-upload callback](/blob/uploads/upload-handler#authorizing-an-upload) runs. A refused file leaves nothing behind: no presigned URL, no row, no multipart upload.
+
+Omitting constraints accepts any type at any size. The option names in each SDK: [TypeScript](/blob/sdks/ts/upload-handler#options), [Python](/blob/sdks/py/upload-handler#options).
+
+In the [constraints document](#in-the-browser) served to the browser they are `maxSize` and `contentTypes`.
 
 ---
 
-## maxSize
+## Max size
 
-```ts
+<CodeGroup>
+```ts TypeScript
 constraints: { maxSize: "2MB" }   // 2,000,000 bytes
 constraints: { maxSize: "32MiB" } // 33,554,432 bytes
 constraints: { maxSize: 4096 }    // a bare number is bytes
 ```
 
-`maxSize` takes a [Size](/blob/reference/types#size), always in bytes. `MB` uses powers of 1,000; `MiB` uses powers of 1,024. Units ignore case. To accept a 32 MiB file, set `maxSize: "32MiB"` or `maxSize: 33_554_432`. `"32mb"` means 32,000,000 bytes and is too small for that file.
+```python Python
+max_size="2MB"    # 2,000,000 bytes
+max_size="32MiB"  # 33,554,432 bytes
+max_size=4096     # a bare int is bytes
+```
+</CodeGroup>
+
+The max size takes a [Size](/blob/reference/types#size), always in bytes. `MB` uses powers of 1,000; `MiB` uses powers of 1,024. Units ignore case. To accept a 32 MiB file, set it to `"32MiB"` or `33554432`. `"32mb"` means 32,000,000 bytes and is too small for that file.
 
 Refusal messages display decimal byte units, or exact bytes when the file and the limit would round to the same text:
 
@@ -36,15 +60,21 @@ Refusal messages display decimal byte units, or exact bytes when the file and th
 cat.png is 2.4 MB, over the 2 MB limit
 ```
 
-An unparseable size throws a `TypeError` where the option is written, at startup, not once per request.
+An unparseable size throws where the option is written, at startup, not once per request.
 
 ---
 
-## contentTypes
+## Content types
 
-```ts
+<CodeGroup>
+```ts TypeScript
 constraints: { contentTypes: ["image/*", "application/pdf", "image/svg+xml"] }
 ```
+
+```python Python
+content_types=["image/*", "application/pdf", "image/svg+xml"]
+```
+</CodeGroup>
 
 Each entry is either an exact `type/subtype`, or one of three wildcards: `image/*`, `video/*` and `audio/*`.
 
@@ -64,7 +94,7 @@ Anything else throws `invalid_content_type_pattern`: `*/*`, `text/*`, and string
 
 ### Aliases
 
-Browsers and operating systems send several spellings for some types. Both the declared type and your list are canonicalized before comparison, so `contentTypes: ['image/jpg']` accepts a file declared `image/jpeg`, and the reverse. Parameters are stripped, so `image/png; charset=binary` is `image/png`.
+Browsers and operating systems send several spellings for some types. Both the declared type and your list are canonicalized before comparison, so a list of `['image/jpg']` accepts a file declared `image/jpeg`, and the reverse. Parameters are stripped, so `image/png; charset=binary` is `image/png`.
 
 <Accordion title="Alias table">
 | Written | Canonicalizes to |
@@ -89,7 +119,7 @@ Browsers and operating systems send several spellings for some types. Both the d
 
 ## Byte sniffing
 
-A route with `contentTypes` checks more than the declared type. The browser sends the file's leading bytes with the `begin` request, so a mislabelled file is refused before the upload rather than after it. Two checks run:
+A route with content types checks more than the declared type. The browser sends the file's leading bytes with the `begin` request, so a mislabelled file is refused before the upload rather than after it. Two checks run:
 
 1. **The declared type must be in the allow list.** A `report.exe` declared as `application/x-msdownload` is refused here.
 2. **The leading bytes must not clearly contradict the declared type.** If the bytes prove nothing, the file passes.
@@ -104,7 +134,9 @@ The second check is lenient on purpose so real files are not refused. A `.docx` 
 
 ## Per-route constraints
 
-```ts lib/uploads.ts
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
 export const uploads = uploadHandler({
   constraints: { maxSize: "20mb", contentTypes: ["image/png"] },
   routes: {
@@ -123,19 +155,44 @@ export const uploads = uploadHandler({
 })
 ```
 
-| Route | `maxSize` | `contentTypes` |
+```python Python
+# app/uploads.py
+uploads = AsyncUploadHandler(
+    max_size="20mb",
+    content_types=["image/png"],
+    routes={
+        "attachment": UploadRoute(
+            on_before_upload=lambda args: BeforeUploadResult(path="attachment/1.png"),
+        ),
+        "avatar": UploadRoute(
+            max_size="2mb",
+            on_before_upload=lambda args: BeforeUploadResult(path="avatar/demo"),
+        ),
+        "large": UploadRoute(
+            max_size="2gb",
+            content_types=None,
+            on_before_upload=lambda args: BeforeUploadResult(path="large/1.bin"),
+        ),
+    },
+)
+```
+</CodeGroup>
+
+| Route | Max size | Content types |
 | ----- | ---------- | -------------- |
 | `attachment` | 20,000,000, inherited | `['image/png']`, inherited |
 | `avatar` | 2,000,000, replaced | `['image/png']`, inherited |
-| `large` | 2,000,000,000, replaced | none, cleared by `null` |
+| `large` | 2,000,000,000, replaced | none, cleared |
 
-A route's `constraints` **override** the handler's key by key. A key the route does not mention is inherited. `null` clears a key the handler set.
+A route's constraints **override** the handler's key by key. A key the route does not mention is inherited. An explicit null (`None` in Python) clears a key the handler set.
 
 ---
 
 ## Narrowing per user
 
-```ts lib/uploads.ts
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
 onBeforeUpload: async ({ request, file }) => {
   const user = await getUser(request)
   return {
@@ -145,7 +202,20 @@ onBeforeUpload: async ({ request, file }) => {
 },
 ```
 
-`onBeforeUpload` may return `constraints` to tighten the route's limits for this one upload, once it knows who is uploading. They are checked against the same file right after it returns. Widening throws a `TypeError`, so a route's code always shows the most it can accept.
+```python Python
+# app/uploads.py
+async def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    user = await get_user(args.request)
+    free = user.plan == "free"
+    return BeforeUploadResult(
+        path=unique_path(f"{user.id}/{args.file.name}"),
+        max_size="25mb" if free else None,
+        content_types=["image/*"] if free else None,
+    )
+```
+</CodeGroup>
+
+The before-upload callback may return constraints to tighten the route's limits for this one upload, once it knows who is uploading. They are checked against the same file right after it returns. Widening throws, so a route's code always shows the most it can accept.
 
 ---
 
@@ -177,7 +247,7 @@ export function UploadButton() {
 }
 ```
 
-A file over `maxSize` is refused in the browser before any request is made. It still becomes a record with `status: 'error'` and a `BlobError` with code `too_large`, so one error path renders both the client-side refusal and the server's.
+A file over the max size is refused in the browser before any request is made. It still becomes a record with `status: 'error'` and a `BlobError` with code `too_large`, so one error path renders both the client-side refusal and the server's.
 
 The size check is the only one that runs in the browser. **The server is authoritative** for everything else. If the constraints have not arrived yet, the file is simply sent and the route decides.
 
@@ -191,4 +261,4 @@ A refusal here is `too_large`, `content_type_not_allowed`, `invalid_content_type
 
 ## Server-side writes
 
-`bucket.put()` takes the same `contentTypes` and `maxSize` options, with the same grammar, aliases and byte check, for bytes that pass through your own route. See [Writing](/blob/bucket/writing#put).
+`put` takes the same content types and max size options, with the same grammar, aliases and byte check, for bytes that pass through your own route. See [Writing](/blob/bucket/writing#put).

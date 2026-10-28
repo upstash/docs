@@ -3,11 +3,17 @@ title: "Caching"
 description: "immutable, revalidate and no-store, where each one can be set, and what a CDN keeps."
 ---
 
-This page covers the `cache` option: what `Cache-Control` an object is served with, where to set it, and which value to pick.
+This page covers the `cache` option: what `Cache-Control` an object is served with, where to set it, and which value to pick. Every SDK takes the same values.
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.put("avatars/7.png", file, { contentType: "image/png", cache: "immutable" })
 ```
+
+```python Python
+bucket.put("avatars/7.png", file, content_type="image/png", cache="immutable")
+```
+</CodeGroup>
 
 `Cache-Control` is written once, at upload, and stored with the object. The CDN and the browser honor it on every read. There is no per-request override; changing it means writing the object again.
 
@@ -17,8 +23,8 @@ await bucket.put("avatars/7.png", file, { contentType: "image/png", cache: "immu
 
 | Object | Path | `cache` | How readers see a change |
 | --- | --- | --- | --- |
-| Unique path per upload (`uniquePath`) | new each time | `'immutable'` | the path is new, nothing to invalidate |
-| Stable path that changes rarely | stable | `'immutable'` plus `versionedUrl` | the URL changes with the etag |
+| Unique path per upload ([unique paths](/blob/bucket/writing#unique-paths)) | new each time | `'immutable'` | the path is new, nothing to invalidate |
+| Stable path that changes rarely | stable | `'immutable'` plus the versioned URL | the URL changes with the etag |
 | Fixed URL you do not control, or a client that drops query strings | stable | `'revalidate'` | a 304 check on every read |
 | Private or sensitive | any | `'no-store'`, or a short duration | the link expires; see [below](#no-store-and-signed-reads) |
 
@@ -35,21 +41,38 @@ await bucket.put("avatars/7.png", file, { contentType: "image/png", cache: "immu
 | unset | `public, max-age=3600` |
 | anything containing `=` or `,` | stored exactly as written |
 
-```ts
+<CodeGroup>
+```ts TypeScript
 cache: "1h"      // public, max-age=3600
 cache: 3600      // public, max-age=3600
 cache: "15 min"  // public, max-age=900
 cache: "7d"      // public, max-age=604800
 ```
 
+```python Python
+cache="1h"                  # public, max-age=3600
+cache=3600                  # public, max-age=3600
+cache="15 min"              # public, max-age=900
+cache="7d"                  # public, max-age=604800
+cache=timedelta(minutes=5)  # public, max-age=300
+```
+</CodeGroup>
+
 A duration is converted to whole seconds, so `'1500ms'` stores `max-age=1`. The grammar is on [Types](/blob/reference/types#duration).
 
 ### The raw header
 
-```ts
+<CodeGroup>
+```ts TypeScript
 cache: "public, max-age=60, s-maxage=31536000"
 cache: "max-age=0, stale-while-revalidate=86400"
 ```
+
+```python Python
+cache="public, max-age=60, s-maxage=31536000"
+cache="max-age=0, stale-while-revalidate=86400"
+```
+</CodeGroup>
 
 Anything containing `=` or `,` is treated as a raw header and stored as written. Use this for `s-maxage`, `stale-while-revalidate`, `no-transform` and anything else the three keywords do not cover.
 
@@ -74,28 +97,45 @@ Four places. The most specific one wins.
 
 ### On the bucket
 
-```ts lib/blob.ts
+<CodeGroup>
+```ts TypeScript
+// lib/blob.ts
 import { Bucket } from "@upstash/blob"
 
 export const bucket = Bucket.fromEnv({ cache: "immutable" })
 ```
 
-The default for every object this bucket stores.
+```python Python
+# app/blob.py
+from upstash_blob import Bucket
+
+bucket = Bucket.from_env(cache="immutable")
+```
+</CodeGroup>
+
+The default for every object this client stores. Client options: [TypeScript](/blob/sdks/ts/overview#the-bucket-client), [Python](/blob/sdks/py/overview#the-bucket-client).
 
 ### On a put
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.put("avatars/7.png", file, {
   contentType: "image/png",
   cache: "revalidate",
 })
 ```
 
-`updateJson` takes it too, for the object it rewrites. So do `copy` and `move`, for the destination. Without it the source's value carries over.
+```python Python
+bucket.put("avatars/7.png", file, content_type="image/png", cache="revalidate")
+```
+</CodeGroup>
+
+The [JSON update](/blob/bucket/writing#updating-json) takes it too, for the object it rewrites. So do `copy` and `move`, for the destination. Without it the source's value carries over.
 
 ### On a signed upload URL
 
-```ts
+<CodeGroup>
+```ts TypeScript
 const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
   contentType: "application/pdf",
   cache: "immutable",
@@ -104,11 +144,20 @@ const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
 await fetch(upload.url, { method: "PUT", headers: upload.headers, body })
 ```
 
-Signed into the URL and handed back in `headers`, so the uploader has to send it verbatim.
+```python Python
+upload = bucket.signed_upload_url("u/7/report.pdf", content_type="application/pdf", cache="immutable")
+
+httpx.put(upload.url, headers=upload.headers, content=body)
+```
+</CodeGroup>
+
+Signed into the URL and handed back in the returned headers, so the uploader has to send it verbatim.
 
 ### On a direct browser upload
 
-```ts lib/uploads.ts
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
 import { uniquePath, uploadHandler } from "@upstash/blob"
 
 export const uploads = uploadHandler({
@@ -119,7 +168,20 @@ export const uploads = uploadHandler({
 })
 ```
 
-Decided per upload on your server and signed into the presigned PUT. See [Upload handler](/blob/uploads/upload-handler#onbeforeupload).
+```python Python
+# app/uploads.py
+from upstash_blob import AsyncUploadHandler, BeforeUploadResult, unique_path
+
+uploads = AsyncUploadHandler(
+    on_before_upload=lambda args: BeforeUploadResult(
+        path=unique_path(f"uploads/{args.file.name}"),
+        cache="immutable",
+    ),
+)
+```
+</CodeGroup>
+
+Decided per upload in the before-upload callback on your server and signed into the presigned PUT. See [Authorizing an upload](/blob/uploads/upload-handler#authorizing-an-upload).
 
 ---
 
@@ -141,7 +203,9 @@ A raw header string is passed through as written, visibility included: `cache: '
 
 ## Immutable plus a versioned URL
 
-```ts app/api/avatar/route.ts
+<CodeGroup>
+```ts TypeScript
+// app/api/avatar/route.ts
 const blob = await bucket.put(`avatars/${user.id}.png`, file, {
   contentType: "image/png",
   cache: "immutable",
@@ -150,19 +214,28 @@ const blob = await bucket.put(`avatars/${user.id}.png`, file, {
 await db.users.update(user.id, { avatar: blob.versionedUrl })
 ```
 
+```python Python
+# app/main.py
+blob = bucket.put(f"avatars/{user.id}.png", file, content_type="image/png", cache="immutable")
+
+db.users.update(user.id, avatar=blob.versioned_url)
+```
+</CodeGroup>
+
 ```tsx
 <img src={user.avatar} />
 ```
 
-`versionedUrl` is `url` with the etag on the query, so it changes whenever the content does. A stable path stored `immutable` and served through `versionedUrl` is cached for a year, and every overwrite produces a URL no cache has seen. The path never moves, so nothing has to be deleted.
+The versioned URL is the URL with the etag on the query, so it changes whenever the content does. A stable path stored `immutable` and served through the versioned URL is cached for a year, and every overwrite produces a URL no cache has seen. The path never moves, so nothing has to be deleted.
 
-`url` and `versionedUrl` are both `undefined` on a private bucket.
+A private bucket has neither URL.
 
 ---
 
 ## `no-store` and signed reads
 
-```ts
+<CodeGroup>
+```ts TypeScript
 await bucket.put("private/report.pdf", body, {
   contentType: "application/pdf",
   cache: "no-store",
@@ -171,11 +244,18 @@ await bucket.put("private/report.pdf", body, {
 const { url, expiresAt } = await bucket.signedReadUrl("private/report.pdf")
 ```
 
-These are two separate mechanisms. The link expires at `expiresAt`, but the stored `Cache-Control` outlives it: with a long max-age the reader's browser keeps the bytes after the link stops working. If a reader must not keep the bytes, store the object with `no-store`.
+```python Python
+bucket.put("private/report.pdf", body, content_type="application/pdf", cache="no-store")
+
+link = bucket.signed_read_url("private/report.pdf")
+```
+</CodeGroup>
+
+These are two separate mechanisms. The link expires at its returned expiry, but the stored `Cache-Control` outlives it: with a long max-age the reader's browser keeps the bytes after the link stops working. If a reader must not keep the bytes, store the object with `no-store`.
 
 `no-store` drops the visibility scope entirely and stores `no-store` on public and private buckets alike.
 
-See [signedReadUrl](/blob/bucket/reading#signedreadurl) for link lifetimes.
+See [Signed read URLs](/blob/bucket/reading#signed-read-urls) for link lifetimes.
 
 ---
 

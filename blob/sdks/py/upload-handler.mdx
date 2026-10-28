@@ -1,0 +1,490 @@
+---
+title: "Upload Handler"
+description: "UploadHandler and AsyncUploadHandler in Python: options, callback arguments, UploadRoute, and mounting on FastAPI, Django and Flask."
+---
+
+`UploadHandler` and `AsyncUploadHandler` are the Python server side of a direct browser upload. What the handler does, the order its callbacks run in, and their guarantees are on [Upload handler](/blob/uploads/upload-handler). This page has the Python names, types and framework wiring.
+
+```python app/uploads.py
+from upstash_blob import (
+    AsyncUploadHandler,
+    BeforeUploadArgs,
+    BeforeUploadResult,
+    BlobError,
+    UploadCompleteArgs,
+    unique_path,
+)
+
+from app.auth import get_user
+from app.db import db
+
+
+async def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    user = await get_user(args.request)
+    if user is None:
+        raise BlobError("unauthorized")  # 401, nothing is signed
+    return BeforeUploadResult(
+        path=unique_path(f"{user.id}/{args.file.name}"),
+        metadata={"owner": user.id},
+    )
+
+
+async def record(args: UploadCompleteArgs) -> dict[str, str]:
+    await db.files.upsert(upload_id=args.upload_id, owner=args.metadata["owner"], path=args.path, url=args.url)
+    return {"path": args.path}
+
+
+uploads = AsyncUploadHandler(
+    content_types=["image/*", "application/pdf"],
+    max_size="20mb",
+    on_before_upload=authorize,
+    on_upload_complete=record,
+)
+```
+
+`on_before_upload`, `on_upload_complete` and `on_error` each take one argument, a frozen dataclass named after the callback, and every option is a keyword. The handler is built once, at import; bad options raise there.
+
+---
+
+## Mounting it
+
+<CodeGroup>
+```python FastAPI app/main.py
+from fastapi import FastAPI
+from upstash_blob.fastapi import upload_view
+
+from app.uploads import uploads
+
+app = FastAPI()
+app.add_api_route("/api/upload", upload_view(uploads), methods=["GET", "POST"])
+```
+
+```python Django app/urls.py
+from django.urls import path
+from upstash_blob.django import upload_view
+
+from app.uploads import uploads
+
+urlpatterns = [path("api/upload", upload_view(uploads))]
+```
+
+```python Flask app/main.py
+from flask import Flask
+from upstash_blob.flask import upload_view
+
+from app.uploads import uploads  # an UploadHandler, see below
+
+app = Flask(__name__)
+app.add_url_rule("/api/upload", view_func=upload_view(uploads), methods=["GET", "POST"])
+```
+</CodeGroup>
+
+`upload_view(uploads)` returns a view that answers `GET` and `POST` at one URL. `args.request` in every callback is the framework's own request: a Starlette `Request`, a Django `HttpRequest`, or Flask's `request`.
+
+| Module | Mounts | Notes |
+| --- | --- | --- |
+| `upstash_blob.fastapi` | `AsyncUploadHandler` | FastAPI and Starlette. |
+| `upstash_blob.django` | either | An `AsyncUploadHandler` becomes an async view, for Django under ASGI. The view is CSRF-exempt: the handler reads only `application/json` bodies, which a cross-site page cannot send without a CORS preflight. Authenticate in [`context`](#context). |
+| `upstash_blob.flask` | `UploadHandler` | Flask names an endpoint after its view, so a second handler on one app needs `upload_view(other, name="other_upload")`. |
+
+The wrong handler for a module raises a `TypeError` when the view is built.
+
+The browser side is `@upstash/blob/react`, unchanged. There is no TypeScript type to bind the hooks to, so call `uploadHooks()` without a type parameter:
+
+```ts lib/upload-hooks.ts
+"use client"
+import { uploadHooks } from "@upstash/blob/react"
+
+export const { useUpload } = uploadHooks()
+```
+
+```tsx app/page.tsx
+const { start, upload, accept } = useUpload("/api/upload")
+```
+
+Route names and `upload.blob.data` are not checked at compile time. See [With a server in another language](/blob/uploads/upload-client#with-a-server-in-another-language), and [FastAPI + React](/blob/recipes/fastapi-react) for a whole app.
+
+### Other frameworks
+
+```python app/main.py
+from aiohttp import web
+from upstash_blob import UploadResponse
+
+from app.uploads import uploads
+
+
+async def upload(request: web.Request) -> web.StreamResponse:
+    res = await uploads.handle(
+        request.method,
+        request=request,
+        route=request.query.get("route"),
+        body=await request.read() if request.method == "POST" else b"",
+        headers=request.headers,
+        native=web.StreamResponse,
+    )
+    if isinstance(res, UploadResponse):
+        return web.Response(body=res.body, status=res.status, headers=res.headers)
+    return res
+
+
+app = web.Application()
+app.router.add_route("*", "/api/upload", upload)
+```
+
+`handle()` is what the adapters call. It takes the method, the framework's request (handed to the callbacks as `request`), the `route` query parameter, the raw body and the headers, and returns an `UploadResponse` with `status`, `headers` and `body: bytes`. On `AsyncUploadHandler` it is awaited.
+
+| Argument | Description |
+| --- | --- |
+| `method` | `GET` serves the route's constraints, `POST` runs the upload phases. Anything else is a 405. |
+| `request` | Any object. It reaches every callback as `args.request`. |
+| `route` | The `route` query parameter, or `None`. |
+| `body` | The raw POST body. It must be `application/json`, or the answer is a 415, and at most 1 MB. The browser client's bodies are a few kilobytes. |
+| `headers` | A mapping. `content-type`, `if-none-match` and `origin` are read, case-insensitively. |
+| `native` | The framework's response class. When `on_error` returns an instance of it, `handle()` returns that instead of an `UploadResponse`. |
+
+---
+
+## Sync or async
+
+| | `UploadHandler` | `AsyncUploadHandler` |
+| --- | --- | --- |
+| Bucket | `Bucket` | `AsyncBucket` |
+| Callbacks and `context` | plain functions | plain functions or `async def` |
+| `handle()` | returns | awaited |
+| Mounts on | Django, Flask | FastAPI, Starlette, Django under ASGI |
+
+An `UploadHandler` callback that returns a coroutine raises a `TypeError`, since nothing would await it. The two take the same options. The Flask version of the handler above:
+
+```python app/uploads.py
+from upstash_blob import BeforeUploadArgs, BeforeUploadResult, BlobError, UploadHandler, unique_path
+
+
+def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    user = get_user(args.request)
+    if user is None:
+        raise BlobError("unauthorized")
+    return BeforeUploadResult(path=unique_path(f"{user.id}/{args.file.name}"), metadata={"owner": user.id})
+
+
+uploads = UploadHandler(
+    content_types=["image/*", "application/pdf"],
+    max_size="20mb",
+    on_before_upload=authorize,
+)
+```
+
+---
+
+## Options
+
+```python app/uploads.py
+uploads = AsyncUploadHandler(
+    bucket=bucket,
+    content_types=["image/*"],
+    max_size="20mb",
+    multipart="100mb",
+    endpoint="/api/upload",
+    context=require_user,
+    owner=lambda user: user.id,
+    input=Thread,
+    on_before_upload=authorize,
+    on_upload_complete=record,
+    on_error=log_refusal,
+    routes={"avatar": avatar, "attachment": attachment},
+)
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `bucket` | `Bucket` / `AsyncBucket` | The bucket every route writes to. See [The bucket](#the-bucket). |
+| `content_types` | `Sequence[str]` | What the routes accept. See [Content types](/blob/uploads/constraints#content-types). |
+| `max_size` | `Size` | The largest file the routes accept. See [Max size](/blob/uploads/constraints#max-size). |
+| `multipart` | `MultipartOption` | Where an upload stops being one PUT. See [Large files](/blob/uploads/large-files#changing-the-threshold). |
+| `endpoint` | `str` | Where the handler is mounted. Only needed to separate two handlers on one bucket. |
+| `context` | `Callable[[request], Any]` | Runs once per POST. Its value is `args.ctx` in every callback. Without it, `ctx` is `None`. See [context](#context). |
+| `owner` | `Callable[[ctx], Any]` | Binds each upload to who began it. Python only. See [owner](#owner). |
+| `input` | pydantic model, `TypeAdapter`, or callable | Validates what the browser sends as `input` before `on_before_upload` runs. Every route inherits it. See [Input and state](#input-and-state). |
+| `on_before_upload` | `Callable[[BeforeUploadArgs], BeforeUploadResult]` | Required, here or on every route. See [on_before_upload](#on_before_upload). |
+| `on_upload_complete` | `Callable[[UploadCompleteArgs], Any]` | What it returns becomes `upload.blob.data`. See [on_upload_complete](#on_upload_complete). |
+| `on_error` | `Callable[[UploadErrorArgs], Any]` | Sees every refusal. See [on_error](#on_error). |
+| `routes` | `Mapping[str, UploadRoute]` | Mounts several routes at this one endpoint. See [Routes](#routes). |
+
+There is no `constraints` object: `content_types` and `max_size` are options of their own, on the handler, on a route, and on what `on_before_upload` returns.
+
+Everything except `routes`, `endpoint`, `context` and `owner` is a default each route inherits; see [Multiple routes](/blob/uploads/upload-handler#multiple-routes). Bad options raise where they are written, at startup: a `ValueError` for an unparseable size, a `TypeError` for an invalid route name, an empty `routes`, a missing `on_before_upload`, or a missing token. See [Bad options](/blob/sdks/py/errors#bad-options-raise-typeerror-or-valueerror).
+
+### The bucket
+
+```python app/uploads.py
+from upstash_blob import AsyncBucket, AsyncUploadHandler
+
+bucket = AsyncBucket.from_env("MEDIA_BLOB_TOKEN", cache="immutable")
+
+uploads = AsyncUploadHandler(bucket=bucket, on_before_upload=authorize)
+```
+
+What the handler uses with no `bucket` is on [Handler options](/blob/uploads/upload-handler#handler-options). Pass `bucket=` when the token lives under another variable or the bucket needs `cache`. An `UploadHandler` takes a `Bucket` and an `AsyncUploadHandler` an `AsyncBucket`; the other kind raises a `TypeError`.
+
+---
+
+## on_before_upload
+
+```python app/uploads.py
+def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    return BeforeUploadResult(
+        path=unique_path(f"{args.ctx.id}/{args.file.name}"),
+        metadata={"owner": args.ctx.id},
+    )
+```
+
+`BeforeUploadArgs`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ctx` | `Any` | Whatever `context` returned for this request. |
+| `route` | `str` | The route this file was sent to. `''` when the handler mounts no named routes. |
+| `request` | `Any` | The framework's request for `begin`, headers and cookies intact. |
+| `file` | `FileInfo` | What the browser declared, before a byte was sent: `name`, `type` and `size`. |
+| `input` | `Any` | The validated `input`, when the route declares a validator. |
+
+It returns a `BeforeUploadResult`. Anything else raises a `TypeError` while the request runs.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `path` | `str` | Required. Where the object is stored. |
+| `cache` | `CacheOption` | The `Cache-Control` this object is stored with. See [Caching](/blob/bucket/caching). |
+| `metadata` | `Mapping[str, str]` | Signed into the upload and handed back to `on_upload_complete`. Keys must be lowercase, as on [`put`](/blob/sdks/py/bucket#put). |
+| `content_types` | `Sequence[str]` | Narrows this one upload's allowed types. |
+| `max_size` | `Size` | Narrows this one upload's limit. |
+| `state` | `Any` | Anything computed here that `on_upload_complete` and `on_error` should get without a lookup. It must be JSON-serializable. See [Input and state](#input-and-state). |
+
+What each field does is on [Authorizing an upload](/blob/uploads/upload-handler#authorizing-an-upload). A path with a `.` or `..` segment is refused with `invalid_input`, since a filename from the browser can put one there.
+
+### Refusing
+
+```python app/uploads.py
+def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    user = get_user(args.request)
+    if user is None:
+        raise BlobError("unauthorized")
+    if over_quota(user):
+        raise BlobError("too_large", "you are out of space")
+    return BeforeUploadResult(path=unique_path(f"{user.id}/{args.file.name}"))
+```
+
+Raise a `BlobError` to refuse. A framework's own HTTP exception works too, mapped through the status table on [What reaches the browser](/blob/reference/errors#what-reaches-the-browser-in-order): the status is read from `status_code` (FastAPI, Starlette), `code` (Werkzeug, so Flask's `abort(401)`) or `status`, and the message from `detail`, `description` or `message`.
+
+```python app/uploads.py
+from fastapi import HTTPException
+
+raise HTTPException(status_code=401, detail="sign in to upload")
+# reaches the browser as BlobError code 'unauthorized', message 'Sign in to upload'
+```
+
+Any other exception is re-raised, so your framework logs it and answers 500.
+
+### Callbacks in another file
+
+A callback is a function, so it lives wherever you import it from. `BeforeUploadArgs`, `BeforeUploadResult`, `UploadCompleteArgs`, `UploadErrorArgs` and `FileInfo` are exported from `upstash_blob` to annotate it. `ctx`, `input` and `state` are typed `Any`; narrow them yourself.
+
+---
+
+## on_upload_complete
+
+```python app/uploads.py
+async def record(args: UploadCompleteArgs) -> dict[str, str]:
+    await db.files.upsert(
+        upload_id=args.upload_id,
+        owner=args.ctx.id,
+        path=args.path,
+        url=args.url,
+        size=args.size,
+        content_type=args.content_type,
+    )
+    return {"path": args.path}
+```
+
+`UploadCompleteArgs` is a `CompletedBlob` with the upload's facts added:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `path` | `str` | Where the object is stored. |
+| `url` | `str \| None` | The public URL. `None` on a private bucket. |
+| `versioned_url` | `str \| None` | `url` with the etag on the query. |
+| `size` | `int` | Bytes actually stored. |
+| `etag` | `str` | The stored object's etag. |
+| `uploaded_at` | `datetime` | When storage wrote it. |
+| `content_type` | `str` | What the object is stored as. |
+| `ctx` | `Any` | What `context` returned for this request. |
+| `route` | `str` | The route name, `''` for a sole route. |
+| `request` | `Any` | The framework's request for `end`. |
+| `file` | `FileInfo` | What the browser declared at `begin`. |
+| `upload_id` | `str` | Identifies this upload. Stable across retries. |
+| `multipart_upload_id` | `str \| None` | For [`abort_multipart_upload()`](/blob/sdks/py/bucket#multipart-cleanup). `None` for a single PUT. |
+| `metadata` | `dict[str, str]` | What `on_before_upload` returned, minus the SDK's marker. |
+| `state` | `Any` | What `on_before_upload` returned as `state`, after a JSON round trip. |
+
+What each field means, and why it may run more than once or not at all, is on [Recording the upload](/blob/uploads/upload-handler#recording-the-upload).
+
+What it returns is handed to the browser as `upload.blob.data`. It must be JSON: a `dict`, `list`, `str`, number, `bool` or `None`, or a pydantic model, a dataclass or a `datetime`, which are converted. Anything else raises a `TypeError` once the callback has returned. Unlike a raise from the callback itself, that does not delete the object: it stays stored, and the browser gets a 500. Return `None` and `data` is not set.
+
+---
+
+## on_error
+
+```python app/uploads.py
+def log_refusal(args: UploadErrorArgs) -> BlobError | None:
+    logger.warning("upload refused", extra={"route": args.route, "path": args.path, "error": repr(args.error)})
+    if isinstance(args.error, PaymentRequired):
+        return BlobError("forbidden", "plan expired")
+    return None
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ctx` | `Any` | `None` when the request failed before `context` returned: no route matched, the body was not sent as `application/json` or was over 1 MB, or `context` itself raised. |
+| `route` | `str` | The name from the query, even when nothing mounts it. |
+| `request` | `Any` | The framework's request. |
+| `error` | `BaseException` | Whatever was raised. |
+| `file`, `path`, `metadata`, `state` | optional | As much as the request had reached before it failed, else `None`. |
+
+Return a `BlobError`, an `UploadResponse`, or the framework's own response object to answer with it. Return anything else, `None` included, to leave the answer alone. See [Handling errors](/blob/uploads/upload-handler#handling-errors).
+
+---
+
+## context
+
+```python app/uploads.py
+from fastapi import HTTPException, Request
+
+
+async def require_user(request: Request) -> User:
+    user = await session_user(request.cookies.get("session"))
+    if user is None:
+        raise HTTPException(status_code=401)
+    return user
+
+
+uploads = AsyncUploadHandler(
+    context=require_user,
+    routes={
+        "avatar": UploadRoute(
+            on_before_upload=lambda args: BeforeUploadResult(path=f"avatars/{args.ctx.id}"),
+        ),
+        "attachment": UploadRoute(
+            on_before_upload=lambda args: BeforeUploadResult(
+                path=unique_path(f"files/{args.ctx.id}/{args.file.name}"),
+            ),
+        ),
+    },
+)
+```
+
+`context` takes the framework's request. Its return value, awaited on `AsyncUploadHandler`, is `args.ctx` in every callback. When it runs is on [Context](/blob/uploads/upload-handler#context).
+
+### owner
+
+```python app/uploads.py
+uploads = AsyncUploadHandler(
+    context=require_user,
+    owner=lambda user: user.id,
+    on_before_upload=authorize,
+)
+```
+
+`owner` reads `ctx` and returns who the upload belongs to. Its value, as a string, is signed into the [completion token](/blob/reference/signing#the-completion-token) at `begin`. Every later request for that upload, `parts`, `end` and `cancel`, must produce the same owner or it is refused with `forbidden` before storage or any callback is touched. So one signed-in user cannot finish, re-sign or cancel an upload somebody else began, even holding its token.
+
+- `owner` needs `context`. Without one it raises a `TypeError` at startup.
+- A return of `None` or `""` is `unauthorized`. A `bool` raises a `TypeError`, since `True` would make every user the same owner.
+
+The TypeScript handler has no `owner`.
+
+---
+
+## Routes
+
+```python app/uploads.py
+from upstash_blob import AsyncUploadHandler, BeforeUploadResult, UploadRoute, unique_path
+
+uploads = AsyncUploadHandler(
+    content_types=["image/*"],
+    max_size="20mb",
+    context=require_user,
+    routes={
+        "avatar": UploadRoute(
+            max_size="2mb",
+            on_before_upload=lambda args: BeforeUploadResult(path=f"avatars/{args.ctx.id}", cache="revalidate"),
+        ),
+        "attachment": UploadRoute(
+            content_types=None,  # clears the handler's list for this route
+            multipart="50mb",
+            on_before_upload=lambda args: BeforeUploadResult(
+                path=unique_path(f"files/{args.ctx.id}/{args.file.name}"),
+            ),
+            on_upload_complete=record_file,
+        ),
+    },
+)
+```
+
+```tsx app/page.tsx
+const avatar = useUpload("avatar")       // POSTs to /api/upload?route=avatar
+const attachment = useUpload("attachment")
+```
+
+`UploadRoute` takes any of `bucket`, `content_types`, `max_size`, `multipart`, `input`, `on_before_upload`, `on_upload_complete` and `on_error`. A field it sets overrides the handler's, and one it leaves out inherits it. `content_types=None` or `max_size=None` clears a limit the handler set. A value in `routes` that is not an `UploadRoute` raises a `TypeError`. The rules for names and inheritance are on [Multiple routes](/blob/uploads/upload-handler#multiple-routes).
+
+---
+
+## Input and state
+
+```python app/uploads.py
+from uuid import UUID
+
+from pydantic import BaseModel
+from upstash_blob import BeforeUploadArgs, BeforeUploadResult, UploadCompleteArgs, UploadRoute, unique_path
+
+
+class Thread(BaseModel):
+    threadId: UUID
+
+
+def begin_thread_upload(args: BeforeUploadArgs) -> BeforeUploadResult:
+    thread: Thread = args.input
+    return BeforeUploadResult(
+        path=unique_path(f"chat/{thread.threadId}/{args.file.name}"),
+        state={"thread_id": str(thread.threadId), "name": args.file.name},
+    )
+
+
+async def record_message(args: UploadCompleteArgs) -> None:
+    await db.messages.insert(
+        upload_id=args.upload_id,
+        thread_id=args.state["thread_id"],
+        name=args.state["name"],
+        owner=args.ctx.id,
+        url=args.url,
+    )
+
+
+thread = UploadRoute(input=Thread, on_before_upload=begin_thread_upload, on_upload_complete=record_message)
+```
+
+```tsx app/page.tsx
+const { start } = useUpload("thread")
+start({ file, input: { threadId } })
+```
+
+There is no `uploadRoute()` here: `input` and `state` work on a plain `UploadRoute`, and on the handler itself. pydantic is not a dependency of the SDK; install it to use a model.
+
+- `input` takes a pydantic `BaseModel` subclass, a pydantic `TypeAdapter`, or any callable that returns the parsed value or raises `ValueError`. Its result is `args.input`, so a model arrives as a model instance. A browser that sent no `input` reaches the validator as `None`.
+- A pydantic error is refused with `invalid_input`, its issues joined as `loc: msg`, so a bad `threadId` reads `ThreadId: Input should be a valid UUID, ...`. A callable's `ValueError` becomes the message.
+- `state` crosses the browser as JSON, so it comes back as `dict`, `list`, `str`, numbers and `None`: a `UUID` or a `datetime` has to be a string before it goes in. A value `json.dumps` cannot write raises a `TypeError`.
+
+How `input` is validated and what `state` exposes are on [Input and state](/blob/uploads/upload-handler#input-and-state).
+
+---
+
+## CORS check
+
+The first upload from each page origin also sends storage the CORS preflight the browser is about to send, against the URL it just signed. When storage refuses it, the handler logs a warning on the `upstash_blob` logger naming the origin to add to the bucket's CORS settings in the Upstash Console. It runs in the background, never delays or fails the request, and runs once per origin. The TypeScript handler has no such check. Buckets allow every origin by default; see [Errors the browser raises on its own](/blob/reference/errors#errors-the-browser-raises-on-its-own).
