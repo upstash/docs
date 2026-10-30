@@ -17,12 +17,12 @@ The `HSETEX` command sets the specified fields with their values and optionally 
   <Expandable title="properties">
     <ParamField body="conditional" type="'FNX' | 'fnx' | 'FXX' | 'fxx'">
       Conditional setting options (case-insensitive):
-      - `FNX`: Only set fields if the hash does not exist
-      - `FXX`: Only set fields if the hash already exists
+      - `FNX`: Only set the fields if none of them exist yet
+      - `FXX`: Only set the fields if all of them already exist
     </ParamField>
 
     <ParamField body="expiration" type="object">
-      Expiration options for the hash.
+      Expiration options for the given fields. The TTL applies to each field, not to the hash key.
 
       <Expandable title="expiration">
         <ParamField body="ex" type="number">
@@ -42,7 +42,7 @@ The `HSETEX` command sets the specified fields with their values and optionally 
         </ParamField>
 
         <ParamField body="keepttl" type="true">
-          Retain the existing time to live (TTL) associated with the hash key when setting fields. If the hash has an expiration, it will be preserved. Set to `true` to enable.
+          Retain the existing time to live (TTL) of each field being set. Set to `true` to enable.
         </ParamField>
       </Expandable>
     </ParamField>
@@ -56,7 +56,7 @@ The `HSETEX` command sets the specified fields with their values and optionally 
 ## Response
 
 <ResponseField type="number" required>
-  The number of fields that were set. Returns 0 if conditions are not met (e.g., `conditional: "FNX"` but hash exists, or `conditional: "FXX"` but hash doesn't exist).
+  `1` if all fields were set, `0` if none were set because the `conditional` check failed (e.g., `conditional: "FNX"` but a field already exists, or `conditional: "FXX"` but a field doesn't exist).
 </ResponseField>
 
 <RequestExample>
@@ -68,43 +68,43 @@ await redis.hsetex("user:123", { expiration: { ex: 3600 } }, {
 });
 ```
 
-```ts With FNX (only if hash doesn't exist)
-// Set fields only if the hash doesn't exist
+```ts With FNX (only if no field exists)
+// Set fields only if none of them exist
 const result = await redis.hsetex(
   "user:456", 
   { conditional: "FNX" }, 
   { name: "Jane", age: "25" }
 );
-console.log(result); // 2 (if hash didn't exist)
+console.log(result); // 1 (no field existed)
 
-// Try again - will return 0 since hash now exists
+// Try again - will return 0 since "name" now exists
 const result2 = await redis.hsetex(
   "user:456", 
   { conditional: "FNX" }, 
-  { email: "jane@example.com" }
+  { name: "Janet", email: "jane@example.com" }
 );
 console.log(result2); // 0
 ```
 
-```ts With FXX (only if hash exists)
+```ts With FXX (only if all fields exist)
 // First create the hash
 await redis.hset("session:abc", { token: "xyz" });
 
-// Update only if hash exists
+// Update only if the field already exists
 const result = await redis.hsetex(
   "session:abc", 
   { conditional: "FXX" }, 
-  { user: "john" }
+  { token: "new-token" }
 );
-console.log(result); // 1 (hash exists, field added)
+console.log(result); // 1 ("token" exists, value updated)
 
-// Try on non-existent hash
+// Try with a field that doesn't exist
 const result2 = await redis.hsetex(
-  "session:nonexistent", 
+  "session:abc", 
   { conditional: "FXX" }, 
   { user: "jane" }
 );
-console.log(result2); // 0 (hash doesn't exist)
+console.log(result2); // 0 ("user" doesn't exist)
 ```
 
 ```ts With PX (milliseconds)
@@ -133,7 +133,7 @@ await redis.hsetex("session:xyz", { expiration: { pxat: futureTime } }, {
 ```
 
 ```ts Combined: Conditional + Expiration
-// Set fields only if hash doesn't exist, with 1 hour expiration
+// Set fields only if none of them exist, with 1 hour expiration
 await redis.hsetex(
   "user:789", 
   { 
@@ -154,22 +154,22 @@ await redis.hsetex("cache:data", { expiration: { ex: 300 } }, {
   value: "cached" 
 });
 
-// Later update fields while retaining the existing TTL
+// Later update the field while retaining its existing TTL
 const result = await redis.hsetex(
   "cache:data", 
   { expiration: { keepttl: true } }, 
-  { updated: "yes" }
+  { value: "updated" }
 );
 console.log(result); // 1
 
-// Verify TTL is still 300 seconds (or less if time passed)
-const ttl = await redis.ttl("cache:data");
-console.log(ttl); // Should be > 0 and <= 300 (TTL was retained)
+// The field's TTL is still 300 seconds (or less if time passed)
+const ttl = await redis.httl("cache:data", "value");
+console.log(ttl); // e.g., [298]
 ```
 
 ```ts Without Options
 // Just set fields without expiration or conditions
-await redis.hsetex("data:simple", undefined, { 
+await redis.hsetex("data:simple", {}, { 
   field1: "value1", 
   field2: "value2" 
 });

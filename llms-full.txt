@@ -98273,7 +98273,7 @@ To enable checking the deny list in your Ratelimit client, simply pass
 const ratelimit = new Ratelimit({
   redis: Redis.fromEnv(),
   limiter: Ratelimit.slidingWindow(10, "10 s"),
-  enableProtection: true
+  enableProtection: true,
   analytics: true,
 });
 ```
@@ -98282,7 +98282,7 @@ When `limit` is called, the client will check whether any of these values
 are in the deny list and block the request if so.
 
 ```tsx
-const { success, pending, reason, deniedValue } = ratelimit.limit("userId", {
+const { success, pending, reason, deniedValue } = await ratelimit.limit("userId", {
   ip: "ip-address",
   userAgent: "user-agent",
   country: "country",
@@ -98680,12 +98680,8 @@ const redis = Redis.fromEnv()
 <Info>
 If you are running on nodejs v17 and earlier, `fetch` will not be natively
 supported. Platforms like Vercel, Netlify, Deno, Fastly etc. provide a polyfill
-for you. But if you are running on bare node, you need to either specify a
-polyfill yourself or change the import path slightly:
-
-```typescript
-import { Redis } from "@upstash/redis/with-fetch";
-```
+for you. But if you are running on bare node, you need to provide a `fetch`
+polyfill yourself.
 
 </Info>
 
@@ -99107,12 +99103,12 @@ p.set("key", 2);
 p.incr("key");
 
 // or inline:
-p.hset("key2", "field", { hello: "world" }).hvals("key2");
+p.hset("key2", { field: { hello: "world" } }).hvals("key2");
 
 // Execute the pipeline once you are done building it:
 // `exec` returns an array where each element represents the response of a command in the pipeline.
 // You can optionally provide a type like this to get a typed response.
-const res = await p.exec<[Type1, Type2, Type3]>();
+const res = await p.exec<[Type1, Type2, Type3, Type4]>();
 ```
 
 For more information about pipelines using REST see
@@ -99142,10 +99138,10 @@ p.set("key", 2);
 p.incr("key");
 
 // or inline:
-p.hset("key2", "field", { hello: "world" }).hvals("key2");
+p.hset("key2", { field: { hello: "world" } }).hvals("key2");
 
 // execute the transaction
-const res = await p.exec<[Type1, Type2, Type3]>();
+const res = await p.exec<[Type1, Type2, Type3, Type4]>();
 ```
 
 # Redis TypeScript SDK Retries
@@ -108381,7 +108377,7 @@ The Search SDK supports defining your content and metadata types at the index le
 
 ```typescript {4,5,6}
 import { Search } from "@upstash/search";
-const client = new Search();
+const client = Search.fromEnv();
 
 type Content = { title: string, genre: string };
 type Metadata = { year: number };
@@ -108428,9 +108424,9 @@ UPSTASH_DISABLE_TELEMETRY=1
 Alternatively, you can disable telemetry programmatically:
 
 ```ts
-const index = client.index("movies", {
-  enableTelemetry: false,
-});
+const client = new Search({ enableTelemetry: false });
+
+const index = client.index("movies");
 ```
 
 # Database Migrator
@@ -118108,7 +118104,7 @@ If you want to configure the calls made to the LLM APIs, you can use the `agentC
 ```ts
 const model = agents.openai('gpt-3.5-turbo', {
   callSettings: {
-    timeout: 1000, // optional request timeout
+    timeout: "10s", // optional request timeout
     retries: 0,    // optional retries
     flowControl: { // optional flow control
       key: "flow-control-key",
@@ -118134,7 +118130,7 @@ This flexibility allows you to tailor the tools to your specific needs while lev
 <CodeGroup>
 
 ```ts WorkflowTool (custom)
-import { WorkflowTool } from '@upstash/workflow'
+import { WorkflowTool } from '@upstash/workflow-agents'
 import { z } from 'zod'
 import * as mathjs from 'mathjs'
 
@@ -118158,7 +118154,7 @@ const mathTool = tool({
     'A tool for evaluating mathematical expressions. ' +
     'Example expressions: ' +
     "'1.2 * (2 + 4.5)', '12.7 cm to inch', 'sin(45 deg) ^ 2'.",
-  parameters: z.object({ expression: z.string() }),
+  inputSchema: z.object({ expression: z.string() }),
   execute: async ({ expression }) => mathjs.evaluate(expression),
 })
 ```
@@ -118173,6 +118169,7 @@ const tools = createAISDKTools(weather)
 
 ```ts LangChain (custom)
 import { DynamicStructuredTool } from "@langchain/core/tools";
+import { z } from "zod";
 
 const numberGenerator = new DynamicStructuredTool({
   name: "random-number-generator",
@@ -118202,14 +118199,14 @@ For available toolkits, you can explore the [LangChain Toolkits](https://js.lang
 By default, the Workflow SDK will wrap the execute/invoke methods of the tools you pass with [`context.run`](/docs/workflow/steps/run) to run them as a Workflow step. This means, you can't use steps like context.call, context.notify etc in execute/invoke right away. If you want to define steps in invoke/execute, you can use the `executeAsStep` option:
 
 ```ts {12}
-import { WorkflowTool } from '@upstash/workflow'
+import { WorkflowTool } from '@upstash/workflow-agents'
 import { serve } from '@upstash/workflow/nextjs'
 
 export const { POST } = serve(async (context) => {
   const tool = new WorkflowTool({
     description: ...,
     schema: ...,
-    invoke: ( ... ) => {
+    invoke: async ( ... ) => {
       // make HTTP call inside the tool with context.call:
       await context.call( ... )
     },
@@ -118366,7 +118363,7 @@ export const { POST } = serve(async (context) => {
           "'1.2 * (2 + 4.5)', '12.7 cm to inch', 'sin(45 deg) ^ 2'." +
           "only call this tool if you need to calculate a mathematical expression." +
           "when writing an expression, don't use words like 'thousand' or 'million'",
-        parameters: z.object({ expression: z.string() }),
+        inputSchema: z.object({ expression: z.string() }),
         execute: async ({ expression }) => mathjs.evaluate(expression),
       }),
     },
@@ -118471,7 +118468,7 @@ export const { POST } = serve<{ prompt: string }>(async (context) => {
     tools: {
       communicationTool: tool({
         description: 'A tool for informing the caller about your inner thoughts',
-        parameters: z.object({ message: z.string() }),
+        inputSchema: z.object({ message: z.string() }),
         execute: async ({ message }) => {
           console.log("Inner thought:", message)
           return "success"
@@ -123617,12 +123614,12 @@ You can pass these configuration options when starting a workflow run:
 ```typescript
 import { Client } from "@upstash/workflow";
 
-const client = Client()
+const client = new Client({ token: "<QSTASH_TOKEN>" })
 
 const { workflowRunId } = await client.trigger({
     url: `http://localhost:3000/api/workflow`,
     retries: 3,
-    retryDelay: "(1 + retries) * 1000",
+    retryDelay: "(1 + retried) * 1000",
     flowControl: {
         key: "limit-ads",
         rate: 1,
@@ -125693,6 +125690,7 @@ Let's create a user-specific schedule, sending a first report to each user exact
 <CodeGroup>
 
 ```typescript api/sign-up/route.ts
+import { NextResponse } from "next/server";
 import { signUp } from "@/utils/auth-utils";
 import { Client } from "@upstash/qstash";
 
@@ -125701,11 +125699,18 @@ const client = new Client({ token: process.env.QSTASH_TOKEN! });
 export async function POST(request: Request) {
   const userData: UserData = await request.json();
 
+  // Simulate user registration
+  const user = await signUp(userData);
+
+  // Weekly cron expression whose first run is 7 days from signup
+  const firstSummaryDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const cron = `${firstSummaryDate.getUTCMinutes()} ${firstSummaryDate.getUTCHours()} * * ${firstSummaryDate.getUTCDay()}`;
+
   // Schedule weekly account summary
   await client.schedules.create({
-    scheduleId: `user-summary-${user.email}`,
+    scheduleId: `user-summary-${user.id}`,
     destination: "https://<YOUR_APP_URL>/api/send-weekly-summary",
-    body: { userId: user.id },
+    body: JSON.stringify({ userId: user.id }),
     cron: cron,
   });
 
@@ -125720,28 +125725,30 @@ export async function POST(request: Request) {
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from qstash import AsyncQStash
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+from utils.auth_utils import sign_up
 
 app = FastAPI()
 
-client = AsyncQStash("<QSTACK_TOKEN>")
+client = AsyncQStash("<QSTASH_TOKEN>")
 
 @app.post("/api/sign-up")
-async def sign_up(request: Request):
+async def sign_up_route(request: Request):
     user_data = await request.json()
 
     # Simulate user registration
     user = await sign_up(user_data)
 
     # Calculate the date for the first summary (7 days from now)
-    first_summary_date = datetime.now() + timedelta(days=7)
+    first_summary_date = datetime.now(timezone.utc) + timedelta(days=7)
 
     # Create cron expression for weekly summaries starting 7 days from signup
-    cron = f"{first_summary_date.minute} {first_summary_date.hour} * * {first_summary_date.day}"
+    cron = f"{first_summary_date.minute} {first_summary_date.hour} * * {first_summary_date.isoweekday() % 7}"
 
     # Schedule weekly account summary
     await client.schedule.create_json(
-        schedule_id=f"user-summary-{user.email}",
+        schedule_id=f"user-summary-{user.id}",
         destination="https://<YOUR_APP_URL>/api/send-weekly-summary",
         body={"userId": user.id},
         cron=cron,
@@ -127299,8 +127306,8 @@ If you want requests to retry automatically, you can explicitly pass a retry con
     </Expandable>
 </ParamField>
 
-<ParamField body="timeout" type="number" >
-    Maximum time (in seconds) to wait for a response.
+<ParamField body="timeout" type="string" >
+    Maximum time to wait for a response, as a duration string such as `"10s"`.
     If retries are enabled, this timeout applies individually to each attempt.
 </ParamField>
 
