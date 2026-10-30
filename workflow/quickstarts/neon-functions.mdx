@@ -1,0 +1,168 @@
+---
+title: "Neon Functions"
+description: "Run durable, multi-step Upstash Workflows on Neon Functions, with retried steps, sleeps, and LLM calls through Neon AI Gateway."
+---
+
+This guide shows how to run Upstash Workflow on
+[Neon Functions](https://neon.com/docs/compute/functions/overview), long-running
+serverless functions on Node.js that run on a Neon branch.
+
+Neon Functions are request/response, with no built-in queue or retries.
+Upstash Workflow adds both: each step runs as its own request, retries on
+failure, and can sleep or wait for events between steps.
+
+## Prerequisites
+
+1. An Upstash QStash token and signing keys. If you don't have them yet, [sign up](https://console.upstash.com/auth/sign-in) and open your QStash dashboard.
+2. A Neon project in a [region that supports Functions](https://neon.com/docs/compute/functions/overview), and the latest [Neon CLI](https://neon.com/docs/cli).
+3. Node.js 24 or later.
+
+## Step 1: Project setup
+
+Create a project directory, link it to your Neon project and branch, and
+install the Workflow SDK:
+
+```bash Terminal
+mkdir upstash-workflow && cd upstash-workflow
+neon link
+npm install @upstash/workflow
+```
+
+`neon link` pulls the branch's environment variables into a local env file
+(`.env.local` in a new directory). `neon dev` loads both `.env` and `.env.local`
+when it runs your function.
+
+## Step 2: Configure environment variables
+
+Upstash Workflow is powered by [QStash](/qstash/overall/getstarted), which calls your endpoint once per step. For local development, use the [local QStash server](/workflow/howto/local-development/development-server):
+
+```bash Terminal
+npx @upstash/qstash-cli dev
+```
+
+Add the `QSTASH_URL` and `QSTASH_TOKEN` it prints to a `.env` file:
+
+```txt .env
+QSTASH_URL="http://127.0.0.1:8080"
+QSTASH_TOKEN="<QSTASH_TOKEN>"
+```
+
+To use production QStash locally instead, expose your function through a [local tunnel](/workflow/howto/local-development/local-tunnel).
+
+## Step 3: Create a workflow endpoint
+
+A Neon Function is a module whose default export has a `fetch(request)` method
+that returns a `Response`. The base `serve` method from `@upstash/workflow`
+returns a `handler` with that signature:
+
+<Tabs>
+
+<Tab title="Minimal example">
+```typescript index.ts
+import { serve } from "@upstash/workflow";
+
+const { handler } = serve(async (context) => {
+  await context.run("initial-step", () => {
+    console.log("initial step ran");
+  });
+
+  await context.run("second-step", () => {
+    console.log("second step ran");
+  });
+});
+
+export default { fetch: handler };
+```
+</Tab>
+
+<Tab title="With Neon AI Gateway">
+Neon injects `NEON_AI_GATEWAY_TOKEN` and `NEON_AI_GATEWAY_BASE_URL` into
+functions, both deployed and under `neon dev`, when
+[AI Gateway](https://neon.com/docs/ai-gateway/overview) is enabled on the branch. QStash makes the LLM call, so the function isn't
+running while the model responds. AI Gateway needs a paid Neon plan with prepaid credits.
+
+```typescript index.ts
+import { serve } from "@upstash/workflow";
+
+const { handler } = serve<{ topic: string }>(async (context) => {
+  const { topic } = context.requestPayload;
+
+  const { body } = await context.api.openai.call("draft", {
+    baseURL: process.env.NEON_AI_GATEWAY_BASE_URL!,
+    token: process.env.NEON_AI_GATEWAY_TOKEN!,
+    operation: "chat.completions.create",
+    body: {
+      model: "gpt-5-mini",
+      messages: [{ role: "user", content: `Write a short post about ${topic}` }],
+    },
+  });
+
+  await context.run("save", () => {
+    console.log(body.choices[0].message.content);
+  });
+});
+
+export default { fetch: handler };
+```
+</Tab>
+</Tabs>
+
+## Step 4: Run the workflow endpoint
+
+Start the function locally:
+
+```bash Terminal
+neon dev --source index.ts --port 8787
+```
+
+Then make a POST request to your workflow endpoint. Each workflow run returns a unique run ID:
+
+```bash Terminal
+curl -X POST http://localhost:8787 -d '{"topic": "Postgres branching"}'
+
+# result: {"workflowRunId":"wfr_xxxxxx"}
+```
+
+See the [documentation on starting a workflow](/workflow/howto/start) for other ways you can start your workflow.
+
+## Step 5: Deploy to production
+
+1. **Deploy the function** with your production QStash credentials from the Upstash Console. The signing keys turn on [request verification](/workflow/howto/security), which a Neon Function needs because its URL is public. Function slugs are 1 to 20 lowercase letters and digits, with no hyphens:
+
+   ```bash Terminal
+   neon functions deploy upstashworkflow --src index.ts \
+     --env QSTASH_URL=<QSTASH_URL> \
+     --env QSTASH_TOKEN=<QSTASH_TOKEN> \
+     --env QSTASH_CURRENT_SIGNING_KEY=<QSTASH_CURRENT_SIGNING_KEY> \
+     --env QSTASH_NEXT_SIGNING_KEY=<QSTASH_NEXT_SIGNING_KEY>
+   ```
+
+   Set `QSTASH_URL` to your QStash region's URL, not the local server address from `.env`. Pick the [QStash region](/qstash/howto/multi-region) closest to your Neon project: `https://qstash-us-east-1.upstash.io` or `https://qstash-eu-central-1.upstash.io`.
+
+2. **Start a run** with [`client.trigger`](/workflow/basics/client/trigger). With signing keys set, the function rejects direct calls that don't come through QStash. Use the function's public URL, which `neon functions get upstashworkflow` prints:
+
+   ```typescript
+   import { Client } from "@upstash/workflow";
+
+   const client = new Client({
+     baseUrl: process.env.QSTASH_URL,
+     token: process.env.QSTASH_TOKEN!,
+   });
+
+   const { workflowRunId } = await client.trigger({
+     url: "https://<branch_id>-upstashworkflow.compute.<cell>.<region>.aws.neon.tech",
+     body: { topic: "Postgres branching" },
+   });
+   ```
+
+3. **Monitor runs** in the Upstash Console. All steps are listed with their status, headers, and body.
+
+Neon limits each account to 100 concurrent function invocations by default. If many workflows run at once, cap concurrent steps with [flow control](/workflow/features/flow-control).
+
+## Next Steps
+
+1. Learn how to protect your workflow endpoint from unauthorized access by [securing your workflow endpoint](/workflow/howto/security).
+
+2. Call LLMs from a workflow step with the [OpenAI integration](/workflow/integrations/openai).
+
+3. For setting up and testing your workflows in a local environment, check out our [local development guide](/workflow/howto/local-development/development-server).
