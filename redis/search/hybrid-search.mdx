@@ -30,6 +30,46 @@ Declare the fields you want to search by meaning as `HYBRID`:
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+import { Redis, s } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const index = await redis.search.createIndex({
+  name: "products",
+  dataType: "json",
+  prefix: "product:",
+  schema: s.object({
+    name: s.string(),
+    description: s.hybrid(),
+    category: s.keyword(),
+    price: s.number("F64"),
+  }),
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+
+index = redis.search.create_index(
+    name="products",
+    data_type="json",
+    prefixes="product:",
+    schema={
+        "name": "TEXT",
+        "description": "HYBRID",
+        "category": "KEYWORD",
+        "price": {"type": "F64", "fast": True},
+    },
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description HYBRID category KEYWORD price F64 FAST
@@ -43,6 +83,28 @@ SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT description HY
 Write documents as usual. Search indexes them and creates their embeddings:
 
 <Tabs>
+
+<Tab title="TypeScript">
+```ts
+await redis.json.set("product:1", "$", { name: "Studio Headphones", description: "Over-ear headphones with active noise cancelling", category: "audio", price: 199 });
+await redis.json.set("product:2", "$", { name: "Travel Earplugs", description: "Soft foam earplugs that keep airplane cabin sound out", category: "travel", price: 9 });
+await redis.json.set("product:3", "$", { name: "Sport Earbuds", description: "Sweat-proof wireless earbuds for running", category: "sports", price: 79 });
+
+// Wait until the documents are indexed
+await index.waitIndexing();
+```
+</Tab>
+
+<Tab title="Python">
+```python
+redis.json.set("product:1", "$", {"name": "Studio Headphones", "description": "Over-ear headphones with active noise cancelling", "category": "audio", "price": 199})
+redis.json.set("product:2", "$", {"name": "Travel Earplugs", "description": "Soft foam earplugs that keep airplane cabin sound out", "category": "travel", "price": 9})
+redis.json.set("product:3", "$", {"name": "Sport Earbuds", "description": "Sweat-proof wireless earbuds for running", "category": "sports", "price": 79})
+
+# Wait until the documents are indexed
+index.wait_indexing()
+```
+</Tab>
 
 <Tab title="Redis CLI">
 ```bash
@@ -65,6 +127,38 @@ text. This query can find the earplugs, even though their description does not c
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: { $ann: { field: "description", query: "block noise on a flight" } },
+});
+
+// Search by meaning within one category
+await index.query({
+  filter: {
+    $ann: { field: "description", query: "headphones for running", filter: { category: "sports" } },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(filter={"$ann": {"field": "description", "query": "block noise on a flight"}})
+
+# Search by meaning within one category
+index.query(
+    filter={
+        "$ann": {
+            "field": "description",
+            "query": "headphones for running",
+            "filter": {"category": "sports"},
+        }
+    }
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.QUERY products '{"$ann": {"field": "description", "query": "block noise on a flight"}}'
@@ -83,6 +177,36 @@ their results into one list. Documents that rank high in both come first:
 
 <Tabs>
 
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: {
+    $rrf: {
+      retrievers: [
+        { description: "noise cancelling" },
+        { $ann: { field: "description", query: "noise cancelling" } },
+      ],
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(
+    filter={
+        "$rrf": {
+            "retrievers": [
+                {"description": "noise cancelling"},
+                {"$ann": {"field": "description", "query": "noise cancelling"}},
+            ]
+        }
+    }
+)
+```
+</Tab>
+
 <Tab title="Redis CLI">
 ```bash
 SEARCH.QUERY products '{"$rrf": {"retrievers": [{"description": "noise cancelling"}, {"$ann": {"field": "description", "query": "noise cancelling"}}]}}'
@@ -95,6 +219,36 @@ To give one side more influence, set its weight. A full-text query takes a weigh
 [`$standard`](/redis/search/retrievers/standard):
 
 <Tabs>
+
+<Tab title="TypeScript">
+```ts
+await index.query({
+  filter: {
+    $rrf: {
+      retrievers: [
+        { $standard: { query: { description: "noise cancelling" }, weight: 2 } },
+        { $ann: { field: "description", query: "noise cancelling" } },
+      ],
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.query(
+    filter={
+        "$rrf": {
+            "retrievers": [
+                {"$standard": {"query": {"description": "noise cancelling"}, "weight": 2}},
+                {"$ann": {"field": "description", "query": "noise cancelling"}},
+            ]
+        }
+    }
+)
+```
+</Tab>
 
 <Tab title="Redis CLI">
 ```bash
