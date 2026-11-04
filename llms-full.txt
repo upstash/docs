@@ -309,6 +309,7 @@ upstash blob get --bucket-id $BUCKET_ID
 upstash blob get --bucket-id $BUCKET_ID --hide-credentials          # omit token and token_next
 upstash blob create --name $NAME --visibility $VISIBILITY           # private (default), public
 upstash blob create --name $NAME --cors $ORIGIN $ORIGIN             # space-separated origins
+upstash blob cors $BUCKET $ORIGIN $ORIGIN                           # replace CORS origins; '*' allows all
 upstash blob delete --bucket-id $BUCKET_ID --dry-run
 upstash blob delete --bucket-id $BUCKET_ID
 upstash blob credentials --bucket-id $BUCKET_ID                     # temporary S3 credentials
@@ -4083,7 +4084,7 @@ the browser blocked the request before sending any bytes, which is almost always
 the bucket has to allow PUT and the signed headers from this origin
 ```
 
-Buckets allow every origin by default, so this only shows up on a bucket whose CORS policy was narrowed.
+Buckets allow every origin by default, so this only shows up on a bucket whose CORS policy was narrowed. Add the page origin with `upstash blob cors <bucket> <origins...>`, which replaces the bucket's list, so name every origin you want to keep, or add it in the Upstash Console under the bucket's CORS settings.
 
 **A 403 on a freshly minted presign** becomes `signature_mismatch`. A 401 or 403 on an older URL is read as an expired signature and the browser asks the route for a new one instead. See [Retries](/docs/blob/uploads/large-files#retries).
 
@@ -11972,6 +11973,127 @@ again.
   </Card>
 </CardGroup>
 
+# Run Hermes Agent's Terminal in Upstash Box
+Source: https://upstash.com/docs/box/guides/hermes-plugin-setup
+
+[Hermes](https://github.com/NousResearch/hermes-agent) runs shell commands, code and file edits on
+your machine by default. The `upstash-box` plugin moves that work into a box: Hermes, your model
+calls and your sessions stay local, and the `terminal`, `execute_code` and file tools run in the box.
+
+Each chat gets its own box. When you close Hermes the box is paused, and it resumes with your files
+and installed tools the next time.
+
+<Note>
+To run all of Hermes in a box instead, including the agent, see [Hermes Setup](/docs/box/guides/hermes-setup).
+</Note>
+
+***
+
+## 1. Install the plugin
+
+Needs Hermes Agent 0.22.3 or newer. Have an
+[Upstash Box API key](/docs/box/overall/quickstart#1-get-your-api-key) ready.
+
+```bash
+hermes plugins install upstash-box
+hermes plugins enable upstash-box
+```
+
+The install asks for your API key and saves it as `UPSTASH_BOX_API_KEY` in `~/.hermes/.env`.
+
+***
+
+## 2. Switch the terminal backend
+
+```bash
+hermes config set terminal.backend upstash_box
+```
+
+Or pick **Upstash Box** in `hermes setup terminal`. Check it with `hermes doctor`.
+
+Restart Hermes so it picks up the new backend. In Hermes Desktop, quit the app and open it again.
+
+***
+
+## 3. Try it
+
+Start Hermes, or open a new chat in Hermes Desktop, and ask:
+
+```
+Run uname -a and whoami.
+```
+
+The answer comes from the box, with the user `boxuser`. The first command of a chat takes about
+10–15 seconds while the box starts and your Hermes skills are uploaded. Later commands start right
+away.
+
+Commands start in `/home/boxuser`.
+
+***
+
+## Configure
+
+All settings are optional and go under `terminal:` in `~/.hermes/config.yaml`:
+
+```yaml
+terminal:
+  backend: upstash_box
+  container_persistent: true    # false: a new box per session, deleted when it ends
+  upstash_box_size: small       # small | medium | large
+  upstash_box_runtime: python   # node (default), python, golang, ruby, rust, ...
+  upstash_box_name_prefix: hermes
+```
+
+The default `node` image has Python but no `pip`. For Python work, set `upstash_box_runtime: python`.
+It applies to boxes created after the change.
+
+***
+
+## Clean up boxes
+
+Paused boxes count toward your plan's box limit, and every Hermes Desktop chat gets its own box. The
+plugin labels its boxes `hermes`:
+
+```bash
+box list --label hermes
+box delete <box-id> --yes
+```
+
+To not keep boxes at all, set `container_persistent: false`. Each session then gets a new box,
+deleted when the session ends.
+
+***
+
+## What runs where
+
+* Every command, and every file the file tools read or write, goes to the box.
+* Your Hermes skills and cache are uploaded to `~/.hermes` in the box. Changes made there are copied
+  back when the session ends.
+* If you [connected GitHub](https://console.upstash.com) under **Box > Settings > GitHub**, the box
+  has your GitHub credentials, so the agent can clone and push.
+* Your API key stays on your machine and is never sent into the box.
+* Hermes skips its dangerous-command approval for commands in the box, as for its other cloud
+  backends.
+
+***
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Hermes Setup" icon="server" href="/box/guides/hermes-setup">
+    Host all of Hermes in a keep-alive box.
+  </Card>
+  <Card title="Plugin source" icon="github" href="https://github.com/upstash/box/tree/main/packages/hermes-box">
+    The plugin code and full reference.
+  </Card>
+  <Card title="Plugin catalog" icon="puzzle-piece" href="https://nousresearch.github.io/hermes-agent/docs/plugins/upstash-box/">
+    The plugin's page in the Hermes catalog.
+  </Card>
+  <Card title="Hermes" icon="globe" href="https://hermes-agent.nousresearch.com/docs">
+    Hermes documentation.
+  </Card>
+</CardGroup>
+
 # Host Hermes Agent in a Cloud Sandbox and Connect from Hermes Desktop
 Source: https://upstash.com/docs/box/guides/hermes-setup
 
@@ -13900,6 +14022,12 @@ box = Box.create(
 </Tab>
 </Tabs>
 
+### API keys
+
+Agents always run on your own provider key. A run uses the key set on the box, or else the key saved for that provider in the [Upstash Console](https://console.upstash.com). Omit `apiKey` to use the saved key. Passing `BoxApiKey.StoredKey` (`BoxApiKey.STORED_KEY` in Python) does the same but fails at create when no key is saved.
+
+A box without a key still works for shell, files, and git. Agent runs fail with `agent API key is required` until you set a key on the box or save one for your account.
+
 ### Agent Options
 
 You can pass provider-specific agent options with the `options` field on `box.agent.run()` and `box.agent.stream()`.
@@ -14467,8 +14595,7 @@ Beyond reading pages, a tab can act. A DOM-aware browser agent runs inside the b
 <Note>
   LLM-resolved AI actions are metered and need an API key for the model's
   provider (Anthropic, OpenAI, OpenRouter, Vercel, OpenCode, Bedrock, or Neon)
-  on the box or your account. Boxes on the Upstash-managed key need no key of
-  your own for Anthropic, OpenAI, OpenRouter, or OpenCode models. Cursor models
+  on the box or your account. Cursor models
   are not supported. Every method accepts a provider-prefixed `model` override such
   as `"openai/gpt-4o"`. Without an override, the call uses the model the box
   was configured with. If the box has no model, it falls back to
@@ -14878,8 +15005,7 @@ print(page.title)
   [`extract`](/docs/box/overall/browser/reading-pages) and [`observe`,
   `act`](/docs/box/overall/browser/ai-actions). They need an API key for the model's
   provider (Anthropic, OpenAI, OpenRouter, Vercel, OpenCode, Bedrock, or Neon)
-  on the box or your account. Boxes on the Upstash-managed key need no key of
-  your own for Anthropic, OpenAI, OpenRouter, or OpenCode models. Cursor models
+  on the box or your account. Cursor models
   are not supported. The exception is replaying a resolved action with
   [`act(action)`](/docs/box/overall/browser/ai-actions#replay-an-action-without-an-llm),
   which uses no LLM and needs no key.
@@ -15458,7 +15584,6 @@ Ready-to-run examples for popular agents:
 
 ## Notes
 
-* Custom agents do not use managed provider keys.
 * Pass secrets through `env` on `Box.create()` or configure them inside the box.
 * The command must be a binary name from `PATH` or an absolute path under `/workspace/home/` or `/home/boxuser/`.
 * The command runs as `boxuser` inside the existing box sandbox.
@@ -19469,7 +19594,7 @@ A snapshot captures:
 
 A restored box does not inherit:
 
-* **Agent API key**: a key passed directly as `apiKey` is not stored in the snapshot. The restored box uses your stored key for that provider or the Upstash-managed key. Pass `agent` again to use your own key.
+* **Agent API key**: a key passed directly as `apiKey` is not stored in the snapshot. The restored box uses the key saved on your account for that provider. Pass `agent` again with `apiKey` to set a key on the restored box.
 * **Network policy**: pass `networkPolicy` again on restore.
 * **Attach headers**: pass `attachHeaders` again on restore.
 * **Lifecycle settings**: init command, keep-alive, and size use the values passed on restore.
@@ -20333,6 +20458,9 @@ Fast iteration is the key to success in today's competitive environment. You can
 # Compliance
 Source: https://upstash.com/docs/common/help/compliance
 
+For our current certifications, security controls and subprocessors, see the
+[Upstash Trust Center](https://trust.upstash.com/).
+
 ## Upstash Legal & Security Documents
 
 * [Upstash Terms of Service](https://upstash.com/static/trust/terms.pdf)
@@ -20341,26 +20469,38 @@ Source: https://upstash.com/docs/common/help/compliance
 * [Upstash Technical and Organizational Security Measures](https://upstash.com/static/trust/security-measures.pdf)
 * [Upstash Subcontractors](https://upstash.com/static/trust/subprocessors.pdf)
 
-## Is Upstash SOC2 Compliant?
+## Is Upstash SOC 2 Compliant?
 
-Upstash Redis databases under Pro and Enterprise support plans are SOC2 compliant. Check our [trust page](https://trust.upstash.com/) for details.
+Yes. Upstash has a SOC 2 Type II report. SOC 2 controls apply across the
+platform, and the report is available to databases with the
+[Prod Pack add-on](/docs/redis/overall/enterprise#prod-pack-features) and to
+Enterprise customers. You can request it through the
+[Trust Center](https://trust.upstash.com/).
 
-## Is Upstash ISO-27001 Compliant?
+## Is Upstash ISO 27001 Compliant?
 
-We are in process of getting this certification. Contact us
+We are in the process of getting this certification. Contact us
 ([support@upstash.com](mailto:support@upstash.com)) to learn about the expected
 date.
 
 ## Is Upstash GDPR Compliant?
 
 Yes. For more information, see our
-[Privacy Policy](https://upstash.com/static/trust/privacy.pdf). We acquire DPAs
-from each [subcontractor](https://upstash.com/static/trust/subprocessors.pdf)
-that we work with.
+[Privacy Policy](https://upstash.com/static/trust/privacy.pdf) and
+[Data Processing Agreement](https://upstash.com/static/trust/dpa.pdf). We
+acquire DPAs from each
+[subcontractor](https://upstash.com/static/trust/subprocessors.pdf) that we
+work with. Upstash also participates in the Data Privacy Framework (DPF).
 
 ## Is Upstash HIPAA Compliant?
 
-Yes. Upstash Redis is HIPAA compliant and we are in process of getting this compliance for our other products. See [Managing Healthcare Data](https://upstash.com/docs/redis/help/managing-healthcare-data) for more details.
+Yes. Upstash Redis is HIPAA compliant and you can use it to store and process
+Protected Health Information (PHI). A Business Associate Agreement (BAA) and
+HIPAA enablement are available with the
+[Enterprise plan](/docs/redis/overall/enterprise#hipaa-compliance). See
+[Managing Healthcare Data](/docs/redis/help/managing-healthcare-data) for your
+responsibilities, and contact us
+([support@upstash.com](mailto:support@upstash.com)) to get started.
 
 ## Is Upstash PCI Compliant?
 
@@ -20376,11 +20516,90 @@ with Enterprise customers. Contact us
 
 ## Does Upstash take backups?
 
-Yes, we take regular snapshots of the data cluster to the AWS S3 platform.
+Yes. We take regular snapshots of the data cluster for disaster recovery. You
+can also create backups of your own databases, schedule daily backups and
+restore them. See [Backup/Restore](/docs/redis/features/backup). Hourly backups with
+custom retention are available for Enterprise customers.
 
 ## Does Upstash encrypt data?
 
-Customers can enable TLS when creating a database or cluster, and we recommend this for production environments. Additionally, we encrypt data at rest upon enabling [Prod Pack add-on](https://upstash.com/docs/redis/overall/enterprise#prod-pack-features).
+Yes. TLS is always enabled on Upstash Redis databases, so data in transit
+between your client and the database is encrypted. Encryption at rest is
+available with the [Prod Pack add-on](/docs/redis/overall/enterprise#prod-pack-features)
+and included in the Enterprise plan. See [Security](/docs/redis/features/security).
+
+# Compliance
+Source: https://upstash.com/docs/common/help/compliance
+
+For our current certifications, security controls and subprocessors, see the
+[Upstash Trust Center](https://trust.upstash.com/).
+
+## Upstash Legal & Security Documents
+
+* [Upstash Terms of Service](https://upstash.com/static/trust/terms.pdf)
+* [Upstash Privacy Policy](https://upstash.com/static/trust/privacy.pdf)
+* [Upstash Data Processing Agreement](https://upstash.com/static/trust/dpa.pdf)
+* [Upstash Technical and Organizational Security Measures](https://upstash.com/static/trust/security-measures.pdf)
+* [Upstash Subcontractors](https://upstash.com/static/trust/subprocessors.pdf)
+
+## Is Upstash SOC 2 Compliant?
+
+Yes. Upstash has a SOC 2 Type II report. SOC 2 controls apply across the
+platform, and the report is available to databases with the
+[Prod Pack add-on](/docs/redis/overall/enterprise#prod-pack-features) and to
+Enterprise customers. You can request it through the
+[Trust Center](https://trust.upstash.com/).
+
+## Is Upstash ISO 27001 Compliant?
+
+We are in the process of getting this certification. Contact us
+([support@upstash.com](mailto:support@upstash.com)) to learn about the expected
+date.
+
+## Is Upstash GDPR Compliant?
+
+Yes. For more information, see our
+[Privacy Policy](https://upstash.com/static/trust/privacy.pdf) and
+[Data Processing Agreement](https://upstash.com/static/trust/dpa.pdf). We
+acquire DPAs from each
+[subcontractor](https://upstash.com/static/trust/subprocessors.pdf) that we
+work with. Upstash also participates in the Data Privacy Framework (DPF).
+
+## Is Upstash HIPAA Compliant?
+
+Yes. Upstash Redis is HIPAA compliant and you can use it to store and process
+Protected Health Information (PHI). A Business Associate Agreement (BAA) and
+HIPAA enablement are available with the
+[Enterprise plan](/docs/redis/overall/enterprise#hipaa-compliance). See
+[Managing Healthcare Data](/docs/redis/help/managing-healthcare-data) for your
+responsibilities, and contact us
+([support@upstash.com](mailto:support@upstash.com)) to get started.
+
+## Is Upstash PCI Compliant?
+
+Upstash does not store personal credit card information. We use Stripe for
+payment processing. Stripe is a certified PCI Service Provider Level 1, which is
+the highest level of certification in the payments industry.
+
+## Does Upstash conduct vulnerability scanning and penetration tests?
+
+Yes, we use third party tools and work with pen testers. We share the results
+with Enterprise customers. Contact us
+([support@upstash.com](mailto:support@upstash.com)) for more information.
+
+## Does Upstash take backups?
+
+Yes. We take regular snapshots of the data cluster for disaster recovery. You
+can also create backups of your own databases, schedule daily backups and
+restore them. See [Backup/Restore](/docs/redis/features/backup). Hourly backups with
+custom retention are available for Enterprise customers.
+
+## Does Upstash encrypt data?
+
+Yes. TLS is always enabled on Upstash Redis databases, so data in transit
+between your client and the database is encrypted. Encryption at rest is
+available with the [Prod Pack add-on](/docs/redis/overall/enterprise#prod-pack-features)
+and included in the Enterprise plan. See [Security](/docs/redis/features/security).
 
 # Feature Requests
 Source: https://upstash.com/docs/common/help/feature-requests
@@ -88460,62 +88679,6 @@ AWS Private link provides private connectivity between Upstash Database and your
 Redis client inside AWS infrastructure. Private link is only available for
 Pro databases.
 
-# Compliance
-Source: https://upstash.com/docs/redis/help/compliance
-
-## Upstash Legal & Security Documents
-
-* [Upstash Terms of Service](https://upstash.com/static/trust/terms.pdf)
-* [Upstash Privacy Policy](https://upstash.com/static/trust/privacy.pdf)
-* [Upstash Data Processing Agreement](https://upstash.com/static/trust/dpa.pdf)
-* [Upstash Technical and Organizational Security Measures](https://upstash.com/static/trust/security-measures.pdf)
-* [Upstash Subcontractors](https://upstash.com/static/trust/subprocessors.pdf)
-
-## Is Upstash SOC2 Compliant?
-
-As of July 2023, Upstash Redis is SOC2 compliant. Check our [trust page](https://trust.upstash.com/) for details.
-
-## Is Upstash ISO-27001 Compliant?
-
-We are in process of getting this certification. Contact us
-([support@upstash.com](mailto:support@upstash.com)) to learn about the expected
-date.
-
-## Is Upstash GDPR Compliant?
-
-Yes. For more information, see our
-[Privacy Policy](https://upstash.com/static/trust/privacy.pdf). We acquire DPAs
-from each [subcontractor](https://upstash.com/static/trust/subprocessors.pdf)
-that we work with.
-
-## Is Upstash HIPAA Compliant?
-
-Upstash is currently not HIPAA compliant. Contact us
-([support@upstash.com](mailto:support@upstash.com)) if HIPAA is important for
-you and we can share more details.
-
-## Is Upstash PCI Compliant?
-
-Upstash does not store personal credit card information. We use Stripe for
-payment processing. Stripe is a certified PCI Service Provider Level 1, which is
-the highest level of certification in the payments industry.
-
-## Does Upstash conduct vulnerability scanning and penetration tests?
-
-Yes, we use third party tools and work with pen testers. We share the results
-with Enterprise customers. Contact us
-([support@upstash.com](mailto:support@upstash.com)) for more information.
-
-## Does Upstash take backups?
-
-Yes, we take regular snapshots of the data cluster to the AWS S3 platform.
-
-## Does Upstash encrypt data?
-
-Customers can enable TLS while creating database/cluster, and we recommend it
-for production databases/clusters. Also we encrypt data at rest at request of
-customers.
-
 # Upstash Redis FAQ
 Source: https://upstash.com/docs/redis/help/faq
 
@@ -115541,7 +115704,7 @@ Source: https://upstash.com/docs/vector/help/faq
 
 * **Do you support hybrid search?**
 
-    We don’t support hybrid search at the moment. Although this is in our roadmap we still haven’t finalized the approach to help our users eliminate the need to have a secondary database for better search result. As we define our approach on implementing hybrid search and gather more user feedback, we will share this through our blog posts
+    Yes. A [hybrid index](../features/hybridindexes) keeps a dense and a sparse component, queries both and fuses the results, so you get semantic matches and exact keyword matches from one query. If you only need keyword-style search, you can also create a [sparse index](../features/sparseindexes).
 
 * **Can I filter by metadata?**
 
@@ -115569,19 +115732,19 @@ Source: https://upstash.com/docs/vector/help/faq
 
 * **Which cloud provider is Upstash Vector hosted on?**
 
-    Upstash is currently offered on AWS. We have plans to expand it to other cloud providers, please reach out support@upstash.com to raise this request as this will help us prioritize accordingly.
+    Upstash Vector is offered on AWS and GCP. If you need another cloud provider, reach out to support@upstash.com so we can prioritize it.
 
 * **In what regions is Upstash available?**
 
-    Upstash Vector is currently available in two regions; AWS us-east1 and AWS eu-west-1. We are in the process of expanding to more regions where other Upstash products are currently offered.
+    Upstash Vector is available in AWS us-east-1 (N. Virginia), AWS eu-west-1 (Ireland) and GCP us-central1 (Iowa). Fixed and Pro plans are available in the AWS regions.
 
-* **Should I be on AWS to be able to use Upstash Vector?**
+* **Should I be on AWS or GCP to be able to use Upstash Vector?**
 
-    No. Your client can be anywhere but the clients in AWS regions will give you better performance.
+    No. Your client can be anywhere, but clients close to your index's region will get lower latency.
 
 **Feature Request and Upgrade:**
 
-* **How can I request a feature during this beta release?**
+* **How can I request a feature?**
 
     Please reach out to support@upstash.com. You can also raise your feature request through our chatbot, located at the bottom of Upstash page. The chatbot will guide you through the process of submitting your feature request.
 
