@@ -1253,7 +1253,7 @@ The plan, Prod Pack and budget tools change what your account is billed. They do
     | `box_preview` | destructive | `create`, `list`, `delete` — public URLs for ports in a box |
     | `box_runs` | destructive | `list`, `get`, `cancel` — a box's run history |
     | `box_snapshots` | destructive | `create`, `list`, `list_all`, `delete`, `restore` |
-    | `box_apikey` | destructive | `list`, `create`, `delete` — Box API keys for the account scope; `create` returns the secret once |
+    | `box_apikey` | destructive | `list`, `create`, `delete` — Box API keys for the account scope; `create` returns the secret once, and `read_only: true` makes a [read-only key](/docs/box/overall/security#read-only-api-keys) |
 
     `box_git` `clone` is what writes the GitHub credentials into the box, so a repository cloned with `git` in `box_exec` cannot `push` or `create_pr`. A clone lands at `/workspace/home/<repo>`; pass that as `folder` on later calls. A Box API key made with `box_apikey` outlives the OAuth grant that created it — revoke it from the console when it is no longer needed. `box_env` is not a secrets store; a value set there lands in the environment of every future box.
   </Accordion>
@@ -19201,6 +19201,37 @@ Environment variables are visible to all code running inside the box. If you run
 ## Attach Headers
 
 For injecting secret HTTP headers into outbound HTTPS requests without exposing them inside the container, see [Attach Headers](/docs/box/overall/attach-headers).
+
+## Read-only API keys
+
+A read-only API key lets a monitoring tool or a debugging agent look into your boxes without being able to change them. Create one in the [console](https://console.upstash.com/box): open **Box**, then on the **Overview** tab under **API Keys** click **+ API Key** and pick **Read Only**. A key's permissions can't be changed later.
+
+With a read-only key you can:
+
+* Get and list boxes, and read status, metrics, logs, schedules, previews and config.
+* List, read and download files, and read git status and diffs.
+* Run commands with `exec`. They run as a separate user with an empty environment, which can't write to the workspace or read the platform's credential files.
+
+Everything else returns `403 This API key is read-only`: creating, deleting, pausing or resetting boxes, runs, file and git writes, schedules, previews, config changes, streaming exec and terminal sessions. On a paused box, commands and file and git reads return `409` instead of waking it; box details and logs still work.
+
+Secrets are masked: env var values and schedule webhook header values come back as their first four characters followed by `••••`, MCP server headers come back only as those masked previews, and schedule webhook URLs are cut to their scheme and host (`https://example.com/••••`).
+
+<CodeGroup>
+```bash CLI
+export UPSTASH_BOX_API_KEY=box_...   # read-only key
+box list
+box exec --box my-box -- 'tail -n 50 /workspace/home/app.log'
+```
+
+```typescript box.ts
+const box = await Box.get("my-box", { apiKey: process.env.READ_ONLY_BOX_KEY })
+const { stdout } = await box.exec.command("tail -n 50 /workspace/home/app.log")
+```
+</CodeGroup>
+
+<Warning>
+A read-only key limits what it can change through the Box API, not what a command can see. Commands still have network access, can read any file in the workspace that isn't private to its owner, and can see other processes' command lines. The startup command and MCP server arguments are returned as written. Keep secrets in env vars or [Attach Headers](/docs/box/overall/attach-headers), not in files, command lines or arguments.
+</Warning>
 
 ## Browser URLs
 
