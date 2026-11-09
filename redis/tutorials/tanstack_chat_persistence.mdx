@@ -26,12 +26,12 @@ UPSTASH_REDIS_REST_TOKEN="..."
 
 ## The adapter
 
-A persistence adapter is just an object with three methods. Each may be sync or async — the client awaits them. We store the messages array under a namespaced key and revive `createdAt` (which becomes a string through JSON) on read.
+A persistence adapter is just an object with three methods. Each may be sync or async — the client awaits them. The client hands it one record per thread (the messages, plus a resume pointer while a run is in flight); we store that record under a namespaced key and revive each message's `createdAt` (which becomes a string through JSON) on read.
 
 ```typescript
 // upstash-persistence.ts
 import type { Redis } from "@upstash/redis";
-import type { ChatClientPersistence, UIMessage } from "@tanstack/ai-client";
+import type { ChatClientPersistence, ChatPersistedState } from "@tanstack/ai-client";
 
 type UpstashPersistenceOptions = {
   redis: Redis;
@@ -41,23 +41,26 @@ type UpstashPersistenceOptions = {
 
 export function upstashPersistence(options: UpstashPersistenceOptions): ChatClientPersistence {
   const { redis, prefix = "tanstack:chat:", ttlSeconds } = options;
-  const key = (id: string) => `${prefix}${id}`;
+  const key = (threadId: string) => `${prefix}${threadId}`;
 
   return {
-    async getItem(id) {
-      const stored = await redis.get<Array<UIMessage>>(key(id));
+    async getItem(threadId) {
+      const stored = await redis.get<ChatPersistedState>(key(threadId));
       if (!stored) return null;
       // createdAt round-trips as a string through JSON; revive it.
-      return stored.map((m) => ({
-        ...m,
-        createdAt: typeof m.createdAt === "string" ? new Date(m.createdAt) : m.createdAt,
-      }));
+      return {
+        ...stored,
+        messages: stored.messages.map((m) => ({
+          ...m,
+          createdAt: typeof m.createdAt === "string" ? new Date(m.createdAt) : m.createdAt,
+        })),
+      };
     },
-    async setItem(id, messages) {
-      await redis.set(key(id), messages, ttlSeconds ? { ex: ttlSeconds } : undefined);
+    async setItem(threadId, state) {
+      await redis.set(key(threadId), state, ttlSeconds ? { ex: ttlSeconds } : undefined);
     },
-    async removeItem(id) {
-      await redis.del(key(id));
+    async removeItem(threadId) {
+      await redis.del(key(threadId));
     },
   };
 }
@@ -65,17 +68,18 @@ export function upstashPersistence(options: UpstashPersistenceOptions): ChatClie
 
 ## Use it
 
-Pass the adapter as `persistence` and give the client a stable `id` — that `id` is the storage key, so the same `id` loads the same conversation back.
+Pass the adapter as `persistence` and give the client a stable `threadId` — that `threadId` is the storage key, so the same `threadId` loads the same conversation back.
 
 ```typescript
 import { Redis } from "@upstash/redis";
-import { ChatClient } from "@tanstack/ai-client";
+import { ChatClient, fetchServerSentEvents } from "@tanstack/ai-client";
 import { upstashPersistence } from "./upstash-persistence";
 
 const redis = Redis.fromEnv();
+const connection = fetchServerSentEvents("/api/chat");
 
 const chat = new ChatClient({
-  id: "conversation-123",
+  threadId: "conversation-123",
   connection,                                 // your OpenAI/SSE transport
   persistence: upstashPersistence({ redis }), // <- that's it
 });
@@ -85,22 +89,22 @@ await chat.sendMessage("In one short sentence, what is Upstash Redis?");
 
 The client now:
 
-- **Hydrates on construction** — calls `getItem(id)` and populates itself (overriding `initialMessages`).
-- **Saves on every change** — calls `setItem(id, messages)` on each new message and streamed chunk, through an ordered write queue.
-- **Clears on `clear()`** — calls `removeItem(id)`.
+- **Hydrates on construction** — calls `getItem(threadId)` and populates itself (overriding `initialMessages`).
+- **Saves on every change** — calls `setItem(threadId, state)` on each new message and streamed chunk, through an ordered write queue.
+- **Clears on `clear()`** — calls `removeItem(threadId)`.
 
 ## Try it
 
-Create a client, chat, then construct a **brand-new** client with the same `id` — it hydrates the full history from Redis with no `initialMessages`:
+Create a client, chat, then construct a **brand-new** client with the same `threadId` — it hydrates the full history from Redis with no `initialMessages`:
 
 ```typescript
 // Session 1 — persists to Redis
-const a = new ChatClient({ id: "demo", connection, persistence: upstashPersistence({ redis }) });
+const a = new ChatClient({ threadId: "demo", connection, persistence: upstashPersistence({ redis }) });
 await a.sendMessage("In one short sentence, what is Upstash Redis?");
 await a.sendMessage("And in one sentence, what is TanStack?");
 
-// Session 2 — same id, fresh client, no initialMessages
-const b = new ChatClient({ id: "demo", connection, persistence: upstashPersistence({ redis }) });
+// Session 2 — same threadId, fresh client, no initialMessages
+const b = new ChatClient({ threadId: "demo", connection, persistence: upstashPersistence({ redis }) });
 await b.sendMessage("What did I ask you first? Quote it back.");
 // -> 'You asked: "In one short sentence, what is Upstash Redis?"'
 ```

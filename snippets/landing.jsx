@@ -1,6 +1,3 @@
-// Hero for the docs home. The actions passed as children are the `npx upstash`
-// command box (a real code block, so the renderer's own copy button handles the
-// click) and the setup prompt; the hint under them says what the command does.
 export const Hero = ({ children }) => (
   <div className="u-hero">
     <h1>Build with Upstash</h1>
@@ -8,11 +5,12 @@ export const Hero = ({ children }) => (
       Serverless data, messaging, and AI infrastructure for developers. Scale to
       zero, pay per request.
     </p>
-    <div className="u-actions">{children}</div>
-    <p className="u-hero__hint">
-      Run it in your terminal to add the Upstash MCP server and skills to Claude Code, Codex, Cursor, and
-      other agents.
-    </p>
+    <div className="u-actions">
+      <a className="u-action u-action--primary" href="/agent-resources/overview">
+        Agent Setup
+      </a>
+      {children}
+    </div>
   </div>
 );
 

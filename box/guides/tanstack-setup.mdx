@@ -82,9 +82,9 @@ export const repoSandbox = defineSandbox({
   Clone the repo in a `setup` step rather than with `source: githubRepo(...)`. A box's home directory is created with agent dotfiles already in it (`.claude`, `.codex`, `.cursor`, `.local`), and `@tanstack/ai-sandbox` clones the source straight into that directory. `git clone` refuses a non-empty target and exits `128`, the bootstrap does not surface the failure, and your setup steps then run against an empty workspace. Cloning into `/tmp` and copying the contents across sidesteps it.
 </Warning>
 
-The harness spawns its CLI inside the box, so the CLI has to be on the box's `PATH`. The `node` runtime already ships `claude`, `codex`, and `opencode` in `/usr/local/bin`, so those three need no setup step at all.
+The harness spawns its CLI inside the box, so the CLI has to be on the box's `PATH`. Every runtime already has `claude`, `codex`, and `opencode` on `PATH`, so those three need no setup step at all.
 
-For any other CLI, install it with `sudo -n`. A box runs as the non-root `boxuser`, and `/usr/local/lib/node_modules` is root-owned, so a plain `npm install -g` fails with `EACCES` and takes the whole bootstrap down with it:
+For any other CLI, install it with `sudo -n`. A box runs as the non-root `boxuser`, and the global `node_modules` is root-owned, so a plain `npm install -g` fails with `EACCES` and takes the whole bootstrap down with it:
 
 ```typescript
 setup: ["sudo -n npm install -g @some/agent-cli --include=optional && some-agent --version"],
@@ -238,7 +238,7 @@ try {
 | `apiKey` | `UPSTASH_BOX_API_KEY` | Your Box API key. |
 | `baseUrl` | SDK default | Overrides the Box API base URL. |
 | `runtime` | `node` | Box runtime image: `node`, `python`, `golang`, `ruby`, `rust`. |
-| `size` | `small` | `small` (2 CPU / 4 GB), `medium` (4 / 8), `large` (8 / 16). |
+| `size` | `small` | `small` (2 CPU / 4 GB RAM / 10 GB disk), `medium` (4 / 8 / 20), `large` (8 / 16 / 30). |
 | `keepAlive` | `false` | `false` avoids billing a perpetually running box and keeps `pause()` available. `true` prevents auto-pause mid-run, bills continuously, and disables pausing. |
 | `snapshot` | none | Base snapshot id to create the box from. |
 | `name` | none | Human readable box name. A deterministic sandbox id from `ensure()` takes precedence. |

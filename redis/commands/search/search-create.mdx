@@ -5,11 +5,11 @@ description: "Create a search index."
 
 Use `SEARCH.CREATE` to create a search index over JSON, hash, or string values, or over a stream.
 
-`ON` names the type of key to index and `PREFIX` the key prefixes to watch, so the index covers exactly the keys that match both, including keys written after it was created. The `SCHEMA` then declares which fields are searchable and how: `TEXT` fields are analyzed for full-text search, with `NOSTEM` and `NOTOKENIZE` to turn parts of that off, numeric, boolean, and date fields are matched exactly and can be marked `FAST` to make them usable for sorting and scoring, and `KEYWORD` and `FACET` fields are kept whole for exact matching and faceting. `FROM` maps a schema field to a differently named field in the document.
+`ON` names the type of key to index and `PREFIX` the key prefixes to watch, so the index covers exactly the keys that match both, including keys written after it was created. The `SCHEMA` then declares which fields are searchable and how: `TEXT` fields are analyzed for full-text search, with `NOSTEM` and `NOTOKENIZE` to turn parts of that off, numeric, boolean, and date fields are matched exactly and can be marked `FAST` to make them usable for sorting and scoring, and `KEYWORD` and `FACET` fields are kept whole for exact matching and faceting. `HYBRID` fields are `TEXT` fields that also store a vector embedding, so [`$ann`](/redis/search/retrievers/ann) can search them by meaning. `FROM` maps a schema field to a differently named field in the document.
 
 `ON STREAM` indexes a single stream instead of a set of keys, so it takes the stream key in place of `PREFIX`. Each entry added with [`XADD`](/redis/commands/streams/xadd) becomes a document whose fields are the entry's fields and whose ID is the entry ID, which is what makes a stream searchable by content rather than only by ID range. Entries removed from the stream leave the index as well.
 
-`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields can index multiple values. Store the field as a JSON array; for hash and stream indexes, store the complete JSON-encoded array in the field string. Each valid element is indexed separately, and a document matches when any element matches. `BOOL` and `FACET` fields remain single-valued.
+`TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields can index multiple values. Store the field as a JSON array; for hash and stream indexes, store the complete JSON-encoded array in the field string. Each valid element is indexed separately, and a document matches when any element matches. `BOOL` and `FACET` fields remain single-valued.
 
 Creating an index starts an initial scan of the matching keys, which `SKIPINITIALSCAN` skips when you only want to index data written from now on. `EXISTSOK` makes the command succeed instead of failing when the index already exists.
 
@@ -30,6 +30,7 @@ SEARCH.CREATE <name>
   [EXISTSOK]
   SCHEMA
     <field> TEXT [NOSTEM] [NOTOKENIZE] [FROM <source_field>]
+    | <field> HYBRID [NOSTEM] [FROM <source_field>]
     | <field> <U64|I64|F64|BOOL|DATE> [FAST] [FROM <source_field>]
     | <field> <KEYWORD|FACET> [FROM <source_field>]
     [...]
@@ -42,7 +43,7 @@ SEARCH.CREATE <name>
 | `ON` | Type of Redis value to index: `JSON`, `HASH`, `STRING`, or `STREAM`. A `STRING` value must contain a JSON object. |
 | `PREFIX` | One or more key prefixes. Prefixes in the same index cannot be duplicates or overlap one another. Not allowed with `ON STREAM`. |
 | `<stream-key>` | Key of the stream to index. Required with `ON STREAM`, and given in place of `PREFIX`. |
-| `LANGUAGE` | Stemming language for `TEXT` fields. Defaults to `english`. Supported values are `arabic`, `danish`, `dutch`, `english`, `finnish`, `french`, `german`, `greek`, `hungarian`, `italian`, `norwegian`, `portuguese`, `romanian`, `russian`, `spanish`, `swedish`, `tamil`, and `turkish`. |
+| `LANGUAGE` | Stemming language for `TEXT` and `HYBRID` fields. Defaults to `english`. Supported values are `arabic`, `danish`, `dutch`, `english`, `finnish`, `french`, `german`, `greek`, `hungarian`, `italian`, `norwegian`, `portuguese`, `romanian`, `russian`, `spanish`, `swedish`, `tamil`, and `turkish`. |
 | `SKIPINITIALSCAN` | Create the index without scanning existing keys. Later writes are still indexed. |
 | `EXISTSOK` | Return `0` when an index with the same data type, prefixes, and schema already exists. A configuration mismatch returns an error. |
 | `SCHEMA` | One or more field definitions. `SCHEMA` must be the final top-level clause. |
@@ -52,11 +53,11 @@ SEARCH.CREATE <name>
 | Option | Valid field types | Description |
 | --- | --- | --- |
 | `FAST` | `U64`, `I64`, `F64`, `BOOL`, `DATE` | Store the field for operations such as sorting and aggregations. Score functions accept `FAST` fields of type `U64`, `I64`, or `F64`. |
-| `NOSTEM` | `TEXT` | Index text without stemming words to their roots. |
+| `NOSTEM` | `TEXT`, `HYBRID` | Index text without stemming words to their roots. |
 | `NOTOKENIZE` | `TEXT` | Index the entire value as one token. |
 | `FROM <source_field>` | All field types | Read the value from a different document field or nested dot path while exposing it under `<field>` in the index. |
 
-`TEXT`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields accept multiple values. A field whose value is a JSON array is indexed element by element, and a document matches when any valid element matches. See [Multi-value fields](/redis/search/schema-definition#multi-value-fields) for data-type-specific input formats and query behavior.
+`TEXT`, `HYBRID`, `KEYWORD`, `U64`, `I64`, `F64`, and `DATE` fields accept multiple values. A field whose value is a JSON array is indexed element by element, and a document matches when any valid element matches. See [Multi-value fields](/redis/search/schema-definition#multi-value-fields) for data-type-specific input formats and query behavior.
 
 ## Response
 
@@ -73,6 +74,9 @@ SEARCH.CREATE products ON JSON PREFIX 1 product: SCHEMA name TEXT price F64 FAST
 
 # Index a stream instead of a set of keys
 SEARCH.CREATE events ON STREAM stream:events SCHEMA message TEXT level KEYWORD
+
+# Index a field for hybrid search
+SEARCH.CREATE articles ON JSON PREFIX 1 article: SCHEMA title TEXT body HYBRID
 ```
 
 </Accordion>
