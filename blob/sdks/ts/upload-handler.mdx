@@ -1,0 +1,362 @@
+---
+title: "Upload Handler"
+description: "uploadHandler in TypeScript: options, callback arguments, uploadRoute(), and mounting it in Next.js, Hono, SvelteKit, Remix and Workers."
+---
+
+`uploadHandler` is the TypeScript server side of a direct browser upload. What the handler does, the order its callbacks run in, and their guarantees are on [Upload handler](/blob/uploads/upload-handler). This page has the TypeScript names, types and framework wiring.
+
+```ts lib/uploads.ts
+import "server-only"
+import { BlobError, uniquePath, uploadHandler } from "@upstash/blob"
+import { getUser } from "./auth"
+import { db } from "./db"
+
+export const uploads = uploadHandler({
+  constraints: { maxSize: "20mb", contentTypes: ["image/*", "application/pdf"] },
+
+  onBeforeUpload: async ({ request, file }) => {
+    const user = await getUser(request)
+    if (!user) throw new BlobError("unauthorized") // 401, nothing is signed
+    return { path: uniquePath(`${user.id}/${file.name}`), metadata: { owner: user.id } }
+  },
+
+  onUploadComplete: async ({ uploadId, metadata, path, url }) => {
+    await db.files.upsert({ uploadId, owner: metadata.owner, path, url })
+    return { path }
+  },
+})
+```
+
+`uploadHandler(options)` returns `{ GET, POST }`, a pair of route handlers.
+
+---
+
+## Mounting it
+
+```ts app/api/upload/route.ts
+import { uploads } from "@/lib/uploads"
+
+export const { GET, POST } = uploads
+```
+
+```ts lib/upload-hooks.ts
+"use client"
+import { uploadHooks } from "@upstash/blob/react"
+import type { uploads } from "./uploads"
+
+export const { useUpload } = uploadHooks<typeof uploads>()
+```
+
+That is Next.js App Router. Where the client looks for the handler is on [Mounting it](/blob/uploads/upload-handler#mounting-it); `endpoint` on `uploadHooks` or `useUpload` changes it. `uploadHooks<typeof uploads>` binds the client to the handler's type, so route names and completion data are checked at compile time. The `import type` is erased at build time and never pulls server code into the browser bundle. [Upload client](/blob/uploads/upload-client) has the hooks in full.
+
+### Other frameworks
+
+`GET` and `POST` are plain `(request: Request) => Promise<Response>` functions, so any framework that hands you a fetch `Request` can mount them.
+
+<CodeGroup>
+```ts Hono
+import { Hono } from "hono"
+import { uploads } from "./uploads"
+
+const app = new Hono()
+app.get("/api/upload", (c) => uploads.GET(c.req.raw))
+app.post("/api/upload", (c) => uploads.POST(c.req.raw))
+```
+
+```ts SvelteKit src/routes/api/upload/+server.ts
+import { uploads } from "$lib/uploads"
+
+export const GET = ({ request }) => uploads.GET(request)
+export const POST = ({ request }) => uploads.POST(request)
+```
+
+```ts Remix / React Router app/routes/api.upload.ts
+import { uploads } from "~/uploads"
+
+export const loader = ({ request }) => uploads.GET(request)
+export const action = ({ request }) => uploads.POST(request)
+```
+</CodeGroup>
+
+Frameworks built on Node's `http` module, such as Express, need an adapter that converts the incoming request into a fetch `Request` first.
+
+On Cloudflare Workers the token only exists on the request's `env`, so build the bucket from `env` and pass it as [`bucket`](#the-bucket); see [Cloudflare Workers](/blob/sdks/ts/overview#cloudflare-workers).
+
+---
+
+## Options
+
+```ts lib/uploads.ts
+export const uploads = uploadHandler({
+  bucket,
+  constraints: { maxSize: "20mb", contentTypes: ["image/*"] },
+  multipart: "100mb",
+  endpoint: "/api/upload",
+  context: (request) => requireUser(request),
+  input: schema,
+  onBeforeUpload,
+  onUploadComplete,
+  onError,
+  routes: { avatar, attachment },
+})
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `bucket` | `Bucket` | The bucket every route writes to. See [The bucket](#the-bucket). |
+| `constraints` | `{ contentTypes?, maxSize? }` | What the route accepts. See [Constraints](/blob/uploads/constraints). |
+| `multipart` | `boolean \| Size` | Where an upload stops being one PUT. See [Large files](/blob/uploads/large-files#changing-the-threshold). |
+| `endpoint` | `string` | Where the handler is mounted. Only needed to separate two handlers on one bucket. |
+| `context` | `(request: Request) => TCtx` | Runs once per POST. Its value is `ctx` in every callback. Without it, `ctx` is `undefined`. See [Context](/blob/uploads/upload-handler#context). |
+| `input` | Standard Schema | Validates what the browser sends as `input` before `onBeforeUpload` runs. Every route inherits it; a route declares its own with [`uploadRoute()`](#uploadroute). |
+| `onBeforeUpload` | `(args) => { path, ... }` | Required, here or on every route. See [onBeforeUpload](#onbeforeupload). |
+| `onUploadComplete` | `(args) => TData` | What it returns becomes `upload.blob.data`. See [onUploadComplete](#onuploadcomplete). |
+| `onError` | `(args) => BlobError \| Response \| void` | Sees every refusal. See [onError](#onerror). |
+| `routes` | `Record<string, route>` | Mounts several routes at this one endpoint. See [Routes](#routes). |
+
+Everything except `routes`, `endpoint` and `context` is a default each route inherits; see [Multiple routes](/blob/uploads/upload-handler#multiple-routes). Bad options throw a `TypeError` at startup, where they are written: an unparseable `multipart` size, an invalid route name, an empty `routes` map, a missing token.
+
+### The bucket
+
+```ts lib/uploads.ts
+import { Bucket, uploadHandler } from "@upstash/blob"
+
+const bucket = Bucket.fromEnv("MEDIA_BLOB_TOKEN", { cache: "immutable" })
+
+export const uploads = uploadHandler({ bucket, onBeforeUpload })
+```
+
+What the handler uses with no `bucket` is on [Handler options](/blob/uploads/upload-handler#handler-options). Pass `bucket:` when the token lives under another variable, the bucket needs `cache`, or you are on [Cloudflare Workers](/blob/sdks/ts/overview#cloudflare-workers).
+
+---
+
+## onBeforeUpload
+
+```ts lib/uploads.ts
+onBeforeUpload: async ({ ctx, route, request, file, input }) => {
+  return { path: uniquePath(`${ctx.userId}/${file.name}`), metadata: { owner: ctx.userId } }
+}
+```
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `ctx` | `TCtx` | Whatever `context` returned for this request. |
+| `route` | `string` | The route this file was sent to. `''` when the handler mounts no named routes. |
+| `request` | `Request` | The `begin` request, headers and cookies intact. |
+| `file` | `{ name, type, size }` | What the browser declared, before a byte was sent. |
+| `input` | `TInput` | The validated `input`, when the route declares a schema. |
+
+What it returns:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `path` | `string` | Required. Where the object is stored. |
+| `cache` | `CacheOption` | The `Cache-Control` this object is stored with. See [Caching](/blob/bucket/caching). |
+| `metadata` | `Record<string, string>` | Signed into the upload and handed back to `onUploadComplete`. |
+| `constraints` | `{ contentTypes?, maxSize? }` | Narrows this one upload's limits. |
+| `state` | `TState` | Anything computed here that `onUploadComplete` and `onError` should get without a lookup. Typed from what this callback returns in a handler without `routes`, written above `onUploadComplete`. With `routes`, give each route that needs it an [`uploadRoute()`](#uploadroute). |
+
+What each field does is on [Authorizing an upload](/blob/uploads/upload-handler#authorizing-an-upload). Throw a `BlobError` to refuse:
+
+```ts lib/uploads.ts
+onBeforeUpload: async ({ request, file }) => {
+  const user = await getUser(request)
+  if (!user) throw new BlobError("unauthorized")
+  if (await overQuota(user)) throw new BlobError("too_large", { message: "you are out of space" })
+  return { path: uniquePath(`${user.id}/${file.name}`) }
+}
+```
+
+<Accordion title="Write onBeforeUpload above onUploadComplete">
+```ts lib/uploads.ts
+// Fine: onBeforeUpload first.
+uploadHandler({ onBeforeUpload: ({ file }) => ({ path: file.name, state: { name: file.name } }), onUploadComplete: ({ state }) => state.name })
+
+// Fine: annotated, so the order stops mattering.
+uploadHandler({ onUploadComplete: ({ state }) => state.name, onBeforeUpload: ({ file }: BeforeUploadArgs) => ({ path: file.name, state: { name: file.name } }) })
+```
+
+In a handler without `routes`, write `onBeforeUpload` **above** `onUploadComplete`, or annotate its parameter. When `onBeforeUpload` is written below with an unannotated parameter, TypeScript fixes `state` to `undefined` first and reports the error on `onBeforeUpload`: `{ name: string } is not assignable to undefined`.
+</Accordion>
+
+---
+
+## onUploadComplete
+
+```ts lib/uploads.ts
+onUploadComplete: async ({ uploadId, path, url, size, contentType, metadata, state, ctx }) => {
+  await db.files.upsert({ uploadId, owner: ctx.userId, path, url, size, contentType })
+  return { path }
+}
+```
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `path` | `string` | Where the object is stored. |
+| `url` | `string \| undefined` | The public URL. `undefined` on a private bucket. |
+| `versionedUrl` | `string \| undefined` | `url` with the etag on the query. |
+| `size` | `number` | Bytes actually stored. |
+| `etag` | `string` | The stored object's etag. |
+| `uploadedAt` | `Date` | When storage wrote it. |
+| `contentType` | `string` | What the object is stored as. |
+| `ctx` | `TCtx` | What `context` returned for this request. |
+| `route` | `string` | The route name, `''` for a sole route. |
+| `request` | `Request` | The `end` request. |
+| `file` | `{ name, type, size }` | What the browser declared at `begin`. |
+| `uploadId` | `string` | Identifies this upload. Stable across retries. |
+| `multipartUploadId` | `string \| undefined` | For `bucket.abortMultipartUpload()`. `undefined` for a single PUT. |
+| `metadata` | `Record<string, string>` | What `onBeforeUpload` returned, minus the SDK's marker. |
+| `state` | `TState` | What `onBeforeUpload` returned as `state`. |
+
+What each field means, and why it may run more than once, is on [Recording the upload](/blob/uploads/upload-handler#recording-the-upload).
+
+What it returns is handed to the browser as `upload.blob.data`, typed through `uploadHooks<typeof uploads>`:
+
+```tsx app/page.tsx
+const { upload } = useUpload()
+if (upload?.status === "done") upload.blob.data.path // string, inferred from onUploadComplete
+```
+
+---
+
+## onError
+
+```ts lib/uploads.ts
+onError: ({ ctx, route, request, error, file, path, metadata, state }) => {
+  logger.warn({ route, path, user: ctx?.userId, error })
+  if (error instanceof PaymentRequired) return new BlobError("forbidden", { message: "plan expired" })
+}
+```
+
+| Argument | Type | Description |
+| --- | --- | --- |
+| `ctx` | `TCtx \| undefined` | `undefined` when `context` itself threw, or when no route matched. |
+| `route` | `string` | The name from the query, even when nothing mounts it. |
+| `request` | `Request` | |
+| `error` | `unknown` | Whatever was thrown. |
+| `file`, `path`, `metadata`, `state` | optional | As much as the request had reached before it failed. |
+
+Return a `BlobError` or a `Response` to answer with it, or nothing to leave the answer alone. See [Handling errors](/blob/uploads/upload-handler#handling-errors).
+
+---
+
+## context
+
+```ts lib/uploads.ts
+export const uploads = uploadHandler({
+  context: (request) => requireUser(request), // throws BlobError('unauthorized') on a dead session
+
+  routes: {
+    avatar: {
+      onBeforeUpload: ({ ctx, file }) => ({ path: uniquePath(`avatars/${ctx.id}/${file.name}`) }),
+      onUploadComplete: ({ ctx, url }) => db.users.update(ctx.id, { avatarUrl: url }),
+    },
+    attachment: {
+      onBeforeUpload: ({ ctx, file }) => ({ path: uniquePath(`files/${ctx.id}/${file.name}`) }),
+    },
+  },
+})
+```
+
+`context` takes the POST's `Request`. Its awaited value is `ctx` in every callback, and typed there. When it runs is on [Context](/blob/uploads/upload-handler#context).
+
+<Accordion title="Write context above routes">
+```ts lib/uploads.ts
+// Fine: context first.
+uploadHandler({ context: (request) => requireUser(request), routes: { a: routeA } })
+
+// Fine: annotated, so the order stops mattering.
+uploadHandler({ routes: { a: routeA }, context: (request: Request) => requireUser(request) })
+```
+
+Write `context` **above** `routes`, or annotate its parameter as `(request: Request) =>`. Written below `routes` with an unannotated parameter, TypeScript infers `ctx: undefined` for the routes first and reports the error on `context`: `Promise<Session> is not assignable to undefined`.
+</Accordion>
+
+### Callbacks in another file
+
+For a callback written in another file, annotate the argument with the helper types, which take the handler and produce the right shape:
+
+```ts lib/callbacks.ts
+import { uniquePath } from "@upstash/blob"
+import type { BeforeUploadArgs, UploadCompleteArgs, UploadContext } from "@upstash/blob"
+import type { uploads } from "./uploads"
+
+export function shared({ ctx, file }: BeforeUploadArgs<typeof uploads>) {
+  return { path: uniquePath(`${ctx.id}/${file.name}`) }
+}
+
+export async function record({ ctx, url }: UploadCompleteArgs<typeof uploads>) {
+  await db.files.insert({ owner: ctx.id, url })
+}
+
+type Session = UploadContext<typeof uploads>
+```
+
+---
+
+## Routes
+
+```ts lib/uploads.ts
+export const uploads = uploadHandler({
+  constraints: { maxSize: "20mb", contentTypes: ["image/*"] },
+  context: (request) => requireUser(request),
+
+  routes: {
+    avatar: {
+      constraints: { maxSize: "2mb" },
+      onBeforeUpload: ({ ctx }) => ({ path: `avatars/${ctx.id}`, cache: "revalidate" }),
+    },
+    attachment: {
+      constraints: { contentTypes: null }, // clears the handler's list for this route
+      multipart: "50mb",
+      onBeforeUpload: ({ ctx, file }) => ({ path: uniquePath(`files/${ctx.id}/${file.name}`) }),
+      onUploadComplete: ({ ctx, path, size }) => db.files.insert({ owner: ctx.id, path, size }),
+    },
+  },
+})
+```
+
+```tsx app/page.tsx
+const avatar = useUpload("avatar")
+const attachment = useUpload("attachment")
+```
+
+A route is an object with any of `bucket`, `constraints`, `multipart`, `onBeforeUpload`, `onUploadComplete` and `onError`. A key it names overrides the handler's. A handler with no `routes` is reached by a bound `useUpload()` that takes no argument. The rules for names and inheritance are on [Multiple routes](/blob/uploads/upload-handler#multiple-routes).
+
+---
+
+## uploadRoute()
+
+```ts lib/uploads.ts
+import { uploadRoute, uniquePath } from "@upstash/blob"
+import * as z from "zod"
+
+const thread = uploadRoute<Session>()({
+  input: z.object({ threadId: z.string().uuid() }),
+
+  onBeforeUpload: ({ ctx, input, file }) => ({
+    path: uniquePath(`chat/${input.threadId}/${file.name}`),
+    state: { threadId: input.threadId, name: file.name },
+  }),
+
+  onUploadComplete: ({ ctx, state, url, uploadId }) =>
+    db.messages.insert({ uploadId, threadId: state.threadId, name: state.name, owner: ctx.id, url }),
+})
+
+export const uploads = uploadHandler({
+  context: (request) => requireUser(request),
+  routes: { thread },
+})
+```
+
+```tsx app/page.tsx
+const { start } = useUpload("thread")
+start({ file, input: { threadId } }) // input is required here, and its shape is checked
+```
+
+Use `uploadRoute()` when a route needs an `input` schema for data the browser sends along with the file, or a typed `state` passed from `onBeforeUpload` to `onUploadComplete`. A plain route object cannot type either. A handler without `routes` types `state` from its own `onBeforeUpload`, written above its `onUploadComplete`; with `routes`, each route that needs it takes an `uploadRoute()`. It is curried so the `ctx` type can be named, and it is written outside the `routes` map.
+
+- `input` takes any [Standard Schema](https://standardschema.dev), such as zod. Only the parsed value reaches `onBeforeUpload`.
+- Everything else on the route works as on a plain object: `bucket`, `constraints`, `multipart`, `onError`, and the same inheritance from the handler.
+
+How `input` is validated and what `state` exposes are on [Input and state](/blob/uploads/upload-handler#input-and-state).
