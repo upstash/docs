@@ -64,7 +64,7 @@ const PREAMBLE = `<Tip>
  */
 const SEARCH_SECTION = `## Search
 
-Search these docs: GET ${SITE_URL}/search?q=<query> returns JSON { results: [{ href, title, heading, snippet, tab }] }. Append .md to any page href for its markdown.`;
+Search these docs: GET ${SITE_URL}/api/search?q=<query> returns JSON { results: [{ href, title, heading, snippet, tab }] }. Append .md to any page href for its markdown.`;
 
 interface Entry {
   title: string;
@@ -242,7 +242,7 @@ function productLlmsTxt(root: ProductRoot): string {
   const lines: string[] = [`# ${root.title}`, ""];
   if (root.description) lines.push(`> ${root.description}`, "");
   lines.push(
-    `Every ${root.title} page, grouped by sidebar section. Links point to the Markdown version of each page; drop the \`.md\` suffix for HTML. The index of all Upstash docs is ${SITE_URL}/llms.txt. Search them with GET ${SITE_URL}/search?q=<query>.`,
+    `Every ${root.title} page, grouped by sidebar section. Links point to the Markdown version of each page; drop the \`.md\` suffix for HTML. The index of all Upstash docs is ${SITE_URL}/llms.txt. Search them with GET ${SITE_URL}/api/search?q=<query>.`,
   );
   for (const [heading, sectionEntries] of sections) {
     lines.push("", `## ${heading}`, "", ...sectionEntries.map(bullet));
