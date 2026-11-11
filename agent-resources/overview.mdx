@@ -73,7 +73,7 @@ The resources above are for agents that help you build. If you're building agent
 
 <CardGroup cols={2}>
   <Card title="Agent memory & chat history" icon="brain" href="/redis/sdks/agentkit/ai-sdk">
-    Long-term memory, RAG, and chat history for the Vercel AI SDK and Eve, backed by Redis.
+    Long-term memory, RAG, chat history, and production backends for the Vercel AI SDK, Eve, and TanStack AI, backed by Redis.
   </Card>
   <Card title="Vector" icon="diagram-project" href="/vector/overall/getstarted">
     Embeddings and semantic search for RAG pipelines, with LangChain, LlamaIndex, and AI SDK integrations.

@@ -15,6 +15,7 @@ package.
 | Import | Feature |
 | --- | --- |
 | `createChatHistory` | Durable chat history on Redis Search — save, list, and `$smart`-search a user's transcripts. |
+| `createAgentMemory` | An AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers): memory tools plus automatic recall into the instructions. |
 | `createMemoryTools` | `recall_memory` + `save_memory` tools so the model reads and writes long-term memory. |
 | `createSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimit` | A configured Upstash Ratelimit to call before the model. |
@@ -97,7 +98,43 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
 
 ## How to add agent memory with the AI SDK
 
-`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
+`createAgentMemory()` is an AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers).
+Create it once. Then, per request, give the model the `recall_memory` and `save_memory` tools, have the
+memories relevant to the latest user message added to the instructions automatically, or both:
+
+```ts
+import { createAgentMemory } from "@upstash/agentkit-ai-sdk";
+import { ToolLoopAgent } from "ai";
+
+const memory = createAgentMemory(); // once, at module level
+
+// per request, with userId from your auth
+const agent = new ToolLoopAgent({
+  model,
+  instructions: `You are a helpful assistant.\n\n${memory.instructions}`,
+  tools: memory.tools({ userId }), // recall_memory + save_memory
+  prepareStep: memory.prepareStep({ userId }), // relevant memories added up front
+});
+
+await agent.generate({ prompt: "What editor do I use?" });
+```
+
+The model is not wrapped: recall runs in `prepareStep` and adds a `<memories>` block to the instructions on
+the first step. It works the same with `generateText` and `streamText`. A failed recall never fails the call.
+Recall is Redis Search `$smart` (fuzzy, BM25), with no embeddings, and saving stays explicit.
+
+<Accordion title="createAgentMemory options">
+  - `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
+  - `memory.tools({ userId, topK?, minScore? })`: the same tools as `createMemoryTools`.
+  - `memory.prepareStep({ userId, query?, topK?, minScore?, onError? })`: `userId` can be a function of the
+    step options, such as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to
+    the text of the last user message.
+  - `memory.recallContext({ userId, query? })`: the formatted block, for building instructions yourself.
+  - `memory.instructions`: guidance on when to use the tools, with your tool names.
+  - `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
+</Accordion>
+
+To use the tools alone, `createMemoryTools` gives you `recall_memory` and `save_memory`:
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";

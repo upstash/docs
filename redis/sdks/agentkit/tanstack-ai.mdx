@@ -1,11 +1,12 @@
 ---
 title: "TanStack AI Persistence, Resumable Streams & Memory with Redis"
 sidebarTitle: "TanStack AI"
-description: "Production backends for TanStack AI on Upstash Redis — chat persistence, session index and session log, stored provider keys, resumable streams, distributed locks, long-term memory, tool caching, rate limiting, and RAG tools."
+description: "Production backends for TanStack AI on Upstash Redis — chat persistence, session index and session log, stored provider keys, resumable streams, distributed locks, long-term memory, sandbox snapshots, MCP tasks and events, tool caching, rate limiting, and RAG tools."
 ---
 
 [TanStack AI](https://tanstack.com/ai) defines the contracts for an agent's production state — chat
-persistence, session history, stored credentials, resumable streaming, locks, memory — and ships in-memory implementations that only work
+persistence, session history, stored credentials, resumable streaming, locks, memory, sandbox snapshots, MCP
+tasks — and ships in-memory implementations that only work
 inside one process. `@upstash/agentkit-tanstack-ai` implements them on Upstash Redis, so they hold
 across serverless instances, page reloads, and devices.
 
@@ -16,12 +17,18 @@ across serverless instances, page reloads, and devices.
 | `upstashStream` | `durability` on the response | Resume a stream after a reload, or open the same thread on another device. |
 | `upstashLocks` | `withLocks()` | Distributed locks for TanStack AI middleware, such as its sandbox setup. |
 | `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/redis/search/introduction). |
+| `upstashSandboxCheckpointStore`, `upstashSandboxInstanceStore` | `createSandboxSnapshots()`, `withSandbox()` | Portable sandbox snapshots with history and forks; any server can resume a thread's sandbox. |
+| `upstashMcpTaskStore`, `upstashMcpEventStore` | `createMCPServer({ taskStore })`, MCP Events | Long-running MCP tasks and webhook subscriptions that survive restarts and work across instances. |
 | `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
 | `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
 
 ```bash
 npm install @upstash/agentkit-tanstack-ai @tanstack/ai
 ```
+
+Each optional part has its own entry point and needs its TanStack package: `/persistence`
+(`@tanstack/ai-persistence`), `/memory` (`@tanstack/ai-memory`), `/sandbox` (`@tanstack/ai-sandbox`) and `/mcp`
+(`@tanstack/ai-mcp`). `/byok` and the root entry need only `@tanstack/ai`.
 
 <Warning>
   Version 0.3.0 and later need **TanStack AI 1.0 or later**: `@tanstack/ai` and `@tanstack/ai-persistence` must be
@@ -301,6 +308,109 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
   });
   ```
 </Accordion>
+
+## How to keep sandbox snapshots in Redis
+
+TanStack AI's [portable snapshots](https://tanstack.com/ai/latest/docs/sandbox/portable-snapshots) let a later run
+rebuild a sandbox's files after the provider sandbox is gone, and fork a conversation, files included, from
+any earlier checkpoint. Every store they need runs on Upstash:
+
+```bash
+npm install @tanstack/ai-sandbox @tanstack/ai-persistence @upstash/blob
+```
+
+```ts
+import { createSandboxSnapshots, withSandbox } from "@tanstack/ai-sandbox";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { Bucket } from "@upstash/blob";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai/persistence";
+import {
+  upstashSandboxCheckpointStore,
+  upstashSandboxInstanceStore,
+} from "@upstash/agentkit-tanstack-ai/sandbox";
+
+const instances = upstashSandboxInstanceStore();
+const snapshots = createSandboxSnapshots({
+  persistence: upstashPersistence({ bucket: Bucket.fromEnv() }), // file bytes in Upstash Blob
+  checkpoints: upstashSandboxCheckpointStore(), // same Redis + prefix as the persistence
+  instances,
+  locks: upstashLocks(),
+});
+
+chat({
+  adapter,
+  messages,
+  threadId,
+  middleware: [withPersistence(snapshots.persistence), withSandbox(sandbox, { instances, snapshots })],
+});
+
+// Branch the conversation, files included, from an earlier checkpoint.
+await snapshots.fork({ threadId, checkpointId, destinationThreadId: "thread-2" });
+```
+
+- `upstashSandboxCheckpointStore()` keeps the checkpoint history of each thread. Appends are compare-and-set on
+  the thread's head, and every write first checks the writer lease, so a writer that lost its lease changes
+  nothing. A fork copies a checkpoint into an empty thread and writes that thread's transcript in the same
+  script, which is why it must use the same `redis` and `prefix` as `upstashPersistence()`.
+- `upstashSandboxInstanceStore()` maps a sandbox key to the provider's sandbox, so any server can resume it.
+- For the sandbox itself, use [Upstash Box](/box/overall/quickstart) through TanStack's
+  `@tanstack/ai-sandbox-upstash-box`.
+
+<Accordion title="Options">
+  ```ts
+  upstashSandboxCheckpointStore({
+    redis, // optional: defaults to Redis.fromEnv()
+    prefix: "agentkit:tanstack", // optional: must match upstashPersistence()
+    messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: match upstashPersistence() if you set it
+    leaseDurationMs: 120_000, // optional: writer lease length
+    renewAfterMs: 45_000, // optional: when the holder renews
+  });
+
+  upstashSandboxInstanceStore({
+    redis, // optional
+    prefix: "agentkit:tanstack", // optional
+    ttlSeconds: 60 * 60 * 24 * 7, // optional: keep at least as long as your sandboxes live
+  });
+  ```
+</Accordion>
+
+## How to share MCP tasks and events across instances
+
+```bash
+npm install @tanstack/ai-mcp
+```
+
+```ts
+import { createMCPClient } from "@tanstack/ai-mcp";
+import { createMCPServer } from "@tanstack/ai-mcp/server";
+import { upstashMcpEventStore, upstashMcpTaskStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+// An MCP server whose long-running tools run as tasks any instance can report on.
+const server = createMCPServer({
+  name: "tools",
+  version: "1.0.0",
+  tools,
+  taskStore: upstashMcpTaskStore({ ttlSeconds: 60 * 60 * 24 }),
+});
+
+// An MCP client whose MCP Events webhook subscriptions are shared by every instance.
+const mcp = await createMCPClient({
+  transport: { type: "http", url: "https://mcp.example.com/mcp" },
+  experimental_events: { store: upstashMcpEventStore() },
+});
+```
+
+- With `upstashMcpTaskStore()`, task records survive restarts and any instance can answer `tasks/get` and
+  `tasks/result`. Cancelling a task still stops its work only on the instance running it.
+- With `upstashMcpEventStore()`, subscriptions, cursors and refresh deadlines are shared, so a webhook can land
+  on any server. Concurrent updates are compare-and-set, so no field is lost. The webhook `secret` is stored as is.
+
+<Tip>
+  Building the server with the official `@modelcontextprotocol/server` SDK instead of TanStack? See
+  [MCP Tasks](/redis/sdks/agentkit/mcp-tasks) and [MCP Events](/redis/sdks/agentkit/mcp-events) for
+  `@upstash/mcp-toolkit`, which also runs the work in the background with QStash.
+</Tip>
 
 ## How to cache tools and rate limit with TanStack AI
 
