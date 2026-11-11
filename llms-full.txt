@@ -88093,6 +88093,26 @@ registration:
 flags={'no-writes', 'allow-key-locking'}
 ```
 
+## Lua Strict Key Locking
+
+By default, a Lua script without `allow-key-locking` runs under the global
+lock, as described above. In the [Upstash Console](https://console.upstash.com),
+open your database's **Configuration** section and turn on **Lua Strict Key
+Locking** to make the rules for `allow-key-locking` apply to every Lua script
+on the database, even scripts without the flag. This setting is available for
+global databases and for Fly.io databases.
+
+With it on:
+
+* Scripts use key-based locking instead of the global lock. A key that is not
+  covered by the script's `KEYS`, as described in
+  [Rules for `allow-key-locking`](#rules-for-allow-key-locking), fails with an
+  error, unless it shares a [hash tag](#hash-tags) with a declared key.
+* A script that calls `FLUSHDB` or `FLUSHALL` fails.
+
+Turn it off to restore the default behavior, where scripts without the flag
+lock the whole database.
+
 ## Dynamic Keys and Latency
 
 Pass every key a script or function touches through the key list of the call,
@@ -102453,6 +102473,28 @@ the same way as on a `TEXT` field, and `$ann` searches its embeddings by meaning
 * If the text of a document cannot be embedded, the document is still searchable by its text.
 * `HYBRID` fields work with JSON, hash, string, and stream indexes.
 
+## How embeddings are created
+
+You don't create vectors yourself. You don't need your own embedding provider, an API key, or a
+separate vector database. Redis Search creates the embeddings for you:
+
+* When you write a document, Search sends the text of its `HYBRID` fields to an OpenAI embedding
+  model (one of `text-embedding-3-small` or `text-embedding-3-large`) in the background and stores the returned vectors in the index.
+* When you run an [`$ann`](/docs/redis/search/retrievers/ann) query, Search creates an embedding of the
+  query text with the same model and finds the documents with the closest vectors.
+
+Your application only reads and writes text. None of the examples on this page call an embedding API.
+
+<Note>
+The text of `HYBRID` fields and of `$ann` queries is sent to OpenAI to create embeddings. Use `TEXT`
+instead of `HYBRID` for fields whose content must not be sent to a third party.
+</Note>
+
+### Pricing
+
+Hybrid search has no extra cost, and creating embeddings is included. Commands are billed the same
+way as all other Redis commands, whether the index has `HYBRID` fields or not. See [Pricing](https://upstash.com/pricing/redis).
+
 ## Create an index
 
 Declare the fields you want to search by meaning as `HYBRID`:
@@ -105457,6 +105499,9 @@ meaning to the query text, even when they use different words.
 
 `$ann` works only on [`HYBRID` fields](/docs/redis/search/schema-definition#hybrid-fields).
 
+You pass the query as plain text. Search creates its embedding with the same model it uses for the
+documents. See [How embeddings are created](/docs/redis/search/hybrid-search#how-embeddings-are-created).
+
 ```json
 { "$ann": { "field": "description", "query": "something to block noise on a flight" } }
 ```
@@ -106279,6 +106324,9 @@ The `HYBRID` field type is a `TEXT` field that also supports semantic search. Se
 vector embedding of the field value, and the [`$ann`](/docs/redis/search/retrievers/ann)
 retriever searches these embeddings by meaning. Full-text queries work on the field the same way as
 on a `TEXT` field.
+
+Embeddings are created automatically with an OpenAI embedding model (one of `text-embedding-3-small` or `text-embedding-3-large`),
+so you don't need your own embedding provider. See [How embeddings are created](/docs/redis/search/hybrid-search#how-embeddings-are-created).
 
 `HYBRID` fields accept the `NOSTEM` and `FROM` options.
 
