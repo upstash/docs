@@ -515,6 +515,96 @@ redis-cli> ACL RESTTOKEN upstash fakepass
 (error) ERR Wrong password or user "upstash" does not exist
 ```
 
+### Running ACL Commands over REST
+
+You can run [ACL commands](/redis/commands/server/overview) over the REST API by sending a `POST` request with a JSON array body: the command name first, then each argument as its own array element (see [POST Command in Body](#post-command-in-body)). Use the Standard token from the console — the `default` user's token, which has full admin access. A [Read Only token](#security-and-authentication) cannot run these commands. For ACL concepts and rule syntax, see [Redis ACL](/redis/features/security#redis-acl).
+
+<Tabs>
+
+<Tab title="List users">
+```bash
+curl -X POST \
+    -d '["ACL", "USERS"]' \
+    -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+    $UPSTASH_REDIS_REST_URL
+```
+
+This returns usernames only. Use [`ACL LIST`](/redis/commands/server/acl-list) or [`ACL GETUSER`](/redis/commands/server/acl-getuser) to inspect a user's rules.
+</Tab>
+
+<Tab title="Generate a password">
+```bash
+curl -X POST \
+    -d '["ACL", "GENTOKEN", "app"]' \
+    -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+    $UPSTASH_REDIS_REST_URL
+```
+
+[`ACL GENTOKEN`](/redis/commands/server/acl-gentoken) takes a username and an optional password and returns a token for `SETUSER`; it does not create the user. Pass the result as `>token` — plain passwords are rejected. The same token can also be used as `UPSTASH_REDIS_REST_TOKEN`.
+</Tab>
+
+<Tab title="Create a user">
+```bash
+curl -X POST \
+    -d '["ACL", "SETUSER", "app", "on", ">token-from-gentoken", "~cache:*", "+get", "+set"]' \
+    -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+    $UPSTASH_REDIS_REST_URL
+```
+
+Replace `>token-from-gentoken` with a value from [`ACL GENTOKEN`](/redis/commands/server/acl-gentoken). See [`ACL SETUSER`](/redis/commands/server/acl-setuser) for the full rule syntax.
+</Tab>
+
+<Tab title="Edit a user">
+```bash
+curl -X POST \
+    -d '["ACL", "SETUSER", "app", "~logs:*", "+lpush"]' \
+    -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+    $UPSTASH_REDIS_REST_URL
+```
+
+Rules are applied left to right and are cumulative, so omitting a password leaves the existing password unchanged.
+</Tab>
+
+<Tab title="Enable/disable">
+```bash
+curl -X POST \
+    -d '["ACL", "SETUSER", "app", "off"]' \
+    -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+    $UPSTASH_REDIS_REST_URL
+```
+
+Use `"on"` instead of `"off"` to enable the user. The `default` user cannot be modified with `ACL SETUSER`.
+</Tab>
+
+<Tab title="Delete a user">
+```bash
+curl -X POST \
+    -d '["ACL", "DELUSER", "app"]' \
+    -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+    $UPSTASH_REDIS_REST_URL
+```
+
+The `default` user cannot be deleted. Deleting a user immediately rejects commands from its open connections and ends its subscriptions.
+</Tab>
+
+<Tab title="Reset a password">
+```bash
+curl -X POST \
+    -d '["ACL", "GENTOKEN", "app"]' \
+    -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+    $UPSTASH_REDIS_REST_URL
+
+curl -X POST \
+    -d '["ACL", "SETUSER", "app", "resetpass", ">new-token-from-gentoken"]' \
+    -H "Authorization: Bearer $UPSTASH_REDIS_REST_TOKEN" \
+    $UPSTASH_REDIS_REST_URL
+```
+
+Apply `resetpass` and `>token` in the same `SETUSER` call to replace the password without deleting the user or changing its other rules.
+</Tab>
+
+</Tabs>
+
 ## Redis Protocol vs REST API
 
 ### REST API Pros
