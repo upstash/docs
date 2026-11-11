@@ -1153,14 +1153,14 @@ A group covers every product it names, because those products share their tools:
 
 ## Tools
 
-76 tools, grouped the way `?features=` groups them, plus `submit_feedback_to_upstash_team`, which every connection gets for reporting a problem to the Upstash team. The access column is the tool's own annotation, which clients use to decide what to confirm with you: **read** never changes anything, **write** only adds, **destructive** can delete or overwrite what is already there. On a read-only connection every write and destructive tool is refused.
+77 tools, grouped the way `?features=` groups them, plus `submit_feedback_to_upstash_team`, which every connection gets for reporting a problem to the Upstash team. The access column is the tool's own annotation, which clients use to decide what to confirm with you: **read** never changes anything, **write** only adds, **destructive** can delete or overwrite what is already there. On a read-only connection every write and destructive tool is refused.
 
 The management tools that describe a resource (`redis_get_database`, `redis_create_database`, `index_get`, `index_create`, `qstash_list_users`) return its REST credentials only when called with `include_credentials: true`, so a routine lookup never carries a secret into the conversation. Listings never include credentials, and on a read-only connection they are omitted regardless.
 
 The plan, Prod Pack and budget tools change what your account is billed. They don't quote prices: each links the product's [pricing page](https://upstash.com/pricing) in its machine-readable form (for example `https://upstash.com/pricing/redis.md`) and tells the agent to give you the price and get your confirmation before calling. Budgets are whole US dollars, 0 for no cap or 20 to 10,000. Read regions count too: on a fixed plan each one adds the plan's per-region price. Moving a Redis database back to the free plan and the enterprise tiers aren't available through the MCP server; use the console or contact sales.
 
 <AccordionGroup>
-  <Accordion title="Redis — 20 tools">
+  <Accordion title="Redis — 21 tools">
     | Tool | Access | What it does |
     | --- | --- | --- |
     | `redis_list_databases` | read | Every Redis database in the account scope, including branches |
@@ -1175,6 +1175,7 @@ The plan, Prod Pack and budget tools change what your account is billed. They do
     | `redis_set_daily_backup` | write | Turns daily backups on or off |
     | `redis_rename_database` | destructive | Renames a database, replacing its current name |
     | `redis_set_eviction` | destructive | Turns key eviction on or off |
+    | `redis_set_lua_strict_key_locking` | destructive | Turns [Lua strict key locking](/docs/redis/features/key-locking#lua-strict-key-locking) on or off for a global database; scripts that use undeclared keys or call `FLUSHDB` or `FLUSHALL` start failing |
     | `redis_set_auto_upgrade` | destructive | Turns automatic plan upgrade on or off |
     | `redis_change_plan` | destructive | Moves a database to pay-as-you-go or a fixed tier, optionally setting Prod Pack and auto-upgrade too |
     | `redis_set_prod_pack` | destructive | Turns the Prod Pack add-on on or off |
@@ -87999,6 +88000,21 @@ bottleneck (for example counters, rate limiters, or per-user state
 transitions). For scripts that must scan or mutate many keys at once, leave
 the flag off so the engine uses the global lock.
 
+### Lua Strict Key Locking
+
+Global databases have a **Lua Strict Key Locking** setting, under **Settings** in
+the [Upstash Console](https://console.upstash.com). When it is enabled, every
+Lua script locks only the keys it declares in `KEYS`, as if it set the
+`allow-key-locking` flag, so you get key-based locking without editing your
+scripts. The [rules above](#rules-for-allow-key-locking) then apply to every
+script: a script fails with an error if it uses a key that is not in `KEYS` and
+shares no [hash tag](#hash-tags) with a declared key, or if it calls `FLUSHDB` or
+`FLUSHALL`. Check your scripts before you enable it. Disabling it brings back the
+default, where scripts without the flag take the global lock.
+
+Agents can change the setting with the `redis_set_lua_strict_key_locking` tool
+of the [Upstash MCP server](/docs/agent-resources/mcp).
+
 ### Example: Key-Locked Counter
 
 ```lua
@@ -102453,6 +102469,28 @@ the same way as on a `TEXT` field, and `$ann` searches its embeddings by meaning
 * If the text of a document cannot be embedded, the document is still searchable by its text.
 * `HYBRID` fields work with JSON, hash, string, and stream indexes.
 
+## How embeddings are created
+
+You don't create vectors yourself. You don't need your own embedding provider, an API key, or a
+separate vector database. Redis Search creates the embeddings for you:
+
+* When you write a document, Search sends the text of its `HYBRID` fields to an OpenAI embedding
+  model (one of `text-embedding-3-small` or `text-embedding-3-large`) in the background and stores the returned vectors in the index.
+* When you run an [`$ann`](/docs/redis/search/retrievers/ann) query, Search creates an embedding of the
+  query text with the same model and finds the documents with the closest vectors.
+
+Your application only reads and writes text. None of the examples on this page call an embedding API.
+
+<Note>
+The text of `HYBRID` fields and of `$ann` queries is sent to OpenAI to create embeddings. Use `TEXT`
+instead of `HYBRID` for fields whose content must not be sent to a third party.
+</Note>
+
+### Pricing
+
+Hybrid search has no extra cost, and creating embeddings is included. Commands are billed the same
+way as all other Redis commands, whether the index has `HYBRID` fields or not. See [Pricing](https://upstash.com/pricing/redis).
+
 ## Create an index
 
 Declare the fields you want to search by meaning as `HYBRID`:
@@ -105457,6 +105495,9 @@ meaning to the query text, even when they use different words.
 
 `$ann` works only on [`HYBRID` fields](/docs/redis/search/schema-definition#hybrid-fields).
 
+You pass the query as plain text. Search creates its embedding with the same model it uses for the
+documents. See [How embeddings are created](/docs/redis/search/hybrid-search#how-embeddings-are-created).
+
 ```json
 { "$ann": { "field": "description", "query": "something to block noise on a flight" } }
 ```
@@ -106279,6 +106320,9 @@ The `HYBRID` field type is a `TEXT` field that also supports semantic search. Se
 vector embedding of the field value, and the [`$ann`](/docs/redis/search/retrievers/ann)
 retriever searches these embeddings by meaning. Full-text queries work on the field the same way as
 on a `TEXT` field.
+
+Embeddings are created automatically with an OpenAI embedding model (one of `text-embedding-3-small` or `text-embedding-3-large`),
+so you don't need your own embedding provider. See [How embeddings are created](/docs/redis/search/hybrid-search#how-embeddings-are-created).
 
 `HYBRID` fields accept the `NOSTEM` and `FROM` options.
 
