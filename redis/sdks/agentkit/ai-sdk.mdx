@@ -47,14 +47,15 @@ export async function POST(req: Request) {
   const userId = await getSessionUserId(req); // your auth session, never a client-sent id
   const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
 
-  const result = streamText({ model, messages: convertToModelMessages(messages) });
+  const result = streamText({ model, messages: await convertToModelMessages(messages) });
 
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) =>
-        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" });
+      },
     }),
   });
 }
@@ -138,11 +139,11 @@ To use the tools alone, `createMemoryTools` gives you `recall_memory` and `save_
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const tools = createMemoryTools({ userId });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "What do you know about me?" });
 ```
 
 <Accordion title="Options and the userId tenant boundary">
@@ -165,12 +166,12 @@ descriptions are generated from your schema.
 ```ts
 import { s } from "@upstash/redis";
 import { createSearchTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
 const tools = createSearchTools({ schema, indexName: "users" });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "How many users named Ada live in London?" });
 ```
 
 <Accordion title="Options">
@@ -251,8 +252,8 @@ import { openai } from "@ai-sdk/openai";
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  isStepCount,
   streamText,
-  stepCountIs,
   toUIMessageStream,
   tool,
   type UIMessage,
@@ -299,7 +300,7 @@ export async function POST(req: Request) {
     model: openai("gpt-5.4-mini"),
     messages: await convertToModelMessages(messages),
     tools,
-    stopWhen: stepCountIs(5),
+    stopWhen: isStepCount(5),
   });
 
   // 3. Persist the whole conversation when the stream finishes.
@@ -308,7 +309,9 @@ export async function POST(req: Request) {
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) => history.saveChat({ userId, sessionId: id, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: id, messages, title: "New chat" });
+      },
     }),
   });
 }
