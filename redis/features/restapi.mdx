@@ -517,7 +517,11 @@ redis-cli> ACL RESTTOKEN upstash fakepass
 
 ### Running ACL Commands over REST
 
-You can run [ACL commands](/redis/commands/server/overview) over the REST API by sending a `POST` request with a JSON array body: the command name first, then each argument as its own array element (see [POST Command in Body](#post-command-in-body)). Use the Standard token from the console — the `default` user's token, which has full admin access. A [Read Only token](#security-and-authentication) cannot run these commands. For ACL concepts and rule syntax, see [Redis ACL](/redis/features/security#redis-acl).
+You can run [ACL commands](/redis/commands/server/overview) over the REST API by sending a `POST` request with a JSON array body: the command name first, then each argument as its own array element (see [POST Command in Body](#post-command-in-body)). For ACL concepts and rule syntax, see [Redis ACL](/redis/features/security#redis-acl).
+
+The token you send must belong to a user that is allowed to run the `ACL` command. That can be the Standard token from the console, which belongs to the `default` user, or the token of an ACL user granted `+acl` or a category that includes it, such as `+@admin` or `+@all`. Granting `+acl` lets a user run every `ACL` subcommand, including creating and deleting users. A [Read Only token](#security-and-authentication) cannot run any `ACL` subcommand, including `ACL USERS`, `ACL LIST` and `ACL GETUSER`.
+
+If the `default` user is disabled on the database's ACL tab in the console, the Standard and Read Only tokens stop working. Use the token of an ACL user with `ACL` access instead.
 
 <Tabs>
 
@@ -540,7 +544,7 @@ curl -X POST \
     $UPSTASH_REDIS_REST_URL
 ```
 
-[`ACL GENTOKEN`](/redis/commands/server/acl-gentoken) takes a username and an optional password and returns a token for `SETUSER`; it does not create the user. Pass the result as `>token` — plain passwords are rejected. The same token can also be used as `UPSTASH_REDIS_REST_TOKEN`.
+[`ACL GENTOKEN`](/redis/commands/server/acl-gentoken) takes a username and an optional password and returns a token for `SETUSER`; it does not create the user. Pass the result as `>token`. Plain passwords are rejected. The same token can also be used as `UPSTASH_REDIS_REST_TOKEN`.
 </Tab>
 
 <Tab title="Create a user">
@@ -573,7 +577,9 @@ curl -X POST \
     $UPSTASH_REDIS_REST_URL
 ```
 
-Use `"on"` instead of `"off"` to enable the user. The `default` user cannot be modified with `ACL SETUSER`.
+Use `"on"` instead of `"off"` to enable the user. A disabled user can't log in and its REST requests are rejected, but TCP connections it already opened keep working.
+
+The `default` user cannot be modified with `ACL SETUSER`. Turn it on or off on the database's ACL tab in the console.
 </Tab>
 
 <Tab title="Delete a user">
@@ -601,6 +607,8 @@ curl -X POST \
 ```
 
 Apply `resetpass` and `>token` in the same `SETUSER` call to replace the password without deleting the user or changing its other rules.
+
+After the reset, REST requests that use a token for the old password are rejected right away. TCP connections that authenticated with the old password stay open and keep the user's permissions. To cut those off too, for example after a credential leak, delete the user with [`ACL DELUSER`](/redis/commands/server/acl-deluser) and create it again with a new token. Connections opened before the delete reject every command until they authenticate again.
 </Tab>
 
 </Tabs>
