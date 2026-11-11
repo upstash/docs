@@ -96269,7 +96269,7 @@ across serverless instances, page reloads, and devices.
 | `upstashLocks` | `withLocks()` | Distributed locks for TanStack AI middleware, such as its sandbox setup. |
 | `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/docs/redis/search/introduction). |
 | `upstashSandboxCheckpointStore`, `upstashSandboxInstanceStore` | `createSandboxSnapshots()`, `withSandbox()` | Portable sandbox snapshots with history and forks; any server can resume a thread's sandbox. |
-| `upstashMcpTaskStore`, `upstashMcpEventStore` | `createMCPServer({ taskStore })`, MCP Events | Long-running MCP tasks and webhook subscriptions that survive restarts and work across instances. |
+| `upstashMcpTaskStore`, `upstashMcpEventStore`, `upstashMcpSessionStore` | `createMCPServer({ taskStore })`, MCP Events, MCP Apps | Long-running MCP tasks, webhook subscriptions and MCP Apps sessions that survive restarts and work across instances. |
 | `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
 | `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
 
@@ -96656,6 +96656,38 @@ const mcp = await createMCPClient({
   `tasks/result`. Cancelling a task still stops its work only on the instance running it.
 * With `upstashMcpEventStore()`, subscriptions, cursors and refresh deadlines are shared, so a webhook can land
   on any server. Concurrent updates are compare-and-set, so no field is lost. The webhook `secret` is stored as is.
+
+### MCP Apps sessions
+
+In MCP Apps, widgets call MCP tools through `createMcpAppCallHandler`, which reconnects to the thread's servers
+for every call. `upstashMcpSessionStore()` remembers those servers, so the call can land on any instance:
+
+```ts
+import { createMcpAppCallHandler } from "@tanstack/ai-mcp/apps";
+import { upstashMcpSessionStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+const store = upstashMcpSessionStore({
+  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts transport headers and stdio env
+  // What Redis cannot hold comes from your code, per server:
+  resolve: ({ threadId, serverId }) => ({
+    needsApproval: (tool) => tool.annotations?.readOnlyHint !== true,
+    authProvider: oauthProviderFor(threadId, serverId),
+  }),
+});
+
+await store.set(threadId, servers); // in the chat route
+const handleCall = createMcpAppCallHandler({ clients, store });
+```
+
+A server descriptor holds the policy for widget calls (`toolFilter`, `needsApproval`, `toolName`) and often a
+transport `fetch` or OAuth `authProvider`, which cannot be stored as JSON. The store saves the rest and records
+which of those fields were dropped. `resolve` supplies them again on every read.
+
+<Warning>
+  The store fails closed. If `resolve` does not supply a dropped field such as `needsApproval`, the read returns
+  nothing. The handler then uses the server's entry in `clients`, or refuses the call. A widget never reaches a
+  server whose approval gate was lost.
+</Warning>
 
 <Tip>
   Building the server with the official `@modelcontextprotocol/server` SDK instead of TanStack? See
@@ -96741,7 +96773,7 @@ across serverless instances, page reloads, and devices.
 | `upstashLocks` | `withLocks()` | Distributed locks for TanStack AI middleware, such as its sandbox setup. |
 | `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/docs/redis/search/introduction). |
 | `upstashSandboxCheckpointStore`, `upstashSandboxInstanceStore` | `createSandboxSnapshots()`, `withSandbox()` | Portable sandbox snapshots with history and forks; any server can resume a thread's sandbox. |
-| `upstashMcpTaskStore`, `upstashMcpEventStore` | `createMCPServer({ taskStore })`, MCP Events | Long-running MCP tasks and webhook subscriptions that survive restarts and work across instances. |
+| `upstashMcpTaskStore`, `upstashMcpEventStore`, `upstashMcpSessionStore` | `createMCPServer({ taskStore })`, MCP Events, MCP Apps | Long-running MCP tasks, webhook subscriptions and MCP Apps sessions that survive restarts and work across instances. |
 | `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
 | `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
 
@@ -97128,6 +97160,38 @@ const mcp = await createMCPClient({
   `tasks/result`. Cancelling a task still stops its work only on the instance running it.
 * With `upstashMcpEventStore()`, subscriptions, cursors and refresh deadlines are shared, so a webhook can land
   on any server. Concurrent updates are compare-and-set, so no field is lost. The webhook `secret` is stored as is.
+
+### MCP Apps sessions
+
+In MCP Apps, widgets call MCP tools through `createMcpAppCallHandler`, which reconnects to the thread's servers
+for every call. `upstashMcpSessionStore()` remembers those servers, so the call can land on any instance:
+
+```ts
+import { createMcpAppCallHandler } from "@tanstack/ai-mcp/apps";
+import { upstashMcpSessionStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+const store = upstashMcpSessionStore({
+  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts transport headers and stdio env
+  // What Redis cannot hold comes from your code, per server:
+  resolve: ({ threadId, serverId }) => ({
+    needsApproval: (tool) => tool.annotations?.readOnlyHint !== true,
+    authProvider: oauthProviderFor(threadId, serverId),
+  }),
+});
+
+await store.set(threadId, servers); // in the chat route
+const handleCall = createMcpAppCallHandler({ clients, store });
+```
+
+A server descriptor holds the policy for widget calls (`toolFilter`, `needsApproval`, `toolName`) and often a
+transport `fetch` or OAuth `authProvider`, which cannot be stored as JSON. The store saves the rest and records
+which of those fields were dropped. `resolve` supplies them again on every read.
+
+<Warning>
+  The store fails closed. If `resolve` does not supply a dropped field such as `needsApproval`, the read returns
+  nothing. The handler then uses the server's entry in `clients`, or refuses the call. A widget never reaches a
+  server whose approval gate was lost.
+</Warning>
 
 <Tip>
   Building the server with the official `@modelcontextprotocol/server` SDK instead of TanStack? See
