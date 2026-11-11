@@ -1473,7 +1473,7 @@ The resources above are for agents that help you build. If you're building agent
 
 <CardGroup cols={2}>
   <Card title="Agent memory & chat history" icon="brain" href="/redis/sdks/agentkit/ai-sdk">
-    Long-term memory, RAG, and chat history for the Vercel AI SDK and Eve, backed by Redis.
+    Long-term memory, RAG, chat history, and production backends for the Vercel AI SDK, Eve, and TanStack AI, backed by Redis.
   </Card>
   <Card title="Vector" icon="diagram-project" href="/vector/overall/getstarted">
     Embeddings and semantic search for RAG pipelines, with LangChain, LlamaIndex, and AI SDK integrations.
@@ -92402,6 +92402,7 @@ package.
 | Import | Feature |
 | --- | --- |
 | `createChatHistory` | Durable chat history on Redis Search — save, list, and `$smart`-search a user's transcripts. |
+| `createAgentMemory` | An AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers): memory tools plus automatic recall into the instructions. |
 | `createMemoryTools` | `recall_memory` + `save_memory` tools so the model reads and writes long-term memory. |
 | `createSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimit` | A configured Upstash Ratelimit to call before the model. |
@@ -92484,7 +92485,43 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
 
 ## How to add agent memory with the AI SDK
 
-`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
+`createAgentMemory()` is an AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers).
+Create it once. Then, per request, give the model the `recall_memory` and `save_memory` tools, have the
+memories relevant to the latest user message added to the instructions automatically, or both:
+
+```ts
+import { createAgentMemory } from "@upstash/agentkit-ai-sdk";
+import { ToolLoopAgent } from "ai";
+
+const memory = createAgentMemory(); // once, at module level
+
+// per request, with userId from your auth
+const agent = new ToolLoopAgent({
+  model,
+  instructions: `You are a helpful assistant.\n\n${memory.instructions}`,
+  tools: memory.tools({ userId }), // recall_memory + save_memory
+  prepareStep: memory.prepareStep({ userId }), // relevant memories added up front
+});
+
+await agent.generate({ prompt: "What editor do I use?" });
+```
+
+The model is not wrapped: recall runs in `prepareStep` and adds a `<memories>` block to the instructions on
+the first step. It works the same with `generateText` and `streamText`. A failed recall never fails the call.
+Recall is Redis Search `$smart` (fuzzy, BM25), with no embeddings, and saving stays explicit.
+
+<Accordion title="createAgentMemory options">
+  * `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
+  * `memory.tools({ userId, topK?, minScore? })`: the same tools as `createMemoryTools`.
+  * `memory.prepareStep({ userId, query?, topK?, minScore?, onError? })`: `userId` can be a function of the
+    step options, such as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to
+    the text of the last user message.
+  * `memory.recallContext({ userId, query? })`: the formatted block, for building instructions yourself.
+  * `memory.instructions`: guidance on when to use the tools, with your tool names.
+  * `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
+</Accordion>
+
+To use the tools alone, `createMemoryTools` gives you `recall_memory` and `save_memory`:
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
@@ -92690,6 +92727,7 @@ package.
 | Import | Feature |
 | --- | --- |
 | `createChatHistory` | Durable chat history on Redis Search — save, list, and `$smart`-search a user's transcripts. |
+| `createAgentMemory` | An AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers): memory tools plus automatic recall into the instructions. |
 | `createMemoryTools` | `recall_memory` + `save_memory` tools so the model reads and writes long-term memory. |
 | `createSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimit` | A configured Upstash Ratelimit to call before the model. |
@@ -92772,7 +92810,43 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
 
 ## How to add agent memory with the AI SDK
 
-`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
+`createAgentMemory()` is an AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers).
+Create it once. Then, per request, give the model the `recall_memory` and `save_memory` tools, have the
+memories relevant to the latest user message added to the instructions automatically, or both:
+
+```ts
+import { createAgentMemory } from "@upstash/agentkit-ai-sdk";
+import { ToolLoopAgent } from "ai";
+
+const memory = createAgentMemory(); // once, at module level
+
+// per request, with userId from your auth
+const agent = new ToolLoopAgent({
+  model,
+  instructions: `You are a helpful assistant.\n\n${memory.instructions}`,
+  tools: memory.tools({ userId }), // recall_memory + save_memory
+  prepareStep: memory.prepareStep({ userId }), // relevant memories added up front
+});
+
+await agent.generate({ prompt: "What editor do I use?" });
+```
+
+The model is not wrapped: recall runs in `prepareStep` and adds a `<memories>` block to the instructions on
+the first step. It works the same with `generateText` and `streamText`. A failed recall never fails the call.
+Recall is Redis Search `$smart` (fuzzy, BM25), with no embeddings, and saving stays explicit.
+
+<Accordion title="createAgentMemory options">
+  * `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
+  * `memory.tools({ userId, topK?, minScore? })`: the same tools as `createMemoryTools`.
+  * `memory.prepareStep({ userId, query?, topK?, minScore?, onError? })`: `userId` can be a function of the
+    step options, such as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to
+    the text of the last user message.
+  * `memory.recallContext({ userId, query? })`: the formatted block, for building instructions yourself.
+  * `memory.instructions`: guidance on when to use the tools, with your tool names.
+  * `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
+</Accordion>
+
+To use the tools alone, `createMemoryTools` gives you `recall_memory` and `save_memory`:
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
@@ -92981,16 +93055,20 @@ Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work to
 Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
 Box sandbox, or control over an individual tool file.
 
-Start from an eve project (**0.65.0 or later** — the published extension is prebuilt, and its
-compatibility manifest requires eve ≥ 0.65's contribution formats; both packages declare this as their
-`eve` peer range). Scaffold one, which installs `eve`
-and an AI-SDK provider for you:
+Start from an eve project on **eve 1.0**. Scaffold one, which installs `eve` and an AI SDK provider for you:
 
 ```bash
 npx eve@latest init my-agent
 # or, to start with a Next.js app:
 npx eve@latest init my-agent --channel-web-nextjs
 ```
+
+<Note>
+  **eve versions.** `@upstash/agentkit-eve-extension` is prebuilt with eve 1.0.0-rc.9, and eve refuses an
+  extension built by a newer eve than its own, so it needs **eve 1.0.0-rc.9 or later**. Still on eve 0.91? Stay
+  on `@upstash/agentkit-eve-extension@0.19`. `@upstash/agentkit-eve` works on **eve 0.87 or later**, eve 1.0
+  included.
+</Note>
 
 <Note>
   AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
@@ -93320,7 +93398,7 @@ export default defineSandbox(() => environment.open());
     `networkPolicy` is **not** an environment option (see below), and neither is `name`, because every
     session gets its own box. `environment.open({ networkPolicy })` is the only open option.
 
-    Requires eve ≥ 0.65 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
+    Requires eve ≥ 0.87 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
     import `@upstash/agentkit-eve/sandbox`. The provider reads `UPSTASH_BOX_API_KEY` when Eve prepares
     the environment (at `eve build`) and at run time.
   </Accordion>
@@ -93424,7 +93502,7 @@ export default defineCachedTool({
 
 Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
 that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
-it, two ways. Needs Eve 0.65 or newer, like the rest of the package.
+it, two ways. Needs eve 0.87 or newer, like the rest of the package.
 
 `redisMemory()` is a full provider. It recalls the memories relevant to the current turn, stores the
 user's messages afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
@@ -93472,6 +93550,7 @@ export default defineMemory({
   | `maxRecallCharacters` | `4000` | Size limit for everything recalled in one turn. |
   | `maxMemoryCharacters` | `2048` | Size limit for a single stored memory. |
   | `prefix` / `indexName` | `agentkit:memorySlot` | Redis key prefix and search index name. |
+  | `toolLabels` | built-in labels | The activity label each tool shows in channels. The defaults are "Saving to memory", "Searching memory", "Forgetting a memory" and "Reading an earlier conversation", and never include the tool input. Pass an object to override one label, or `false` (for all tools or one) to hide memory calls from channel activity. `false` needs eve 1.0.0-rc.7 or later. |
   | `redis` | `Redis.fromEnv()` | Your Redis client. |
 
   `redisDocuments()`:
@@ -93542,6 +93621,10 @@ export default defineSearchTools({
   indexName: "books",
 }).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
 ```
+
+Each factory takes an activity label for the channel UI: `label` on `defineMemoryRecallTool` and
+`defineMemorySaveTool`, and `labels` (one per tool) on `defineSearchTools`. Pass `false` to hide a call
+(eve 1.0.0-rc.7 or later).
 
 <Accordion title="Options and the one-file-per-tool rule">
   `defineMemoryRecallTool` / `defineMemorySaveTool` take a required `userId` (string or
@@ -93608,16 +93691,20 @@ Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work to
 Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
 Box sandbox, or control over an individual tool file.
 
-Start from an eve project (**0.65.0 or later** — the published extension is prebuilt, and its
-compatibility manifest requires eve ≥ 0.65's contribution formats; both packages declare this as their
-`eve` peer range). Scaffold one, which installs `eve`
-and an AI-SDK provider for you:
+Start from an eve project on **eve 1.0**. Scaffold one, which installs `eve` and an AI SDK provider for you:
 
 ```bash
 npx eve@latest init my-agent
 # or, to start with a Next.js app:
 npx eve@latest init my-agent --channel-web-nextjs
 ```
+
+<Note>
+  **eve versions.** `@upstash/agentkit-eve-extension` is prebuilt with eve 1.0.0-rc.9, and eve refuses an
+  extension built by a newer eve than its own, so it needs **eve 1.0.0-rc.9 or later**. Still on eve 0.91? Stay
+  on `@upstash/agentkit-eve-extension@0.19`. `@upstash/agentkit-eve` works on **eve 0.87 or later**, eve 1.0
+  included.
+</Note>
 
 <Note>
   AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
@@ -93947,7 +94034,7 @@ export default defineSandbox(() => environment.open());
     `networkPolicy` is **not** an environment option (see below), and neither is `name`, because every
     session gets its own box. `environment.open({ networkPolicy })` is the only open option.
 
-    Requires eve ≥ 0.65 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
+    Requires eve ≥ 0.87 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
     import `@upstash/agentkit-eve/sandbox`. The provider reads `UPSTASH_BOX_API_KEY` when Eve prepares
     the environment (at `eve build`) and at run time.
   </Accordion>
@@ -94051,7 +94138,7 @@ export default defineCachedTool({
 
 Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
 that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
-it, two ways. Needs Eve 0.65 or newer, like the rest of the package.
+it, two ways. Needs eve 0.87 or newer, like the rest of the package.
 
 `redisMemory()` is a full provider. It recalls the memories relevant to the current turn, stores the
 user's messages afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
@@ -94099,6 +94186,7 @@ export default defineMemory({
   | `maxRecallCharacters` | `4000` | Size limit for everything recalled in one turn. |
   | `maxMemoryCharacters` | `2048` | Size limit for a single stored memory. |
   | `prefix` / `indexName` | `agentkit:memorySlot` | Redis key prefix and search index name. |
+  | `toolLabels` | built-in labels | The activity label each tool shows in channels. The defaults are "Saving to memory", "Searching memory", "Forgetting a memory" and "Reading an earlier conversation", and never include the tool input. Pass an object to override one label, or `false` (for all tools or one) to hide memory calls from channel activity. `false` needs eve 1.0.0-rc.7 or later. |
   | `redis` | `Redis.fromEnv()` | Your Redis client. |
 
   `redisDocuments()`:
@@ -94169,6 +94257,10 @@ export default defineSearchTools({
   indexName: "books",
 }).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
 ```
+
+Each factory takes an activity label for the channel UI: `label` on `defineMemoryRecallTool` and
+`defineMemorySaveTool`, and `labels` (one per tool) on `defineSearchTools`. Pass `false` to hide a call
+(eve 1.0.0-rc.7 or later).
 
 <Accordion title="Options and the one-file-per-tool rule">
   `defineMemoryRecallTool` / `defineMemorySaveTool` take a required `userId` (string or
@@ -96164,7 +96256,8 @@ Next.js app that runs the same tool on QStash and on Workflow, with a live log o
 Source: https://upstash.com/docs/redis/sdks/agentkit/tanstack-ai
 
 [TanStack AI](https://tanstack.com/ai) defines the contracts for an agent's production state — chat
-persistence, session history, stored credentials, resumable streaming, locks, memory — and ships in-memory implementations that only work
+persistence, session history, stored credentials, resumable streaming, locks, memory, sandbox snapshots, MCP
+tasks — and ships in-memory implementations that only work
 inside one process. `@upstash/agentkit-tanstack-ai` implements them on Upstash Redis, so they hold
 across serverless instances, page reloads, and devices.
 
@@ -96175,12 +96268,18 @@ across serverless instances, page reloads, and devices.
 | `upstashStream` | `durability` on the response | Resume a stream after a reload, or open the same thread on another device. |
 | `upstashLocks` | `withLocks()` | Distributed locks for TanStack AI middleware, such as its sandbox setup. |
 | `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/docs/redis/search/introduction). |
+| `upstashSandboxCheckpointStore`, `upstashSandboxInstanceStore` | `createSandboxSnapshots()`, `withSandbox()` | Portable sandbox snapshots with history and forks; any server can resume a thread's sandbox. |
+| `upstashMcpTaskStore`, `upstashMcpEventStore` | `createMCPServer({ taskStore })`, MCP Events | Long-running MCP tasks and webhook subscriptions that survive restarts and work across instances. |
 | `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
 | `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
 
 ```bash
 npm install @upstash/agentkit-tanstack-ai @tanstack/ai
 ```
+
+Each optional part has its own entry point and needs its TanStack package: `/persistence`
+(`@tanstack/ai-persistence`), `/memory` (`@tanstack/ai-memory`), `/sandbox` (`@tanstack/ai-sandbox`) and `/mcp`
+(`@tanstack/ai-mcp`). `/byok` and the root entry need only `@tanstack/ai`.
 
 <Warning>
   Version 0.3.0 and later need **TanStack AI 1.0 or later**: `@tanstack/ai` and `@tanstack/ai-persistence` must be
@@ -96460,6 +96559,109 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
   });
   ```
 </Accordion>
+
+## How to keep sandbox snapshots in Redis
+
+TanStack AI's [portable snapshots](https://tanstack.com/ai/latest/docs/sandbox/portable-snapshots) let a later run
+rebuild a sandbox's files after the provider sandbox is gone, and fork a conversation, files included, from
+any earlier checkpoint. Every store they need runs on Upstash:
+
+```bash
+npm install @tanstack/ai-sandbox @tanstack/ai-persistence @upstash/blob
+```
+
+```ts
+import { createSandboxSnapshots, withSandbox } from "@tanstack/ai-sandbox";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { Bucket } from "@upstash/blob";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai/persistence";
+import {
+  upstashSandboxCheckpointStore,
+  upstashSandboxInstanceStore,
+} from "@upstash/agentkit-tanstack-ai/sandbox";
+
+const instances = upstashSandboxInstanceStore();
+const snapshots = createSandboxSnapshots({
+  persistence: upstashPersistence({ bucket: Bucket.fromEnv() }), // file bytes in Upstash Blob
+  checkpoints: upstashSandboxCheckpointStore(), // same Redis + prefix as the persistence
+  instances,
+  locks: upstashLocks(),
+});
+
+chat({
+  adapter,
+  messages,
+  threadId,
+  middleware: [withPersistence(snapshots.persistence), withSandbox(sandbox, { instances, snapshots })],
+});
+
+// Branch the conversation, files included, from an earlier checkpoint.
+await snapshots.fork({ threadId, checkpointId, destinationThreadId: "thread-2" });
+```
+
+* `upstashSandboxCheckpointStore()` keeps the checkpoint history of each thread. Appends are compare-and-set on
+  the thread's head, and every write first checks the writer lease, so a writer that lost its lease changes
+  nothing. A fork copies a checkpoint into an empty thread and writes that thread's transcript in the same
+  script, which is why it must use the same `redis` and `prefix` as `upstashPersistence()`.
+* `upstashSandboxInstanceStore()` maps a sandbox key to the provider's sandbox, so any server can resume it.
+* For the sandbox itself, use [Upstash Box](/docs/box/overall/quickstart) through TanStack's
+  `@tanstack/ai-sandbox-upstash-box`.
+
+<Accordion title="Options">
+  ```ts
+  upstashSandboxCheckpointStore({
+    redis, // optional: defaults to Redis.fromEnv()
+    prefix: "agentkit:tanstack", // optional: must match upstashPersistence()
+    messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: match upstashPersistence() if you set it
+    leaseDurationMs: 120_000, // optional: writer lease length
+    renewAfterMs: 45_000, // optional: when the holder renews
+  });
+
+  upstashSandboxInstanceStore({
+    redis, // optional
+    prefix: "agentkit:tanstack", // optional
+    ttlSeconds: 60 * 60 * 24 * 7, // optional: keep at least as long as your sandboxes live
+  });
+  ```
+</Accordion>
+
+## How to share MCP tasks and events across instances
+
+```bash
+npm install @tanstack/ai-mcp
+```
+
+```ts
+import { createMCPClient } from "@tanstack/ai-mcp";
+import { createMCPServer } from "@tanstack/ai-mcp/server";
+import { upstashMcpEventStore, upstashMcpTaskStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+// An MCP server whose long-running tools run as tasks any instance can report on.
+const server = createMCPServer({
+  name: "tools",
+  version: "1.0.0",
+  tools,
+  taskStore: upstashMcpTaskStore({ ttlSeconds: 60 * 60 * 24 }),
+});
+
+// An MCP client whose MCP Events webhook subscriptions are shared by every instance.
+const mcp = await createMCPClient({
+  transport: { type: "http", url: "https://mcp.example.com/mcp" },
+  experimental_events: { store: upstashMcpEventStore() },
+});
+```
+
+* With `upstashMcpTaskStore()`, task records survive restarts and any instance can answer `tasks/get` and
+  `tasks/result`. Cancelling a task still stops its work only on the instance running it.
+* With `upstashMcpEventStore()`, subscriptions, cursors and refresh deadlines are shared, so a webhook can land
+  on any server. Concurrent updates are compare-and-set, so no field is lost. The webhook `secret` is stored as is.
+
+<Tip>
+  Building the server with the official `@modelcontextprotocol/server` SDK instead of TanStack? See
+  [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks) and [MCP Events](/docs/redis/sdks/agentkit/mcp-events) for
+  `@upstash/mcp-toolkit`, which also runs the work in the background with QStash.
+</Tip>
 
 ## How to cache tools and rate limit with TanStack AI
 
@@ -96526,7 +96728,8 @@ off, set `UPSTASH_DISABLE_TELEMETRY`, or pass `enableTelemetry: false` to a help
 Source: https://upstash.com/docs/redis/sdks/agentkit/tanstack-ai
 
 [TanStack AI](https://tanstack.com/ai) defines the contracts for an agent's production state — chat
-persistence, session history, stored credentials, resumable streaming, locks, memory — and ships in-memory implementations that only work
+persistence, session history, stored credentials, resumable streaming, locks, memory, sandbox snapshots, MCP
+tasks — and ships in-memory implementations that only work
 inside one process. `@upstash/agentkit-tanstack-ai` implements them on Upstash Redis, so they hold
 across serverless instances, page reloads, and devices.
 
@@ -96537,12 +96740,18 @@ across serverless instances, page reloads, and devices.
 | `upstashStream` | `durability` on the response | Resume a stream after a reload, or open the same thread on another device. |
 | `upstashLocks` | `withLocks()` | Distributed locks for TanStack AI middleware, such as its sandbox setup. |
 | `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/docs/redis/search/introduction). |
+| `upstashSandboxCheckpointStore`, `upstashSandboxInstanceStore` | `createSandboxSnapshots()`, `withSandbox()` | Portable sandbox snapshots with history and forks; any server can resume a thread's sandbox. |
+| `upstashMcpTaskStore`, `upstashMcpEventStore` | `createMCPServer({ taskStore })`, MCP Events | Long-running MCP tasks and webhook subscriptions that survive restarts and work across instances. |
 | `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
 | `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
 
 ```bash
 npm install @upstash/agentkit-tanstack-ai @tanstack/ai
 ```
+
+Each optional part has its own entry point and needs its TanStack package: `/persistence`
+(`@tanstack/ai-persistence`), `/memory` (`@tanstack/ai-memory`), `/sandbox` (`@tanstack/ai-sandbox`) and `/mcp`
+(`@tanstack/ai-mcp`). `/byok` and the root entry need only `@tanstack/ai`.
 
 <Warning>
   Version 0.3.0 and later need **TanStack AI 1.0 or later**: `@tanstack/ai` and `@tanstack/ai-persistence` must be
@@ -96822,6 +97031,109 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
   });
   ```
 </Accordion>
+
+## How to keep sandbox snapshots in Redis
+
+TanStack AI's [portable snapshots](https://tanstack.com/ai/latest/docs/sandbox/portable-snapshots) let a later run
+rebuild a sandbox's files after the provider sandbox is gone, and fork a conversation, files included, from
+any earlier checkpoint. Every store they need runs on Upstash:
+
+```bash
+npm install @tanstack/ai-sandbox @tanstack/ai-persistence @upstash/blob
+```
+
+```ts
+import { createSandboxSnapshots, withSandbox } from "@tanstack/ai-sandbox";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { Bucket } from "@upstash/blob";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai/persistence";
+import {
+  upstashSandboxCheckpointStore,
+  upstashSandboxInstanceStore,
+} from "@upstash/agentkit-tanstack-ai/sandbox";
+
+const instances = upstashSandboxInstanceStore();
+const snapshots = createSandboxSnapshots({
+  persistence: upstashPersistence({ bucket: Bucket.fromEnv() }), // file bytes in Upstash Blob
+  checkpoints: upstashSandboxCheckpointStore(), // same Redis + prefix as the persistence
+  instances,
+  locks: upstashLocks(),
+});
+
+chat({
+  adapter,
+  messages,
+  threadId,
+  middleware: [withPersistence(snapshots.persistence), withSandbox(sandbox, { instances, snapshots })],
+});
+
+// Branch the conversation, files included, from an earlier checkpoint.
+await snapshots.fork({ threadId, checkpointId, destinationThreadId: "thread-2" });
+```
+
+* `upstashSandboxCheckpointStore()` keeps the checkpoint history of each thread. Appends are compare-and-set on
+  the thread's head, and every write first checks the writer lease, so a writer that lost its lease changes
+  nothing. A fork copies a checkpoint into an empty thread and writes that thread's transcript in the same
+  script, which is why it must use the same `redis` and `prefix` as `upstashPersistence()`.
+* `upstashSandboxInstanceStore()` maps a sandbox key to the provider's sandbox, so any server can resume it.
+* For the sandbox itself, use [Upstash Box](/docs/box/overall/quickstart) through TanStack's
+  `@tanstack/ai-sandbox-upstash-box`.
+
+<Accordion title="Options">
+  ```ts
+  upstashSandboxCheckpointStore({
+    redis, // optional: defaults to Redis.fromEnv()
+    prefix: "agentkit:tanstack", // optional: must match upstashPersistence()
+    messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: match upstashPersistence() if you set it
+    leaseDurationMs: 120_000, // optional: writer lease length
+    renewAfterMs: 45_000, // optional: when the holder renews
+  });
+
+  upstashSandboxInstanceStore({
+    redis, // optional
+    prefix: "agentkit:tanstack", // optional
+    ttlSeconds: 60 * 60 * 24 * 7, // optional: keep at least as long as your sandboxes live
+  });
+  ```
+</Accordion>
+
+## How to share MCP tasks and events across instances
+
+```bash
+npm install @tanstack/ai-mcp
+```
+
+```ts
+import { createMCPClient } from "@tanstack/ai-mcp";
+import { createMCPServer } from "@tanstack/ai-mcp/server";
+import { upstashMcpEventStore, upstashMcpTaskStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+// An MCP server whose long-running tools run as tasks any instance can report on.
+const server = createMCPServer({
+  name: "tools",
+  version: "1.0.0",
+  tools,
+  taskStore: upstashMcpTaskStore({ ttlSeconds: 60 * 60 * 24 }),
+});
+
+// An MCP client whose MCP Events webhook subscriptions are shared by every instance.
+const mcp = await createMCPClient({
+  transport: { type: "http", url: "https://mcp.example.com/mcp" },
+  experimental_events: { store: upstashMcpEventStore() },
+});
+```
+
+* With `upstashMcpTaskStore()`, task records survive restarts and any instance can answer `tasks/get` and
+  `tasks/result`. Cancelling a task still stops its work only on the instance running it.
+* With `upstashMcpEventStore()`, subscriptions, cursors and refresh deadlines are shared, so a webhook can land
+  on any server. Concurrent updates are compare-and-set, so no field is lost. The webhook `secret` is stored as is.
+
+<Tip>
+  Building the server with the official `@modelcontextprotocol/server` SDK instead of TanStack? See
+  [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks) and [MCP Events](/docs/redis/sdks/agentkit/mcp-events) for
+  `@upstash/mcp-toolkit`, which also runs the work in the background with QStash.
+</Tip>
 
 ## How to cache tools and rate limit with TanStack AI
 
@@ -102453,6 +102765,28 @@ the same way as on a `TEXT` field, and `$ann` searches its embeddings by meaning
 * If the text of a document cannot be embedded, the document is still searchable by its text.
 * `HYBRID` fields work with JSON, hash, string, and stream indexes.
 
+## How embeddings are created
+
+You don't create vectors yourself. You don't need your own embedding provider, an API key, or a
+separate vector database. Redis Search creates the embeddings for you:
+
+* When you write a document, Search sends the text of its `HYBRID` fields to an OpenAI embedding
+  model (one of `text-embedding-3-small` or `text-embedding-3-large`) in the background and stores the returned vectors in the index.
+* When you run an [`$ann`](/docs/redis/search/retrievers/ann) query, Search creates an embedding of the
+  query text with the same model and finds the documents with the closest vectors.
+
+Your application only reads and writes text. None of the examples on this page call an embedding API.
+
+<Note>
+The text of `HYBRID` fields and of `$ann` queries is sent to OpenAI to create embeddings. Use `TEXT`
+instead of `HYBRID` for fields whose content must not be sent to a third party.
+</Note>
+
+### Pricing
+
+Hybrid search has no extra cost, and creating embeddings is included. Commands are billed the same
+way as all other Redis commands, whether the index has `HYBRID` fields or not. See [Pricing](https://upstash.com/pricing/redis).
+
 ## Create an index
 
 Declare the fields you want to search by meaning as `HYBRID`:
@@ -105457,6 +105791,9 @@ meaning to the query text, even when they use different words.
 
 `$ann` works only on [`HYBRID` fields](/docs/redis/search/schema-definition#hybrid-fields).
 
+You pass the query as plain text. Search creates its embedding with the same model it uses for the
+documents. See [How embeddings are created](/docs/redis/search/hybrid-search#how-embeddings-are-created).
+
 ```json
 { "$ann": { "field": "description", "query": "something to block noise on a flight" } }
 ```
@@ -106279,6 +106616,9 @@ The `HYBRID` field type is a `TEXT` field that also supports semantic search. Se
 vector embedding of the field value, and the [`$ann`](/docs/redis/search/retrievers/ann)
 retriever searches these embeddings by meaning. Full-text queries work on the field the same way as
 on a `TEXT` field.
+
+Embeddings are created automatically with an OpenAI embedding model (one of `text-embedding-3-small` or `text-embedding-3-large`),
+so you don't need your own embedding provider. See [How embeddings are created](/docs/redis/search/hybrid-search#how-embeddings-are-created).
 
 `HYBRID` fields accept the `NOSTEM` and `FROM` options.
 
