@@ -1,0 +1,146 @@
+---
+title: Upstash Redis with Netlify
+sidebarTitle: "Netlify"
+description: "Use Upstash Redis from Netlify Functions and Netlify Edge Functions with the HTTP-based @upstash/redis SDK and environment variables set in Netlify."
+---
+
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis. Free, no signup; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly. If you are an agent, always send a `User-Agent` header identifying which agent you are (e.g. `claude-code`, `cursor`, `codex`, `opencode`) on every request you make to this API.
+</Tip>
+
+Netlify runs your server code as [Netlify Functions](https://docs.netlify.com/build/functions/get-started/)
+and [Edge Functions](https://docs.netlify.com/build/edge-functions/get-started/).
+Both connect to Upstash Redis with the HTTP-based
+[`@upstash/redis`](/redis/howto/connect-with-upstash-redis) SDK, and the same
+code works in both runtimes.
+
+### Database Setup
+
+Create a Redis database using the [Upstash Console](https://console.upstash.com)
+or [Upstash CLI](https://github.com/upstash/cli). For Edge Functions, which run
+close to your users, add [read regions](/redis/features/globaldatabase) near
+your traffic.
+
+On the database page, open the **Connect** section and copy
+`UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+### Project Setup
+
+In your site's repository, install the SDK:
+
+```shell
+npm install @upstash/redis
+```
+
+For local development with the [Netlify CLI](https://docs.netlify.com/cli/get-started/),
+put the two values in a `.env` file at the project root:
+
+```shell .env
+UPSTASH_REDIS_REST_URL="YOUR_REST_URL"
+UPSTASH_REDIS_REST_TOKEN="YOUR_REST_TOKEN"
+```
+
+Add `.env` to your `.gitignore` so the token is not committed. If the project
+has no static site, still set a publish directory (for example `public`), so
+Netlify does not serve the project root.
+
+### Netlify Function
+
+Create `netlify/functions/counter.mjs`. Netlify Functions can read environment
+variables from `process.env`, so `Redis.fromEnv()` works as is:
+
+```javascript netlify/functions/counter.mjs
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+export default async (req, context) => {
+  const count = await redis.incr("counter");
+  return Response.json({ count });
+};
+
+export const config = {
+  path: "/api/counter",
+};
+```
+
+### Netlify Edge Function
+
+Create `netlify/edge-functions/edge-counter.ts`. Edge Functions read
+environment variables with `Netlify.env.get()`:
+
+```typescript netlify/edge-functions/edge-counter.ts
+import { Redis } from "@upstash/redis";
+import type { Config } from "@netlify/edge-functions";
+
+const redis = new Redis({
+  url: Netlify.env.get("UPSTASH_REDIS_REST_URL")!,
+  token: Netlify.env.get("UPSTASH_REDIS_REST_TOKEN")!,
+});
+
+export default async (req: Request) => {
+  const count = await redis.incr("edge-counter");
+  return Response.json({ count });
+};
+
+export const config: Config = {
+  path: "/edge/counter",
+};
+```
+
+Edge Functions import npm packages by name after you install them.
+Netlify marks npm support in Edge Functions as
+[beta](https://docs.netlify.com/build/edge-functions/api/).
+
+### Set Environment Variables in Netlify
+
+<Steps>
+  <Step title="Import or open your site">
+    In the [Netlify app](https://app.netlify.com), create a new project and pick
+    your Git provider under **Import a Git repository**, or open an existing
+    project.
+
+    <Frame>
+      <img src="/img/netlify/netlify-import-project.jpg" alt="Netlify new project page with Import a Git repository options" />
+    </Frame>
+  </Step>
+  <Step title="Add the variables">
+    Go to **Project configuration** → **Environment variables** and click
+    **Add a variable** → **Add a single variable** for
+    `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. Keep
+    **All scopes** selected so functions can read them at runtime. On paid
+    plans you can pick specific scopes instead; include **Functions** if you do.
+
+    <Frame>
+      <img src="/img/netlify/netlify-env-vars.jpg" alt="Netlify New environment variable form with key UPSTASH_REDIS_REST_URL" />
+    </Frame>
+  </Step>
+  <Step title="Deploy">
+    Trigger a new deploy. Functions get variable values at deploy time, so
+    changes need a new deploy. New projects can be private by default and
+    return 401 to anyone outside your team; to call the functions from
+    elsewhere, click **Make public** on the project.
+  </Step>
+</Steps>
+
+Variables declared in `netlify.toml` are not available to Functions or Edge
+Functions, so set them in the Netlify UI or with the Netlify CLI
+(`netlify env:set`).
+
+### Test
+
+```shell
+curl https://YOUR_SITE.netlify.app/api/counter
+# {"count":1}
+
+curl https://YOUR_SITE.netlify.app/edge/counter
+# {"count":1}
+```
+
+Run `netlify dev` to test both functions locally with the values from `.env`.
+
+### Next Steps
+
+- Add rate limiting to a function with [@upstash/ratelimit](/redis/sdks/ratelimit-ts/overview).
+- For frameworks on Netlify such as Next.js or Astro, use the same SDK and
+  environment variables in the framework's server routes.

@@ -5,6 +5,8 @@ description: "useUpload, useServerUpload and uploadHooks, for uploading from the
 
 `@upstash/blob/react` is the browser side of a direct upload. `uploadHooks` binds the hooks to your [upload handler](/blob/uploads/upload-handler), and `useUpload` runs the upload and reports its progress. There is a plain function for apps without React, and `useServerUpload` for routes where the bytes do pass through your app.
 
+The browser client is JavaScript, but the server behind it can be any server SDK. Every upload handler speaks the same protocol, so the hooks, the record and the errors on these pages are the same whichever language runs the route. See [With a server in another language](#with-a-server-in-another-language).
+
 ```ts lib/upload-hooks.ts
 "use client"
 import { uploadHooks } from "@upstash/blob/react"
@@ -52,6 +54,21 @@ A call-site option on `useUpload` wins over the default, except `onError`, where
   starting. A throw from the configured default `onError` is caught and logged.
 </Warning>
 
+### With a server in another language
+
+```ts lib/upload-hooks.ts
+"use client"
+import { uploadHooks } from "@upstash/blob/react"
+
+export const { useUpload } = uploadHooks({ endpoint: "/api/upload" })
+```
+
+```tsx app/page.tsx
+const avatar = useUpload("avatar") // POSTs to /api/upload?route=avatar
+```
+
+`uploadHooks<typeof uploads>` needs the handler's TypeScript type. When the handler is written with another server SDK, such as [Python](/blob/sdks/py/upload-handler#mounting-it) or [Go](/blob/sdks/go/upload-handler#mounting-it), call `uploadHooks()` with no type parameter, or import `useUpload` from `@upstash/blob/react` directly. The unbound hook takes a route name, which resolves against `endpoint`, or the handler's URL. Route names are not checked at compile time, and `upload.blob.data` is `unknown`.
+
 ---
 
 ## useUpload
@@ -86,6 +103,8 @@ const { start, uploads, upload, clear, accept, constraints } = useUpload("attach
 
 Three files upload at once by default and the rest queue. `clear(id?)` removes records from the list; a cleared upload that is still running finishes anyway. Unmounting the component does not cancel anything either.
 
+`start` needs a browser. Where there is no `XMLHttpRequest`, such as a Node script, it throws `invalid_input` before calling the route, as [`upload()`](#without-react) does.
+
 ### The record
 
 | Field | Type | Description |
@@ -105,9 +124,9 @@ Three files upload at once by default and the rest queue. `clear(id?)` removes r
 
 Drive UI off `pending` rather than deriving it from `status`. `percent` stays at 99 through `finishing`, because 100 means stored, not sent. See [Progress and status](/blob/uploads/large-files#progress-and-status).
 
-`blob.data` is typed from that route's [`onUploadComplete`](/blob/uploads/upload-handler#onuploadcomplete). Fields a status does not carry are `undefined` rather than absent, so `upload?.blob?.url` and `upload?.error?.message` read straight off the record with no narrowing.
+`blob.data` is typed from that route's [`onUploadComplete`](/blob/sdks/ts/upload-handler#onuploadcomplete). Fields a status does not carry are `undefined` rather than absent, so `upload?.blob?.url` and `upload?.error?.message` read straight off the record with no narrowing.
 
-`canPause` is `false` for a single PUT, which is every file under the multipart threshold. `retry()` works only from `error`, and resumes from the parts that already landed. See [Large files](/blob/uploads/large-files).
+`canPause` is `false` for a single PUT, which is every file under the multipart threshold. `retry()` works only from `error`, and resumes from the parts that already landed. It answers `false` when the route already accepted the upload and only its answer was lost: the file is stored and `onUploadComplete` ran. See [Large files](/blob/uploads/large-files).
 
 ### headers
 
@@ -148,11 +167,15 @@ stop()
 
 `upload()` starts immediately and returns an `UploadTask`: `snapshot()` for the current state, `subscribe()` for changes, `done` as a promise, and `pause()`, `resume()`, `cancel()` and `retry()`. The snapshot has the same fields as the React record.
 
+`upload()` needs a browser. Where there is no `XMLHttpRequest`, such as a Node script, it throws `invalid_input` before calling the route. Server code uploads with [`bucket.put`](/blob/bucket/writing) instead.
+
 ---
 
 ## useServerUpload
 
-```ts app/api/avatar/route.ts
+<CodeGroup>
+```ts TypeScript
+// app/api/avatar/route.ts
 import { Bucket } from "@upstash/blob"
 
 const bucket = Bucket.fromEnv()
@@ -165,6 +188,61 @@ export async function POST(request: Request) {
   return Response.json({ url: blob.versionedUrl })
 }
 ```
+
+```python Python
+# app/main.py (FastAPI)
+from fastapi import FastAPI, UploadFile
+from fastapi.responses import JSONResponse
+from upstash_blob import AsyncBucket, BlobError
+
+app = FastAPI()
+bucket = AsyncBucket.from_env()
+
+
+@app.post("/api/avatar")
+async def avatar(file: UploadFile):
+    try:
+        blob = await bucket.put(
+            f"avatars/{user_id}",
+            file.file,
+            content_type=file.content_type,
+            content_types=["image/png"],
+            max_size="2mb",
+        )
+    except BlobError as e:
+        return JSONResponse(e.to_dict(), status_code=e.status)  # decoded by useServerUpload
+    return {"url": blob.versioned_url}
+```
+
+```go Go
+// avatar.go (net/http)
+func avatar(w http.ResponseWriter, r *http.Request) {
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "file field required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	b, err := bucket.Put(r.Context(), "avatars/"+userID, file, &blob.PutOptions{
+		ContentType:  header.Header.Get("Content-Type"),
+		ContentTypes: []string{"image/png"},
+		MaxSize:      2 * blob.MB,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	var be *blob.Error
+	if errors.As(err, &be) {
+		w.WriteHeader(be.Status)
+		json.NewEncoder(w).Encode(be) // decoded by useServerUpload
+		return
+	} else if err != nil {
+		http.Error(w, "upload failed", http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"url": b.VersionedURL})
+}
+```
+</CodeGroup>
 
 ```tsx app/avatar.tsx
 "use client"
@@ -190,5 +268,7 @@ Every option is optional.
 | `onError` | none | Runs for every failed upload. |
 
 `start({ body })` sends a `File`, `Blob` or `FormData` as the raw body instead of a form field. The record has `cancel()` only and no pause, since there is no multipart. Statuses are `queued`, `uploading`, `finishing`, `done`, `canceled` and `error`.
+
+Like `useUpload`, `start` throws `invalid_input` where there is no `XMLHttpRequest`.
 
 A proxied upload is capped by your platform's request body limit rather than by `maxSize`. The SDK surfaces that refusal as `too_large` with the platform's limit as a hint; see [Platform body limits](/blob/reference/errors#platform-body-limits). Anything larger needs a direct upload with an [upload handler](/blob/uploads/upload-handler).
