@@ -5,8 +5,15 @@ description: "Add long-term memory, RAG, and chat history to the Vercel AI SDK w
 ---
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/redis/search/introduction) and its `$smart` fuzzy operator.
+conversation history, caching, and RAG, with no separate vector database. Memory recall is
+[hybrid search](/redis/search/hybrid-search) in [Upstash Redis Search](/redis/search/introduction):
+keyword and semantic results merged, with the text embedded by Redis itself. Memory and chat history
+share one search index, so they work on a database that allows only one (the Free plan).
+
+<Note>
+  Upgrading from an earlier AgentKit version: an existing memory index fails on the first read with an
+  error asking you to run `SEARCH.DROP <index>`. Documents are kept and indexed again.
+</Note>
 
 `@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter — drop-ins for
 `generateText` / `streamText`. `redis` defaults to `Redis.fromEnv()`, so you import only from this
@@ -75,14 +82,14 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
     ```ts
     createChatHistory({
       redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: base key prefix
-      indexName: "agentkit_chat", // optional: index name (defaults to the prefix)
+      prefix: "agentkit:chat", // optional: setting prefix or indexName gives chats their own index
       ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
     });
     ```
 
     Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
+    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Chats are
+    indexed over `userId` + `sessionId` (filters) and `userMessages` +
     `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
     overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
     methods: `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats`
@@ -122,15 +129,15 @@ await agent.generate({ prompt: "What editor do I use?" });
 
 The model is not wrapped: recall runs in `prepareStep` and adds a `<memories>` block to the instructions on
 the first step. It works the same with `generateText` and `streamText`. A failed recall never fails the call.
-Recall is Redis Search `$smart` (fuzzy, BM25), with no embeddings, and saving stays explicit.
+Recall is hybrid: it finds memories by keyword and by meaning, so "What should I cook?" finds "The user is
+vegetarian." Saving stays explicit.
 
 <Accordion title="createAgentMemory options">
   - `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
-  - `memory.tools({ userId, topK?, minScore? })`: the same tools as `createMemoryTools`.
-  - `memory.prepareStep({ userId, query?, topK?, minScore?, onError? })`: `userId` can be a function of the
-    step options, such as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to
-    the text of the last user message.
-  - `memory.recallContext({ userId, query? })`: the formatted block, for building instructions yourself.
+  - `memory.tools({ userId })`: the same tools as `createMemoryTools`.
+  - `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options, such
+    as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the text of the
+    last user message. A failed recall goes to `onError` (default `console.warn`).
   - `memory.instructions`: guidance on when to use the tools, with your tool names.
   - `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
 </Accordion>
@@ -150,7 +157,8 @@ await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "What do yo
   - **`userId`** _(required)_ — a string, or `(input, options) => string`.
   - `redis` — defaults to `Redis.fromEnv()`.
   - `topK` — max memories `recall` returns.
-  - `minScore` — BM25 relevance floor.
+  - `minScore` — BM25 relevance floor, for keyword results only (recall falls back to keyword if a
+    hybrid query fails).
   - `recallToolName` / `saveToolName` — override the tool names.
 
   `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from a **verified

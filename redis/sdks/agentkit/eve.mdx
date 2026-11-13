@@ -5,8 +5,15 @@ description: "Add long-term memory, searchable chat history, RAG, rate limiting,
 ---
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/redis/search/introduction) and its `$smart` fuzzy operator.
+conversation history, caching, and RAG, with no separate vector database. Memory recall is
+[hybrid search](/redis/search/hybrid-search) in [Upstash Redis Search](/redis/search/introduction):
+keyword and semantic results merged, with the text embedded by Redis itself. Memory and chat history
+share one search index, so they work on a database that allows only one (the Free plan).
+
+<Note>
+  Upgrading from an earlier AgentKit version: an existing memory index fails on the first read with an
+  error asking you to run `SEARCH.DROP <index>`. Documents are kept and indexed again.
+</Note>
 
 Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work together in one agent:
 
@@ -84,7 +91,8 @@ export default agentkit({
   - `agentkit__recall_memory` — searches the user's memories; called with no `query` it returns all of them.
   - `agentkit__save_memory` — stores one durable fact about the user.
   - `memory.topK` — max memories a recall returns.
-  - `memory.minScore` — relevance floor. Scores are unbounded BM25 values, not `[0,1]`.
+  - `memory.minScore` — BM25 relevance floor, for keyword results only. Recall is hybrid (keyword and
+    meaning), and falls back to keyword if a hybrid query fails.
 
   `userId` is the only tenant boundary. It defaults to Eve's verified session auth
   (`auth.current?.principalId`, then `auth.initiator?.principalId`, then the session id), so
@@ -160,8 +168,9 @@ chat and its index entry.
   Pass an object in place of `true` to tune storage:
 
   - `chatHistory.prefix` — base key prefix (default `agentkit:chat`).
-  - `chatHistory.indexName` — [Redis Search](/redis/search/introduction) index name (defaults to the
-    identifier-safe `prefix`).
+  - `chatHistory.indexName` — [Redis Search](/redis/search/introduction) index name. By default chats
+    share the `agentkit` index with memory, so a bare mount needs one index; setting `prefix` or
+    `indexName` gives chats their own.
   - `chatHistory.ttlSeconds` — per-chat TTL. Omit for no expiry.
 
   Each session is one JSON document at `agentkit:chat:<userId>:<sessionId>`, holding the raw transcript
@@ -509,11 +518,10 @@ export default defineMemory({
   | --- | --- | --- |
   | `rememberMessages` | `true` | What gets saved automatically. `true` (same as `"fromUser"`) saves what the user says; `"all"` saves both sides; `"fromModel"` saves the agent's replies; `false` saves nothing. |
   | `topK` | `5` | How many memories to bring back each turn. |
-  | `minScore` | `0` | Minimum relevance score to bring one back. Scores are BM25, so unbounded. |
+  | `minScore` | `0` | Minimum BM25 score, for keyword results only. Recall is hybrid (keyword and meaning). |
   | `maxRecallCharacters` | `4000` | Size limit for everything recalled in one turn. |
   | `maxMemoryCharacters` | `2048` | Size limit for a single stored memory. |
   | `prefix` / `indexName` | `agentkit:memorySlot` | Redis key prefix and search index name. |
-  | `toolLabels` | built-in labels | The activity label each tool shows in channels. The defaults are "Saving to memory", "Searching memory", "Forgetting a memory" and "Reading an earlier conversation", and never include the tool input. Pass an object to override one label, or `false` (for all tools or one) to hide memory calls from channel activity. `false` needs eve 1.0.0-rc.7 or later. |
   | `redis` | `Redis.fromEnv()` | Your Redis client. |
 
   `redisDocuments()`:
@@ -584,10 +592,6 @@ export default defineSearchTools({
   indexName: "books",
 }).search; // aggregate_books.ts → .aggregate, count_books.ts → .count
 ```
-
-Each factory takes an activity label for the channel UI: `label` on `defineMemoryRecallTool` and
-`defineMemorySaveTool`, and `labels` (one per tool) on `defineSearchTools`. Pass `false` to hide a call
-(eve 1.0.0-rc.7 or later).
 
 <Accordion title="Options and the one-file-per-tool rule">
   `defineMemoryRecallTool` / `defineMemorySaveTool` take a required `userId` (string or
