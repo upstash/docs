@@ -1473,7 +1473,7 @@ The resources above are for agents that help you build. If you're building agent
 
 <CardGroup cols={2}>
   <Card title="Agent memory & chat history" icon="brain" href="/redis/sdks/agentkit/ai-sdk">
-    Long-term memory, RAG, and chat history for the Vercel AI SDK and Eve, backed by Redis.
+    Long-term memory, RAG, chat history, and production backends for the Vercel AI SDK, Eve, and TanStack AI, backed by Redis.
   </Card>
   <Card title="Vector" icon="diagram-project" href="/vector/overall/getstarted">
     Embeddings and semantic search for RAG pipelines, with LangChain, LlamaIndex, and AI SDK integrations.
@@ -92496,8 +92496,15 @@ Source: https://upstash.com/docs/redis/sdks/agent-analytics
 Source: https://upstash.com/docs/redis/sdks/agentkit/ai-sdk
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+conversation history, caching, and RAG, with no separate vector database. Memory recall is
+[hybrid search](/docs/redis/search/hybrid-search) in [Upstash Redis Search](/docs/redis/search/introduction):
+keyword and semantic results merged, with the text embedded by Redis itself. Memory and chat history
+share one search index, so they work on a database that allows only one (the Free plan).
+
+<Note>
+  Upgrading from an earlier AgentKit version: an existing memory index fails on the first read with an
+  error asking you to run `SEARCH.DROP <index>`. Documents are kept and indexed again.
+</Note>
 
 `@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter — drop-ins for
 `generateText` / `streamText`. `redis` defaults to `Redis.fromEnv()`, so you import only from this
@@ -92506,6 +92513,7 @@ package.
 | Import | Feature |
 | --- | --- |
 | `createChatHistory` | Durable chat history on Redis Search — save, list, and `$smart`-search a user's transcripts. |
+| `createAgentMemory` | An AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers): memory tools plus automatic recall into the instructions. |
 | `createMemoryTools` | `recall_memory` + `save_memory` tools so the model reads and writes long-term memory. |
 | `createSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimit` | A configured Upstash Ratelimit to call before the model. |
@@ -92537,14 +92545,15 @@ export async function POST(req: Request) {
   const userId = await getSessionUserId(req); // your auth session, never a client-sent id
   const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
 
-  const result = streamText({ model, messages: convertToModelMessages(messages) });
+  const result = streamText({ model, messages: await convertToModelMessages(messages) });
 
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) =>
-        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" });
+      },
     }),
   });
 }
@@ -92564,14 +92573,14 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
     ```ts
     createChatHistory({
       redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: base key prefix
-      indexName: "agentkit_chat", // optional: index name (defaults to the prefix)
+      prefix: "agentkit:chat", // optional: setting prefix or indexName gives chats their own index
       ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
     });
     ```
 
     Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
+    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Chats are
+    indexed over `userId` + `sessionId` (filters) and `userMessages` +
     `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
     overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
     methods: `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats`
@@ -92588,22 +92597,59 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
 
 ## How to add agent memory with the AI SDK
 
-`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
+`createAgentMemory()` is an AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers).
+Create it once. Then, per request, give the model the `recall_memory` and `save_memory` tools, have the
+memories relevant to the latest user message added to the instructions automatically, or both:
+
+```ts
+import { createAgentMemory } from "@upstash/agentkit-ai-sdk";
+import { ToolLoopAgent } from "ai";
+
+const memory = createAgentMemory(); // once, at module level
+
+// per request, with userId from your auth
+const agent = new ToolLoopAgent({
+  model,
+  instructions: `You are a helpful assistant.\n\n${memory.instructions}`,
+  tools: memory.tools({ userId }), // recall_memory + save_memory
+  prepareStep: memory.prepareStep({ userId }), // relevant memories added up front
+});
+
+await agent.generate({ prompt: "What editor do I use?" });
+```
+
+The model is not wrapped: recall runs in `prepareStep` and adds a `<memories>` block to the instructions on
+the first step. It works the same with `generateText` and `streamText`. A failed recall never fails the call.
+Recall is hybrid: it finds memories by keyword and by meaning, so "What should I cook?" finds "The user is
+vegetarian." Saving stays explicit.
+
+<Accordion title="createAgentMemory options">
+  * `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
+  * `memory.tools({ userId })`: the same tools as `createMemoryTools`.
+  * `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options, such
+    as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the text of the
+    last user message. A failed recall goes to `onError` (default `console.warn`).
+  * `memory.instructions`: guidance on when to use the tools, with your tool names.
+  * `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
+</Accordion>
+
+To use the tools alone, `createMemoryTools` gives you `recall_memory` and `save_memory`:
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const tools = createMemoryTools({ userId });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "What do you know about me?" });
 ```
 
 <Accordion title="Options and the userId tenant boundary">
   * **`userId`** _(required)_ — a string, or `(input, options) => string`.
   * `redis` — defaults to `Redis.fromEnv()`.
   * `topK` — max memories `recall` returns.
-  * `minScore` — BM25 relevance floor.
+  * `minScore` — BM25 relevance floor, for keyword results only (recall falls back to keyword if a
+    hybrid query fails).
   * `recallToolName` / `saveToolName` — override the tool names.
 
   `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from a **verified
@@ -92619,12 +92665,12 @@ descriptions are generated from your schema.
 ```ts
 import { s } from "@upstash/redis";
 import { createSearchTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
 const tools = createSearchTools({ schema, indexName: "users" });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "How many users named Ada live in London?" });
 ```
 
 <Accordion title="Options">
@@ -92705,8 +92751,8 @@ import { openai } from "@ai-sdk/openai";
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  isStepCount,
   streamText,
-  stepCountIs,
   toUIMessageStream,
   tool,
   type UIMessage,
@@ -92753,7 +92799,7 @@ export async function POST(req: Request) {
     model: openai("gpt-5.4-mini"),
     messages: await convertToModelMessages(messages),
     tools,
-    stopWhen: stepCountIs(5),
+    stopWhen: isStepCount(5),
   });
 
   // 3. Persist the whole conversation when the stream finishes.
@@ -92762,7 +92808,9 @@ export async function POST(req: Request) {
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) => history.saveChat({ userId, sessionId: id, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: id, messages, title: "New chat" });
+      },
     }),
   });
 }
@@ -92784,8 +92832,15 @@ lives in [`examples/ai-sdk-demo`](https://github.com/upstash/agentkit/tree/main/
 Source: https://upstash.com/docs/redis/sdks/agentkit/ai-sdk
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+conversation history, caching, and RAG, with no separate vector database. Memory recall is
+[hybrid search](/docs/redis/search/hybrid-search) in [Upstash Redis Search](/docs/redis/search/introduction):
+keyword and semantic results merged, with the text embedded by Redis itself. Memory and chat history
+share one search index, so they work on a database that allows only one (the Free plan).
+
+<Note>
+  Upgrading from an earlier AgentKit version: an existing memory index fails on the first read with an
+  error asking you to run `SEARCH.DROP <index>`. Documents are kept and indexed again.
+</Note>
 
 `@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter — drop-ins for
 `generateText` / `streamText`. `redis` defaults to `Redis.fromEnv()`, so you import only from this
@@ -92794,6 +92849,7 @@ package.
 | Import | Feature |
 | --- | --- |
 | `createChatHistory` | Durable chat history on Redis Search — save, list, and `$smart`-search a user's transcripts. |
+| `createAgentMemory` | An AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers): memory tools plus automatic recall into the instructions. |
 | `createMemoryTools` | `recall_memory` + `save_memory` tools so the model reads and writes long-term memory. |
 | `createSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimit` | A configured Upstash Ratelimit to call before the model. |
@@ -92825,14 +92881,15 @@ export async function POST(req: Request) {
   const userId = await getSessionUserId(req); // your auth session, never a client-sent id
   const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
 
-  const result = streamText({ model, messages: convertToModelMessages(messages) });
+  const result = streamText({ model, messages: await convertToModelMessages(messages) });
 
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) =>
-        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" });
+      },
     }),
   });
 }
@@ -92852,14 +92909,14 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
     ```ts
     createChatHistory({
       redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: base key prefix
-      indexName: "agentkit_chat", // optional: index name (defaults to the prefix)
+      prefix: "agentkit:chat", // optional: setting prefix or indexName gives chats their own index
       ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
     });
     ```
 
     Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
+    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Chats are
+    indexed over `userId` + `sessionId` (filters) and `userMessages` +
     `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
     overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
     methods: `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats`
@@ -92876,22 +92933,59 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
 
 ## How to add agent memory with the AI SDK
 
-`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
+`createAgentMemory()` is an AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers).
+Create it once. Then, per request, give the model the `recall_memory` and `save_memory` tools, have the
+memories relevant to the latest user message added to the instructions automatically, or both:
+
+```ts
+import { createAgentMemory } from "@upstash/agentkit-ai-sdk";
+import { ToolLoopAgent } from "ai";
+
+const memory = createAgentMemory(); // once, at module level
+
+// per request, with userId from your auth
+const agent = new ToolLoopAgent({
+  model,
+  instructions: `You are a helpful assistant.\n\n${memory.instructions}`,
+  tools: memory.tools({ userId }), // recall_memory + save_memory
+  prepareStep: memory.prepareStep({ userId }), // relevant memories added up front
+});
+
+await agent.generate({ prompt: "What editor do I use?" });
+```
+
+The model is not wrapped: recall runs in `prepareStep` and adds a `<memories>` block to the instructions on
+the first step. It works the same with `generateText` and `streamText`. A failed recall never fails the call.
+Recall is hybrid: it finds memories by keyword and by meaning, so "What should I cook?" finds "The user is
+vegetarian." Saving stays explicit.
+
+<Accordion title="createAgentMemory options">
+  * `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
+  * `memory.tools({ userId })`: the same tools as `createMemoryTools`.
+  * `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options, such
+    as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the text of the
+    last user message. A failed recall goes to `onError` (default `console.warn`).
+  * `memory.instructions`: guidance on when to use the tools, with your tool names.
+  * `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
+</Accordion>
+
+To use the tools alone, `createMemoryTools` gives you `recall_memory` and `save_memory`:
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const tools = createMemoryTools({ userId });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "What do you know about me?" });
 ```
 
 <Accordion title="Options and the userId tenant boundary">
   * **`userId`** _(required)_ — a string, or `(input, options) => string`.
   * `redis` — defaults to `Redis.fromEnv()`.
   * `topK` — max memories `recall` returns.
-  * `minScore` — BM25 relevance floor.
+  * `minScore` — BM25 relevance floor, for keyword results only (recall falls back to keyword if a
+    hybrid query fails).
   * `recallToolName` / `saveToolName` — override the tool names.
 
   `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from a **verified
@@ -92907,12 +93001,12 @@ descriptions are generated from your schema.
 ```ts
 import { s } from "@upstash/redis";
 import { createSearchTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
 const tools = createSearchTools({ schema, indexName: "users" });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "How many users named Ada live in London?" });
 ```
 
 <Accordion title="Options">
@@ -92993,8 +93087,8 @@ import { openai } from "@ai-sdk/openai";
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  isStepCount,
   streamText,
-  stepCountIs,
   toUIMessageStream,
   tool,
   type UIMessage,
@@ -93041,7 +93135,7 @@ export async function POST(req: Request) {
     model: openai("gpt-5.4-mini"),
     messages: await convertToModelMessages(messages),
     tools,
-    stopWhen: stepCountIs(5),
+    stopWhen: isStepCount(5),
   });
 
   // 3. Persist the whole conversation when the stream finishes.
@@ -93050,7 +93144,9 @@ export async function POST(req: Request) {
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) => history.saveChat({ userId, sessionId: id, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: id, messages, title: "New chat" });
+      },
     }),
   });
 }
@@ -93072,8 +93168,15 @@ lives in [`examples/ai-sdk-demo`](https://github.com/upstash/agentkit/tree/main/
 Source: https://upstash.com/docs/redis/sdks/agentkit/eve
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+conversation history, caching, and RAG, with no separate vector database. Memory recall is
+[hybrid search](/docs/redis/search/hybrid-search) in [Upstash Redis Search](/docs/redis/search/introduction):
+keyword and semantic results merged, with the text embedded by Redis itself. Memory and chat history
+share one search index, so they work on a database that allows only one (the Free plan).
+
+<Note>
+  Upgrading from an earlier AgentKit version: an existing memory index fails on the first read with an
+  error asking you to run `SEARCH.DROP <index>`. Documents are kept and indexed again.
+</Note>
 
 Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work together in one agent:
 
@@ -93085,16 +93188,20 @@ Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work to
 Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
 Box sandbox, or control over an individual tool file.
 
-Start from an eve project (**0.65.0 or later** — the published extension is prebuilt, and its
-compatibility manifest requires eve ≥ 0.65's contribution formats; both packages declare this as their
-`eve` peer range). Scaffold one, which installs `eve`
-and an AI-SDK provider for you:
+Start from an eve project on **eve 1.0**. Scaffold one, which installs `eve` and an AI SDK provider for you:
 
 ```bash
 npx eve@latest init my-agent
 # or, to start with a Next.js app:
 npx eve@latest init my-agent --channel-web-nextjs
 ```
+
+<Note>
+  **eve versions.** `@upstash/agentkit-eve-extension` is prebuilt with eve 1.0.0-rc.9, and eve refuses an
+  extension built by a newer eve than its own, so it needs **eve 1.0.0-rc.9 or later**. Still on eve 0.91? Stay
+  on `@upstash/agentkit-eve-extension@0.19`. `@upstash/agentkit-eve` works on **eve 0.87 or later**, eve 1.0
+  included.
+</Note>
 
 <Note>
   AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
@@ -93147,7 +93254,8 @@ export default agentkit({
   * `agentkit__recall_memory` — searches the user's memories; called with no `query` it returns all of them.
   * `agentkit__save_memory` — stores one durable fact about the user.
   * `memory.topK` — max memories a recall returns.
-  * `memory.minScore` — relevance floor. Scores are unbounded BM25 values, not `[0,1]`.
+  * `memory.minScore` — BM25 relevance floor, for keyword results only. Recall is hybrid (keyword and
+    meaning), and falls back to keyword if a hybrid query fails.
 
   `userId` is the only tenant boundary. It defaults to Eve's verified session auth
   (`auth.current?.principalId`, then `auth.initiator?.principalId`, then the session id), so
@@ -93223,8 +93331,9 @@ chat and its index entry.
   Pass an object in place of `true` to tune storage:
 
   * `chatHistory.prefix` — base key prefix (default `agentkit:chat`).
-  * `chatHistory.indexName` — [Redis Search](/docs/redis/search/introduction) index name (defaults to the
-    identifier-safe `prefix`).
+  * `chatHistory.indexName` — [Redis Search](/docs/redis/search/introduction) index name. By default chats
+    share the `agentkit` index with memory, so a bare mount needs one index; setting `prefix` or
+    `indexName` gives chats their own.
   * `chatHistory.ttlSeconds` — per-chat TTL. Omit for no expiry.
 
   Each session is one JSON document at `agentkit:chat:<userId>:<sessionId>`, holding the raw transcript
@@ -93424,7 +93533,7 @@ export default defineSandbox(() => environment.open());
     `networkPolicy` is **not** an environment option (see below), and neither is `name`, because every
     session gets its own box. `environment.open({ networkPolicy })` is the only open option.
 
-    Requires eve ≥ 0.65 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
+    Requires eve ≥ 0.87 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
     import `@upstash/agentkit-eve/sandbox`. The provider reads `UPSTASH_BOX_API_KEY` when Eve prepares
     the environment (at `eve build`) and at run time.
   </Accordion>
@@ -93528,7 +93637,7 @@ export default defineCachedTool({
 
 Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
 that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
-it, two ways. Needs Eve 0.65 or newer, like the rest of the package.
+it, two ways. Needs eve 0.87 or newer, like the rest of the package.
 
 `redisMemory()` is a full provider. It recalls the memories relevant to the current turn, stores the
 user's messages afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
@@ -93572,7 +93681,7 @@ export default defineMemory({
   | --- | --- | --- |
   | `rememberMessages` | `true` | What gets saved automatically. `true` (same as `"fromUser"`) saves what the user says; `"all"` saves both sides; `"fromModel"` saves the agent's replies; `false` saves nothing. |
   | `topK` | `5` | How many memories to bring back each turn. |
-  | `minScore` | `0` | Minimum relevance score to bring one back. Scores are BM25, so unbounded. |
+  | `minScore` | `0` | Minimum BM25 score, for keyword results only. Recall is hybrid (keyword and meaning). |
   | `maxRecallCharacters` | `4000` | Size limit for everything recalled in one turn. |
   | `maxMemoryCharacters` | `2048` | Size limit for a single stored memory. |
   | `prefix` / `indexName` | `agentkit:memorySlot` | Redis key prefix and search index name. |
@@ -93699,8 +93808,15 @@ Two complete `eve` apps live in the AgentKit repo:
 Source: https://upstash.com/docs/redis/sdks/agentkit/eve
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/docs/redis/search/introduction) and its `$smart` fuzzy operator.
+conversation history, caching, and RAG, with no separate vector database. Memory recall is
+[hybrid search](/docs/redis/search/hybrid-search) in [Upstash Redis Search](/docs/redis/search/introduction):
+keyword and semantic results merged, with the text embedded by Redis itself. Memory and chat history
+share one search index, so they work on a database that allows only one (the Free plan).
+
+<Note>
+  Upgrading from an earlier AgentKit version: an existing memory index fails on the first read with an
+  error asking you to run `SEARCH.DROP <index>`. Documents are kept and indexed again.
+</Note>
 
 Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work together in one agent:
 
@@ -93712,16 +93828,20 @@ Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work to
 Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
 Box sandbox, or control over an individual tool file.
 
-Start from an eve project (**0.65.0 or later** — the published extension is prebuilt, and its
-compatibility manifest requires eve ≥ 0.65's contribution formats; both packages declare this as their
-`eve` peer range). Scaffold one, which installs `eve`
-and an AI-SDK provider for you:
+Start from an eve project on **eve 1.0**. Scaffold one, which installs `eve` and an AI SDK provider for you:
 
 ```bash
 npx eve@latest init my-agent
 # or, to start with a Next.js app:
 npx eve@latest init my-agent --channel-web-nextjs
 ```
+
+<Note>
+  **eve versions.** `@upstash/agentkit-eve-extension` is prebuilt with eve 1.0.0-rc.9, and eve refuses an
+  extension built by a newer eve than its own, so it needs **eve 1.0.0-rc.9 or later**. Still on eve 0.91? Stay
+  on `@upstash/agentkit-eve-extension@0.19`. `@upstash/agentkit-eve` works on **eve 0.87 or later**, eve 1.0
+  included.
+</Note>
 
 <Note>
   AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
@@ -93774,7 +93894,8 @@ export default agentkit({
   * `agentkit__recall_memory` — searches the user's memories; called with no `query` it returns all of them.
   * `agentkit__save_memory` — stores one durable fact about the user.
   * `memory.topK` — max memories a recall returns.
-  * `memory.minScore` — relevance floor. Scores are unbounded BM25 values, not `[0,1]`.
+  * `memory.minScore` — BM25 relevance floor, for keyword results only. Recall is hybrid (keyword and
+    meaning), and falls back to keyword if a hybrid query fails.
 
   `userId` is the only tenant boundary. It defaults to Eve's verified session auth
   (`auth.current?.principalId`, then `auth.initiator?.principalId`, then the session id), so
@@ -93850,8 +93971,9 @@ chat and its index entry.
   Pass an object in place of `true` to tune storage:
 
   * `chatHistory.prefix` — base key prefix (default `agentkit:chat`).
-  * `chatHistory.indexName` — [Redis Search](/docs/redis/search/introduction) index name (defaults to the
-    identifier-safe `prefix`).
+  * `chatHistory.indexName` — [Redis Search](/docs/redis/search/introduction) index name. By default chats
+    share the `agentkit` index with memory, so a bare mount needs one index; setting `prefix` or
+    `indexName` gives chats their own.
   * `chatHistory.ttlSeconds` — per-chat TTL. Omit for no expiry.
 
   Each session is one JSON document at `agentkit:chat:<userId>:<sessionId>`, holding the raw transcript
@@ -94051,7 +94173,7 @@ export default defineSandbox(() => environment.open());
     `networkPolicy` is **not** an environment option (see below), and neither is `name`, because every
     session gets its own box. `environment.open({ networkPolicy })` is the only open option.
 
-    Requires eve ≥ 0.65 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
+    Requires eve ≥ 0.87 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
     import `@upstash/agentkit-eve/sandbox`. The provider reads `UPSTASH_BOX_API_KEY` when Eve prepares
     the environment (at `eve build`) and at run time.
   </Accordion>
@@ -94155,7 +94277,7 @@ export default defineCachedTool({
 
 Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
 that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
-it, two ways. Needs Eve 0.65 or newer, like the rest of the package.
+it, two ways. Needs eve 0.87 or newer, like the rest of the package.
 
 `redisMemory()` is a full provider. It recalls the memories relevant to the current turn, stores the
 user's messages afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
@@ -94199,7 +94321,7 @@ export default defineMemory({
   | --- | --- | --- |
   | `rememberMessages` | `true` | What gets saved automatically. `true` (same as `"fromUser"`) saves what the user says; `"all"` saves both sides; `"fromModel"` saves the agent's replies; `false` saves nothing. |
   | `topK` | `5` | How many memories to bring back each turn. |
-  | `minScore` | `0` | Minimum relevance score to bring one back. Scores are BM25, so unbounded. |
+  | `minScore` | `0` | Minimum BM25 score, for keyword results only. Recall is hybrid (keyword and meaning). |
   | `maxRecallCharacters` | `4000` | Size limit for everything recalled in one turn. |
   | `maxMemoryCharacters` | `2048` | Size limit for a single stored memory. |
   | `prefix` / `indexName` | `agentkit:memorySlot` | Redis key prefix and search index name. |
@@ -96268,7 +96390,8 @@ Next.js app that runs the same tool on QStash and on Workflow, with a live log o
 Source: https://upstash.com/docs/redis/sdks/agentkit/tanstack-ai
 
 [TanStack AI](https://tanstack.com/ai) defines the contracts for an agent's production state — chat
-persistence, session history, stored credentials, resumable streaming, locks, memory — and ships in-memory implementations that only work
+persistence, session history, stored credentials, resumable streaming, locks, memory, sandbox snapshots, MCP
+tasks — and ships in-memory implementations that only work
 inside one process. `@upstash/agentkit-tanstack-ai` implements them on Upstash Redis, so they hold
 across serverless instances, page reloads, and devices.
 
@@ -96278,13 +96401,19 @@ across serverless instances, page reloads, and devices.
 | `upstashCredentials` | `CredentialStore` (`@tanstack/ai/byok`) | Provider API keys and OAuth tokens that users or organizations saved, optionally encrypted at rest. |
 | `upstashStream` | `durability` on the response | Resume a stream after a reload, or open the same thread on another device. |
 | `upstashLocks` | `withLocks()` | Distributed locks for TanStack AI middleware, such as its sandbox setup. |
-| `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/docs/redis/search/introduction). |
+| `upstashMemory` | `memoryMiddleware()` | Long-term memory recalled by keyword and meaning ([hybrid search](/docs/redis/search/hybrid-search)). |
+| `upstashSandboxCheckpointStore`, `upstashSandboxInstanceStore` | `createSandboxSnapshots()`, `withSandbox()` | Portable sandbox snapshots with history and forks; any server can resume a thread's sandbox. |
+| `upstashMcpTaskStore`, `upstashMcpEventStore`, `upstashMcpSessionStore` | `createMCPServer({ taskStore })`, MCP Events, MCP Apps | Long-running MCP tasks, webhook subscriptions and MCP Apps sessions that survive restarts and work across instances. |
 | `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
 | `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
 
 ```bash
 npm install @upstash/agentkit-tanstack-ai @tanstack/ai
 ```
+
+Each optional part has its own entry point and needs its TanStack package: `/persistence`
+(`@tanstack/ai-persistence`), `/memory` (`@tanstack/ai-memory`), `/sandbox` (`@tanstack/ai-sandbox`) and `/mcp`
+(`@tanstack/ai-mcp`). `/byok` and the root entry need only `@tanstack/ai`.
 
 <Warning>
   Version 0.3.0 and later need **TanStack AI 1.0 or later**: `@tanstack/ai` and `@tanstack/ai-persistence` must be
@@ -96498,7 +96627,7 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
 import { withLocks } from "@tanstack/ai/locks";
 import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
 
-chat({ adapter, messages, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
+chat({ adapter, messages, threadId, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
 ```
 
 `withLocks` doesn't lock anything by itself. It gives the lock store to later middleware, which lock
@@ -96537,6 +96666,7 @@ import { upstashMemory } from "@upstash/agentkit-tanstack-ai/memory";
 chat({
   adapter,
   messages,
+  threadId,
   middleware: [
     memoryMiddleware({
       adapter: upstashMemory(),
@@ -96565,6 +96695,141 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
   ```
 </Accordion>
 
+## How to keep sandbox snapshots in Redis
+
+TanStack AI's [portable snapshots](https://tanstack.com/ai/latest/docs/sandbox/portable-snapshots) let a later run
+rebuild a sandbox's files after the provider sandbox is gone, and fork a conversation, files included, from
+any earlier checkpoint. Every store they need runs on Upstash:
+
+```bash
+npm install @tanstack/ai-sandbox @tanstack/ai-persistence @upstash/blob
+```
+
+```ts
+import { createSandboxSnapshots, withSandbox } from "@tanstack/ai-sandbox";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { Bucket } from "@upstash/blob";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai/persistence";
+import {
+  upstashSandboxCheckpointStore,
+  upstashSandboxInstanceStore,
+} from "@upstash/agentkit-tanstack-ai/sandbox";
+
+const instances = upstashSandboxInstanceStore();
+const snapshots = createSandboxSnapshots({
+  persistence: upstashPersistence({ bucket: Bucket.fromEnv() }), // file bytes in Upstash Blob
+  checkpoints: upstashSandboxCheckpointStore(), // same Redis + prefix as the persistence
+  instances,
+  locks: upstashLocks(),
+});
+
+chat({
+  adapter,
+  messages,
+  threadId,
+  middleware: [withPersistence(snapshots.persistence), withSandbox(sandbox, { instances, snapshots })],
+});
+
+// Branch the conversation, files included, from an earlier checkpoint.
+await snapshots.fork({ threadId, checkpointId, destinationThreadId: "thread-2" });
+```
+
+* `upstashSandboxCheckpointStore()` keeps the checkpoint history of each thread. Appends are compare-and-set on
+  the thread's head, and every write first checks the writer lease, so a writer that lost its lease changes
+  nothing. A fork copies a checkpoint into an empty thread and writes that thread's transcript in the same
+  script, which is why it must use the same `redis` and `prefix` as `upstashPersistence()`.
+* `upstashSandboxInstanceStore()` maps a sandbox key to the provider's sandbox, so any server can resume it.
+* For the sandbox itself, use [Upstash Box](/docs/box/overall/quickstart) through TanStack's
+  `@tanstack/ai-sandbox-upstash-box`.
+
+<Accordion title="Options">
+  ```ts
+  upstashSandboxCheckpointStore({
+    redis, // optional: defaults to Redis.fromEnv()
+    prefix: "agentkit:tanstack", // optional: must match upstashPersistence()
+    messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: match upstashPersistence() if you set it
+    leaseDurationMs: 120_000, // optional: writer lease length
+    renewAfterMs: 45_000, // optional: when the holder renews
+  });
+
+  upstashSandboxInstanceStore({
+    redis, // optional
+    prefix: "agentkit:tanstack", // optional
+    ttlSeconds: 60 * 60 * 24 * 7, // optional: keep at least as long as your sandboxes live
+  });
+  ```
+</Accordion>
+
+## How to share MCP tasks and events across instances
+
+```bash
+npm install @tanstack/ai-mcp
+```
+
+```ts
+import { createMCPClient } from "@tanstack/ai-mcp";
+import { createMCPServer } from "@tanstack/ai-mcp/server";
+import { upstashMcpEventStore, upstashMcpTaskStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+// An MCP server whose long-running tools run as tasks any instance can report on.
+const server = createMCPServer({
+  name: "tools",
+  version: "1.0.0",
+  tools,
+  taskStore: upstashMcpTaskStore({ ttlSeconds: 60 * 60 * 24 }),
+});
+
+// An MCP client whose MCP Events webhook subscriptions are shared by every instance.
+const mcp = await createMCPClient({
+  transport: { type: "http", url: "https://mcp.example.com/mcp" },
+  experimental_events: { store: upstashMcpEventStore() },
+});
+```
+
+* With `upstashMcpTaskStore()`, task records survive restarts and any instance can answer `tasks/get` and
+  `tasks/result`. Cancelling a task still stops its work only on the instance running it.
+* With `upstashMcpEventStore()`, subscriptions, cursors and refresh deadlines are shared, so a webhook can land
+  on any server. Concurrent updates are compare-and-set, so no field is lost. The webhook `secret` is stored as is.
+
+### MCP Apps sessions
+
+In MCP Apps, widgets call MCP tools through `createMcpAppCallHandler`, which reconnects to the thread's servers
+for every call. `upstashMcpSessionStore()` remembers those servers, so the call can land on any instance:
+
+```ts
+import { createMcpAppCallHandler } from "@tanstack/ai-mcp/apps";
+import { upstashMcpSessionStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+const store = upstashMcpSessionStore({
+  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts transport headers and stdio env
+  // What Redis cannot hold comes from your code, per server:
+  resolve: ({ threadId, serverId }) => ({
+    needsApproval: (tool) => tool.annotations?.readOnlyHint !== true,
+    authProvider: oauthProviderFor(threadId, serverId),
+  }),
+});
+
+await store.set(threadId, servers); // in the chat route
+const handleCall = createMcpAppCallHandler({ clients, store });
+```
+
+A server descriptor holds the policy for widget calls (`toolFilter`, `needsApproval`, `toolName`) and often a
+transport `fetch` or OAuth `authProvider`, which cannot be stored as JSON. The store saves the rest and records
+which of those fields were dropped. `resolve` supplies them again on every read.
+
+<Warning>
+  The store fails closed. If `resolve` does not supply a dropped field such as `needsApproval`, the read returns
+  nothing. The handler then uses the server's entry in `clients`, or refuses the call. A widget never reaches a
+  server whose approval gate was lost.
+</Warning>
+
+<Tip>
+  Building the server with the official `@modelcontextprotocol/server` SDK instead of TanStack? See
+  [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks) and [MCP Events](/docs/redis/sdks/agentkit/mcp-events) for
+  `@upstash/mcp-toolkit`, which also runs the work in the background with QStash.
+</Tip>
+
 ## How to cache tools and rate limit with TanStack AI
 
 ```ts
@@ -96573,6 +96838,7 @@ import { rateLimit, Ratelimit, toolCache } from "@upstash/agentkit-tanstack-ai";
 chat({
   adapter,
   messages,
+  threadId,
   tools: [getWeather, sendEmail],
   middleware: [
     rateLimit({ limiter: Ratelimit.slidingWindow(10, "60 s"), identifier: userId }),
@@ -96605,7 +96871,7 @@ const tools = createSearchTools({
   schema: s.object({ name: s.string(), price: s.number(), category: s.string().noTokenize() }),
 });
 
-chat({ adapter, messages, tools });
+chat({ adapter, messages, threadId, tools });
 ```
 
 The tool descriptions are generated from the schema, and the index is created on first use.
@@ -96630,7 +96896,8 @@ off, set `UPSTASH_DISABLE_TELEMETRY`, or pass `enableTelemetry: false` to a help
 Source: https://upstash.com/docs/redis/sdks/agentkit/tanstack-ai
 
 [TanStack AI](https://tanstack.com/ai) defines the contracts for an agent's production state — chat
-persistence, session history, stored credentials, resumable streaming, locks, memory — and ships in-memory implementations that only work
+persistence, session history, stored credentials, resumable streaming, locks, memory, sandbox snapshots, MCP
+tasks — and ships in-memory implementations that only work
 inside one process. `@upstash/agentkit-tanstack-ai` implements them on Upstash Redis, so they hold
 across serverless instances, page reloads, and devices.
 
@@ -96640,13 +96907,19 @@ across serverless instances, page reloads, and devices.
 | `upstashCredentials` | `CredentialStore` (`@tanstack/ai/byok`) | Provider API keys and OAuth tokens that users or organizations saved, optionally encrypted at rest. |
 | `upstashStream` | `durability` on the response | Resume a stream after a reload, or open the same thread on another device. |
 | `upstashLocks` | `withLocks()` | Distributed locks for TanStack AI middleware, such as its sandbox setup. |
-| `upstashMemory` | `memoryMiddleware()` | Long-term memory ranked in [Redis Search](/docs/redis/search/introduction). |
+| `upstashMemory` | `memoryMiddleware()` | Long-term memory recalled by keyword and meaning ([hybrid search](/docs/redis/search/hybrid-search)). |
+| `upstashSandboxCheckpointStore`, `upstashSandboxInstanceStore` | `createSandboxSnapshots()`, `withSandbox()` | Portable sandbox snapshots with history and forks; any server can resume a thread's sandbox. |
+| `upstashMcpTaskStore`, `upstashMcpEventStore`, `upstashMcpSessionStore` | `createMCPServer({ taskStore })`, MCP Events, MCP Apps | Long-running MCP tasks, webhook subscriptions and MCP Apps sessions that survive restarts and work across instances. |
 | `toolCache`, `rateLimit` | `middleware` | Skip repeated tool calls; throttle users before the model runs. |
 | `createSearchTools` | `tools` | `search` / `aggregate` / `count` over your own documents (RAG). |
 
 ```bash
 npm install @upstash/agentkit-tanstack-ai @tanstack/ai
 ```
+
+Each optional part has its own entry point and needs its TanStack package: `/persistence`
+(`@tanstack/ai-persistence`), `/memory` (`@tanstack/ai-memory`), `/sandbox` (`@tanstack/ai-sandbox`) and `/mcp`
+(`@tanstack/ai-mcp`). `/byok` and the root entry need only `@tanstack/ai`.
 
 <Warning>
   Version 0.3.0 and later need **TanStack AI 1.0 or later**: `@tanstack/ai` and `@tanstack/ai-persistence` must be
@@ -96860,7 +97133,7 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
 import { withLocks } from "@tanstack/ai/locks";
 import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
 
-chat({ adapter, messages, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
+chat({ adapter, messages, threadId, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
 ```
 
 `withLocks` doesn't lock anything by itself. It gives the lock store to later middleware, which lock
@@ -96899,6 +97172,7 @@ import { upstashMemory } from "@upstash/agentkit-tanstack-ai/memory";
 chat({
   adapter,
   messages,
+  threadId,
   middleware: [
     memoryMiddleware({
       adapter: upstashMemory(),
@@ -96927,6 +97201,141 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
   ```
 </Accordion>
 
+## How to keep sandbox snapshots in Redis
+
+TanStack AI's [portable snapshots](https://tanstack.com/ai/latest/docs/sandbox/portable-snapshots) let a later run
+rebuild a sandbox's files after the provider sandbox is gone, and fork a conversation, files included, from
+any earlier checkpoint. Every store they need runs on Upstash:
+
+```bash
+npm install @tanstack/ai-sandbox @tanstack/ai-persistence @upstash/blob
+```
+
+```ts
+import { createSandboxSnapshots, withSandbox } from "@tanstack/ai-sandbox";
+import { withPersistence } from "@tanstack/ai-persistence";
+import { Bucket } from "@upstash/blob";
+import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
+import { upstashPersistence } from "@upstash/agentkit-tanstack-ai/persistence";
+import {
+  upstashSandboxCheckpointStore,
+  upstashSandboxInstanceStore,
+} from "@upstash/agentkit-tanstack-ai/sandbox";
+
+const instances = upstashSandboxInstanceStore();
+const snapshots = createSandboxSnapshots({
+  persistence: upstashPersistence({ bucket: Bucket.fromEnv() }), // file bytes in Upstash Blob
+  checkpoints: upstashSandboxCheckpointStore(), // same Redis + prefix as the persistence
+  instances,
+  locks: upstashLocks(),
+});
+
+chat({
+  adapter,
+  messages,
+  threadId,
+  middleware: [withPersistence(snapshots.persistence), withSandbox(sandbox, { instances, snapshots })],
+});
+
+// Branch the conversation, files included, from an earlier checkpoint.
+await snapshots.fork({ threadId, checkpointId, destinationThreadId: "thread-2" });
+```
+
+* `upstashSandboxCheckpointStore()` keeps the checkpoint history of each thread. Appends are compare-and-set on
+  the thread's head, and every write first checks the writer lease, so a writer that lost its lease changes
+  nothing. A fork copies a checkpoint into an empty thread and writes that thread's transcript in the same
+  script, which is why it must use the same `redis` and `prefix` as `upstashPersistence()`.
+* `upstashSandboxInstanceStore()` maps a sandbox key to the provider's sandbox, so any server can resume it.
+* For the sandbox itself, use [Upstash Box](/docs/box/overall/quickstart) through TanStack's
+  `@tanstack/ai-sandbox-upstash-box`.
+
+<Accordion title="Options">
+  ```ts
+  upstashSandboxCheckpointStore({
+    redis, // optional: defaults to Redis.fromEnv()
+    prefix: "agentkit:tanstack", // optional: must match upstashPersistence()
+    messagesTtlSeconds: 60 * 60 * 24 * 30, // optional: match upstashPersistence() if you set it
+    leaseDurationMs: 120_000, // optional: writer lease length
+    renewAfterMs: 45_000, // optional: when the holder renews
+  });
+
+  upstashSandboxInstanceStore({
+    redis, // optional
+    prefix: "agentkit:tanstack", // optional
+    ttlSeconds: 60 * 60 * 24 * 7, // optional: keep at least as long as your sandboxes live
+  });
+  ```
+</Accordion>
+
+## How to share MCP tasks and events across instances
+
+```bash
+npm install @tanstack/ai-mcp
+```
+
+```ts
+import { createMCPClient } from "@tanstack/ai-mcp";
+import { createMCPServer } from "@tanstack/ai-mcp/server";
+import { upstashMcpEventStore, upstashMcpTaskStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+// An MCP server whose long-running tools run as tasks any instance can report on.
+const server = createMCPServer({
+  name: "tools",
+  version: "1.0.0",
+  tools,
+  taskStore: upstashMcpTaskStore({ ttlSeconds: 60 * 60 * 24 }),
+});
+
+// An MCP client whose MCP Events webhook subscriptions are shared by every instance.
+const mcp = await createMCPClient({
+  transport: { type: "http", url: "https://mcp.example.com/mcp" },
+  experimental_events: { store: upstashMcpEventStore() },
+});
+```
+
+* With `upstashMcpTaskStore()`, task records survive restarts and any instance can answer `tasks/get` and
+  `tasks/result`. Cancelling a task still stops its work only on the instance running it.
+* With `upstashMcpEventStore()`, subscriptions, cursors and refresh deadlines are shared, so a webhook can land
+  on any server. Concurrent updates are compare-and-set, so no field is lost. The webhook `secret` is stored as is.
+
+### MCP Apps sessions
+
+In MCP Apps, widgets call MCP tools through `createMcpAppCallHandler`, which reconnects to the thread's servers
+for every call. `upstashMcpSessionStore()` remembers those servers, so the call can land on any instance:
+
+```ts
+import { createMcpAppCallHandler } from "@tanstack/ai-mcp/apps";
+import { upstashMcpSessionStore } from "@upstash/agentkit-tanstack-ai/mcp";
+
+const store = upstashMcpSessionStore({
+  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts transport headers and stdio env
+  // What Redis cannot hold comes from your code, per server:
+  resolve: ({ threadId, serverId }) => ({
+    needsApproval: (tool) => tool.annotations?.readOnlyHint !== true,
+    authProvider: oauthProviderFor(threadId, serverId),
+  }),
+});
+
+await store.set(threadId, servers); // in the chat route
+const handleCall = createMcpAppCallHandler({ clients, store });
+```
+
+A server descriptor holds the policy for widget calls (`toolFilter`, `needsApproval`, `toolName`) and often a
+transport `fetch` or OAuth `authProvider`, which cannot be stored as JSON. The store saves the rest and records
+which of those fields were dropped. `resolve` supplies them again on every read.
+
+<Warning>
+  The store fails closed. If `resolve` does not supply a dropped field such as `needsApproval`, the read returns
+  nothing. The handler then uses the server's entry in `clients`, or refuses the call. A widget never reaches a
+  server whose approval gate was lost.
+</Warning>
+
+<Tip>
+  Building the server with the official `@modelcontextprotocol/server` SDK instead of TanStack? See
+  [MCP Tasks](/docs/redis/sdks/agentkit/mcp-tasks) and [MCP Events](/docs/redis/sdks/agentkit/mcp-events) for
+  `@upstash/mcp-toolkit`, which also runs the work in the background with QStash.
+</Tip>
+
 ## How to cache tools and rate limit with TanStack AI
 
 ```ts
@@ -96935,6 +97344,7 @@ import { rateLimit, Ratelimit, toolCache } from "@upstash/agentkit-tanstack-ai";
 chat({
   adapter,
   messages,
+  threadId,
   tools: [getWeather, sendEmail],
   middleware: [
     rateLimit({ limiter: Ratelimit.slidingWindow(10, "60 s"), identifier: userId }),
@@ -96967,7 +97377,7 @@ const tools = createSearchTools({
   schema: s.object({ name: s.string(), price: s.number(), category: s.string().noTokenize() }),
 });
 
-chat({ adapter, messages, tools });
+chat({ adapter, messages, threadId, tools });
 ```
 
 The tool descriptions are generated from the schema, and the index is created on first use.

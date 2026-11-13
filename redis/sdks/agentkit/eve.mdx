@@ -5,8 +5,15 @@ description: "Add long-term memory, searchable chat history, RAG, rate limiting,
 ---
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/redis/search/introduction) and its `$smart` fuzzy operator.
+conversation history, caching, and RAG, with no separate vector database. Memory recall is
+[hybrid search](/redis/search/hybrid-search) in [Upstash Redis Search](/redis/search/introduction):
+keyword and semantic results merged, with the text embedded by Redis itself. Memory and chat history
+share one search index, so they work on a database that allows only one (the Free plan).
+
+<Note>
+  Upgrading from an earlier AgentKit version: an existing memory index fails on the first read with an
+  error asking you to run `SEARCH.DROP <index>`. Documents are kept and indexed again.
+</Note>
 
 Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work together in one agent:
 
@@ -18,16 +25,20 @@ Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work to
 Mount the extension for the bundled setup. Add the package when you need a rate-limit gate, an Upstash
 Box sandbox, or control over an individual tool file.
 
-Start from an eve project (**0.65.0 or later** — the published extension is prebuilt, and its
-compatibility manifest requires eve ≥ 0.65's contribution formats; both packages declare this as their
-`eve` peer range). Scaffold one, which installs `eve`
-and an AI-SDK provider for you:
+Start from an eve project on **eve 1.0**. Scaffold one, which installs `eve` and an AI SDK provider for you:
 
 ```bash
 npx eve@latest init my-agent
 # or, to start with a Next.js app:
 npx eve@latest init my-agent --channel-web-nextjs
 ```
+
+<Note>
+  **eve versions.** `@upstash/agentkit-eve-extension` is prebuilt with eve 1.0.0-rc.9, and eve refuses an
+  extension built by a newer eve than its own, so it needs **eve 1.0.0-rc.9 or later**. Still on eve 0.91? Stay
+  on `@upstash/agentkit-eve-extension@0.19`. `@upstash/agentkit-eve` works on **eve 0.87 or later**, eve 1.0
+  included.
+</Note>
 
 <Note>
   AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
@@ -80,7 +91,8 @@ export default agentkit({
   - `agentkit__recall_memory` — searches the user's memories; called with no `query` it returns all of them.
   - `agentkit__save_memory` — stores one durable fact about the user.
   - `memory.topK` — max memories a recall returns.
-  - `memory.minScore` — relevance floor. Scores are unbounded BM25 values, not `[0,1]`.
+  - `memory.minScore` — BM25 relevance floor, for keyword results only. Recall is hybrid (keyword and
+    meaning), and falls back to keyword if a hybrid query fails.
 
   `userId` is the only tenant boundary. It defaults to Eve's verified session auth
   (`auth.current?.principalId`, then `auth.initiator?.principalId`, then the session id), so
@@ -156,8 +168,9 @@ chat and its index entry.
   Pass an object in place of `true` to tune storage:
 
   - `chatHistory.prefix` — base key prefix (default `agentkit:chat`).
-  - `chatHistory.indexName` — [Redis Search](/redis/search/introduction) index name (defaults to the
-    identifier-safe `prefix`).
+  - `chatHistory.indexName` — [Redis Search](/redis/search/introduction) index name. By default chats
+    share the `agentkit` index with memory, so a bare mount needs one index; setting `prefix` or
+    `indexName` gives chats their own.
   - `chatHistory.ttlSeconds` — per-chat TTL. Omit for no expiry.
 
   Each session is one JSON document at `agentkit:chat:<userId>:<sessionId>`, holding the raw transcript
@@ -357,7 +370,7 @@ export default defineSandbox(() => environment.open());
     `networkPolicy` is **not** an environment option (see below), and neither is `name`, because every
     session gets its own box. `environment.open({ networkPolicy })` is the only open option.
 
-    Requires eve ≥ 0.65 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
+    Requires eve ≥ 0.87 and `@upstash/box` ≥ 0.7.1, an optional peer dependency needed only when you
     import `@upstash/agentkit-eve/sandbox`. The provider reads `UPSTASH_BOX_API_KEY` when Eve prepares
     the environment (at `eve build`) and at run time.
   </Accordion>
@@ -461,7 +474,7 @@ export default defineCachedTool({
 
 Eve has a native [memory](https://eve.dev/docs/memory) feature: a slot file under `agent/memory/`
 that Eve calls before and after each turn. `@upstash/agentkit-eve/memory` puts Upstash Redis behind
-it, two ways. Needs Eve 0.65 or newer, like the rest of the package.
+it, two ways. Needs eve 0.87 or newer, like the rest of the package.
 
 `redisMemory()` is a full provider. It recalls the memories relevant to the current turn, stores the
 user's messages afterwards, and contributes `<slot>__save_memory`, `<slot>__search_memory`,
@@ -505,7 +518,7 @@ export default defineMemory({
   | --- | --- | --- |
   | `rememberMessages` | `true` | What gets saved automatically. `true` (same as `"fromUser"`) saves what the user says; `"all"` saves both sides; `"fromModel"` saves the agent's replies; `false` saves nothing. |
   | `topK` | `5` | How many memories to bring back each turn. |
-  | `minScore` | `0` | Minimum relevance score to bring one back. Scores are BM25, so unbounded. |
+  | `minScore` | `0` | Minimum BM25 score, for keyword results only. Recall is hybrid (keyword and meaning). |
   | `maxRecallCharacters` | `4000` | Size limit for everything recalled in one turn. |
   | `maxMemoryCharacters` | `2048` | Size limit for a single stored memory. |
   | `prefix` / `indexName` | `agentkit:memorySlot` | Redis key prefix and search index name. |

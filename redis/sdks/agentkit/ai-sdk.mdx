@@ -5,8 +5,15 @@ description: "Add long-term memory, RAG, and chat history to the Vercel AI SDK w
 ---
 
 [Upstash AgentKit](https://github.com/upstash/agentkit) builds AI agents on Upstash Redis: memory,
-conversation history, caching, and RAG, with no separate vector database. The semantic features run on
-[Upstash Redis Search](/redis/search/introduction) and its `$smart` fuzzy operator.
+conversation history, caching, and RAG, with no separate vector database. Memory recall is
+[hybrid search](/redis/search/hybrid-search) in [Upstash Redis Search](/redis/search/introduction):
+keyword and semantic results merged, with the text embedded by Redis itself. Memory and chat history
+share one search index, so they work on a database that allows only one (the Free plan).
+
+<Note>
+  Upgrading from an earlier AgentKit version: an existing memory index fails on the first read with an
+  error asking you to run `SEARCH.DROP <index>`. Documents are kept and indexed again.
+</Note>
 
 `@upstash/agentkit-ai-sdk` is the [Vercel AI SDK](https://ai-sdk.dev) adapter — drop-ins for
 `generateText` / `streamText`. `redis` defaults to `Redis.fromEnv()`, so you import only from this
@@ -15,6 +22,7 @@ package.
 | Import | Feature |
 | --- | --- |
 | `createChatHistory` | Durable chat history on Redis Search — save, list, and `$smart`-search a user's transcripts. |
+| `createAgentMemory` | An AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers): memory tools plus automatic recall into the instructions. |
 | `createMemoryTools` | `recall_memory` + `save_memory` tools so the model reads and writes long-term memory. |
 | `createSearchTools` | `search` / `aggregate` / `count` tools over a Redis Search index (this is how you do RAG). |
 | `createRateLimit` | A configured Upstash Ratelimit to call before the model. |
@@ -46,14 +54,15 @@ export async function POST(req: Request) {
   const userId = await getSessionUserId(req); // your auth session, never a client-sent id
   const { id: chatId, messages } = await req.json(); // useChat posts its chat id + the full transcript
 
-  const result = streamText({ model, messages: convertToModelMessages(messages) });
+  const result = streamText({ model, messages: await convertToModelMessages(messages) });
 
   return createUIMessageStreamResponse({
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) =>
-        history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: chatId, messages, title: "New chat" });
+      },
     }),
   });
 }
@@ -73,14 +82,14 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
     ```ts
     createChatHistory({
       redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: base key prefix
-      indexName: "agentkit_chat", // optional: index name (defaults to the prefix)
+      prefix: "agentkit:chat", // optional: setting prefix or indexName gives chats their own index
       ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
     });
     ```
 
     Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`), indexed over `userId` + `sessionId` (filters) and `userMessages` +
+    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Chats are
+    indexed over `userId` + `sessionId` (filters) and `userMessages` +
     `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
     overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
     methods: `getChat` / `deleteChat` (`{ userId, sessionId }`), `listChats` / `searchChats`
@@ -97,22 +106,59 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
 
 ## How to add agent memory with the AI SDK
 
-`recall_memory` and `save_memory` tools so the model reads and writes its own long-term memory.
+`createAgentMemory()` is an AI SDK [memory provider](https://ai-sdk.dev/docs/agents/memory#memory-providers).
+Create it once. Then, per request, give the model the `recall_memory` and `save_memory` tools, have the
+memories relevant to the latest user message added to the instructions automatically, or both:
+
+```ts
+import { createAgentMemory } from "@upstash/agentkit-ai-sdk";
+import { ToolLoopAgent } from "ai";
+
+const memory = createAgentMemory(); // once, at module level
+
+// per request, with userId from your auth
+const agent = new ToolLoopAgent({
+  model,
+  instructions: `You are a helpful assistant.\n\n${memory.instructions}`,
+  tools: memory.tools({ userId }), // recall_memory + save_memory
+  prepareStep: memory.prepareStep({ userId }), // relevant memories added up front
+});
+
+await agent.generate({ prompt: "What editor do I use?" });
+```
+
+The model is not wrapped: recall runs in `prepareStep` and adds a `<memories>` block to the instructions on
+the first step. It works the same with `generateText` and `streamText`. A failed recall never fails the call.
+Recall is hybrid: it finds memories by keyword and by meaning, so "What should I cook?" finds "The user is
+vegetarian." Saving stays explicit.
+
+<Accordion title="createAgentMemory options">
+  - `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
+  - `memory.tools({ userId })`: the same tools as `createMemoryTools`.
+  - `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options, such
+    as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the text of the
+    last user message. A failed recall goes to `onError` (default `console.warn`).
+  - `memory.instructions`: guidance on when to use the tools, with your tool names.
+  - `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
+</Accordion>
+
+To use the tools alone, `createMemoryTools` gives you `recall_memory` and `save_memory`:
 
 ```ts
 import { createMemoryTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const tools = createMemoryTools({ userId });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "What do you know about me?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "What do you know about me?" });
 ```
 
 <Accordion title="Options and the userId tenant boundary">
   - **`userId`** _(required)_ — a string, or `(input, options) => string`.
   - `redis` — defaults to `Redis.fromEnv()`.
   - `topK` — max memories `recall` returns.
-  - `minScore` — BM25 relevance floor.
+  - `minScore` — BM25 relevance floor, for keyword results only (recall falls back to keyword if a
+    hybrid query fails).
   - `recallToolName` / `saveToolName` — override the tool names.
 
   `userId` is the only tenant boundary (required, non-empty, no `:`). Derive it from a **verified
@@ -128,12 +174,12 @@ descriptions are generated from your schema.
 ```ts
 import { s } from "@upstash/redis";
 import { createSearchTools } from "@upstash/agentkit-ai-sdk";
-import { generateText, stepCountIs } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const schema = s.object({ name: s.string(), age: s.number(), city: s.string().noTokenize() });
 const tools = createSearchTools({ schema, indexName: "users" });
 
-await generateText({ model, tools, stopWhen: stepCountIs(5), prompt: "How many users named Ada live in London?" });
+await generateText({ model, tools, stopWhen: isStepCount(5), prompt: "How many users named Ada live in London?" });
 ```
 
 <Accordion title="Options">
@@ -214,8 +260,8 @@ import { openai } from "@ai-sdk/openai";
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
+  isStepCount,
   streamText,
-  stepCountIs,
   toUIMessageStream,
   tool,
   type UIMessage,
@@ -262,7 +308,7 @@ export async function POST(req: Request) {
     model: openai("gpt-5.4-mini"),
     messages: await convertToModelMessages(messages),
     tools,
-    stopWhen: stepCountIs(5),
+    stopWhen: isStepCount(5),
   });
 
   // 3. Persist the whole conversation when the stream finishes.
@@ -271,7 +317,9 @@ export async function POST(req: Request) {
     stream: toUIMessageStream({
       stream: result.stream,
       originalMessages: messages,
-      onFinish: ({ messages }) => history.saveChat({ userId, sessionId: id, messages, title: "New chat" }),
+      onFinish: async ({ messages }) => {
+        await history.saveChat({ userId, sessionId: id, messages, title: "New chat" });
+      },
     }),
   });
 }
