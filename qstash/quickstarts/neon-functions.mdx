@@ -1,0 +1,140 @@
+---
+title: "Neon Functions"
+description: "Receive and verify QStash messages in a Neon Function to add retries, delays, schedules, and flow control to background work."
+---
+
+This is a step by step guide on how to receive messages from QStash in a
+[Neon Function](https://neon.com/docs/compute/functions/overview).
+
+Neon Functions are request/response, with no built-in queue or retries.
+Publish work to the function through QStash to get
+[retries](/qstash/features/retry), [delays](/qstash/features/delay),
+[schedules](/qstash/features/schedules), and
+[flow control](/qstash/features/flowcontrol) on top of it.
+
+### 1. Project setup
+
+You need a Neon project in a [region that supports Functions](https://neon.com/docs/compute/functions/overview),
+the latest [Neon CLI](https://neon.com/docs/cli), and Node.js 20 or later.
+
+Create a project directory, link it to your Neon project and branch, and install the QStash SDK:
+
+```shell
+mkdir qstash-receiver && cd qstash-receiver
+neon link
+npm install @upstash/qstash
+```
+
+### 2. Get your signing keys
+
+Open the [Upstash Console](https://console.upstash.com/qstash) and copy
+`QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY`. Add them to a
+`.env` file in the project directory:
+
+```shell .env
+QSTASH_CURRENT_SIGNING_KEY=<YOUR_CURRENT_SIGNING_KEY>
+QSTASH_NEXT_SIGNING_KEY=<YOUR_NEXT_SIGNING_KEY>
+```
+
+### 3. Verify messages in your handler
+
+A Neon Function has a public URL and no platform gate in front of the handler,
+so verify the `Upstash-Signature` header before you do any work:
+
+```ts index.ts
+import { Receiver } from "@upstash/qstash";
+
+const receiver = new Receiver({
+  currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+  nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+});
+
+export default {
+  async fetch(request: Request) {
+    const body = await request.text();
+
+    const isValid = await receiver
+      .verify({
+        signature: request.headers.get("Upstash-Signature") ?? "",
+        body,
+      })
+      .catch(() => false);
+
+    if (!isValid) {
+      return new Response("Invalid signature", { status: 401 });
+    }
+
+    // signature is valid
+    console.log("Received:", body);
+
+    return new Response("OK");
+  },
+};
+```
+
+Any response other than `2XX` makes QStash retry the message.
+
+### 4. Deploy
+
+Deploy the function and pass the signing keys as environment variables. Function slugs are 1 to 20 lowercase letters and digits, with no hyphens.
+
+```shell
+neon functions deploy qstashreceiver --src index.ts \
+  --env QSTASH_CURRENT_SIGNING_KEY=<YOUR_CURRENT_SIGNING_KEY> \
+  --env QSTASH_NEXT_SIGNING_KEY=<YOUR_NEXT_SIGNING_KEY>
+```
+
+Get the public URL of the function:
+
+```shell
+neon functions get qstashreceiver
+```
+
+The URL looks like `https://<branch_id>-qstashreceiver.compute.<cell>.<region>.aws.neon.tech/`.
+
+### 5. Publish a message
+
+Publish a message to the function URL:
+
+```shell
+curl --request POST "https://qstash.upstash.io/v2/publish/<FUNCTION_URL>" \
+     -H "Authorization: Bearer <QSTASH_TOKEN>" \
+     -H "Content-Type: application/json" \
+     -d "{ \"hello\": \"world\"}"
+```
+
+Check the function's [logs](https://neon.com/docs/compute/functions/logs) for
+the `Received:` line:
+
+```shell
+neon logs query --source function --since 1h
+```
+
+## Limit concurrency
+
+Neon limits each account to 100 concurrent function invocations by default. Calls
+over the limit get `429 Too Many Requests` with a `Retry-After` header, and
+QStash [schedules the retry](/qstash/features/retry#retry-after-headers) from
+that header.
+
+To stay under the limit, cap how many messages QStash delivers at once with
+[flow control](/qstash/features/flowcontrol):
+
+```ts
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: process.env.QSTASH_TOKEN! });
+
+await client.publishJSON({
+  url: "<FUNCTION_URL>",
+  body: { hello: "world" },
+  flowControl: { key: "neon-functions", parallelism: 20 },
+});
+```
+
+## Next Steps
+
+Learn more about publishing a message to QStash [here](/qstash/howto/publishing).
+
+To run multi-step jobs on Neon Functions, see
+[Upstash Workflow on Neon Functions](/workflow/quickstarts/neon-functions).

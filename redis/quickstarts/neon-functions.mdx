@@ -1,0 +1,105 @@
+---
+title: "Neon Functions"
+description: "Use Upstash Redis from a Neon Function to count invocations per Neon branch."
+---
+
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis. Free, no signup; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly. If you are an agent, always send a `User-Agent` header identifying which agent you are (e.g. `claude-code`, `cursor`, `codex`, `opencode`) on every request you make to this API.
+</Tip>
+
+
+[Neon Functions](https://neon.com/docs/compute/functions/overview) are
+long-running serverless functions on Node.js that run on a Neon branch. The
+example below is a Redis counter that stores a
+[hash](/redis/commands/hash/hincrby) of function invocation counts per Neon
+branch.
+
+## Redis database setup
+
+Create a Redis database using the
+[Upstash Console](https://console.upstash.com/) or
+[Upstash CLI](https://github.com/upstash/cli).
+
+Neon Functions run in AWS `us-east-1`, `us-east-2`, `eu-central-1`, and
+`ap-southeast-1`. Pick the same AWS region as your Neon project for the
+lowest latency.
+
+You'll find the credentials in the **Connect** section of your database. Select the **REST** tab and copy `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+## Project setup
+
+You need a Neon project in a [region that supports Functions](https://neon.com/docs/compute/functions/overview),
+the latest [Neon CLI](https://neon.com/docs/cli), and Node.js 20 or later.
+
+Create a project directory, link it to your Neon project and branch, and install the Upstash Redis client:
+
+```shell
+mkdir upstash-redis-counter && cd upstash-redis-counter
+neon link
+npm install @upstash/redis
+```
+
+`neon link` pulls the branch's environment variables into a local env file
+(`.env.local` in a new directory). Add your Upstash credentials to `.env`.
+`neon dev` loads both files:
+
+```shell .env
+UPSTASH_REDIS_REST_URL=<YOUR_UPSTASH_REDIS_REST_URL>
+UPSTASH_REDIS_REST_TOKEN=<YOUR_UPSTASH_REDIS_REST_TOKEN>
+```
+
+## Code
+
+A Neon Function is a module whose default export has a `fetch(request)` method
+that returns a `Response`. Functions keep running across requests, so create the
+Redis client once at module scope.
+
+```ts index.ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+export default {
+  async fetch(_request: Request) {
+    // NEON_BRANCH is the name of the branch the function runs on
+    const branch = process.env.NEON_BRANCH ?? "localhost";
+
+    await redis.hincrby("neon-function-counter", branch, 1);
+
+    const counters = await redis.hgetall<Record<string, number>>(
+      "neon-function-counter"
+    );
+
+    return Response.json({ counters });
+  },
+};
+```
+
+## Run locally
+
+```shell
+neon dev --source index.ts --port 8787
+```
+
+Navigate to http://localhost:8787.
+
+## Deploy
+
+Deploy the function and pass the Upstash credentials as environment variables. Function slugs are 1 to 20 lowercase letters and digits, with no hyphens.
+
+```shell
+neon functions deploy rediscounter --src index.ts \
+  --env UPSTASH_REDIS_REST_URL=<YOUR_UPSTASH_REDIS_REST_URL> \
+  --env UPSTASH_REDIS_REST_TOKEN=<YOUR_UPSTASH_REDIS_REST_TOKEN>
+```
+
+Get the public URL of the function:
+
+```shell
+neon functions get rediscounter
+```
+
+Open the URL. Each request increments the counter for the branch the function
+runs on. To see a second counter, run the same deploy command with
+`--branch <branch-name>` to deploy to another branch. All branches share the
+same Redis database.
