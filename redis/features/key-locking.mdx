@@ -62,11 +62,14 @@ duration of the transaction.
 If a queued command requires a database-wide lock, the whole transaction uses
 the global lock. This includes commands such as `FLUSHDB` and `FLUSHALL`.
 
-Lua scripts queued inside a transaction always execute under the global lock,
-even if the script declares [`allow-key-locking`](#lua-scripts). If you want
-script-level key locking, run the script directly with
-[`EVAL`](/redis/commands/scripting/eval) /
-[`EVALSHA`](/redis/commands/scripting/evalsha) outside of a transaction.
+When [Lua strict key locking](#lua-strict-key-locking) is disabled, Lua scripts
+queued inside a transaction execute under the global lock, even if the script
+declares [`allow-key-locking`](#lua-scripts). If you want script-level key
+locking, run the script directly with [`EVAL`](/redis/commands/scripting/eval) /
+[`EVALSHA`](/redis/commands/scripting/evalsha) outside of a transaction. When
+strict key locking is enabled, a queued script locks its declared keys at `EXEC`,
+and wrapping it in `MULTI`/`EXEC` does not get around the strict rules: a script
+that uses an undeclared key still fails.
 
 ## Lua Scripts
 
@@ -146,15 +149,17 @@ the flag off so the engine uses the global lock.
 
 ### Lua Strict Key Locking
 
-Global databases have a **Lua Strict Key Locking** setting, under **Settings** in
-the [Upstash Console](https://console.upstash.com). When it is enabled, every
-Lua script locks only the keys it declares in `KEYS`, as if it set the
-`allow-key-locking` flag, so you get key-based locking without editing your
-scripts. The [rules above](#rules-for-allow-key-locking) then apply to every
-script: a script fails with an error if it uses a key that is not in `KEYS` and
-shares no [hash tag](#hash-tags) with a declared key, or if it calls `FLUSHDB` or
-`FLUSHALL`. Check your scripts before you enable it. Disabling it brings back the
-default, where scripts without the flag take the global lock.
+Global and Fly databases have a **Lua Strict Key Locking** setting, under
+**Settings** in the [Upstash Console](https://console.upstash.com). When it is
+enabled, every Lua script and [Redis function](#redis-functions) locks only the
+keys it declares, as if it set the `allow-key-locking` flag, so you get key-based
+locking without editing your code. The [rules above](#rules-for-allow-key-locking)
+then apply to all of them, including scripts queued in a
+[transaction](#transactions): a script or function fails with an error if it uses
+a key that is not declared and shares no [hash tag](#hash-tags) with a declared
+key, or if it calls `FLUSHDB` or `FLUSHALL`. Check your scripts and functions
+before you enable it. Disabling it brings back the default, where scripts and
+functions without the flag take the global lock.
 
 Agents can change the setting with the `redis_set_lua_strict_key_locking` tool
 of the [Upstash MCP server](/agent-resources/mcp).
@@ -252,6 +257,10 @@ registration:
 ```lua
 flags={'no-writes', 'allow-key-locking'}
 ```
+
+When [Lua strict key locking](#lua-strict-key-locking) is enabled, every function
+is called as if it were registered with `allow-key-locking`, whether or not it
+was, so a function that uses undeclared keys starts failing.
 
 ## Dynamic Keys and Latency
 
