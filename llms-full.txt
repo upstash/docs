@@ -92598,13 +92598,14 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
     ```ts
     createChatHistory({
       redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: setting prefix or indexName gives chats their own index
       ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
     });
     ```
 
     Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Chats are
+    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Setting
+    `prefix` or `indexName`, even to the default `agentkit:chat`, gives chats an index of their own, which
+    a Free-plan database (one index) has no room for next to memory. Chats are
     indexed over `userId` + `sessionId` (filters) and `userMessages` +
     `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
     overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
@@ -92651,8 +92652,9 @@ vegetarian." Saving stays explicit.
 <Accordion title="createAgentMemory options">
   * `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
   * `memory.tools({ userId })`: the same tools as `createMemoryTools`.
-  * `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options, such
-    as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the text of the
+  * `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options. On
+    a shared agent, type the runtime context:
+    `memory.prepareStep<{ userId: string }>({ userId: ({ runtimeContext }) => runtimeContext.userId })`. `query` defaults to the text of the
     last user message. A failed recall goes to `onError` (default `console.warn`).
   * `memory.instructions`: guidance on when to use the tools, with your tool names.
   * `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
@@ -92861,7 +92863,8 @@ and documents are unchanged, so there is no data to migrate: only the search ind
 
 Dropping an index keeps its documents. The next read creates the new index, which indexes and
 embeds the existing memories again; on a large store, recall can miss some of them until that
-finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+finishes. A client that hit the error retries on its next read, so nothing needs a restart. A brand-new
+index can take up to about a minute before newly written memories and chats are searchable.
 
 Drop old indexes once every deployment runs the new version: an instance still on the old version
 recreates its index on its next read, which on the Free plan takes the only slot again. Until they
@@ -92967,13 +92970,14 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
     ```ts
     createChatHistory({
       redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: setting prefix or indexName gives chats their own index
       ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
     });
     ```
 
     Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Chats are
+    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Setting
+    `prefix` or `indexName`, even to the default `agentkit:chat`, gives chats an index of their own, which
+    a Free-plan database (one index) has no room for next to memory. Chats are
     indexed over `userId` + `sessionId` (filters) and `userMessages` +
     `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
     overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
@@ -93020,8 +93024,9 @@ vegetarian." Saving stays explicit.
 <Accordion title="createAgentMemory options">
   * `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
   * `memory.tools({ userId })`: the same tools as `createMemoryTools`.
-  * `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options, such
-    as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the text of the
+  * `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options. On
+    a shared agent, type the runtime context:
+    `memory.prepareStep<{ userId: string }>({ userId: ({ runtimeContext }) => runtimeContext.userId })`. `query` defaults to the text of the
     last user message. A failed recall goes to `onError` (default `console.warn`).
   * `memory.instructions`: guidance on when to use the tools, with your tool names.
   * `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
@@ -93230,7 +93235,8 @@ and documents are unchanged, so there is no data to migrate: only the search ind
 
 Dropping an index keeps its documents. The next read creates the new index, which indexes and
 embeds the existing memories again; on a large store, recall can miss some of them until that
-finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+finishes. A client that hit the error retries on its next read, so nothing needs a restart. A brand-new
+index can take up to about a minute before newly written memories and chats are searchable.
 
 Drop old indexes once every deployment runs the new version: an instance still on the old version
 recreates its index on its next read, which on the Free plan takes the only slot again. Until they
@@ -93316,7 +93322,7 @@ mount gives the model long-term memory:
 // agent/extensions/agentkit.ts
 import agentkit from "@upstash/agentkit-eve-extension";
 
-export default agentkit();
+export default agentkit({});
 ```
 
 The filename supplies the namespace, so contributions compose as `agentkit__recall_memory`,
@@ -93325,7 +93331,8 @@ system prompt telling the model when to save and recall.
 
 The three feature groups below are independent of each other. Memory holds facts the model decided to
 keep. Chat history is the transcript of what was said. Search is retrieval over documents you write
-into your own index. Each has its own Redis keyspace and its own search index.
+into your own index. Each has its own Redis keyspace. Memory and chat history share one search index,
+`agentkit`, so both fit on a Free-plan database; search uses an index of its own.
 
 ### How to add memory to Vercel Eve
 
@@ -93705,6 +93712,11 @@ Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
 import { z } from "zod";
 import { defineCachedTool } from "@upstash/agentkit-eve";
 
+async function fetchWeather(city: string) {
+  const res = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=j1`);
+  return res.json();
+}
+
 export default defineCachedTool({
   description: "Get the current weather for a city.",
   inputSchema: z.object({ city: z.string() }),
@@ -93908,7 +93920,8 @@ tool files.
 
 Dropping an index keeps its documents. The next read creates the new index, which indexes and
 embeds the existing memories again; on a large store, recall can miss some of them until that
-finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+finishes. A client that hit the error retries on its next read, so nothing needs a restart. A brand-new
+index can take up to about a minute before newly written memories and chats are searchable.
 
 Drop old indexes once every deployment runs the new version: an instance still on the old version
 recreates its index on its next read, which on the Free plan takes the only slot again. Until they
@@ -93995,7 +94008,7 @@ mount gives the model long-term memory:
 // agent/extensions/agentkit.ts
 import agentkit from "@upstash/agentkit-eve-extension";
 
-export default agentkit();
+export default agentkit({});
 ```
 
 The filename supplies the namespace, so contributions compose as `agentkit__recall_memory`,
@@ -94004,7 +94017,8 @@ system prompt telling the model when to save and recall.
 
 The three feature groups below are independent of each other. Memory holds facts the model decided to
 keep. Chat history is the transcript of what was said. Search is retrieval over documents you write
-into your own index. Each has its own Redis keyspace and its own search index.
+into your own index. Each has its own Redis keyspace. Memory and chat history share one search index,
+`agentkit`, so both fit on a Free-plan database; search uses an index of its own.
 
 ### How to add memory to Vercel Eve
 
@@ -94384,6 +94398,11 @@ Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
 import { z } from "zod";
 import { defineCachedTool } from "@upstash/agentkit-eve";
 
+async function fetchWeather(city: string) {
+  const res = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=j1`);
+  return res.json();
+}
+
 export default defineCachedTool({
   description: "Get the current weather for a city.",
   inputSchema: z.object({ city: z.string() }),
@@ -94587,7 +94606,8 @@ tool files.
 
 Dropping an index keeps its documents. The next read creates the new index, which indexes and
 embeds the existing memories again; on a large store, recall can miss some of them until that
-finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+finishes. A client that hit the error retries on its next read, so nothing needs a restart. A brand-new
+index can take up to about a minute before newly written memories and chats are searchable.
 
 Drop old indexes once every deployment runs the new version: an instance still on the old version
 recreates its index on its next read, which on the Free plan takes the only slot again. Until they
@@ -96619,9 +96639,10 @@ chat({ adapter, messages, threadId, middleware: [withPersistence(persistence)] }
 ```
 
 This covers every TanStack AI persistence store: `messages`, `runs`, `interrupts`, and `metadata` for
-chats, `generationRuns` and `artifacts` for one-shot generation jobs such as images or speech, and the
-`sessions` and `log` stores described [below](#how-to-keep-a-session-index-in-redis). The
-`blobs` store for generated bytes is added when you pass an Upstash Blob bucket:
+chats, `generationRuns` for one-shot generation jobs such as images or speech, and the `sessions` and
+`log` stores described [below](#how-to-keep-a-session-index-in-redis). The `artifacts` and `blobs`
+stores for generated files (records in Redis, bytes in Upstash Blob) are added when you pass a bucket.
+Without one, `withGenerationPersistence()` still records each generation run, but not its files:
 
 ```ts
 import { Bucket } from "@upstash/blob";
@@ -96745,7 +96766,10 @@ secret. `getVersioned` and `setIf` are compare-and-set on a revision that never 
 
 <Accordion title="Encryption at rest">
   Set `encryptionKey` to encrypt secrets with AES-256-GCM. It is 32 bytes: a `Uint8Array`, or a base64,
-  base64url, or hex string (`openssl rand -base64 32`). Without it, secrets are stored as plain JSON.
+  base64url, or hex string (`openssl rand -base64 32`). Without it, secrets are stored as plain JSON. If
+  `encryptionKey` is passed as `undefined` (an unset env var), the store warns once that secrets are stored
+  unencrypted; add `requireEncryption: true` to fail instead. A wrong key fails reads with an error that
+  says so.
 
   ```ts
   upstashCredentials({
@@ -96799,6 +96823,7 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
 
 ```ts
 import { withLocks } from "@tanstack/ai/locks";
+import { withSandbox } from "@tanstack/ai-sandbox"; // the sandbox package, see below
 import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
 
 chat({ adapter, messages, threadId, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
@@ -96976,7 +97001,7 @@ import { createMcpAppCallHandler } from "@tanstack/ai-mcp/apps";
 import { upstashMcpSessionStore } from "@upstash/agentkit-tanstack-ai/mcp";
 
 const store = upstashMcpSessionStore({
-  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts transport headers and stdio env
+  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts each stored entry, headers included
   // What Redis cannot hold comes from your code, per server:
   resolve: ({ threadId, serverId }) => ({
     needsApproval: (tool) => tool.annotations?.readOnlyHint !== true,
@@ -96991,6 +97016,10 @@ const handleCall = createMcpAppCallHandler({ clients, store });
 A server descriptor holds the policy for widget calls (`toolFilter`, `needsApproval`, `toolName`) and often a
 transport `fetch` or OAuth `authProvider`, which cannot be stored as JSON. The store saves the rest and records
 which of those fields were dropped. `resolve` supplies them again on every read.
+
+With `encryptionKey`, each entry is encrypted whole. If the env var is unset, the store warns and keeps
+entries unencrypted. Turning the key on or rotating it makes reads of entries written before throw until
+they expire (`ttlSeconds`, 30 minutes by default), so clear the old entries or roll out between sessions.
 
 <Warning>
   The store fails closed. If `resolve` does not supply a dropped field such as `needsApproval`, the read returns
@@ -97048,7 +97077,13 @@ const tools = createSearchTools({
 chat({ adapter, messages, threadId, tools });
 ```
 
-The tool descriptions are generated from the schema, and the index is created on first use.
+The tool descriptions are generated from the schema, and the index is created on first use. The tools
+search JSON documents stored under the key prefix `<indexName>:` (here `products:`), which you write
+yourself:
+
+```ts
+await redis.json.set("products:1", "$", { name: "Wireless headphones", price: 59, category: "audio" });
+```
 
 Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environment.
 
@@ -97065,12 +97100,13 @@ documents are unchanged, so there is no data to migrate: only the memory index c
 
 | Your setup | On upgrade | What to do |
 | --- | --- | --- |
-| [Memory](#how-to-add-long-term-memory-to-tanstack-ai) (`upstashMemory()`) | The first read fails with `exists with a different definition`. | Run `SEARCH.DROP agentkit_tanstackMemory`, or the `indexName` you set. |
+| [Memory](#how-to-add-long-term-memory-to-tanstack-ai) (`upstashMemory()`) | Recall fails with `exists with a different definition`. Through `memoryMiddleware`, which doesn't pass recall errors on, the adapter logs it with `console.error` and chats run with no memory until the drop. | Run `SEARCH.DROP agentkit_tanstackMemory`, or the `indexName` you set. |
 | Every other store, and RAG tools | Nothing. | Nothing. |
 
 Dropping the index keeps its documents. The next read creates the new index, which indexes and
 embeds the existing memories again; on a large store, recall can miss some of them until that
-finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+finishes. A client that hit the error retries on its next read, so nothing needs a restart. A brand-new
+index can take up to about a minute before newly written memories and chats are searchable.
 
 Drop the old index once every deployment runs the new version: an instance still on the old version
 recreates the old index on its next read, and the new version then fails again.
@@ -97158,9 +97194,10 @@ chat({ adapter, messages, threadId, middleware: [withPersistence(persistence)] }
 ```
 
 This covers every TanStack AI persistence store: `messages`, `runs`, `interrupts`, and `metadata` for
-chats, `generationRuns` and `artifacts` for one-shot generation jobs such as images or speech, and the
-`sessions` and `log` stores described [below](#how-to-keep-a-session-index-in-redis). The
-`blobs` store for generated bytes is added when you pass an Upstash Blob bucket:
+chats, `generationRuns` for one-shot generation jobs such as images or speech, and the `sessions` and
+`log` stores described [below](#how-to-keep-a-session-index-in-redis). The `artifacts` and `blobs`
+stores for generated files (records in Redis, bytes in Upstash Blob) are added when you pass a bucket.
+Without one, `withGenerationPersistence()` still records each generation run, but not its files:
 
 ```ts
 import { Bucket } from "@upstash/blob";
@@ -97284,7 +97321,10 @@ secret. `getVersioned` and `setIf` are compare-and-set on a revision that never 
 
 <Accordion title="Encryption at rest">
   Set `encryptionKey` to encrypt secrets with AES-256-GCM. It is 32 bytes: a `Uint8Array`, or a base64,
-  base64url, or hex string (`openssl rand -base64 32`). Without it, secrets are stored as plain JSON.
+  base64url, or hex string (`openssl rand -base64 32`). Without it, secrets are stored as plain JSON. If
+  `encryptionKey` is passed as `undefined` (an unset env var), the store warns once that secrets are stored
+  unencrypted; add `requireEncryption: true` to fail instead. A wrong key fails reads with an error that
+  says so.
 
   ```ts
   upstashCredentials({
@@ -97338,6 +97378,7 @@ Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environme
 
 ```ts
 import { withLocks } from "@tanstack/ai/locks";
+import { withSandbox } from "@tanstack/ai-sandbox"; // the sandbox package, see below
 import { upstashLocks } from "@upstash/agentkit-tanstack-ai";
 
 chat({ adapter, messages, threadId, middleware: [withLocks(upstashLocks()), withSandbox(sandbox)] });
@@ -97515,7 +97556,7 @@ import { createMcpAppCallHandler } from "@tanstack/ai-mcp/apps";
 import { upstashMcpSessionStore } from "@upstash/agentkit-tanstack-ai/mcp";
 
 const store = upstashMcpSessionStore({
-  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts transport headers and stdio env
+  encryptionKey: process.env.MCP_SESSION_KEY, // encrypts each stored entry, headers included
   // What Redis cannot hold comes from your code, per server:
   resolve: ({ threadId, serverId }) => ({
     needsApproval: (tool) => tool.annotations?.readOnlyHint !== true,
@@ -97530,6 +97571,10 @@ const handleCall = createMcpAppCallHandler({ clients, store });
 A server descriptor holds the policy for widget calls (`toolFilter`, `needsApproval`, `toolName`) and often a
 transport `fetch` or OAuth `authProvider`, which cannot be stored as JSON. The store saves the rest and records
 which of those fields were dropped. `resolve` supplies them again on every read.
+
+With `encryptionKey`, each entry is encrypted whole. If the env var is unset, the store warns and keeps
+entries unencrypted. Turning the key on or rotating it makes reads of entries written before throw until
+they expire (`ttlSeconds`, 30 minutes by default), so clear the old entries or roll out between sessions.
 
 <Warning>
   The store fails closed. If `resolve` does not supply a dropped field such as `needsApproval`, the read returns
@@ -97587,7 +97632,13 @@ const tools = createSearchTools({
 chat({ adapter, messages, threadId, tools });
 ```
 
-The tool descriptions are generated from the schema, and the index is created on first use.
+The tool descriptions are generated from the schema, and the index is created on first use. The tools
+search JSON documents stored under the key prefix `<indexName>:` (here `products:`), which you write
+yourself:
+
+```ts
+await redis.json.set("products:1", "$", { name: "Wireless headphones", price: 59, category: "audio" });
+```
 
 Reads `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from the environment.
 
@@ -97604,12 +97655,13 @@ documents are unchanged, so there is no data to migrate: only the memory index c
 
 | Your setup | On upgrade | What to do |
 | --- | --- | --- |
-| [Memory](#how-to-add-long-term-memory-to-tanstack-ai) (`upstashMemory()`) | The first read fails with `exists with a different definition`. | Run `SEARCH.DROP agentkit_tanstackMemory`, or the `indexName` you set. |
+| [Memory](#how-to-add-long-term-memory-to-tanstack-ai) (`upstashMemory()`) | Recall fails with `exists with a different definition`. Through `memoryMiddleware`, which doesn't pass recall errors on, the adapter logs it with `console.error` and chats run with no memory until the drop. | Run `SEARCH.DROP agentkit_tanstackMemory`, or the `indexName` you set. |
 | Every other store, and RAG tools | Nothing. | Nothing. |
 
 Dropping the index keeps its documents. The next read creates the new index, which indexes and
 embeds the existing memories again; on a large store, recall can miss some of them until that
-finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+finishes. A client that hit the error retries on its next read, so nothing needs a restart. A brand-new
+index can take up to about a minute before newly written memories and chats are searchable.
 
 Drop the old index once every deployment runs the new version: an instance still on the old version
 recreates the old index on its next read, and the new version then fails again.
