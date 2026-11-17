@@ -1,0 +1,167 @@
+---
+title: "client.dlq.resume"
+---
+
+The `dlq.resume` method resumes one or more workflow runs from the **Dead Letter Queue (DLQ)** at the point where they previously failed.
+This allows you to continue execution from the failed step instead of restarting the workflow from the beginning.
+
+## Arguments
+
+The first argument specifies which DLQ entries to resume. The optional second argument provides flow control and retry settings.
+
+### By DLQ ID
+
+Pass a single DLQ ID or an array of IDs directly:
+
+```ts
+await client.dlq.resume("dlq-12345");
+await client.dlq.resume(["dlq-12345", "dlq-67890"]);
+```
+
+### By filters
+
+Pass an object with a `filter` field:
+
+<ParamField body="filter" type="object">
+    <Expandable defaultOpen>
+        <ParamField body="workflowUrl" type="string" optional>
+            Filter by exact workflow URL.
+        </ParamField>
+
+        <ParamField body="workflowRunId" type="string" optional>
+            Filter by workflow run ID.
+        </ParamField>
+
+        <ParamField body="label" type="string | string[]" optional>
+            Resume workflows with this label. Pass an array to match runs that
+            have any of the given labels (OR semantics).
+        </ParamField>
+
+        <ParamField body="fromDate" type="Date | number" optional>
+            Resume workflows created after this date.
+        </ParamField>
+
+        <ParamField body="toDate" type="Date | number" optional>
+            Resume workflows created before this date.
+        </ParamField>
+
+        <ParamField body="callerIp" type="string" optional>
+            Filter by the IP address that triggered the workflow.
+        </ParamField>
+
+        <ParamField body="flowControlKey" type="string" optional>
+            Filter by flow control key.
+        </ParamField>
+
+        <ParamField body="workflowCreatedAt" type="number" optional>
+            Filter by workflow creation time (Unix timestamp in ms).
+        </ParamField>
+
+        <ParamField body="failureFunctionState" type="string" optional>
+            Filter by failure callback state.
+        </ParamField>
+    </Expandable>
+</ParamField>
+
+<ParamField body="count" type="number" optional>
+    Maximum number of messages to process per call. Defaults to `100`.
+</ParamField>
+
+<ParamField body="cursor" type="string" optional>
+    A pagination cursor from a previous request.
+</ParamField>
+
+### Resume all
+
+<ParamField body="all" type="boolean">
+    Set to `true` to resume all DLQ entries.
+</ParamField>
+
+### Options (second argument)
+
+<ParamField body="flowControl" type="object" optional>
+    An optional flow control configuration to limit concurrency and execution rate
+    of resumed workflow runs.
+
+    See [Flow Control](/workflow/features/flow-control) for details.
+
+    <Expandable title="properties">
+        <ParamField body="key" type="string">
+            A logical grouping key that identifies which resumed runs share the same flow control limits.
+        </ParamField>
+
+        <ParamField body="rate" type="number">
+            The maximum number of allowed resumption requests per second.
+        </ParamField>
+
+        <ParamField body="parallelism" type="number">
+            The maximum number of resumed runs that can execute concurrently.
+        </ParamField>
+
+        <ParamField body="period" type="string|number">
+            The time window used to enforce the defined rate limit. Default is `1s`.
+        </ParamField>
+    </Expandable>
+</ParamField>
+
+<ParamField body="retries" type="number" optional>
+    Number of retry attempts to apply when resuming the workflow run.
+    Defaults to `3` if not provided.
+</ParamField>
+
+## Response
+
+<ResponseField name="cursor" type="string">
+    A pagination cursor. If not returned, all matching entries have been processed.
+</ResponseField>
+
+<ResponseField name="workflowRuns" type="object[]">
+    <Expandable defaultOpen>
+        <ResponseField name="workflowRunId" type="string">
+            The ID of the workflow run resumed from the DLQ message.
+        </ResponseField>
+
+        <ResponseField name="workflowCreatedAt" type="number">
+            The Unix timestamp (in milliseconds) when the resumed run was created.
+        </ResponseField>
+    </Expandable>
+</ResponseField>
+
+## Usage
+
+<CodeGroup>
+```ts Single
+const { messages } = await client.dlq.list();
+
+const response = await client.dlq.resume(messages[0].dlqId, {
+  flowControl: {
+    key: "my-flow-control-key",
+    parallelism: 10,
+  },
+  retries: 3,
+});
+```
+```ts Multiple
+const response = await client.dlq.resume(["dlq-12345", "dlq-67890"]);
+```
+```ts By filters
+let cursor: string | undefined;
+do {
+  const result = await client.dlq.resume({
+    filter: {
+      label: "my-label",
+      workflowUrl: "https://example.com/workflow",
+    },
+    cursor,
+  });
+  cursor = result.cursor;
+} while (cursor);
+```
+```ts All
+let cursor: string | undefined;
+do {
+  const result = await client.dlq.resume({ all: true, cursor });
+  cursor = result.cursor;
+} while (cursor);
+```
+</CodeGroup>

@@ -1,0 +1,188 @@
+---
+title: "SCAN"
+description: "Incrementally iterate keys."
+---
+
+Use `SCAN` to walk through the keys of the database incrementally, a batch at a time.
+
+Each call takes a cursor and returns the next cursor together with a batch of keys. Start with cursor `0` and keep calling with the cursor from the previous reply until the server returns `0` again, which marks the end of the iteration. Because the work is split over many short calls, `SCAN` never blocks the server the way [`KEYS`](/redis/commands/generic/keys) can on a large keyspace.
+
+`MATCH` filters the returned keys with a glob-style pattern, `COUNT` hints at how much work each call should do (a hint about effort, not a page size, so batches vary in length), and `TYPE` limits the reply to keys of one type. Filtering is applied after a batch has been read, so a call can legitimately return no keys at all while the cursor is still non-zero: only the cursor tells you when the iteration is over.
+
+The guarantee is that every key present for the whole iteration is returned at least once. Keys added or removed while the scan runs may or may not show up, and a key can be returned more than once, so make the processing of each key idempotent. [`HSCAN`](/redis/commands/hash/hscan), [`SSCAN`](/redis/commands/set/sscan), and [`ZSCAN`](/redis/commands/sorted-set/zscan) apply the same mechanism inside a single collection.
+
+## Syntax
+
+```redis
+SCAN <cursor> [MATCH <pattern>] [COUNT <count>] [TYPE <type>]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<cursor>` | Yes | No | Cursor returned by the previous call; start at `0`. |
+| `MATCH <pattern>` | No | No | Return only elements matching this glob-style pattern. |
+| `COUNT <count>` | No | No | Hint for how much work each iteration should do. |
+| `TYPE <type>` | No | No | Return only keys of this type, such as `string`, `list`, or `hash`. |
+
+## Important points
+
+- This operation can inspect a large part of the database. Prefer cursor-based scans where possible and avoid unbounded use on hot paths.
+- The cursor is opaque. Start with `0` and continue until the server returns cursor `0`; a single iteration may return no elements.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Two-element array: cursor and array of bulk-string keys |
+| RESP3 | Two-element array: cursor and array of bulk-string keys |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+SCAN 0
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const [cursor, keys] = await redis.scan(0, { match: "*" });
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.scan(0)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.scan("0");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.scan("0");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.scan(0)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, _, err := client.Scan(context.Background(), 0, "*", 0).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.scan("0");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let iter: redis::Iter<String> = connection.scan()?;
+    for key in iter {
+        println!("{key}");
+    }
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

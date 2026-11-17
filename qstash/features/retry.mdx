@@ -1,0 +1,185 @@
+---
+title: "Retry"
+---
+
+<Warning title="Max HTTP Response Duration">
+QStash will abort a delivery attempt if **the HTTP call to your endpoint does not return within the plan-specific Max HTTP Response Duration**.  
+See the current limits on the <a href="https://upstash.com/pricing/qstash" target="_blank" rel="noopener">QStash pricing page</a>.
+</Warning>
+
+Many things can go wrong in a serverless environment. If your API does not
+respond with a success status code (2XX), we retry the request to ensure every
+message will be delivered.
+
+By default, we retry a failed delivery 3 times. You can change this per message
+by sending the `Upstash-Retries` header:
+
+<CodeGroup>
+```shell cURL
+curl -XPOST \
+    -H 'Authorization: Bearer XXX' \
+    -H "Content-type: application/json" \
+    -H "Upstash-Retries: 2" \
+    -d '{ "hello": "world" }' \
+    'https://qstash.upstash.io/v2/publish/https://my-api...'
+```
+
+```typescript TypeScript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+const res = await client.publishJSON({
+  url: "https://my-api...",
+  body: { hello: "world" },
+  retries: 2,
+});
+```
+
+```python Python
+from qstash import QStash
+
+client = QStash("<QSTASH_TOKEN>")
+client.message.publish_json(
+    url="https://my-api...",
+    body={
+        "hello": "world",
+    },
+    retries=2,
+)
+```
+</CodeGroup>
+
+The backoff algorithm calculates the retry delay based on the number of retries.
+Each delay is capped at 1 day.
+
+```
+n = how many times this request has been retried
+delay =  min(86400, e ** (2.5*n)) // in seconds
+```
+
+| n   | delay  |
+| --- | ------ |
+| 1   | 12s    |
+| 2   | 2m28s  |
+| 3   | 30m8ss |
+| 4   | 6h7m6s |
+| 5   | 24h    |
+| 6   | 24h    |
+
+## Custom Retry Delay
+
+You can customize the delay between retry attempts by using the `Upstash-Retry-Delay` header when publishing a message. This allows you to override the default exponential backoff with your own mathematical expressions.
+
+<CodeGroup>
+```shell cURL
+curl -XPOST \
+    -H 'Authorization: Bearer XXX' \
+    -H "Content-type: application/json" \
+    -H "Upstash-Retries: 3" \
+    -H "Upstash-Retry-Delay: pow(2, retried) * 1000" \
+    -d '{ "hello": "world" }' \
+    'https://qstash.upstash.io/v2/publish/https://my-api...'
+```
+
+```typescript TypeScript
+import { Client } from "@upstash/qstash";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" });
+const res = await client.publishJSON({
+  url: "https://my-api...",
+  body: { hello: "world" },
+  retries: 3,
+  retryDelay: "pow(2, retried) * 1000", // 2^retried * 1000ms
+});
+```
+
+```python Python
+from qstash import QStash
+
+client = QStash("<QSTASH_TOKEN>")
+client.message.publish_json(
+    url="https://my-api...",
+    body={
+        "hello": "world",
+    },
+    retries=3,
+    retry_delay="pow(2, retried) * 1000",  # 2^retried * 1000ms
+)
+```
+</CodeGroup>
+
+The `retryDelay` expression can use mathematical functions and the special variable `retried` (current retry attempt count starting from 0).
+
+**Supported functions:**
+- `pow` - Power function
+- `sqrt` - Square root
+- `abs` - Absolute value
+- `exp` - Exponential
+- `floor` - Floor function
+- `ceil` - Ceiling function
+- `round` - Rounding function
+- `min` - Minimum of values
+- `max` - Maximum of values
+
+**Examples:**
+- `1000` - Fixed 1 second delay
+- `1000 * (1 + retried)` - Linear backoff: 1s, 2s, 3s, 4s...
+- `pow(2, retried) * 1000` - Exponential backoff: 1s, 2s, 4s, 8s...
+- `max(1000, pow(2, retried) * 100)` - Exponential with minimum 1s delay
+
+## Retry-After Headers
+
+Instead of using the default backoff algorithm, you can specify when QStash should retry your message.
+To do this, include one of the following headers in your response to QStash request. 
+- Retry-After
+- X-RateLimit-Reset
+- X-RateLimit-Reset-Requests
+- X-RateLimit-Reset-Tokens
+
+These headers can be set to a value in seconds, the RFC1123 date format, or a duration format (e.g., 6m5s).
+For the duration format, valid time units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
+
+Note that you can only delay retries up to the maximum value of the default backoff algorithm, which is one day. 
+If you specify a value beyond this limit, the backoff algorithm will be applied.
+
+This feature is particularly useful if your application has rate limits, ensuring retries are scheduled appropriately without wasting attempts during restricted periods.
+
+```
+Retry-After: 0                             // Next retry will be scheduled immediately without any delay.
+Retry-After: 10                            // Next retry will be scheduled after a 10-second delay.
+Retry-After: 6m5s                          // Next retry will be scheduled after 6 minutes 5 seconds delay.
+Retry-After: Sun, 27 Jun 2024 12:16:24 GMT // Next retry will be scheduled for the specified date, within the allowable limits.
+```
+
+## Redirects
+
+QStash follows redirects from your endpoint, up to 10 in a row. Each redirect
+target goes through the same URL checks as the original destination. Only the
+final response decides the outcome: a 2XX is a success, and anything else,
+including a 3XX that QStash stops following, is retried.
+
+- `307` and `308` keep the request method and body.
+- `301`, `302` and `303` turn the request into a `GET` without a body.
+- The `Upstash-Signature` header is passed along, but its `sub` claim is still
+  the original destination URL. If your endpoint checks `sub`, a redirected
+  request fails verification. Publish to the final URL to avoid this.
+
+## Upstash-Retried Header
+
+QStash adds the `Upstash-Retried` header to requests sent to your API. This
+indicates how many times the request has been retried.
+
+```
+Upstash-Retried: 0 // This is the first attempt
+Upstash-Retried: 1 // This request has been sent once before and now is the second attempt
+Upstash-Retried: 2 // This request has been sent twice before and now is the third attempt
+```
+
+## Non-Retryable Error
+
+By default, QStash retries requests for any response that does not return a successful 2XX status code.
+To explicitly disable retries for a given message, respond with a 489 status code and include the header `Upstash-NonRetryable-Error: true`.
+
+When this header is present, QStash will immediately mark the message as failed and skip any further retry attempts. The message will then be forwarded to the Dead Letter Queue (DLQ) for manual review and resolution.
+
+This mechanism is particularly useful in scenarios where retries are generally enabled but should be bypassed for specific known errors—such as invalid payloads or non-recoverable conditions.

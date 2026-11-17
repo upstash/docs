@@ -1,0 +1,162 @@
+---
+title: "Rate Limiting for Your FastAPI App"
+---
+
+### Introduction
+
+In this tutorial, we’ll learn how to add rate limiting to a FastAPI application using Upstash Redis. Rate limiting is essential for controlling API usage and with Upstash Redis, you can easily implement rate limiting to protect your API resources.
+
+We’ll set up a simple FastAPI app and apply rate limiting to its endpoints. With Upstash Redis, we’ll configure a fixed window rate limiter that allows a specific number of requests per given time period.
+
+### Environment Setup
+
+First, install FastAPI, the Upstash Redis client, the Upstash rate limiting package, and an ASGI server:
+
+```shell
+pip install fastapi upstash-redis upstash-ratelimit uvicorn[standard]
+```
+
+### Database Setup
+
+Create a Redis database using the [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli), and export the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to your environment:
+
+```shell
+export UPSTASH_REDIS_REST_URL=<YOUR_URL>
+export UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+```
+
+You can also use `python-dotenv` to load environment variables from your `.env` file.
+
+### Application Setup
+
+In this example, we will build an API endpoint that is rate-limited to a certain number of requests per time window. If the limit is exceeded (e.g., by making more than 10 requests in 10 seconds), the API will return an HTTP 429 error with the message "Rate limit exceeded. Please try again later."
+
+Create `main.py`:
+
+```python main.py
+from fastapi import FastAPI, HTTPException
+from upstash_ratelimit import Ratelimit, FixedWindow
+from upstash_redis import Redis
+from dotenv import load_dotenv
+import requests
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Initialize the FastAPI app
+app = FastAPI()
+
+# Initialize Redis client
+redis = Redis.from_env()
+
+# Create a rate limiter that allows 10 requests per 10 seconds
+ratelimit = Ratelimit(
+    redis=redis,
+    limiter=FixedWindow(max_requests=10, window=10),  # 10 requests per 10 seconds
+    prefix="@upstash/ratelimit"
+)
+
+@app.get("/expensive_calculation")
+def expensive_calculation():
+    identifier = "api"  # Common identifier for rate limiting all users equally
+    response = ratelimit.limit(identifier)
+
+    if not response.allowed:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.")
+    
+    # Placeholder for a resource-intensive operation
+    result = do_expensive_calculation()
+    return {"message": "Here is your result", "result": result}
+
+# Simulated function for an expensive calculation
+def do_expensive_calculation():
+    return "Expensive calculation result"
+
+# Test function to check rate limiting
+def test_rate_limiting():
+    url = "http://127.0.0.1:8000/expensive_calculation"
+    success_count = 0
+    fail_count = 0
+
+    # Attempt 15 requests in quick succession
+    for i in range(15):
+        response = requests.get(url)
+        
+        if response.status_code == 200:
+            success_count += 1
+            print(f"Request {i+1}: Success - {response.json()['message']}")
+        elif response.status_code == 429:
+            fail_count += 1
+            print(f"Request {i+1}: Failed - Rate limit exceeded")
+
+        # Small delay to avoid flooding
+
+    print("\nTest Summary:")
+    print(f"Total Successful Requests: {success_count}")
+    print(f"Total Failed Requests due to Rate Limit: {fail_count}")
+
+if __name__ == "__main__":
+    # Run the FastAPI app in a separate thread or terminal with:
+    # uvicorn main:app --reload
+
+    # To test rate limiting after the server is running
+    test_rate_limiting()
+```
+
+### Running the Application
+
+Run the FastAPI app with Uvicorn:
+
+```shell
+uvicorn main:app --reload
+```
+
+Run the test function to check the rate limiting:
+
+```shell
+python main.py
+```
+
+### Testing Rate Limiting
+
+Here's the output you should see when running the test function:
+
+```
+Request 1: Success - Here is your result
+Request 2: Success - Here is your result
+Request 3: Success - Here is your result
+Request 4: Success - Here is your result
+Request 5: Success - Here is your result
+Request 6: Success - Here is your result
+Request 7: Success - Here is your result
+Request 8: Success - Here is your result
+Request 9: Success - Here is your result
+Request 10: Success - Here is your result
+Request 11: Failed - Rate limit exceeded
+Request 12: Failed - Rate limit exceeded
+Request 13: Failed - Rate limit exceeded
+Request 14: Failed - Rate limit exceeded
+Request 15: Failed - Rate limit exceeded
+
+Test Summary:
+Total Successful Requests: 10
+Total Failed Requests due to Rate Limit: 5
+```
+
+### Code Breakdown
+
+1. **Redis and Rate Limiter Setup**:
+   - We initialize a `Redis` client with `Redis.from_env()` using environment variables for configuration.
+   - We create a rate limiter using `Ratelimit` with a `FixedWindow` limiter that allows 10 requests per 10 seconds. The `prefix` option is set to organize the Redis keys used by the rate limiter.
+
+2. **Rate Limiting the Endpoint**:
+   - For the `/expensive_calculation` endpoint, the rate limiter is applied by calling `ratelimit.limit(identifier)`.
+   - The `identifier` variable uniquely identifies this rate limit. You could use user-specific identifiers (like user IDs) to implement per-user limits.
+   - If the request exceeds the allowed limit, an HTTP 429 error is returned.
+
+3. **Expensive Calculation Simulation**:
+   - The `do_expensive_calculation` function simulates a resource-intensive operation. In real scenarios, this could represent database queries, file processing, or other time-consuming tasks.
+
+### Benefits of Rate Limiting with Redis
+
+Using Redis for rate limiting helps control API usage across multiple instances of your app, making it highly scalable. Redis’s in-memory storage provides fast access to rate-limiting data, ensuring minimal performance impact on your API.

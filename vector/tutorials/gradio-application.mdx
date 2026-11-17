@@ -1,0 +1,114 @@
+---
+title: Create and Deploy RAG Applications with Gradio
+---
+
+In this tutorial, we'll demonstrate how to use Gradio to build an interactive Semantic Search and Question Answering app using Hugging Face embeddings, Upstash Vector, and LangChain. Users can enter a question, and the app will retrieve relevant information and provide an answer.
+
+### Important Note on Python Version
+
+Recent Python versions may cause compatibility issues with `torch`, a dependency for Hugging Face models. Therefore, we recommend using **Python 3.9** to avoid any installation issues.
+
+### Installation and Setup
+
+First, we need to set up our environment and install the necessary libraries. Install the dependencies by running the following command:
+
+```bash
+pip install gradio langchain sentence_transformers upstash-vector python-dotenv transformers langchain-community langchain-huggingface
+```
+
+Next, create a `.env` file in your project directory with the following content, replacing `your_upstash_url` and `your_upstash_token` with your actual Upstash credentials:
+
+```
+UPSTASH_VECTOR_REST_URL=your_upstash_url
+UPSTASH_VECTOR_REST_TOKEN=your_upstash_token
+```
+
+This configuration file will allow us to load the required environment variables.
+
+### Code
+
+We will load our environment variables, initialize the Hugging Face embeddings model, set up Upstash Vector, and configure a Hugging Face Question Answering model.
+
+```python
+# Import libraries
+import gradio as gr
+from dotenv import load_dotenv
+from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores.upstash import UpstashVectorStore
+from transformers import pipeline
+from langchain.schema import Document
+
+# Load environment variables
+load_dotenv()
+
+# Set up embeddings and Upstash Vector store
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+vector_store = UpstashVectorStore(embedding=embeddings)
+```
+
+Next, we will create sample documents, embed them using Hugging Face embeddings, and store them in Upstash Vector.
+
+```python
+# Sample documents to embed and store
+documents = [
+    Document(page_content="Global warming is causing sea levels to rise."),
+    Document(page_content="AI is transforming many industries."),
+    Document(page_content="Renewable energy is vital for sustainable development.")
+]
+vector_store.add_documents(documents=documents, batch_size=100, embedding_chunk_size=200)
+```
+
+When inserting documents, they are first embedded using the `Embeddings` object. Many embedding models, such as the Hugging Face models, support embedding multiple documents at once. This allows for efficient processing by batching documents and embedding them in parallel.
+
+- The `embedding_chunk_size` parameter controls the number of documents processed in parallel when creating embeddings.
+  
+Once the embeddings are created, they are stored in Upstash Vector. To reduce the number of HTTP requests, the vectors are also batched when they are sent to Upstash Vector.
+
+- The `batch_size` parameter controls the number of vectors included in each HTTP request when sending to Upstash Vector.
+  
+<Note type="info">
+In the Upstash Vector free tier, there is a limit of 1000 vectors per batch.
+</Note>
+
+Now, we can set up a Question Answering model and the Gradio interface.
+
+```python
+# Set up a Hugging Face Question Answering model
+qa_pipeline = pipeline("question-answering", model="distilbert-base-cased-distilled-squad")
+
+# Gradio interface function
+def answer_question(query):
+    # Retrieve relevant documents from Upstash Vector
+    results = vector_store.similarity_search(query, k=3)
+    
+    # Use the most relevant document for QA
+    if results:
+        context = results[0].page_content
+        qa_input = {"question": query, "context": context}
+        answer = qa_pipeline(qa_input)["answer"]
+        return f"Answer: {answer}\n\nContext: {context}"
+    else:
+        return "No relevant context found."
+
+# Set up Gradio interface
+iface = gr.Interface(
+    fn=answer_question,
+    inputs="text",
+    outputs="text",
+    title="RAG Application",
+    description="Ask a question, and the app will retrieve relevant information and provide an answer."
+)
+
+# Launch the Gradio app
+iface.launch()
+```
+
+### Running the App
+
+After setting up the code, run your script to start the Gradio app. You will be presented with an interface where you can enter a question. The app will retrieve the most relevant information from the embedded documents and provide an answer based on the content.
+
+### Notes
+
+- **Deployment**: To create a public link, set `share=True` in `launch()`. This will generate a public URL for your Gradio app. This share link expires in 72 hours. For free permanent hosting and GPU upgrades, run `gradio deploy` from Terminal to deploy to [Hugging Face Spaces](https://huggingface.co/spaces)
+- **Batch Processing**: The `batch_size` and `embedding_chunk_size` parameters allow you to control the efficiency of document processing and storage in Upstash Vector.
+- **Namespaces**: Upstash Vector supports namespaces for organizing different types of documents. You can set a namespace while creating the `UpstashVectorStore` instance.

@@ -1,0 +1,353 @@
+---
+title: "Shell"
+---
+
+Every box has a full Linux shell and runs on Debian by default.
+
+You can access that shell either through the SDK or directly over SSH.
+
+---
+
+## SSH
+
+Connect to a box with:
+
+```bash
+ssh <box-id>@us-east-1.box.upstash.com
+```
+
+When prompted for a password, use your **Box API key**.
+
+For example:
+
+```bash
+ssh current-wasp-05510@us-east-1.box.upstash.com
+```
+
+<Tip>
+  You can also copy this command from the **SSH** button on the box details page in the Upstash Console.
+</Tip>
+
+### SSH keys
+
+Instead of the password, you can log in with an SSH key. A key you add works for all boxes in your account or team.
+
+1. Create a key pair, if you don't have one:
+
+   ```bash
+   mkdir -p ~/.ssh && chmod 700 ~/.ssh
+   ssh-keygen -t ed25519 -f ~/.ssh/upstash_box
+   ```
+
+2. In the [Upstash Console](https://console.upstash.com/box?tab=settings&section=ssh-keys), go to **Box → Settings → SSH Keys**, click **New SSH Key**, and paste the contents of `~/.ssh/upstash_box.pub`.
+
+3. Connect with the private key:
+
+   ```bash
+   ssh -i ~/.ssh/upstash_box <box-id>@us-east-1.box.upstash.com
+   ```
+
+If your key is one SSH tries by default, such as `~/.ssh/id_ed25519`, you can leave out `-i`.
+
+<Note>
+  You can also click **Generate Key** to have Upstash create the key pair. The private key is shown only once and isn't stored, so save it right away.
+</Note>
+
+Accepted key types are ed25519, ECDSA, their security-key (`sk-`) variants, and RSA keys of at least 2048 bits. An account can have up to 20 keys.
+
+---
+
+## API
+
+### Run a shell command
+
+A shell command resolves when the command finishes and gives you back the result and status. The SDK waits up to 10 minutes for the result by default (set `timeout` in the box config to change it). If the request gives up, the command keeps running in the box, so wrap commands that must stop in `timeout`, for example `timeout 60 npm test`.
+
+<CodeGroup>
+```typescript box.ts
+const run = await box.exec.command("echo hello")
+
+console.log(run.result) // "hello"
+console.log(run.status) // "completed"
+```
+
+```python box.py
+run = box.exec.command("echo hello")
+
+print(run.result)  # "hello"
+print(run.status)  # "completed"
+```
+</CodeGroup>
+
+If you need additional system tools, install them with Debian's package manager inside the box.
+
+<CodeGroup>
+```typescript box.ts
+await box.exec.command("sudo apt-get install <package>")
+```
+
+```python box.py
+box.exec.command("sudo apt-get install <package>")
+```
+</CodeGroup>
+
+---
+
+### Run a code snippet
+
+You can execute code inside of a box:
+
+<CodeGroup>
+```typescript box.ts
+const run = await box.exec.code({
+  code: "console.log('hello')",
+  lang: "js",
+})
+
+console.log(run.result)   // "hello"
+console.log(run.exitCode) // 0
+```
+
+```python box.py
+run = box.exec.code(code="print('hello')", lang="python")
+
+print(run.result)     # "hello"
+print(run.exit_code)  # 0
+```
+</CodeGroup>
+
+---
+
+### Check exit status
+
+If the command fails, the run status will be `"failed"` and its result contains the stderr output.
+
+<CodeGroup>
+```typescript box.ts
+const run = await box.exec.command("node -e 'process.exit(1)'")
+
+console.log(run.status) // "failed"
+```
+
+```python box.py
+run = box.exec.command("node -e 'process.exit(1)'")
+
+print(run.status)  # "failed"
+```
+</CodeGroup>
+
+---
+
+### Chain commands
+
+Pass a full shell expression. Pipes, redirects, and chained commands all work as expected.
+
+<CodeGroup>
+```typescript box.ts
+const run = await box.exec.command("cd my-app && npm install && npm test")
+
+console.log(run.result)
+```
+
+```python box.py
+run = box.exec.command("cd my-app && npm install && npm test")
+
+print(run.result)
+```
+</CodeGroup>
+
+---
+
+### Hold a command open
+
+`exec.command` runs a command to completion. When you need to write to stdin, drive an interactive program through a terminal, or signal a process while it runs, start a [live session](/box/overall/live-sessions) instead.
+
+<CodeGroup>
+```typescript box.ts
+const session = await box.exec.session({ argv: ["sort"] })
+session.write("banana\napple\n")
+session.endStdin()
+
+await session.wait()
+```
+
+```python box.py
+session = box.exec.session(argv=["sort"])
+session.write("banana\napple\n")
+session.end_stdin()
+
+session.wait(30)
+```
+</CodeGroup>
+
+---
+
+### Stop a long-running command
+
+`exec.command` only returns once the command exits, so it cannot be stopped midway. To stop a command while it runs, start it as a [live session](/box/overall/live-sessions#stop-a-session) and terminate it.
+
+<CodeGroup>
+```typescript box.ts
+const session = await box.exec.session({ argv: ["sleep", "600"] })
+
+// SIGTERM now, then SIGKILL after 5s if it is still running
+session.terminate(5000)
+await session.wait()
+```
+
+```python box.py
+session = box.exec.session(argv=["sleep", "600"])
+
+# SIGTERM now, then SIGKILL after 5s if it is still running
+session.terminate(5000)
+session.wait(30)
+```
+</CodeGroup>
+
+---
+
+### Retrieve logs
+
+After a command finishes, call `logs()` to get the full timestamped output for debugging or auditing.
+
+<CodeGroup>
+```typescript box.ts
+const run = await box.exec.command("npm test")
+const logs = await run.logs()
+
+console.log(logs)
+// [
+//   { timestamp: "2026-02-23T...", level: "info", message: "PASS src/auth.test.ts" },
+//   { timestamp: "2026-02-23T...", level: "info", message: "Tests: 12 passed, 12 total" },
+// ]
+```
+
+```python box.py
+run = box.exec.command("npm test")
+logs = run.logs()
+
+print(logs)
+# [
+#   RunLog(timestamp="2026-02-23T...", level="info", message="PASS src/auth.test.ts"),
+#   RunLog(timestamp="2026-02-23T...", level="info", message="Tests: 12 passed, 12 total"),
+# ]
+```
+</CodeGroup>
+
+---
+
+## Examples
+
+### Install dependencies before a run
+
+Set up the environment with `box.exec.command()`, then hand off to the agent.
+
+<CodeGroup>
+```typescript box.ts
+import { Agent, Box } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY },
+  git: { token: process.env.GITHUB_TOKEN },
+})
+
+await box.git.clone({ repo: "https://github.com/your-org/your-api" })
+await box.cd("your-api")
+await box.exec.command("npm install")
+
+await box.agent.run({
+  prompt: "Run the test suite and fix any failing tests",
+})
+```
+
+```python box.py
+import os
+from upstash_box import Box, Agent
+
+box = Box.create(
+    runtime="node",
+    agent={"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]},
+    git={"token": os.environ["GITHUB_TOKEN"]},
+)
+
+box.git.clone(repo="https://github.com/your-org/your-api")
+box.cd("your-api")
+box.exec.command("npm install")
+
+box.agent.run(prompt="Run the test suite and fix any failing tests")
+```
+</CodeGroup>
+
+### Run a build and extract artifacts
+
+Upload the project files, run the build, then download the output. Upload each file individually, since `files.upload` does not take directories.
+
+<CodeGroup>
+```typescript box.ts
+import { Agent, Box } from "@upstash/box"
+
+const box = await Box.create({ runtime: "node" })
+
+await box.files.upload([
+  { path: "./package.json", destination: "app/package.json" },
+  { path: "./src/index.js", destination: "app/src/index.js" },
+])
+
+await box.exec.command("cd app && npm install && npm run build")
+await box.files.download({ folder: "app/dist" }) // saved to ./dist
+await box.delete()
+```
+
+```python box.py
+from upstash_box import Box
+
+box = Box.create(runtime="node")
+
+box.files.upload([
+    {"path": "./package.json", "destination": "app/package.json"},
+    {"path": "./src/index.js", "destination": "app/src/index.js"},
+])
+
+box.exec.command("cd app && npm install && npm run build")
+box.files.download(folder="app/dist")  # saved to ./dist
+box.delete()
+```
+</CodeGroup>
+
+### Health-check before handing off
+
+Verify the environment is usable before starting a longer agent task.
+
+<CodeGroup>
+```typescript box.ts
+import { Agent, Box } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "python",
+  agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY },
+})
+
+const check = await box.exec.command("python3 --version && pip list")
+console.log(check.result)
+
+await box.agent.run({
+  prompt: "Write a data pipeline that reads raw.csv, cleans it, and saves clean.parquet",
+})
+```
+
+```python box.py
+import os
+from upstash_box import Box, Agent
+
+box = Box.create(
+    runtime="python",
+    agent={"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]},
+)
+
+check = box.exec.command("python3 --version && pip list")
+print(check.result)
+
+box.agent.run(prompt="Write a data pipeline that reads raw.csv, cleans it, and saves clean.parquet")
+```
+</CodeGroup>

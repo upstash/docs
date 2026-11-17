@@ -1,0 +1,363 @@
+---
+title: "Live Sessions"
+---
+
+`box.exec.command` resolves once a command has finished. A live session resolves as soon as the command *starts*, and hands you a handle to the running process.
+
+That lets you do things a one-shot command cannot: write to stdin while the process runs, drive an interactive program through a real terminal, stream output as it is produced, and signal the process tree.
+
+<Note>
+  Live sessions are a Node.js API in the JavaScript SDK. Authentication travels in a request header, and browsers cannot set headers on a WebSocket handshake.
+</Note>
+
+---
+
+## API
+
+### Start a session
+
+Pass `argv` to run a program directly with no shell involved, which is the safest option when any part of the command comes from user input.
+
+Output arrives through callbacks as the process produces it. `stdout` and `stderr` stay separate.
+
+<CodeGroup>
+```typescript box.ts
+let out = ""
+
+const session = await box.exec.session({
+  argv: ["npm", "test"],
+  onStdout: (data) => (out += Buffer.from(data).toString()),
+  onStderr: (data) => console.error(Buffer.from(data).toString()),
+})
+
+console.log(session.pid)     // in-box process id
+const code = await session.wait()
+console.log(code)            // exit code
+```
+
+```python box.py
+chunks = []
+
+session = box.exec.session(
+    argv=["npm", "test"],
+    on_stdout=chunks.append,
+    on_stderr=lambda data: print(data.decode(), end=""),
+)
+
+print(session.pid)        # in-box process id
+code = session.wait()
+print(code)               # exit code
+```
+</CodeGroup>
+
+`wait()` blocks until the process exits and returns its exit code. In Python you can pass a timeout in **seconds** to bound the wait, and it raises `TimeoutError` if that elapses. The JavaScript `wait()` takes no timeout, so cap it with your own timer if you need one.
+
+Use `cmd` instead of `argv` when you want a shell, for pipes, globs, or `&&`. It runs through `bash -lc`.
+
+<CodeGroup>
+```typescript box.ts
+const session = await box.exec.session({ cmd: "cat *.log | grep ERROR" })
+```
+
+```python box.py
+session = box.exec.session(cmd="cat *.log | grep ERROR")
+```
+</CodeGroup>
+
+<Tip>
+  `argv` does not expand variables or treat `;` as a separator, so `argv: ["echo", "$HOME; rm -rf /"]` prints that text literally. Prefer it over `cmd` for untrusted input.
+</Tip>
+
+---
+
+### Write to stdin
+
+Send input to the running process. Close stdin when you are done so a command that reads to end of input can finish.
+
+<CodeGroup>
+```typescript box.ts
+let out = ""
+
+const session = await box.exec.session({
+  argv: ["sort"],
+  onStdout: (data) => (out += Buffer.from(data).toString()),
+})
+
+session.write("banana\napple\n")
+session.endStdin() // EOF, so sort can finish
+
+await session.wait()
+console.log(out) // "apple\nbanana\n"
+```
+
+```python box.py
+chunks = []
+
+session = box.exec.session(argv=["sort"], on_stdout=chunks.append)
+
+session.write("banana\napple\n")
+session.end_stdin()  # EOF, so sort can finish
+
+session.wait()
+print(b"".join(chunks).decode())  # "apple\nbanana\n"
+```
+</CodeGroup>
+
+A long-lived process can take many rounds of input without ever closing stdin.
+
+---
+
+### Run interactive programs
+
+Set `tty` to allocate a real terminal. Programs that behave differently when piped, such as REPLs, `top`, or anything drawing a terminal UI, then work as they do in a real shell. Give the terminal a size with `rows` and `cols`, and change it later with `resize`.
+
+With a TTY, stderr is merged into stdout, the same as in a terminal.
+
+<CodeGroup>
+```typescript box.ts
+const repl = await box.exec.session({
+  cmd: "python3 -i",
+  tty: true,
+  rows: 24,
+  cols: 80,
+  onStdout: (data) => process.stdout.write(Buffer.from(data)),
+})
+
+repl.write("2 + 2\n")
+repl.resize(50, 120)
+```
+
+```python box.py
+repl = box.exec.session(
+    cmd="python3 -i",
+    tty=True,
+    rows=24,
+    cols=80,
+    on_stdout=lambda data: print(data.decode(), end=""),
+)
+
+repl.write("2 + 2\n")
+repl.resize(50, 120)
+```
+</CodeGroup>
+
+---
+
+### Set the directory and environment
+
+`cwd` places the process, resolving against the box's current directory. `env` entries are `KEY=VALUE` strings overlaid on the box environment.
+
+<CodeGroup>
+```typescript box.ts
+const session = await box.exec.session({
+  argv: ["npm", "run", "build"],
+  cwd: "packages/web",
+  env: ["NODE_ENV=production"],
+})
+```
+
+```python box.py
+session = box.exec.session(
+    argv=["npm", "run", "build"],
+    cwd="packages/web",
+    env=["NODE_ENV=production"],
+)
+```
+</CodeGroup>
+
+<Note>
+  A few environment variables are reserved by the runtime and are dropped rather than applied, so a session cannot use them to alter how the box itself runs.
+</Note>
+
+---
+
+### Stop a session
+
+`terminate` asks the server for a graceful stop: SIGTERM now, then SIGKILL after the grace period if the process is still running.
+
+<CodeGroup>
+```typescript box.ts
+session.terminate(5000) // milliseconds: SIGTERM, then SIGKILL after 5s
+await session.wait()
+```
+
+```python box.py
+session.terminate(5000)  # milliseconds: SIGTERM, then SIGKILL after 5s
+session.wait()
+```
+</CodeGroup>
+
+<Note>
+  Only the first `terminate` starts the sequence. Later calls are ignored, so the grace period cannot be changed once it is running. Use `kill("KILL")` to stop the process immediately instead.
+</Note>
+
+`kill` sends a single signal to the whole process tree, so background children started by the command are signalled too. It defaults to `TERM`, and accepts `TERM`, `KILL`, `INT`, `HUP`, `TSTP`, `QUIT`, `USR1`, and `USR2`.
+
+<CodeGroup>
+```typescript box.ts
+session.kill()        // TERM
+session.kill("KILL")  // stop immediately
+```
+
+```python box.py
+session.kill()        # TERM
+session.kill("KILL")  # stop immediately
+```
+</CodeGroup>
+
+---
+
+## The session owns the process
+
+A session is a live connection, and the process belongs to it. Closing the handle, losing the network link, or exiting your program all stop the command rather than leaving it running in the box.
+
+<Warning>
+  Sessions cannot be reattached. Once the connection is gone the process is gone with it, so a session is the wrong tool for work that must outlive your program. Use [schedules](/box/overall/schedules) or a `keep_alive` box with `box.exec.command` for that.
+</Warning>
+
+Always stop the session on your way out, including when your code raises. In Python the handle is a context manager. In JavaScript, close it in a `finally` block.
+
+<CodeGroup>
+```typescript box.ts
+const dev = await box.exec.session({ cmd: "npm run dev", tty: true })
+try {
+  dev.write("rs\n") // restart
+} finally {
+  dev.close()       // stops the process
+}
+```
+
+```python box.py
+with box.exec.session(cmd="npm run dev", tty=True) as dev:
+    dev.write("rs\n")  # restart
+# the process is stopped on the way out
+```
+</CodeGroup>
+
+---
+
+## Sessions or commands?
+
+| Use | When |
+| --- | --- |
+| `box.exec.command` | You want the result of a command that finishes on its own. |
+| `box.exec.stream` | You want output as it arrives, but no input and no signals. |
+| `box.exec.session` | You need stdin, a terminal, signals, or a process you hold open. |
+
+---
+
+## Examples
+
+### Drive a REPL and collect answers
+
+<CodeGroup>
+```typescript box.ts
+let out = ""
+const repl = await box.exec.session({
+  argv: ["python3", "-i", "-q"],
+  onStdout: (data) => (out += Buffer.from(data).toString()),
+})
+
+for (const expr of ["import math", "math.factorial(10)", "sum(range(100))"]) {
+  repl.write(`${expr}\n`)
+  await new Promise((r) => setTimeout(r, 200))
+}
+
+repl.endStdin()
+await repl.wait()
+console.log(out)
+```
+
+```python box.py
+import time
+
+chunks = []
+repl = box.exec.session(argv=["python3", "-i", "-q"], on_stdout=chunks.append)
+
+for expr in ["import math", "math.factorial(10)", "sum(range(100))"]:
+    repl.write(f"{expr}\n")
+    time.sleep(0.2)
+
+repl.end_stdin()
+repl.wait()
+print(b"".join(chunks).decode())
+```
+</CodeGroup>
+
+---
+
+### Answer a prompt from an installer
+
+Collect the output as it arrives, wait for the prompt to show up, then answer it.
+
+<CodeGroup>
+```typescript box.ts
+let out = ""
+
+const session = await box.exec.session({
+  cmd: "npm create vite@latest my-app",
+  tty: true,
+  onStdout: (data) => (out += Buffer.from(data).toString()),
+})
+
+const deadline = Date.now() + 30000
+while (!out.includes("Select a framework") && Date.now() < deadline) {
+  await new Promise((r) => setTimeout(r, 100))
+}
+session.write("\n") // accept the default
+
+await session.wait()
+```
+
+```python box.py
+import time
+
+out = ""
+
+def collect(data: bytes) -> None:
+    global out
+    out += data.decode()
+
+session = box.exec.session(
+    cmd="npm create vite@latest my-app",
+    tty=True,
+    on_stdout=collect,
+)
+
+deadline = time.monotonic() + 30
+while "Select a framework" not in out and time.monotonic() < deadline:
+    time.sleep(0.1)
+session.write("\n")  # accept the default
+
+session.wait()
+```
+</CodeGroup>
+
+---
+
+### Stop a build that runs too long
+
+<CodeGroup>
+```typescript box.ts
+const build = await box.exec.session({ argv: ["npm", "run", "build"] })
+
+// wait() has no timeout in JS, so cap the build with a timer.
+const timer = setTimeout(() => build.terminate(5000), 60000) // ms
+const code = await build.wait()
+clearTimeout(timer)
+
+console.log(code === 0 ? "built" : `stopped with ${code}`)
+```
+
+```python box.py
+build = box.exec.session(argv=["npm", "run", "build"])
+
+try:
+    code = build.wait(60)  # seconds
+except TimeoutError:
+    build.terminate(5000)  # milliseconds
+    code = build.wait()
+
+print("built" if code == 0 else f"stopped with {code}")
+```
+</CodeGroup>

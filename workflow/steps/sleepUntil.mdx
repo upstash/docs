@@ -1,0 +1,88 @@
+---
+title: "context.sleepUntil"
+---
+
+`context.sleepUntil()` pauses workflow execution until a specific timestamp.
+
+When a workflow is paused, the current request completes and a new one is automatically scheduled to resume at the target time.
+This ensures no compute resources are consumed while sleeping.
+
+<Note>Always await a `sleepUntil` step to properly pause execution.</Note>
+
+##  Arguments
+
+<ParamField body="stepName" type="string">
+    A unique identifier for the step.
+</ParamField>
+
+<ParamField body="datetime" type="Date|number|string">
+    The target time when the workflow should resume.
+    Accepted formats:
+    - A **number**: Unix timestamp in seconds
+    - A **Date object**
+    - A **string** that can be parsed by `new Date(string)` in JavaScript
+</ParamField>
+
+## Usage
+
+<CodeGroup>
+
+```typescript TypeScript highlight={11-16}
+import { serve } from "@upstash/workflow/nextjs";
+import { signIn, sendEmail } from "@/utils/onboarding-utils";
+
+export const { POST } = serve<User>(async (context) => {
+  const userData = context.requestPayload;
+
+  const user = await context.run("sign-in", async () => {
+    return signIn(userData);
+  });
+
+  // 👇 Calculate the date for one week from now
+  const oneWeekFromNow = new Date();
+  oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7);
+
+  // 👇 Sleep until the calculated date
+  await context.sleepUntil("wait-for-one-week", oneWeekFromNow);
+
+  await context.run("send-welcome-email", async () => {
+    return sendEmail(user.name, user.email);
+  });
+});
+```
+
+```python Python
+from fastapi import FastAPI
+from datetime import datetime, timedelta
+from upstash_workflow.fastapi import Serve
+from upstash_workflow import AsyncWorkflowContext
+from onboarding_utils import sign_in, send_email
+
+app = FastAPI()
+serve = Serve(app)
+
+
+@serve.post("/api/onboarding")
+async def onboarding(context: AsyncWorkflowContext[User]) -> None:
+    user_data = context.request_payload
+
+    async def _sign_in():
+        return await sign_in(user_data)
+
+    user = await context.run("sign-in", _sign_in)
+
+    # 👇 Calculate the date for one week from now
+    one_week_from_now = datetime.now() + timedelta(days=7)
+
+    # 👇 Wait until the calculated date
+    await context.sleep_until("wait-for-one-week", one_week_from_now)
+
+    async def _send_email():
+        return await send_email(user.name, user.email)
+
+    await context.run("send-welcome-email", _send_email)
+
+```
+
+</CodeGroup>
+

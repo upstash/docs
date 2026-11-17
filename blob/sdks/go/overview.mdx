@@ -1,0 +1,197 @@
+---
+title: "Go SDK"
+sidebarTitle: "Overview"
+description: "Install blob-go, build a Bucket client, and configure retries, telemetry and an S3 client."
+---
+
+`github.com/upstash/blob-go` is the Go SDK. It has a `Bucket` client for server-side reads and writes, and an upload handler that serves the [browser client](/blob/uploads/upload-client), so a React app can upload straight to storage through a Go backend.
+
+This section is the Go reference: names, types, and `net/http` wiring. What each call does, its defaults and its limits are on the concept pages it links to.
+
+---
+
+## Install
+
+```bash
+go get github.com/upstash/blob-go
+```
+
+It needs Go 1.22 or later and uses only the standard library.
+
+```go
+import blob "github.com/upstash/blob-go"
+```
+
+The package name is `blob`. The examples import it under that name explicitly, since the module path ends in `blob-go`.
+
+| Exports | |
+| --- | --- |
+| `Bucket`, `NewBucket`, `NewBucketFromEnv`, `NewBucketWith`, `Options`, `RetryConfig` | The bucket client. See [Bucket API](/blob/sdks/go/bucket). |
+| `UpdateJSON`, `UniquePath` | Package functions that take or build a path. |
+| `NewUploadHandler`, `UploadHandlerOptions`, `UploadRoute`, `JSONInput` | The server half of a browser upload. See [Upload handler](/blob/sdks/go/upload-handler). |
+| `Error`, `ErrorCode`, `NewError`, `HasCode`, `ErrNotFound`, ... | See [Errors](/blob/sdks/go/errors). |
+| `KB`, `MB`, `GB`, `MiB`, ..., `ParseSize`, `FormatBytes` | See [Option types](#option-types). |
+| `CacheImmutable`, `CacheRevalidate`, `CacheNoStore` | See [Caching](/blob/bucket/caching). |
+| `MultipartAlways`, `MultipartNever`, `MultipartOver` | See [Large bodies](/blob/bucket/writing#large-bodies). |
+
+There is no Go browser client. The browser runs `@upstash/blob/react` or `@upstash/blob/browser`, which speak the same protocol to a Go handler as to a TypeScript one; see [With a server in another language](/blob/uploads/upload-client#with-a-server-in-another-language).
+
+---
+
+## The Bucket client
+
+```go blob.go
+bucket, err := blob.NewBucketFromEnv() // reads UPSTASH_BLOB_TOKEN
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+`NewBucketFromEnv()` returns an error when `UPSTASH_BLOB_TOKEN` is unset or empty. `NewBucket(token)` takes the token directly. `NewBucketWith` takes every option:
+
+```go
+bucket, err := blob.NewBucketWith(blob.Options{
+	Token:            os.Getenv("REPORTS_BUCKET_TOKEN"),
+	Cache:            blob.CacheImmutable,
+	DisableTelemetry: true,
+	Retry:            blob.RetryConfig{Retries: 5},
+	HTTPClient:       &http.Client{Transport: proxyTransport},
+})
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Token` | `string` | Required. Surrounding whitespace, such as the newline of a token read from a file, is trimmed. See [Connecting](/blob/bucket/connecting). |
+| `Cache` | `string` | The default `Cache-Control` for every object this client stores. A per-call `Cache` overrides it. See [Caching](/blob/bucket/caching). |
+| `DisableTelemetry` | `bool` | Turns telemetry off for this client. See [Telemetry](/blob/bucket/connecting#telemetry). |
+| `Retry` | `RetryConfig` | See [Retries](#retries). The zero value keeps the defaults. |
+| `HTTPClient` | `*http.Client` | Sends every request, for a proxy or a custom transport. Nil is `http.DefaultClient`. A `Timeout` on it also bounds reading a `Get` body and sending a large `Put`; bound a call with its context instead. |
+
+A missing or malformed token, an unparseable `Cache` and a negative retry count are returned as an error from the constructor, not on the first request.
+
+There is no visibility option. Whether the bucket is public or private is a console setting; see [Connecting](/blob/bucket/connecting#public-or-private).
+
+A `*Bucket` is safe for concurrent use. Build one at startup and share it, or build one per request: buckets on the same token share one credential cache.
+
+### Contexts
+
+Every method that makes a request takes a `context.Context` first. Canceling it, or a deadline passing, stops the request and any retry wait, and the method returns the context's error. In a handler, pass `r.Context()`.
+
+A multipart upload that fails or is canceled aborts itself on its way out, on a context of its own, so the parts already sent are not left behind.
+
+### Retries
+
+```go
+// every request once
+blob.NewBucketWith(blob.Options{
+	Token: token,
+	Retry: blob.RetryConfig{Disabled: true},
+})
+
+blob.NewBucketWith(blob.Options{
+	Token: token,
+	Retry: blob.RetryConfig{
+		Retries: 5,
+		Backoff: func(n int) time.Duration {
+			return time.Duration(n) * 500 * time.Millisecond
+		},
+	},
+})
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Disabled` | `bool` | Sends every request once. |
+| `Retries` | `int` | Retries after the first attempt, for every request this client makes. Zero keeps the defaults. |
+| `Backoff` | `func(retryCount int) time.Duration` | The wait before retry `n`, counted from 0. A `Retry-After` from the service wins over it. Nil keeps the default. |
+
+Which requests are retried, and the default budget and backoff, are on [Retries](/blob/bucket/connecting#retries). In Go, a body `Put` can read again is retried; see [Bodies](/blob/sdks/go/bucket#bodies).
+
+---
+
+## Using an S3 client
+
+```go
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+)
+
+refresh := func(ctx context.Context) (aws.Credentials, error) {
+	c, err := bucket.S3(ctx)
+	if err != nil {
+		return aws.Credentials{}, err
+	}
+	return aws.Credentials{
+		AccessKeyID:     c.AccessKeyID,
+		SecretAccessKey: c.SecretAccessKey,
+		SessionToken:    c.SessionToken,
+		CanExpire:       true,
+		Expires:         c.Expires,
+	}, nil
+}
+
+cfg, err := bucket.S3(ctx)
+if err != nil {
+	return err
+}
+client := s3.New(s3.Options{
+	Region:       cfg.Region,
+	BaseEndpoint: aws.String(cfg.Endpoint),
+	Credentials:  aws.NewCredentialsCache(aws.CredentialsProviderFunc(refresh)),
+})
+
+out, err := client.GetObject(ctx, &s3.GetObjectInput{
+	Bucket: aws.String(cfg.Bucket),
+	Key:    aws.String("reports/q3.pdf"),
+	Range:  aws.String("bytes=0-1023"),
+})
+```
+
+`bucket.S3(ctx)` returns an `*S3Credentials` with `Endpoint`, `Region`, `Bucket`, a short-lived credential and its `Expires`. The SDK does not depend on the AWS SDK; bring your own. The credential stops working at `Expires`, so hand the AWS SDK a provider that calls `bucket.S3` again, as above, rather than a static one.
+
+What an S3 client is for, and why it must not presign, is on [Using an S3 client](/blob/bucket/connecting#using-an-s3-client).
+
+---
+
+## Option types
+
+| Type | Go | Grammar |
+| --- | --- | --- |
+| Size | `int64` bytes | [Size](/blob/reference/types#size). Write `20 * blob.MB` or `32 * blob.MiB`. |
+| Duration | `time.Duration` | [Duration](/blob/reference/types#duration). Signed URL lifetimes count whole seconds. |
+| CacheOption | `string` | [CacheOption](/blob/reference/types#cacheoption): a `Cache*` constant, a duration such as `"15m"`, `"3600"` or `"1h30m"`, or a raw header. |
+| MultipartOption | `blob.Multipart` | [Changing the threshold](/blob/uploads/large-files#changing-the-threshold) |
+
+`KB`, `MB`, `GB` and `TB` are powers of 1,000, and `KiB`, `MiB`, `GiB` and `TiB` powers of 1,024. `32 * blob.MB` refuses a 32 MiB file.
+
+```go
+bucket.SignedReadURL(ctx, "reports/q3.pdf", &blob.SignedReadURLOptions{
+	ExpiresIn: 2 * time.Minute,
+})
+// Cache-Control: public, max-age=604800
+bucket.Put(ctx, "avatars/7.png", file, &blob.PutOptions{Cache: "7d"})
+bucket.Put(ctx, "export.csv", rows, &blob.PutOptions{MaxSize: 10 * blob.MiB})
+```
+
+A size read from configuration goes through `blob.ParseSize("32MiB")`, which takes the same strings as the other SDKs and returns `invalid_input` for one that does not parse. `blob.FormatBytes(2_400_000)` is `"2.4 MB"`, the same text the browser client shows.
+
+The zero value of every option means unset: no limit, the default lifetime, the bucket's cache. A negative size or lifetime on a `Bucket` call is refused with `invalid_input`, and a negative `MaxSize` on an upload handler or route is an error from `NewUploadHandler`. Two negatives have a meaning: a route's `MaxSize: blob.NoLimit` clears the handler's limit, and `MultipartOver` treats a negative threshold as 0.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Bucket API" href="/blob/sdks/go/bucket">
+    Every `Bucket` method, its options and the records it returns.
+  </Card>
+
+  <Card title="Upload handler" href="/blob/sdks/go/upload-handler">
+    `NewUploadHandler` options, callbacks, and mounting it on `net/http`.
+  </Card>
+
+  <Card title="Errors" href="/blob/sdks/go/errors">
+    `*blob.Error`, matching codes, and what is returned as a plain error.
+  </Card>
+</CardGroup>

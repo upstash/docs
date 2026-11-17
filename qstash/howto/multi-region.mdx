@@ -1,0 +1,152 @@
+---
+title: Select a QStash Region
+sidebarTitle: Select a Region
+---
+
+## Overview
+
+QStash is available in two regions: **EU region** and **US region**. Each region is completely independent with its own infrastructure, pricing, resources, logs, and messages.
+
+## Regional URLs
+
+- **EU Region**: `https://qstash-eu-central-1.upstash.io`, or `https://qstash.upstash.io`
+- **US Region**: `https://qstash-us-east-1.upstash.io`
+
+`QSTASH_URL` is optional. When it is not set, SDKs default to the EU region
+(`https://qstash.upstash.io`). To use the US region, set `QSTASH_URL` to the US
+regional URL together with that region's `QSTASH_TOKEN` and signing keys — you can
+copy all of them from the **Quickstart** section of the
+[QStash Console](https://console.upstash.com/qstash).
+
+## Key Concepts
+
+Each QStash region maintains:
+- Usage in each region is tracked and billed independently
+- Messages, queues, schedules, URL groups and DLQ are region-specific
+- Each region has its own API tokens and signing keys
+
+### Migration Between Regions
+
+If you don't have any active resources (active messages, schedules, url groups etc), you can simply update your environment variables with the new region to migrate. If you have active resources, you will need to migrate more gracefully, as described below.
+
+You can migrate your QStash resources from one region to another using the Upstash Console:
+
+1. Navigate to the [QStash tab on Upstash Console](https://console.upstash.com/qstash)
+2. Click the **Migrate** button
+3. Follow the guided migration process
+
+<img src="/img/qstash/local-mode-qstash.png" alt="Local QStash server mode" />
+
+The migration tool will:
+- Help you set up migration mode environment variables
+- Copy and update your QStash resources (schedules, url groups, queues)
+
+Your message logs or DLQ aren't part of the migration. They will remain in the old region.
+
+<Info>
+After migration, your app will be able to handle requests from both regions simultaneously to ensure a smooth transition.
+</Info>
+
+## Operating Modes
+
+QStash SDK supports two modes of operation:
+
+### Single-Region Mode (Default)
+
+When `QSTASH_REGION` environment variable is **not set**, the SDK operates in single-region mode:
+
+- Uses `QSTASH_TOKEN` and `QSTASH_URL` (or defaults to EU region)
+- All outgoing messages are sent through the configured region
+- Incoming messages are verified using default signing keys if signing keys are defined
+
+```bash
+# Single-region configuration (EU)
+QSTASH_URL="https://qstash.upstash.io"
+QSTASH_TOKEN="your_eu_token"
+QSTASH_CURRENT_SIGNING_KEY="your_eu_current_key"
+QSTASH_NEXT_SIGNING_KEY="your_eu_next_key"
+```
+
+### Migration Mode
+
+When `QSTASH_REGION` is set to `US_EAST_1` or `EU_CENTRAL_1`, the SDK enables migration mode:
+
+- Uses region-specific credentials (e.g., `US_EAST_1_QSTASH_TOKEN`)
+- Automatically handles region detection for incoming requests
+- Supports receiving messages from multiple regions simultaneously
+
+<Note>
+  If a message was published in one region, it will still be delivered from that region after the migration.
+</Note>
+
+Environment variables:
+
+```bash
+# Migration mode configuration with US as primary
+QSTASH_REGION="US_EAST_1"
+
+US_EAST_1_QSTASH_URL="https://qstash-us-east-1.upstash.io"
+US_EAST_1_QSTASH_TOKEN="your_us_token"
+US_EAST_1_QSTASH_CURRENT_SIGNING_KEY="your_us_current_key"
+US_EAST_1_QSTASH_NEXT_SIGNING_KEY="your_us_next_key"
+
+EU_CENTRAL_1_QSTASH_URL="https://qstash-eu-central-1.upstash.io"
+EU_CENTRAL_1_QSTASH_TOKEN="your_eu_token"
+EU_CENTRAL_1_QSTASH_CURRENT_SIGNING_KEY="your_eu_current_key"
+EU_CENTRAL_1_QSTASH_NEXT_SIGNING_KEY="your_eu_next_key"
+```
+
+<Warning>
+  Migration mode relies on environment variables being available via `process.env`. It won't work on platforms where `process.env` is not available, such as Cloudflare Workers.
+</Warning>
+
+#### Verifying Incoming Requests
+
+QStash includes an `upstash-region` header with every request to indicate the source region:
+
+```
+upstash-region: US-EAST-1
+```
+
+With this header, the SDK can determine which signing keys to use when verifying the request if `QSTASH_REGION` is set. For this to work correctly, value of `upstash-region` header should be passed to the `verify` method:
+
+```typescript {10-11}
+import { Receiver } from "@upstash/qstash";
+
+// Initialize receiver (works in both modes)
+const receiver = new Receiver();
+
+// Verify the incoming request
+await receiver.verify({
+  signature: request.headers.get("upstash-signature")!,
+  body: await request.text(),
+  // Pass the region header for multi-region support
+  upstashRegion: request.headers.get("upstash-region") ?? undefined,
+});
+```
+
+#### Platform-Specific Verification
+
+Most platform verifiers automatically handle the region header:
+
+```typescript
+// Next.js App Router - automatically handles multi-region
+import { verifySignatureAppRouter } from "@upstash/qstash/nextjs";
+
+export const POST = verifySignatureAppRouter(async (req) => {
+  const body = await req.json();
+  return Response.json({ success: true });
+});
+```
+
+## SDK Requirements
+
+Migration mode support requires:
+- `@upstash/qstash` >= 2.9.0
+
+Update your dependency:
+
+```bash
+npm install @upstash/qstash@latest
+```
+

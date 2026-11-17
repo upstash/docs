@@ -1,0 +1,185 @@
+---
+title: "Handle Failed Runs"
+---
+
+This guide shows you how to **gracefully handle failed workflow runs**. This involves best practices on resolving runtime errors, logging and manually retrying runs that have failed multiple times.
+
+## Why a workflow might fail
+
+- A step in your workflow throws a database error that causes your code to fail at runtime.
+- QStash calls your workflow URL, but the URL is not reachable - for example, because of a temporary outage of your deployment platform.
+- A single step takes longer than your platform's function execution limit.
+
+Workflow automatically retries a failed step based on your configuration (by default, it retries three times with exponential backoff). 
+This helps handle temporary outages or intermittent failures gracefully.
+
+<Frame caption="A failed step is automatically retried three times">
+  <img src="/img/qstash-workflow/automatic_retry.png" alt="A failed step is automatically retried three times" />
+</Frame>
+
+If, even after all retries, your step does not succeed, we'll move the failed run into your [Dead Letter Queue (DLQ)](/qstash/howto/handling-failures#dead-letter-queue). That way, you can always manually retry it again and debug the issue.
+
+<Frame caption="Manually retry from the Dead-Letter-Queue (DLQ)">
+  <img src="/img/qstash-workflow/workflow_dlq.png" alt="Manually retry from the Dead-Letter-Queue (DLQ)" />
+</Frame>
+
+If you want to take an action (a cleanup/log), you can configure either `failureFunction` or a `failureUrl` on the `serve` method of your workflow.
+These options allow you to define custom logic or an external endpoint that will be triggered when a failure occurs.
+
+While a step is waiting for its next retry, you can retry it immediately from the console. See [Run a Step Now](/workflow/howto/retry-now).
+
+## Using a `failureFunction` (recommended)
+
+The `serve` function you use to create a workflow endpoint accepts a `failureFunction` parameter - an easy way to gracefully handle errors (i.e. logging them to Sentry) or your custom handling logic.
+
+
+<CodeGroup>
+```typescript TypeScript
+export const { POST } = serve<string>(
+  async (context) => {
+    // Your workflow logic...
+  },
+  {
+    failureFunction: async ({
+      context,
+      failStatus,
+      failResponse,
+      failHeaders,
+    }) => {
+      // Handle error, i.e. log to Sentry
+      console.error("Workflow failed:", failResponse);
+      
+      // You can optionally return a string that will be visible
+      // in the UI (coming soon) and in workflow logs
+      return `Workflow failed with status ${failStatus}: ${failResponse}`;
+    },
+  }
+);
+```
+
+```python Python
+async def failure_function(
+    context,       # context during failure
+    fail_status,   # failure status
+    fail_response, # failure message
+    fail_headers   # failure headers
+):
+    # handle the failure
+    pass
+
+@serve.post("/api/example", failure_function=failure_function)
+async def example(context: AsyncWorkflowContext[str]) -> None: ...
+```
+
+</CodeGroup>
+
+Note: If you use a custom authorization method to secure your workflow endpoint, add authorization to the `failureFunction` too. Otherwise, anyone can invoke your failure function. Read more here: [securing your workflow endpoint](/workflow/howto/security).
+
+In `@upstash/workflow`, the `failureFunction` can optionally return a string value that will be displayed in the UI (coming soon) and included in the workflow logs. This is useful for providing custom error messages, debugging information, or tracking specific failure conditions.
+
+## Using a `failureUrl`
+
+Instead of using the built-in failure function, you can define a separate failure callback URL.
+Unlike the failure function, which only works when your application is running, the failure URL allows you to handle errors even if your application is completely down.
+If the URL is a different service other than your application, it will be reachable in these cases.
+
+By pointing the failure URL to an external service (not hosted within your main application), you ensure that it remains accessible even when your primary app is unavailable.
+
+<CodeGroup>
+
+```typescript TypeScript
+export const { POST } = serve<string>(
+  async (context) => {
+    // Your workflow logic...
+  },
+  {
+    failureUrl: "https://<YOUR_FAILURE_URL>/workflow-failure",
+  }
+);
+```
+
+```python Python
+@serve.post("/api/example", failureUrl="https://<YOUR-FAILURE-ENDPOINT>/...")
+async def example(context: AsyncWorkflowContext[str]) -> None: ...
+```
+
+</CodeGroup>
+
+The callback body sent to you will be a JSON object with the following fields:
+
+```javascript JavaScript
+{
+  "status": 200,
+  "header": { "key": ["value"] },         // Response header
+  "body": "YmFzZTY0IGVuY29kZWQgcm9keQ==", // base64 encoded response body
+  "retried": 2,                           // How many times we retried to deliver the original message
+  "maxRetries": 3,                        // Number of retries before the message assumed to be failed to delivered.
+  "sourceMessageId": "msg_xxx",           // The ID of the message that triggered the callback
+  "topicName": "myTopic",                 // The name of the URL Group (topic) if the request was part of a URL Group
+  "endpointName": "myEndpoint",           // The endpoint name if the endpoint is given a name within a topic
+  "url": "http://myurl.com",              // The destination url of the message that triggered the callback
+  "method": "GET",                        // The http method of the message that triggered the callback
+  "sourceHeader": { "key": "value" },     // The http header of the message that triggered the callback
+  "sourceBody": "YmFzZTY0kZWQgcm9keQ==",  // The base64 encoded body of the message that triggered the callback
+  "notBefore": "1701198458025",           // The unix timestamp of the message that triggered the callback is/will be delivered in milliseconds
+  "createdAt": "1701198447054",           // The unix timestamp of the message that triggered the callback is created in milliseconds
+  "scheduleId": "scd_xxx",                // The scheduleId of the message if the message is triggered by a schedule
+  "callerIP": "178.247.74.179"            // The IP address where the message that triggered the callback is published from
+}
+```
+
+In Next.js you can use the following code to handle the callback:
+
+```javascript JavaScript
+// pages/api/callback.js
+
+import { verifySignature } from "@upstash/qstash/nextjs";
+
+function handler(req, res) {
+  // responses from qstash are base64-encoded
+  const decoded = atob(req.body.body);
+  console.log(decoded);
+
+  return res.status(200).end();
+}
+
+export default verifySignature(handler);
+
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+```
+
+`verifySignature` allows to verify the signature of request, which is signed by Upstash using your signing keys.
+If you don't want to verify the signature, you can remove `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` environment variables and remove `verifySignature` function.
+
+
+
+## Manually Handling Failed Workflow Runs
+
+When a workflow run fails and is moved to the Dead Letter Queue (DLQ), you have several options to handle it manually via the REST API:
+
+### [Resume](/workflow/api-reference/dlq/resume-workflow-from-dlq)
+- **What it does:** Continues a failed workflow run from exactly where it failed, preserving all successful step results.
+- **When to use:** Use this if you want to retry only the failed/pending steps without re-executing the entire workflow.
+
+### [Restart](/workflow/api-reference/dlq/restart-workflow-from-dlq)
+- **What it does:** Starts the failed workflow run over from the beginning, discarding all previous step results.
+- **When to use:** Use this if you want a clean execution, or if the failure may have been caused by a corrupted state that requires a fresh start.
+
+### [Callback](/workflow/api-reference/dlq/retry-failure-callback)
+- **What it does:** Reruns the failure callback for a workflow run, in case the original failure callback was not delivered or failed.
+- **When to use:** Use this to ensure your system is notified of workflow failures, even if the original callback attempt did not succeed.
+
+
+## Debugging failed runs
+
+In your DLQ, filter messages via the `Workflow URL` or `Workflow Run ID` to search for a particular failure. We include all request and response headers and bodies to simplify debugging failed runs.
+
+For example, let's debug the following failed run. Judging by the status code `404`, the `Ngrok-Error-Code` header of `ERR_NGROK_3200` and the returned HTML body, we know that the URL our workflow called does not exist.
+
+<Frame>
+  <img src="/img/qstash-workflow/workflow_dlq_debug.png" alt="Debug a failed workflow run in the DLQ" />
+</Frame>

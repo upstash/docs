@@ -1,0 +1,413 @@
+---
+title: "Filesystem"
+---
+
+Every box has its own isolated filesystem. Upload, write, read, list, and download files inside the box.
+
+---
+
+## API
+
+### Upload files
+
+Push local files into the box. Each entry maps a local file to a destination inside the box. Relative destinations resolve against the box's current directory, `/workspace/home` by default.
+
+<CodeGroup>
+```typescript box.ts
+await box.files.upload([
+  { path: "./data/report.csv", destination: "report.csv" },
+  { path: "./config.json", destination: "config.json" },
+])
+```
+
+```python box.py
+box.files.upload([
+    {"path": "./data/report.csv", "destination": "report.csv"},
+    {"path": "./config.json", "destination": "config.json"},
+])
+```
+</CodeGroup>
+
+All files in a call are sent in a single request. Each file can be up to 100 MB, and a request up to about 1 GB in total. Each `path` must be a file, not a directory.
+
+---
+
+### Write files
+
+Create or overwrite a file directly from a string. Useful when you want to inject configuration, scripts, or generated content without a local file.
+
+<CodeGroup>
+```typescript box.ts
+await box.files.write({
+  path: "script.js",
+  content: `console.log("hello from box")`,
+})
+```
+
+```python box.py
+box.files.write(
+    path="script.js",
+    content='console.log("hello from box")',
+)
+```
+</CodeGroup>
+
+---
+
+### Read files
+
+Read the contents of a file as a string.
+
+<CodeGroup>
+```typescript box.ts
+const content = await box.files.read("output.json")
+console.log(JSON.parse(content))
+```
+
+```python box.py
+import json
+
+content = box.files.read("output.json")
+print(json.loads(content))
+```
+</CodeGroup>
+
+---
+
+### Read part of a file
+
+Pass `length` to read a bounded byte range instead of the whole file, starting at `offset` (default `0`). This keeps a large log or dataset out of memory when you only need a slice of it. The server rejects a length above 8 MiB.
+
+<CodeGroup>
+```typescript box.ts
+// First 512 bytes
+const head = await box.files.read("train.csv", { length: 512 })
+
+// 1 KB starting at byte 4096
+const chunk = await box.files.read("train.csv", { offset: 4096, length: 1024 })
+```
+
+```python box.py
+# First 512 bytes
+head = box.files.read("train.csv", length=512)
+
+# 1 KB starting at byte 4096
+chunk = box.files.read("train.csv", offset=4096, length=1024)
+```
+</CodeGroup>
+
+---
+
+### Inspect a path
+
+Get metadata for a single path without reading it: the entry type, size, last modified time, inode, and an opaque `version` token.
+
+Use `version` for optimistic concurrency. Read it before a slow operation, then compare it afterwards to detect whether the file changed underneath you. Compare it for equality only, and do not parse it.
+
+<CodeGroup>
+```typescript box.ts
+const info = await box.files.stat("report.csv")
+
+console.log(info.type)     // "file" | "directory" | "symlink" | "other"
+console.log(info.size)     // 1024
+console.log(info.version)  // opaque freshness token
+```
+
+```python box.py
+info = box.files.stat("report.csv")
+
+print(info.type)     # "file" | "directory" | "symlink" | "other"
+print(info.size)     # 1024
+print(info.version)  # opaque freshness token
+```
+</CodeGroup>
+
+By default a symlink is reported as `"symlink"`. Pass `follow` to resolve it and describe the target instead.
+
+<CodeGroup>
+```typescript box.ts
+const target = await box.files.stat("latest", { follow: true })
+```
+
+```python box.py
+target = box.files.stat("latest", follow=True)
+```
+</CodeGroup>
+
+---
+
+### Create directories
+
+Create a directory. Pass `parents` to create missing parent directories, the way `mkdir -p` does, and to succeed when the directory already exists.
+
+<CodeGroup>
+```typescript box.ts
+await box.files.mkdir("output/reports", { parents: true })
+```
+
+```python box.py
+box.files.mkdir("output/reports", parents=True)
+```
+</CodeGroup>
+
+---
+
+### Move and rename
+
+Move a path to a new location, which is also how you rename it.
+
+<CodeGroup>
+```typescript box.ts
+await box.files.rename("draft.md", "final.md")
+```
+
+```python box.py
+box.files.rename("draft.md", "final.md")
+```
+</CodeGroup>
+
+---
+
+### Delete files
+
+Remove a file. Removing a directory requires `recursive`, so a directory is never deleted by accident.
+
+<CodeGroup>
+```typescript box.ts
+await box.files.remove("scratch.tmp")
+await box.files.remove("build", { recursive: true })
+```
+
+```python box.py
+box.files.remove("scratch.tmp")
+box.files.remove("build", recursive=True)
+```
+</CodeGroup>
+
+---
+
+### List files
+
+List the entries in a directory. Each entry includes the name, path, size, whether it is a directory, and the last modified timestamp.
+
+<CodeGroup>
+```typescript box.ts
+const files = await box.files.list()
+
+console.log(files)
+// [
+//   { name: "report.csv", path: "/workspace/home/report.csv", size: 1024, is_dir: false, mod_time: "2026-02-23T..." },
+//   { name: "output", path: "/workspace/home/output", size: 4096, is_dir: true, mod_time: "2026-02-23T..." },
+// ]
+```
+
+```python box.py
+files = box.files.list()
+
+print(files)
+# [
+#   FileEntry(name="report.csv", path="/workspace/home/report.csv", size=1024, is_dir=False, mod_time="2026-02-23T..."),
+#   FileEntry(name="output", path="/workspace/home/output", size=4096, is_dir=True, mod_time="2026-02-23T..."),
+# ]
+```
+</CodeGroup>
+
+---
+
+### Download files
+
+Pull files from a box directory back to your local machine. Pass a `folder` to download that directory into `./<folder name>`, or call with no arguments to download the current directory (`./workspace` for the default `/workspace/home`).
+
+Downloads are not recursive: only the files directly inside the directory are downloaded, and subdirectories are skipped. `folder` must be a directory, not a single file. To fetch one file, use `files.read`.
+
+<CodeGroup>
+```typescript box.ts
+await box.files.download()
+await box.files.download({ folder: "output" })
+```
+
+```python box.py
+box.files.download()
+box.files.download(folder="output")
+```
+</CodeGroup>
+
+---
+
+## Examples
+
+### Feed data to an agent
+
+Upload input files, run the agent, then read back the structured result.
+
+<CodeGroup>
+```typescript box.ts
+import { Agent, Box } from "@upstash/box"
+import { z } from "zod"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY },
+})
+
+await box.files.upload([
+  { path: "./resumes/candidate.pdf", destination: "resume.pdf" },
+])
+
+const run = await box.agent.run({
+  prompt: "Read resume.pdf. Extract the candidate's name, email, and skills.",
+  responseSchema: z.object({
+    name: z.string(),
+    email: z.string(),
+    skills: z.array(z.string()),
+  }),
+})
+
+console.log(run.result)
+// { name: "Jane Doe", email: "jane@example.com", skills: ["TypeScript", "PostgreSQL"] }
+
+await box.delete()
+```
+
+```python box.py
+import os
+from pydantic import BaseModel
+from upstash_box import Box, Agent
+
+class Candidate(BaseModel):
+    name: str
+    email: str
+    skills: list[str]
+
+box = Box.create(
+    runtime="node",
+    agent={"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]},
+)
+
+box.files.upload([
+    {"path": "./resumes/candidate.pdf", "destination": "resume.pdf"},
+])
+
+run = box.agent.run(
+    prompt="Read resume.pdf. Extract the candidate's name, email, and skills.",
+    response_schema=Candidate,
+)
+
+print(run.result)
+# Candidate(name="Jane Doe", email="jane@example.com", skills=["TypeScript", "PostgreSQL"])
+
+box.delete()
+```
+</CodeGroup>
+
+### Inject config before a run
+
+Write environment-specific configuration into the box, then let the agent use it.
+
+<CodeGroup>
+```typescript box.ts
+import { Agent, Box } from "@upstash/box"
+
+const box = await Box.create({
+  runtime: "node",
+  agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY },
+  git: { token: process.env.GITHUB_TOKEN },
+})
+
+await box.git.clone({ repo: "https://github.com/your-org/your-api" })
+await box.cd("your-api")
+
+await box.files.write({
+  path: ".env.test",
+  content: `DATABASE_URL=postgres://localhost:5432/test\nREDIS_URL=redis://localhost:6379`,
+})
+
+await box.agent.run({
+  prompt: "Run the integration test suite using the config in .env.test",
+})
+```
+
+```python box.py
+import os
+from upstash_box import Box, Agent
+
+box = Box.create(
+    runtime="node",
+    agent={"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]},
+    git={"token": os.environ["GITHUB_TOKEN"]},
+)
+
+box.git.clone(repo="https://github.com/your-org/your-api")
+box.cd("your-api")
+
+box.files.write(
+    path=".env.test",
+    content="DATABASE_URL=postgres://localhost:5432/test\nREDIS_URL=redis://localhost:6379",
+)
+
+box.agent.run(prompt="Run the integration test suite using the config in .env.test")
+```
+</CodeGroup>
+
+### Collect outputs from parallel boxes
+
+Fan out work across multiple boxes. Each box writes to its own output folder, so the downloads land in separate local folders.
+
+<CodeGroup>
+```typescript box.ts
+import { Agent, Box } from "@upstash/box"
+
+const tasks = [
+  { out: "summary", prompt: "Analyze data.csv and write a summary to summary/summary.md" },
+  { out: "charts", prompt: "Generate charts from data.csv and save PNGs to charts/" },
+  { out: "anomalies", prompt: "Find anomalies in data.csv and write a report to anomalies/report.md" },
+]
+
+await Promise.all(
+  tasks.map(async ({ out, prompt }) => {
+    const box = await Box.create({
+      runtime: "node",
+      agent: { harness: Agent.ClaudeCode, model: "anthropic/claude-opus-4-6", apiKey: process.env.ANTHROPIC_API_KEY },
+    })
+
+    await box.files.upload([
+      { path: "./data.csv", destination: "data.csv" },
+    ])
+
+    await box.agent.run({ prompt })
+    // Downloads the files in the box's `out` folder into ./<out>
+    await box.files.download({ folder: out })
+    await box.delete()
+  })
+)
+```
+
+```python box.py
+import asyncio
+import os
+from upstash_box import AsyncBox, Agent
+
+tasks = [
+    ("summary", "Analyze data.csv and write a summary to summary/summary.md"),
+    ("charts", "Generate charts from data.csv and save PNGs to charts/"),
+    ("anomalies", "Find anomalies in data.csv and write a report to anomalies/report.md"),
+]
+
+async def run_one(out: str, prompt: str) -> None:
+    box = await AsyncBox.create(
+        runtime="node",
+        agent={"harness": Agent.CLAUDE_CODE, "model": "anthropic/claude-opus-4-6", "api_key": os.environ["ANTHROPIC_API_KEY"]},
+    )
+    await box.files.upload([{"path": "./data.csv", "destination": "data.csv"}])
+    await box.agent.run(prompt=prompt)
+    # Downloads the files in the box's `out` folder into ./<out>
+    await box.files.download(folder=out)
+    await box.delete()
+
+async def main() -> None:
+    # fan out across boxes in parallel
+    await asyncio.gather(*(run_one(out, prompt) for out, prompt in tasks))
+
+asyncio.run(main())
+```
+</CodeGroup>

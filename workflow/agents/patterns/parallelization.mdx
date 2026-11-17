@@ -1,0 +1,77 @@
+---
+title: "Parallelization"
+---
+
+<img src="/img/workflow/agents/diagram/parallel-diagram.png" alt="Parallel agent workflow diagram" />
+
+This workflow calls multiple agents simultaneously to handle tasks, and then aggregates their results.
+
+```ts
+import { serve } from "@upstash/workflow/nextjs";
+import { agentWorkflow } from "@upstash/workflow-agents";
+
+export const { POST } = serve(async (context) => {
+  const agents = agentWorkflow(context);
+  const model = agents.openai('gpt-3.5-turbo');
+
+  // Define worker agents
+  const worker1 = agents.agent({
+    model,
+    name: 'worker1',
+    maxSteps: 1,
+    background: 'You are an agent that explains quantum physics.',
+    tools: {}
+  });
+
+  const worker2 = agents.agent({
+    model,
+    name: 'worker2',
+    maxSteps: 1,
+    background: 'You are an agent that explains relativity.',
+    tools: {}
+  });
+
+  const worker3 = agents.agent({
+    model,
+    name: 'worker3',
+    maxSteps: 1,
+    background: 'You are an agent that explains string theory.',
+    tools: {}
+  });
+
+  // Await results
+  const [result1, result2, result3] = await Promise.all([
+    agents.task({ agent: worker1, prompt: "Explain quantum physics." }).run(),
+    agents.task({ agent: worker2, prompt: "Explain relativity." }).run(),
+    agents.task({ agent: worker3, prompt: "Explain string theory." }).run(),
+  ]);
+
+  // Aggregating results
+  const aggregator = agents.agent({
+    model,
+    name: 'aggregator',
+    maxSteps: 1,
+    background: 'You are an agent that summarizes multiple answers.',
+    tools: {}
+  });
+
+  const task = await agents.task({
+    agent: aggregator,
+    prompt: `Summarize these three explanations: ${result1.text}, ${result2.text}, ${result3.text}`
+  })
+  const finalSummary = await task.run();
+
+  console.log(finalSummary.text);
+});
+
+```
+
+You can also see how the same thing can be achieved using an manager agent in [orchestrator-workers example](/workflow/agents/patterns/orchestrator-workers).
+
+<img src="/img/workflow/agents/logs/logs-parallel.png" alt="Parallel agent workflow logs" />
+
+In response to the prompt, our agents generate this response:
+
+```
+Quantum physics explores the behavior of very small particles, such as atoms and subatomic particles, in the strange world of quantum mechanics, where particles can exist in multiple states simultaneously. Key principles include superposition and entanglement, leading to technological advancements like quantum computers. Relativity, developed by Albert Einstein, consists of special relativity and general relativity, explaining the behavior of objects moving at high speeds and the warping of spacetime by massive objects. String theory proposes that the universe's fundamental building blocks are tiny vibrating strings, aiming to unify the four fundamental forces of nature and suggest extra dimensions beyond the familiar ones.
+```

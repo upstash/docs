@@ -1,0 +1,327 @@
+---
+title: "Constraints"
+description: "Max size, content types and byte sniffing, enforced on your server before anything is signed."
+---
+
+Constraints are the two limits an upload route enforces before it signs anything: how big a file may be, and what type it may be.
+
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
+import { uploadHandler, uniquePath } from "@upstash/blob"
+
+export const uploads = uploadHandler({
+  constraints: { maxSize: "20mb", contentTypes: ["image/*", "application/pdf"] },
+  onBeforeUpload: ({ file }) => ({ path: uniquePath(`uploads/${file.name}`) }),
+})
+```
+
+```python Python
+# app/uploads.py
+from upstash_blob import AsyncUploadHandler, BeforeUploadResult, unique_path
+
+uploads = AsyncUploadHandler(
+    max_size="20mb",
+    content_types=["image/*", "application/pdf"],
+    on_before_upload=lambda args: BeforeUploadResult(path=unique_path(f"uploads/{args.file.name}")),
+)
+```
+
+```go Go
+// uploads.go
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
+	MaxSize:      20 * blob.MB,
+	ContentTypes: []string{"image/*", "application/pdf"},
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[struct{}],
+	) (blob.BeforeUploadResult, error) {
+		path := blob.UniquePath("uploads/" + a.File.Name)
+		return blob.BeforeUploadResult{Path: path}, nil
+	},
+})
+```
+</CodeGroup>
+
+They are checked at `begin`, from the name, type and size the browser declared, before the [before-upload callback](/blob/uploads/upload-handler#authorizing-an-upload) runs. A refused file leaves nothing behind: no presigned URL, no row, no multipart upload.
+
+Omitting constraints accepts any type at any size. The option names in each SDK: [TypeScript](/blob/sdks/ts/upload-handler#options), [Python](/blob/sdks/py/upload-handler#options), [Go](/blob/sdks/go/upload-handler#options).
+
+In the [constraints document](#in-the-browser) served to the browser they are `maxSize` and `contentTypes`.
+
+---
+
+## Max size
+
+<CodeGroup>
+```ts TypeScript
+constraints: { maxSize: "2MB" }   // 2,000,000 bytes
+constraints: { maxSize: "32MiB" } // 33,554,432 bytes
+constraints: { maxSize: 4096 }    // a bare number is bytes
+```
+
+```python Python
+max_size="2MB"    # 2,000,000 bytes
+max_size="32MiB"  # 33,554,432 bytes
+max_size=4096     # a bare int is bytes
+```
+
+```go Go
+MaxSize: 2 * blob.MB   // 2,000,000 bytes
+MaxSize: 32 * blob.MiB // 33,554,432 bytes
+MaxSize: 4096          // always bytes
+```
+</CodeGroup>
+
+The max size takes a [Size](/blob/reference/types#size), always in bytes. `MB` uses powers of 1,000; `MiB` uses powers of 1,024. Units ignore case. To accept a 32 MiB file, set it to `"32MiB"` or `33554432`. `"32mb"` means 32,000,000 bytes and is too small for that file.
+
+Refusal messages display decimal byte units, or exact bytes when the file and the limit would round to the same text:
+
+```
+cat.png is 2.4 MB, over the 2 MB limit
+```
+
+An unparseable size throws where the option is written, at startup, not once per request. In Go a size is an `int64` and cannot be unparseable; `blob.ParseSize` reads one from configuration.
+
+---
+
+## Content types
+
+<CodeGroup>
+```ts TypeScript
+constraints: { contentTypes: ["image/*", "application/pdf", "image/svg+xml"] }
+```
+
+```python Python
+content_types=["image/*", "application/pdf", "image/svg+xml"]
+```
+
+```go Go
+ContentTypes: []string{"image/*", "application/pdf", "image/svg+xml"}
+```
+</CodeGroup>
+
+Each entry is either an exact `type/subtype`, or one of three wildcards: `image/*`, `video/*` and `audio/*`.
+
+Anything else throws `invalid_content_type_pattern`: `*/*`, `text/*`, and strings that are not a media type (`png`, `image/`, `/png`). An empty list throws too; omit the option to accept anything.
+
+### What the wildcards expand to
+
+| Wildcard  | Expands to |
+| --------- | ---------- |
+| `image/*` | `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/bmp`, `image/tiff`, `image/avif`, `image/heic`, `image/heif`, `image/x-icon` |
+| `video/*` | `video/mp4`, `video/quicktime`, `video/webm`, `video/x-matroska`, `video/x-msvideo`, `video/mpeg`, `video/ogg`, `video/3gpp` |
+| `audio/*` | `audio/mpeg`, `audio/wav`, `audio/ogg`, `audio/opus`, `audio/flac`, `audio/aac`, `audio/mp4`, `audio/webm` |
+
+<Note>
+  `image/*` deliberately does not include `image/svg+xml`. An SVG can contain script, so allow it explicitly by listing `'image/svg+xml'`.
+</Note>
+
+### Aliases
+
+Browsers and operating systems send several spellings for some types. Both the declared type and your list are canonicalized before comparison, so a list of `['image/jpg']` accepts a file declared `image/jpeg`, and the reverse. Parameters are stripped, so `image/png; charset=binary` is `image/png`.
+
+<Accordion title="Alias table">
+| Written | Canonicalizes to |
+| ------- | ---------------- |
+| `image/jpg` | `image/jpeg` |
+| `image/pjpeg` | `image/jpeg` |
+| `image/vnd.microsoft.icon` | `image/x-icon` |
+| `audio/x-wav` | `audio/wav` |
+| `audio/wave` | `audio/wav` |
+| `audio/vnd.wave` | `audio/wav` |
+| `audio/mp3` | `audio/mpeg` |
+| `audio/x-flac` | `audio/flac` |
+| `audio/x-aac` | `audio/aac` |
+| `video/avi` | `video/x-msvideo` |
+| `video/msvideo` | `video/x-msvideo` |
+| `application/x-gzip` | `application/gzip` |
+| `application/x-zip-compressed` | `application/zip` |
+| `application/vnd.rar` | `application/x-rar-compressed` |
+</Accordion>
+
+---
+
+## Byte sniffing
+
+A route with content types checks more than the declared type. The browser sends the file's leading bytes with the `begin` request, so a mislabelled file is refused before the upload rather than after it. Two checks run:
+
+1. **The declared type must be in the allow list.** A `report.exe` declared as `application/x-msdownload` is refused here.
+2. **The leading bytes must not clearly contradict the declared type.** If the bytes prove nothing, the file passes.
+
+The second check is lenient on purpose so real files are not refused. A `.docx` really is a zip, and so are `.epub`, `.jar` and `.apk`. Formats that share a signature, like mp4 and heic, or webm and mkv, never contradict a declaration. Neither does `application/octet-stream`.
+
+<Note>
+  This is a convenience, not a security control. The bytes never reach your server, so a client can send an honest sample and then upload something else. It is not malware scanning, and stored objects should still be treated as untrusted.
+</Note>
+
+---
+
+## Per-route constraints
+
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
+export const uploads = uploadHandler({
+  constraints: { maxSize: "20mb", contentTypes: ["image/png"] },
+  routes: {
+    attachment: {
+      onBeforeUpload: () => ({ path: "attachment/1.png" }),
+    },
+    avatar: {
+      constraints: { maxSize: "2mb" },
+      onBeforeUpload: () => ({ path: "avatar/demo" }),
+    },
+    large: {
+      constraints: { maxSize: "2gb", contentTypes: null },
+      onBeforeUpload: () => ({ path: "large/1.bin" }),
+    },
+  },
+})
+```
+
+```python Python
+# app/uploads.py
+uploads = AsyncUploadHandler(
+    max_size="20mb",
+    content_types=["image/png"],
+    routes={
+        "attachment": UploadRoute(
+            on_before_upload=lambda args: BeforeUploadResult(path="attachment/1.png"),
+        ),
+        "avatar": UploadRoute(
+            max_size="2mb",
+            on_before_upload=lambda args: BeforeUploadResult(path="avatar/demo"),
+        ),
+        "large": UploadRoute(
+            max_size="2gb",
+            content_types=None,
+            on_before_upload=lambda args: BeforeUploadResult(path="large/1.bin"),
+        ),
+    },
+)
+```
+
+```go Go
+// uploads.go
+paths := map[string]string{
+	"attachment": "attachment/1.png",
+	"avatar":     "avatar/demo",
+	"large":      "large/1.bin",
+}
+
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[struct{}]{
+	MaxSize:      20 * blob.MB,
+	ContentTypes: []string{"image/png"},
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[struct{}],
+	) (blob.BeforeUploadResult, error) {
+		return blob.BeforeUploadResult{Path: paths[a.Route]}, nil
+	},
+	Routes: map[string]blob.UploadRoute[struct{}]{
+		"attachment": {},
+		"avatar":     {MaxSize: 2 * blob.MB},
+		"large":      {MaxSize: 2 * blob.GB, ContentTypes: []string{}},
+	},
+})
+```
+</CodeGroup>
+
+| Route | Max size | Content types |
+| ----- | ---------- | -------------- |
+| `attachment` | 20,000,000, inherited | `['image/png']`, inherited |
+| `avatar` | 2,000,000, replaced | `['image/png']`, inherited |
+| `large` | 2,000,000,000, replaced | none, cleared |
+
+A route's constraints **override** the handler's key by key. A key the route does not mention is inherited. An explicit null (`None` in Python) clears a key the handler set. In Go, where a zero value means inherit, an empty `ContentTypes` slice or `MaxSize: blob.NoLimit` clears it.
+
+---
+
+## Narrowing per user
+
+<CodeGroup>
+```ts TypeScript
+// lib/uploads.ts
+onBeforeUpload: async ({ request, file }) => {
+  const user = await getUser(request)
+  return {
+    path: uniquePath(`${user.id}/${file.name}`),
+    constraints: user.plan === "free" ? { maxSize: "25mb", contentTypes: ["image/*"] } : undefined,
+  }
+},
+```
+
+```python Python
+# app/uploads.py
+async def authorize(args: BeforeUploadArgs) -> BeforeUploadResult:
+    user = await get_user(args.request)
+    free = user.plan == "free"
+    return BeforeUploadResult(
+        path=unique_path(f"{user.id}/{args.file.name}"),
+        max_size="25mb" if free else None,
+        content_types=["image/*"] if free else None,
+    )
+```
+
+```go Go
+// uploads.go
+func authorize(
+	a blob.BeforeUploadArgs[*User],
+) (blob.BeforeUploadResult, error) {
+	path := blob.UniquePath(a.Ctx.ID + "/" + a.File.Name)
+	res := blob.BeforeUploadResult{Path: path}
+	if a.Ctx.Plan == "free" {
+		res.MaxSize = 25 * blob.MB
+		res.ContentTypes = []string{"image/*"}
+	}
+	return res, nil
+}
+```
+</CodeGroup>
+
+The before-upload callback may return constraints to tighten the route's limits for this one upload, once it knows who is uploading. They are checked against the same file right after it returns. Widening throws, so a route's code always shows the most it can accept.
+
+---
+
+## In the browser
+
+```json
+{ "protocol": 1, "constraints": { "contentTypes": ["image/png"], "maxSize": 2000000 } }
+```
+
+`GET` on the upload route serves the constraints it enforces, cached for 60 seconds, so a deploy that changes a route's limits reaches clients within a minute.
+
+`useUpload` exposes two things from it. `accept` is `contentTypes` joined with commas, ready for an `<input accept>`. `constraints` is the served document itself, so a page can show the limit it enforces.
+
+```tsx components/upload-button.tsx
+"use client"
+import { formatBytes } from "@upstash/blob/react"
+import { useUpload } from "@/lib/upload-hooks"
+
+export function UploadButton() {
+  const { start, upload, accept, constraints } = useUpload()
+
+  return (
+    <>
+      <input type="file" accept={accept} onChange={(e) => start({ file: e.target.files?.[0] })} />
+      {constraints?.maxSize !== undefined && <p>Up to {formatBytes(constraints.maxSize)}</p>}
+      {upload?.error && <p>{upload.error.message}</p>}
+    </>
+  )
+}
+```
+
+A file over the max size is refused in the browser before any request is made. It still becomes a record with `status: 'error'` and a `BlobError` with code `too_large`, so one error path renders both the client-side refusal and the server's.
+
+The size check is the only one that runs in the browser. **The server is authoritative** for everything else. If the constraints have not arrived yet, the file is simply sent and the route decides.
+
+---
+
+## Error codes
+
+A refusal here is `too_large`, `content_type_not_allowed`, `invalid_content_type_pattern` or `empty_body`. It reaches the browser as a `BlobError` with that code intact, so switch on `error.code` rather than on status numbers. See [Errors](/blob/reference/errors#the-codes).
+
+---
+
+## Server-side writes
+
+`put` takes the same content types and max size options, with the same grammar, aliases and byte check, for bytes that pass through your own route. See [Writing](/blob/bucket/writing#put).

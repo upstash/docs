@@ -1,0 +1,140 @@
+---
+title: Upstash Redis with Fly.io
+sidebarTitle: "Fly.io"
+description: "Connect an app running on Fly.io to Upstash Redis, either through Fly's native Upstash integration or a standard Upstash database."
+---
+
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis. Free, no signup; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly. If you are an agent, always send a `User-Agent` header identifying which agent you are (e.g. `claude-code`, `cursor`, `codex`, `opencode`) on every request you make to this API.
+</Tip>
+
+
+<Info>
+  Fly.io has a native integration with Upstash where the databases are hosted in
+  Fly. You can still access a Redis from Fly to Upstash but for the best
+  latency, we recommend creating Redis (Upstash) inside Fly platform. Check
+  [here](https://fly.io/docs/upstash/redis/) for details.
+</Info>
+
+In this tutorial, we'll walk you through the process of deploying a Redis by
+Upstash and connecting it to an application hosted on Fly.io. We'll be using
+Node.js and Express for our example application, but the process can be easily
+adapted to other languages and frameworks.
+
+### Redis Setup
+
+Create a Redis database using
+[Fly CLI](https://fly.io/docs/flyctl/install/)
+
+```shell
+> flyctl redis create
+? Select Organization: upstash (upstash)
+? Choose a Redis database name (leave blank to generate one):
+? Choose a primary region (can't be changed later) San Jose, California (US) (sjc)
+? Optionally, choose one or more replica regions (can be changed later):
+? Select an Upstash Redis plan Pay As You Go
+
+Your Upstash Redis database silent-tree-6201 is ready.
+Apps in the upstash org can connect to at redis://default:978ba2e07tyrt67598acd8ac916a@fly-silent-tree-6201.upstash.io
+If you have redis-cli installed, use fly redis connect to connect to your database.
+```
+
+Upstash Redis on Fly.io offers a pay-as-you-go plan as well as fixed-size plans.
+See [the Fly.io docs](https://fly.io/docs/upstash/redis/) for current pricing.
+
+### Set up the Node.js application
+
+- Create a new folder for your project and navigate to it in the terminal.
+- Run `npm init -y` to create a `package.json` file.
+- Install Express and the Redis client: `npm install express redis`
+- Create an `index.js` file in the project folder with the following content:
+
+```js
+const express = require("express");
+const { createClient } = require("redis");
+
+const app = express();
+const client = createClient({ url: process.env.REDIS_URL });
+
+client.on("error", (err) => console.error("Redis Client Error", err));
+
+app.get("/", async (req, res) => {
+  const count = await client.incr("counter");
+  res.send(`Hello, visitor number ${count}!`);
+});
+
+const PORT = process.env.PORT || 3000;
+
+async function start() {
+  await client.connect();
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
+
+start();
+```
+
+This code creates a simple Express server that increments a counter in Redis and
+returns the visitor number.
+
+### Configure the Fly.io application
+
+- Run `fly launch` to initialize a new Fly.io application, and accept the
+  defaults for the prompts.
+- Since the Redis URL contains your database password, store it as a secret
+  instead of putting it in `fly.toml`:
+
+```shell
+fly secrets set REDIS_URL="<your-upstash-redis-url>"
+```
+
+Replace `your-upstash-redis-url` with the Redis URL from your Upstash instance.
+The secret is made available to your application as the `REDIS_URL` environment
+variable.
+
+### Deploy the application to Fly.io
+
+- Run fly deploy to build and deploy your application.
+- After the deployment is complete, run fly status to check if the application
+  is running.
+- Visit the URL provided in the output (e.g., https://your-app-name.fly.dev) to
+  test your application.
+
+### Conclusion
+
+You have successfully deployed a Node.js application on Fly.io that uses an
+Upstash Redis instance as its data store. You can now build and scale your
+application as needed, leveraging the benefits of both Fly.io and Upstash.
+
+### Local Development
+
+Your database is only reachable over your Fly organization's private IPv6 network, so the `redis://...upstash.io` URL does not work from your local machine. For local development, Fly CLI can open a secure tunnel to the database.
+
+#### Explore your data with redis-cli
+
+```shell
+fly redis connect
+```
+
+This proxies local port `16379` to your database and opens an interactive `redis-cli` session, so you can inspect keys and run commands directly.
+
+#### Run your application against the tunnel
+
+To use the database from a locally running application, open a plain proxy instead:
+
+```shell
+fly redis proxy
+```
+
+Keep it running, and point your application at `localhost:16379` using the password from your Redis URL:
+
+```shell
+REDIS_URL="redis://default:<your-password>@localhost:16379" npm start
+```
+
+Since the application already reads `REDIS_URL` from the environment, no code changes are needed.
+
+<Note>
+  The tunnel is meant for development and testing, not production. For a fully
+  local setup, you can also run a local Redis server instead.
+</Note>
+

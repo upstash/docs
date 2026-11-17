@@ -1,0 +1,453 @@
+---
+title: "Client-Side Usage"
+---
+
+The `useRealtime` hook connects your React components to realtime events with full type safety.
+
+## Setup
+
+### 1. Add the Provider
+
+Wrap your app in the `RealtimeProvider`:
+
+```tsx providers.tsx
+"use client"
+
+import { RealtimeProvider } from "@upstash/realtime/client"
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return <RealtimeProvider>{children}</RealtimeProvider>
+}
+```
+
+```tsx layout.tsx
+import { Providers } from "./providers"
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  )
+}
+```
+
+### 2. Create Typed Hook
+
+Create a typed `useRealtime` hook using `createRealtime`:
+
+```typescript lib/realtime-client.ts
+"use client"
+
+import { createRealtime } from "@upstash/realtime/client"
+import type { RealtimeEvents } from "./realtime"
+
+export const { useRealtime } = createRealtime<RealtimeEvents>()
+```
+
+## Basic Usage
+
+Subscribe to events in any client component:
+
+```tsx page.tsx
+"use client"
+
+import { useRealtime } from "@/lib/realtime-client"
+
+export default function Page() {
+  useRealtime({
+    events: ["notification.alert"],
+    onData({ event, data, channel }) {
+      console.log(`Received ${event}:`, data)
+    },
+  })
+
+  return <p>Listening for events...</p>
+}
+```
+
+## Provider Options
+
+<ParamField
+  path="api"
+  type="object"
+  default='{ url: "/api/realtime", withCredentials: false }'
+>
+  API configuration: - `url`: The realtime endpoint URL - `withCredentials`: Whether to
+  send cookies with requests
+</ParamField>
+
+<ParamField path="maxReconnectAttempts" type="number" default="3">
+  Maximum number of reconnection attempts before giving up
+</ParamField>
+
+```tsx providers.tsx
+"use client"
+
+import { RealtimeProvider } from "@upstash/realtime/client"
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <RealtimeProvider
+      api={{ url: "/api/realtime", withCredentials: true }}
+      maxReconnectAttempts={5}
+    >
+      {children}
+    </RealtimeProvider>
+  )
+}
+```
+
+## Hook Options
+
+<ParamField path="events" type="string[]">
+  Array of event names to subscribe to (e.g. `["notification.alert", "chat.message"]`)
+</ParamField>
+
+<ParamField path="onData" type="function">
+  Callback when an event is received. Receives an object with `event`, `data`, and
+  `channel`.
+</ParamField>
+
+<ParamField path="channels" type="string[]" default='["default"]'>
+  Array of channel names to subscribe to
+</ParamField>
+
+<ParamField path="enabled" type="boolean" default="true">
+  Whether the subscription is active. Set to `false` to disconnect.
+</ParamField>
+
+## Return Value
+
+The hook returns an object with:
+
+<ResponseField name="status" type="ConnectionStatus">
+  Current connection state: `"connecting"`, `"connected"`, `"disconnected"`, or `"error"`
+</ResponseField>
+
+```tsx page.tsx
+import { useRealtime } from "@/lib/realtime-client"
+
+const { status } = useRealtime({
+  events: ["notification.alert"],
+  onData({ event, data, channel }) {},
+})
+
+console.log(status)
+```
+
+## Connection Control
+
+Enable or disable connections dynamically:
+
+```tsx page.tsx
+"use client"
+
+import { useState } from "react"
+import { useRealtime } from "@/lib/realtime-client"
+
+export default function Page() {
+  const [enabled, setEnabled] = useState(true)
+
+  const { status } = useRealtime({
+    enabled,
+    events: ["notification.alert"],
+    onData({ event, data, channel }) {
+      console.log(event, data, channel)
+    },
+  })
+
+  return (
+    <div>
+      <button onClick={() => setEnabled((prev) => !prev)}>
+        {enabled ? "Disconnect" : "Connect"}
+      </button>
+
+      <p>Status: {status}</p>
+    </div>
+  )
+}
+```
+
+### Conditional Connections
+
+Connect only when certain conditions are met:
+
+```tsx page.tsx
+"use client"
+
+import { useRealtime } from "@/lib/realtime-client"
+import { useUser } from "@/hooks/auth"
+
+export default function Page() {
+  const { user } = useUser()
+
+  useRealtime({
+    enabled: Boolean(user),
+    channels: [`user-${user?.id}`],
+    events: ["notification.alert"],
+    onData({ event, data, channel }) {
+      console.log(data)
+    },
+  })
+
+  return <p>Notifications {user ? "enabled" : "disabled"}</p>
+}
+```
+
+## Multiple Events
+
+Subscribe to multiple events at once:
+
+```tsx page.tsx
+"use client"
+
+import { useRealtime } from "@/lib/realtime-client"
+
+export default function Page() {
+  useRealtime({
+    events: ["chat.message", "chat.reaction", "user.joined"],
+    onData({ event, data, channel }) {
+      // 👇 data is automatically typed based on the event
+      if (event === "chat.message") console.log("New message:", data)
+      if (event === "chat.reaction") console.log("New reaction:", data)
+      if (event === "user.joined") console.log("User joined:", data)
+    },
+  })
+
+  return <p>Listening to multiple events</p>
+}
+```
+
+## Multiple Channels
+
+Subscribe to multiple channels at once:
+
+```tsx page.tsx
+"use client"
+
+import { useRealtime } from "@/lib/realtime-client"
+
+export default function Page() {
+  useRealtime({
+    channels: ["global", "announcements", "user-123"],
+    events: ["notification.alert"],
+    onData({ event, data, channel }) {
+      console.log(`Message from ${channel}:`, data)
+    },
+  })
+
+  return <p>Listening to multiple channels</p>
+}
+```
+
+### Dynamic Channel Management
+
+Add and remove channels dynamically:
+
+```tsx page.tsx
+"use client"
+
+import { useState } from "react"
+import { useRealtime } from "@/lib/realtime-client"
+
+export default function Page() {
+  const [channels, setChannels] = useState<string[]>(["lobby"])
+
+  useRealtime({
+    channels,
+    events: ["chat.message"],
+    onData({ event, data, channel }) {
+      console.log(`Message from ${channel}:`, data)
+    },
+  })
+
+  const joinRoom = (roomId: string) => {
+    setChannels((prev) => [...prev, roomId])
+  }
+
+  const leaveRoom = (roomId: string) => {
+    setChannels((prev) => prev.filter((c) => c !== roomId))
+  }
+
+  return (
+    <div>
+      <p>Active channels: {channels.join(", ")}</p>
+      <button onClick={() => joinRoom("room-1")}>Join Room 1</button>
+      <button onClick={() => joinRoom("room-2")}>Join Room 2</button>
+      <button onClick={() => leaveRoom("lobby")}>Leave Lobby</button>
+    </div>
+  )
+}
+```
+
+## Custom API Endpoint
+
+Configure a custom realtime endpoint in the provider:
+
+```tsx providers.tsx
+"use client"
+
+import { RealtimeProvider } from "@upstash/realtime/client"
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <RealtimeProvider
+      api={{
+        url: "/api/custom-realtime",
+        withCredentials: true,
+      }}
+    >
+      {children}
+    </RealtimeProvider>
+  )
+}
+```
+
+## Use Cases
+
+<AccordionGroup>
+  <Accordion title="Live Notifications">
+    Show real-time notifications to users:
+
+    ```tsx notifications.tsx
+    "use client"
+
+    import { useRealtime } from "@/lib/realtime-client"
+    import { toast } from "react-hot-toast"
+    import { useUser } from "@/hooks/auth"
+
+    export default function Notifications() {
+      const { user } = useUser()
+
+      useRealtime({
+        channels: [`user-${user.id}`],
+        events: ["notification.alert"],
+        onData({ data }) {
+          toast(data)
+        },
+      })
+
+      return <p>Listening for notifications...</p>
+    }
+    ```
+
+  </Accordion>
+
+  <Accordion title="Realtime Chat">
+    Build a real-time chat:
+
+    ```tsx chat.tsx
+    "use client"
+
+    import { useState } from "react"
+    import { useRealtime } from "@/lib/realtime-client"
+    import z from "zod/v4"
+    import type { RealtimeEvents } from "@/lib/realtime"
+
+    type Message = z.infer<RealtimeEvents["chat"]["message"]>
+
+    export default function Chat() {
+      const [messages, setMessages] = useState<Message[]>([])
+
+      useRealtime({
+        channels: ["room-123"],
+        events: ["chat.message"],
+        onData({ data }) {
+          setMessages((prev) => [...prev, data])
+        },
+      })
+
+      return (
+        <div>
+          {messages.map((msg, i) => (
+            <p key={i}>
+              <span className="font-bold">{msg.sender}:</span> {msg.text}
+            </p>
+          ))}
+        </div>
+      )
+    }
+    ```
+
+  </Accordion>
+
+  <Accordion title="Live Dashboard">
+    Update metrics in real-time:
+
+    ```tsx dashboard.tsx
+    "use client"
+
+    import { useQuery, useQueryClient } from "@tanstack/react-query"
+    import { useRealtime } from "@/lib/realtime-client"
+
+    export default function Dashboard() {
+      const queryClient = useQueryClient()
+
+      const { data: metrics } = useQuery({
+        queryKey: ["metrics"],
+        queryFn: async () => {
+          const res = await fetch("/api/metrics?user=user-123")
+          return res.json()
+        },
+      })
+
+      useRealtime({
+        channels: ["user-123"],
+        events: ["metrics.update"],
+        onData() {
+          queryClient.invalidateQueries({ queryKey: ["metrics"] })
+        },
+      })
+
+      return (
+        <div>
+          <p>Active Users: {metrics?.users}</p>
+          <p>Revenue: ${metrics?.revenue}</p>
+        </div>
+      )
+    }
+    ```
+
+  </Accordion>
+
+  <Accordion title="Collaborative Editing">
+    Sync changes across users:
+
+    ```tsx editor.tsx
+    "use client"
+
+    import { useState } from "react"
+    import { useRealtime } from "@/lib/realtime-client"
+
+    export default function Editor({ documentId }: { documentId: string }) {
+      const [content, setContent] = useState("")
+
+      useRealtime({
+        channels: [`doc-${documentId}`],
+        events: ["document.update"],
+        onData({ data }) {
+          setContent(data.content)
+        },
+      })
+
+      return <textarea value={content} onChange={(e) => setContent(e.target.value)} />
+    }
+    ```
+
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Channels" icon="tower-broadcast" href="/realtime/features/channels">
+    Scope events to specific rooms or users
+  </Card>
+
+  <Card title="History" icon="clock-rotate-left" href="/realtime/features/history">
+    Configure message retention and replay
+  </Card>
+</CardGroup>

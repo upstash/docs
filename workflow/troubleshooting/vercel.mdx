@@ -1,0 +1,82 @@
+---
+title: "Vercel"
+sidebarTitle: "Vercel"
+---
+
+# Common Issues and Solutions
+
+### Preview Deployment Protection
+
+**Problem:**
+When Deployment Protection setting is enabled on Vercel, it's not possible to trigger and complete a workflow run on a preview deployment.
+
+**Solution:**
+Vercel provides a way to bypass this protection by using a bypass secret. To create one, follow these steps:
+
+<Steps>
+	<Step title="Settings">Go to **Deployment Protection** section under your Vercel project settings.</Step>
+
+	<Step title="Find related section">
+		Click on **Add Secret** under **Protection Bypass for Automation** section.
+		<Frame>
+        <img src="/img/workflow/troubleshooting/vercel-deployment-protection.png" alt="Vercel deployment protection settings" />
+		</Frame>
+	</Step>
+
+	<Step title="Generate a bypass token">Don't forget to save it and store it as an environment variable (e.g., `VERCEL_AUTOMATION_BYPASS_SECRET`).</Step>
+</Steps>
+
+Now that you have a bypass token, you need to pass it as a header in two places to bypass deployment protection.
+
+## Using the Bypass Secret
+
+### Step 1: Configure QStash Client with Headers
+
+[Configure the QStash client](/workflow/basics/serve/advanced#param-qstash-client) with the bypass header in your workflow serve options. This ensures that all workflow steps, including `context.invoke` calls, will include the bypass header automatically:
+
+```ts
+import { Client } from '@upstash/qstash'
+import { serve } from '@upstash/workflow/nextjs'
+
+export const { POST } = serve<string>(async (context) => {
+  // your workflow logic
+}, {
+  qstashClient: new Client({
+    token: process.env.QSTASH_TOKEN!,
+    headers: {
+      "x-vercel-protection-bypass": process.env.VERCEL_AUTOMATION_BYPASS_SECRET!
+    }
+  })
+})
+```
+
+### Step 2: Pass Header When Triggering
+
+When [triggering the workflow](/workflow/howto/start) using `curl` or `client.trigger`, you must also pass the bypass secret as a header:
+
+<CodeGroup>
+```ts client.trigger
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: "<QSTASH_TOKEN>" })
+
+await client.trigger({
+  url: "https://vercel-preview.com/workflow",
+  headers: {
+    "x-vercel-protection-bypass": process.env.VERCEL_AUTOMATION_BYPASS_SECRET!
+  },
+  body: "Hello world!"
+})
+```
+
+```bash cURL
+curl -X POST \
+  'https://vercel-preview.com/workflow' \
+  -H 'x-vercel-protection-bypass: <PROTECTION_BYPASS_SECRET>' \
+  -d 'Hello world!'
+```
+</CodeGroup>
+
+<Warning>
+	Note that you should apply both of the steps above. The header must be passed when triggering the workflow AND configured in the QStash client for subsequent workflow steps to work properly.
+</Warning>

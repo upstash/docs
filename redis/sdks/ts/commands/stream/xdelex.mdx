@@ -1,0 +1,117 @@
+---
+title: XDELEX
+description: Extended delete for streams with reference control.
+---
+
+The `XDELEX` command provides extended deletion capabilities for stream entries with additional control options. This is an enhanced version of XDEL with more advanced features for managing stream data.
+
+## Arguments
+
+<ParamField body="key" type="string" required>
+  The key of the stream.
+</ParamField>
+
+<ParamField body="option" type="'KEEPREF' | 'keepref' | 'DELREF' | 'delref' | 'ACKED' | 'acked'">
+  Optional deletion behavior (case-insensitive). When provided, must come before the IDs:
+  - `KEEPREF`: Delete the entries but keep their references in other consumer groups' pending lists
+  - `DELREF`: Delete the entries and remove their references from every consumer group's pending list
+  - `ACKED`: Only delete entries that every consumer group has acknowledged
+  
+  Pass `undefined` to use the server default (`KEEPREF`).
+</ParamField>
+
+<ParamField body="ids" type="...string[]" required>
+  One or more stream entry IDs to delete. When an option is provided, IDs must come after the option.
+</ParamField>
+
+## Response
+
+<ResponseField type="number[]" required>
+  An array of numbers indicating the result for each ID in the same order as provided.
+</ResponseField>
+
+<RequestExample>
+```ts Single Entry
+// Delete a single stream entry
+const result = await redis.xdelex("mystream", "KEEPREF", "1638360173533-0");
+console.log(result); // Array of results for each ID
+```
+
+```ts Multiple Entries
+// Delete multiple stream entries
+const result = await redis.xdelex(
+  "mystream",
+  "KEEPREF",
+  "1638360173533-0",
+  "1638360173533-1",
+  "1638360173533-2"
+);
+console.log(result); // Array of results for each ID
+```
+
+```ts With Option
+// Use KEEPREF option to keep consumer group references
+const result = await redis.xdelex(
+  "mystream",
+  "KEEPREF",
+  "1638360173533-0",
+  "1638360173533-1"
+);
+console.log(result); // Array of results for each ID
+
+// Use DELREF option to delete consumer group references
+const result2 = await redis.xdelex(
+  "mystream",
+  "DELREF",
+  "1638360173533-0"
+);
+console.log(result2); // Array of results for each ID
+
+// Use ACKED to only delete entries every consumer group has acknowledged
+const result3 = await redis.xdelex(
+  "mystream",
+  "ACKED",
+  "1638360173533-0"
+);
+console.log(result3); // Array of results for each ID
+```
+
+```ts With Stream Processing
+// Add entries to stream
+await redis.xadd("events", "*", { type: "login", user: "john" });
+await redis.xadd("events", "*", { type: "logout", user: "john" });
+
+// Read entries
+const entries = await redis.xrange("events", "-", "+");
+console.log(entries);
+
+// Delete specific entries
+const [firstId, secondId] = Object.keys(entries);
+const deleted = await redis.xdelex("events", "KEEPREF", firstId, secondId);
+console.log(`Results: ${deleted}`); // Array of results for each ID
+```
+
+```ts Cleanup Old Entries
+// Get entries older than a certain timestamp
+const oldEntries = await redis.xrange("logs", "-", "1638360000000-0");
+
+// Delete old entries
+const ids = Object.keys(oldEntries);
+if (ids.length > 0) {
+  const deleted = await redis.xdelex("logs", "KEEPREF", ...ids);
+  console.log(`Results: ${deleted}`); // Array of results for each ID
+}
+```
+</RequestExample>
+
+## Use Cases
+
+- **Stream Cleanup**: Remove processed or expired stream entries
+- **Data Retention**: Implement custom retention policies
+- **Error Handling**: Delete corrupted or invalid stream entries
+- **Memory Management**: Clean up streams to free memory
+
+<Note>
+This command is available in Redis 8.2.0 and later. It provides extended functionality compared to the standard XDEL command.
+</Note>
+

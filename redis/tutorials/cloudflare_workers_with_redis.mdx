@@ -1,0 +1,147 @@
+---
+title: "Use Redis in Cloudflare Workers"
+---
+<Card title="GitHub Repository" icon="github" href="https://github.com/upstash/redis-js/tree/main/examples/cloudflare-workers-with-typescript" horizontal>
+  You can find the project source code on GitHub.
+</Card>
+
+This tutorial showcases using Redis with REST API in Cloudflare Workers. We will
+write a sample edge function (Cloudflare Workers) which will show a custom
+greeting depending on the location of the client. We will load the greeting
+message from Redis so you can update it without touching the code.
+
+### Why Upstash?
+
+- Cloudflare Workers does not allow TCP connections. Upstash provides REST API
+  on top of the Redis database.
+- Upstash is a serverless offering with per-request pricing which fits for edge
+  and serverless functions.
+- Upstash Global database provides low latency all over the world.
+
+### Prerequisites
+
+1. Install the Cloudflare Wrangler CLI with `npm install wrangler --save-dev`
+
+### Project Setup
+
+Create a Cloudflare Worker with the following options:
+
+```shell
+➜  tutorials > ✗ npx wrangler init
+╭ Create an application with Cloudflare Step 1 of 3
+│
+├ In which directory do you want to create your application?
+│ dir ./greetings-cloudflare
+│
+├ What would you like to start with?
+│ category Hello World example
+│
+├ Which template would you like to use?
+│ type Hello World Worker
+│
+├ Which language do you want to use?
+│ lang TypeScript
+│
+├ Copying template files
+│ files copied to project directory
+│
+├ Updating name in `package.json`
+│ updated `package.json`
+│
+├ Installing dependencies
+│ installed via `npm install`
+│
+╰ Application created
+
+╭ Configuring your application for Cloudflare Step 2 of 3
+│
+├ Installing @cloudflare/workers-types
+│ installed via npm
+│
+├ Adding latest types to `tsconfig.json`
+│ added @cloudflare/workers-types/2023-07-01
+│
+├ Retrieving current workerd compatibility date
+│ compatibility date 2024-10-22
+│
+├ Do you want to use git for version control?
+│ no git
+│
+╰ Application configured
+```
+
+Install Upstash Redis:
+
+```shell
+cd greetings-cloudflare
+npm install @upstash/redis
+```
+
+### Database Setup
+
+Create a Redis database using [Upstash Console](https://console.upstash.com) or [Upstash CLI](https://github.com/upstash/cli) and copy the `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` into your `wrangler.toml` file.
+
+```toml wrangler.toml
+# existing config
+
+[vars]
+UPSTASH_REDIS_REST_URL = <YOUR_URL>
+UPSTASH_REDIS_REST_TOKEN = <YOUR_TOKEN>
+```
+
+Using CLI Tab in the Upstash Console, add some greetings to your database:
+
+![CLI Tab](img/examples/tutorial-cloudflare-workers.png)
+
+### Greetings Function Setup
+
+Update `src/index.ts`:
+
+```typescript src/index.ts
+import { Redis } from '@upstash/redis/cloudflare';
+
+type RedisEnv = {
+	UPSTASH_REDIS_REST_URL: string;
+	UPSTASH_REDIS_REST_TOKEN: string;
+};
+
+export default {
+	async fetch(request: Request, env: RedisEnv) {
+		const redis = Redis.fromEnv(env);
+
+		const country = request.headers.get('cf-ipcountry');
+		if (country) {
+			const greeting = await redis.get<string>(country);
+			if (greeting) {
+				return new Response(greeting);
+			}
+		}
+
+		return new Response('Hello!');
+	},
+};
+```
+
+The code tries to find out the user's location checking the "cf-ipcountry"
+header. Then it loads the corresponding greeting for that location using the Redis
+REST API.
+
+### Run Locally
+
+Run the following command to start your dev session:
+
+```shell
+npx wrangler dev
+```
+
+Visit [localhost:8787](http://localhost:8787)
+
+### Build and Deploy
+
+Build and deploy your app to Cloudflare:
+  
+```shell
+npx wrangler deploy
+```
+
+Visit the output url.

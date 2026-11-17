@@ -1,0 +1,243 @@
+---
+title: Upstash Redis with Cloudflare Workers
+sidebarTitle: "Cloudflare Workers"
+description: "Create a Cloudflare Workers app with C3 that connects to Upstash Redis over HTTP with @upstash/redis, then deploy it to Cloudflare."
+---
+
+<Tip>
+  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis. Free, no signup; the response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly. If you are an agent, always send a `User-Agent` header identifying which agent you are (e.g. `claude-code`, `cursor`, `codex`, `opencode`) on every request you make to this API.
+</Tip>
+
+
+### Database Setup
+
+Create a Redis database using [Upstash Console](https://console.upstash.com) or
+[Upstash CLI](https://github.com/upstash/cli).
+
+### Project Setup
+
+We will use **C3 (create-cloudflare-cli)** command-line tool to create our application. You can open a new terminal window and run C3 using the prompt below.
+
+<CodeGroup>
+
+```shell npm
+npm create cloudflare@latest -- upstash-redis-worker
+```
+
+```shell yarn
+yarn create cloudflare upstash-redis-worker
+```
+
+```shell pnpm
+pnpm create cloudflare upstash-redis-worker
+```
+
+</CodeGroup>
+
+This will create a new Cloudflare Workers project:
+
+```text
+➜  npm create cloudflare@latest -- upstash-redis-worker
+
+> npx
+> create-cloudflare upstash-redis-worker
+
+
+─────────────────────────────────────────────────────────────────────────────────────────────────
+👋 Welcome to create-cloudflare vX.Y.Z!
+🧡 Let's get started.
+📊 Cloudflare collects telemetry about your usage of Create-Cloudflare.
+
+Learn more at: https://github.com/cloudflare/workers-sdk/blob/main/packages/create-cloudflare/telemetry.md
+─────────────────────────────────────────────────────────────────────────────────────────────────
+
+╭ Create an application with Cloudflare Step 1 of 3
+│
+├ In which directory do you want to create your application?
+│ dir ./upstash-redis-worker
+│
+├ What would you like to start with?
+│ category Hello World example
+│
+├ Which template would you like to use?
+│ type Worker only
+│
+├ Which language do you want to use?
+│ lang TypeScript
+│
+├ Copying template files
+│ files copied to project directory
+│
+├ Updating name in `package.json`
+│ updated `package.json`
+│
+├ Installing dependencies
+│ installed via `npm install`
+│
+╰ Application created 
+
+...
+
+────────────────────────────────────────────────────────────
+🎉  SUCCESS  Application created successfully!
+```
+
+We will also install the **Upstash Redis SDK** to connect to Redis.
+
+```bash
+npm install @upstash/redis
+```
+
+### The Code
+
+Here is a Worker template to configure and test Upstash Redis connection.
+
+<CodeGroup>
+
+```ts src/index.ts
+import { Redis } from "@upstash/redis/cloudflare";
+
+export interface Env {
+  UPSTASH_REDIS_REST_URL: string;
+  UPSTASH_REDIS_REST_TOKEN: string;
+}
+
+export default {
+  async fetch(request, env, ctx): Promise<Response> {
+    const redis = Redis.fromEnv(env);
+    const count = await redis.incr("counter");
+    return new Response(JSON.stringify({ count }));
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+```js src/index.js
+import { Redis } from "@upstash/redis/cloudflare";
+
+export default {
+  async fetch(request, env, ctx) {
+    const redis = Redis.fromEnv(env);
+    const count = await redis.incr("counter");
+    return new Response(JSON.stringify({ count }));
+  },
+};
+```
+
+</CodeGroup>
+
+### Configure Credentials
+
+There are two methods for setting up the credentials for Redis. One for worker level, the other for account level.
+
+#### Using Cloudflare Secrets (Worker Level Secrets)
+
+This is the common way of creating secrets for your worker, see [Workers Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
+
+The recommended method is the Wrangler CLI, since secrets added this way persist
+across deployments. Navigate to [Upstash Console](https://console.upstash.com),
+get your Redis credentials and run in your project directory:
+
+```shell
+npx wrangler secret put UPSTASH_REDIS_REST_URL
+npx wrangler secret put UPSTASH_REDIS_REST_TOKEN
+```
+
+Each command prompts you for the secret value.
+
+Alternatively, you can add the secrets from the dashboard:
+
+- Navigate to [Upstash Console](https://console.upstash.com) and get your Redis credentials.
+
+- In [Cloudflare Dashboard](https://dash.cloudflare.com/), Go to **Compute (Workers)** > **Workers & Pages**.
+
+- Select your worker and go to **Settings** > **Variables and Secrets**.
+
+- Add your Redis credentials as secrets here:
+
+<Frame>
+  <img src="/img/cloudflare-integration/redis-secrets.png" alt="Redis secrets in Cloudflare Workers" />
+</Frame>
+
+#### Using Cloudflare Secrets Store (Account Level Secrets)
+
+This method requires a few modifications in the worker code, see [Access to Secret on Env Object](https://developers.cloudflare.com/secrets-store/integrations/workers/#3-access-the-secret-on-the-env-object)
+
+```ts src/index.ts
+import { Redis } from "@upstash/redis/cloudflare";
+
+export interface Env {
+  UPSTASH_REDIS_REST_URL: SecretsStoreSecret;
+  UPSTASH_REDIS_REST_TOKEN: SecretsStoreSecret;
+}
+
+export default {
+  async fetch(request, env, ctx): Promise<Response> {
+    const redis = Redis.fromEnv({
+      UPSTASH_REDIS_REST_URL: await env.UPSTASH_REDIS_REST_URL.get(),
+      UPSTASH_REDIS_REST_TOKEN: await env.UPSTASH_REDIS_REST_TOKEN.get(),
+    });
+    const count = await redis.incr("counter");
+    return new Response(JSON.stringify({ count }));
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+After doing these modifications, you can deploy the worker to Cloudflare with `npx wrangler deploy`, and
+follow the steps below to define the secrets:
+
+- Navigate to [Upstash Console](https://console.upstash.com) and get your Redis credentials.
+
+- In [Cloudflare Dashboard](https://dash.cloudflare.com/), Go to **Secrets Store** and add Redis credentials as secrets.
+
+<Frame>
+  <img src="/img/cloudflare-integration/redis-secrets-store.png" alt="Cloudflare Workers secrets store for Redis" />
+</Frame>
+
+- Under **Compute (Workers)** > **Workers & Pages**, find your worker and add these secrets as bindings.
+
+<Frame>
+  <img src="/img/cloudflare-integration/redis-add-binding.png" alt="Add a Redis binding to a Cloudflare Worker" />
+</Frame>
+
+### Deployment
+
+<Note>
+  Newer deployments may revert the configurations you did in the dashboard.
+  While worker level secrets persist, the bindings will be gone!
+</Note>
+
+Deploy your function to Cloudflare with `npx wrangler deploy`
+
+The endpoint of the function will be provided to you, once the deployment is done.
+
+### Testing
+
+Open a different terminal and test the endpoint. Note the destination
+url is the same that was printed in the previous deploy step.
+
+```bash
+curl https://<your-worker-name>.<account-name>.workers.dev
+```
+
+The response will be in the format of `{"count":20}`
+
+In the logs you should see something like this:
+
+```bash
+$ npx wrangler tail
+
+⛅️ wrangler X.Y.Z
+--------------------
+
+Successfully created tail, expires at <expiry-date>
+Connected to <your-worker-name>, waiting for logs...
+GET https://<your-worker-name>.<account-name>.workers.dev/ - Ok @ <timestamp>
+```
+
+## Repositories
+
+Javascript:
+[https://github.com/upstash/upstash-redis/tree/main/examples/cloudflare-workers](https://github.com/upstash/upstash-redis/tree/main/examples/cloudflare-workers)
+
+Typescript:
+[https://github.com/upstash/upstash-redis/tree/main/examples/cloudflare-workers-with-typescript](https://github.com/upstash/upstash-redis/tree/main/examples/cloudflare-workers-with-typescript)

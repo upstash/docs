@@ -1,0 +1,92 @@
+---
+title: $terms
+---
+
+`$terms` groups documents by distinct field values.
+
+Each distinct value becomes one bucket with its own `docCount`.
+
+### Compatibility
+
+| Field Type | Supported |
+|------------|-----------|
+| TEXT | No |
+| U64/I64/F64 | Yes |
+| DATE | Yes |
+| BOOL | Yes |
+| KEYWORD | Yes |
+| FACET | No |
+
+Field must be `FAST`.
+
+### Arguments
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `field` | `string` | Yes | Field to bucket on. |
+| `size` | `number` | No | Max number of buckets returned. |
+| `segmentSize` | `number` | No | Number of candidate terms collected per index segment before merging. Raising it improves count accuracy at higher cost; lowering it is cheaper but less accurate. See [Count accuracy](#count-accuracy). |
+| `showTermDocCountError` | `boolean` | No | Include `docCountErrorUpperBound` in output. |
+| `minDocCount` | `number` | No | Buckets with fewer docs are excluded. |
+| `order` | `object` | No | One-key order object: `{ "count": "desc" }`, `{ "key": "asc" }`, or `{ "<subAggAlias>": "desc" }`. |
+| `missing` | `string \| number` | No | Bucket key used when the field is missing. |
+| `include` | `string \| string[]` | No | Include regex or explicit value list. |
+| `exclude` | `string \| string[]` | No | Exclude regex or explicit value list. |
+
+<Tabs>
+
+<Tab title="TypeScript">
+```ts
+await index.aggregate({
+  aggregations: {
+    by_category: {
+      $terms: { field: "category", size: 5 },
+    },
+  },
+});
+```
+</Tab>
+
+<Tab title="Python">
+```python
+index.aggregate(
+    aggregations={
+        "by_category": {
+            "$terms": {"field": "category", "size": 5}
+        }
+    }
+)
+```
+</Tab>
+
+<Tab title="Redis CLI">
+```bash
+SEARCH.AGGREGATE products '{}' '{"by_category": {"$terms": {"field": "category", "size": 5}}}'
+```
+</Tab>
+
+</Tabs>
+
+### Output
+
+```json
+{
+  "by_category": {
+    "buckets": [
+      { "key": "electronics", "docCount": 120 },
+      { "key": "books", "docCount": 83 }
+    ],
+    "sumOtherDocCount": 42
+  }
+}
+```
+
+- `sumOtherDocCount` is the number of matching documents that fell outside the returned buckets.
+
+### Count accuracy
+
+<Warning>
+`$terms` bucket counts are **approximate**. Terms are tallied per index segment and then merged, so a term's `docCount` can be slightly off, especially for terms near the `size` cutoff.
+</Warning>
+
+`docCountErrorUpperBound` reports the maximum possible error on the returned counts (set `showTermDocCountError: true` for per-bucket values), and `sumOtherDocCount` is the number of matching documents not included in the returned buckets. Raising `segmentSize` reduces the error at the cost of more work per query. For an exact count of a specific term, use [`SEARCH.COUNT`](/redis/commands/search/search-count) instead of reading it from a bucket.

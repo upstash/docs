@@ -1,0 +1,416 @@
+---
+title: "Bucket API"
+description: "Every Bucket method in @upstash/blob: put, get, info, list, copy, move, del, signed URLs and multipart cleanup."
+---
+
+The `Bucket` methods, their TypeScript options and what they return. Each section links to the concept page with the behaviour and defaults.
+
+```ts lib/blob.ts
+import { Bucket } from "@upstash/blob"
+
+export const bucket = Bucket.fromEnv()
+```
+
+Building the client is on [Overview](/blob/sdks/ts/overview#the-bucket-client). Every method runs on your server with the bucket token.
+
+---
+
+## put
+
+```ts
+put(path: string, body: PutBody, options?: PutOptions): Promise<CompletedBlob>
+```
+
+```ts lib/reports.ts
+import { bucket } from "@/lib/blob"
+
+export async function saveReport(pdf: Blob) {
+  const blob = await bucket.put("reports/q3.pdf", pdf, { contentType: "application/pdf" })
+  return blob.url
+}
+```
+
+Every option is optional. Behaviour and defaults are on [Writing](/blob/bucket/writing#put).
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `contentType` | `string` | What the object is stored as. |
+| `contentTypes` | `string[]` | An allow list such as `["image/*", "application/pdf"]`. See [Constraints](/blob/uploads/constraints#content-types). |
+| `maxSize` | `Size` | Refuses a larger body with `too_large`. |
+| `cache` | `CacheOption` | The `Cache-Control` this object is stored with. See [Caching](/blob/bucket/caching). |
+| `metadata` | `Record<string, string>` | Custom key-value pairs. See [Metadata](/blob/bucket/writing#metadata). |
+| `size` | `number` | The exact length in bytes, for a stream whose size is not otherwise known. |
+| `allowOverwrite` | `boolean` | `false` refuses the write if something is already at the path. See [Conditional writes](/blob/bucket/writing#conditional-writes). |
+| `ifUnchanged` | `string` | An etag. The write fails with `conflict` if the object changed since you read it. |
+| `multipart` | `boolean \| Size` | Where a body stops being one PUT. See [Large bodies](/blob/bucket/writing#large-bodies). |
+
+The result is a [`CompletedBlob`](#records):
+
+```ts
+const blob = await bucket.put("avatars/7.png", file, { contentType: "image/png" })
+
+blob.path          // 'avatars/7.png'
+blob.url           // https://b3f9a2c7d1e4.blob.upstash.io/avatars/7.png
+blob.versionedUrl  // ...?v=%22d41d8...%22
+blob.size          // bytes stored
+blob.etag          // '"d41d8..."', what ifUnchanged takes
+blob.uploadedAt    // Date
+blob.contentType   // 'image/png'
+```
+
+### Bodies
+
+```ts app/api/avatar/route.ts
+import { bucket } from "@/lib/blob"
+
+export async function POST(request: Request) {
+  // A Request carries its own length and type, so nothing has to be declared.
+  const blob = await bucket.put("avatars/me.png", request, {
+    contentTypes: ["image/*"],
+    maxSize: "5mb",
+  })
+  return Response.json({ url: blob.url })
+}
+```
+
+`PutBody` is one of these. If the body does not carry its own length or type, declare `size` or `contentType` yourself.
+
+| Body | Carries its length | Carries a content type |
+| --- | --- | --- |
+| `Request` | From its `content-length` header | From its `content-type` header |
+| `Blob` / `File` | Yes | Yes, when `type` is set |
+| `ArrayBuffer` | Yes | No |
+| Typed array | Yes | No |
+| `string` | Yes, once UTF-8 encoded | No |
+| `ReadableStream<Uint8Array>` | No | No |
+
+An explicit `contentType` wins over what the body carries.
+
+A `Request` with no body, or one that has already been read, throws `empty_body`. Anything else is a `TypeError`. A `Request` that arrived chunked has no `content-length` and counts as an unknown length, like a stream.
+
+### Streams
+
+```ts
+// Buffer up to the cap. A stream that runs past it is cancelled with too_large.
+await bucket.put("export.csv", stream, { maxSize: "10mb" })
+
+// Stream straight through, nothing buffered. The declared size must be exact.
+await bucket.put("export.csv", stream, { size: 5000 })
+```
+
+A `ReadableStream` with neither throws `length_required`. Why is on [Streams and unknown lengths](/blob/bucket/writing#streams-and-unknown-lengths).
+
+---
+
+## uniquePath
+
+```ts
+uniquePath(path: string): string
+```
+
+```ts
+import { uniquePath } from "@upstash/blob"
+
+uniquePath(`users/${userId}/${file.name}`) // 'users/Alice_123/Q3 Report-3xK9mBqR.pdf'
+```
+
+Exported from `@upstash/blob`. The suffix rules are on [Unique paths](/blob/bucket/writing#unique-paths).
+
+---
+
+## updateJson
+
+```ts
+updateJson<T = unknown>(
+  path: string,
+  fn: (prev: T | null) => T | Promise<T>,
+  options?: UpdateJsonOptions,
+): Promise<BlobObject>
+```
+
+```ts
+interface Settings {
+  theme: string
+}
+
+await bucket.updateJson<Settings>(
+  "u/7.json",
+  (prev) => ({ ...(prev ?? {}), theme: "dark" }),
+  { maxAttempts: 10, metadata: { owner: "u7" }, cache: "no-store" },
+)
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `maxAttempts` | `number` | How many read-transform-write rounds to try before throwing `conflict`. |
+| `cache` | `CacheOption` | The `Cache-Control` the rewritten object is stored with. |
+| `metadata` | `Record<string, string>` | Replaces the metadata on the object. |
+
+The loop and its defaults are on [Updating JSON](/blob/bucket/writing#updating-json).
+
+---
+
+## copy and move
+
+```ts
+copy(from: string, to: string, options?: CopyOptions): Promise<BlobObject>
+move(from: string, to: string, options?: CopyOptions): Promise<BlobObject>
+```
+
+```ts
+const archived = await bucket.copy("tmp/9f3c", "archive/2026/report.pdf")
+const moved = await bucket.move("tmp/9f3c", "reports/q3.pdf", { contentType: "application/pdf" })
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `contentType` | `string` | What the destination is stored as. |
+| `cache` | `CacheOption` | The `Cache-Control` the destination is stored with. |
+| `metadata` | `Record<string, string>` | Replaces the metadata outright. |
+
+What carries over from the source is on [copy and move](/blob/bucket/writing#copy-and-move).
+
+---
+
+## signedUploadUrl
+
+```ts
+signedUploadUrl(path: string, options?: SignedUploadUrlOptions): Promise<SignedUploadUrl>
+```
+
+```ts
+const upload = await bucket.signedUploadUrl("u/7/report.pdf", {
+  contentType: "application/pdf",
+  size: pdf.size,
+  expiresIn: "10m",
+})
+
+await fetch(upload.url, { method: "PUT", headers: upload.headers, body: pdf })
+```
+
+Returns `{ url: string, headers: Record<string, string>, expiresAt: Date }`. Send `headers` verbatim.
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `expiresIn` | `Duration` | How long the link should live. |
+| `contentType` | `string` | The `Content-Type` the upload must send, and what the object is stored as. |
+| `cache` | `CacheOption` | The `Cache-Control` the object is stored with. |
+| `metadata` | `Record<string, string>` | Written as `x-amz-meta-*`, under the same rules as `put`. |
+| `size` | `Size` | Pins the body's exact length. |
+| `allowOverwrite` | `boolean` | `false` refuses the upload if something is already at the path. |
+
+Defaults and lifetimes are on [Signed upload URLs](/blob/bucket/writing#signed-upload-urls).
+
+---
+
+## get
+
+```ts
+get(path: string): Promise<BlobDownload>
+```
+
+```ts
+const res = await bucket.get("reports/2026-01.pdf")
+
+res.contentType  // 'application/pdf'
+res.size         // 184_302
+res.etag         // '"9f3c..."'
+res.metadata     // { owner: 'u7' }
+res.body         // ReadableStream<Uint8Array>
+```
+
+`body` is a `ReadableStream<Uint8Array>` and nothing is buffered for you. Wrap it in a `Response` for the usual conversions:
+
+```ts
+const text = await new Response((await bucket.get("notes/1.md")).body).text()
+const buffer = await new Response((await bucket.get("img/1.png")).body).arrayBuffer()
+```
+
+A missing object throws `not_found`. See [get](/blob/bucket/reading#get).
+
+---
+
+## info and exists
+
+```ts
+info(path: string): Promise<BlobInfo>
+exists(path: string): Promise<boolean>
+```
+
+```ts
+const info = await bucket.info("reports/2026-01.pdf")
+
+info.size         // 184_302
+info.etag         // '"9f3c..."'
+info.contentType  // 'application/pdf'
+info.metadata     // { owner: 'u7' }
+info.uploadedAt   // Date
+
+if (await bucket.exists("avatars/u7.png")) {
+  // ...
+}
+```
+
+See [info](/blob/bucket/reading#info) and [exists](/blob/bucket/reading#exists).
+
+---
+
+## list
+
+```ts
+list(options?: ListOptions): Promise<ListPage>
+```
+
+```ts
+let cursor: string | undefined
+const paths: string[] = []
+
+do {
+  const page = await bucket.list({ prefix: "avatars/", limit: 1000, cursor })
+  for (const blob of page.blobs) paths.push(blob.path)
+  cursor = page.cursor
+} while (cursor)
+```
+
+Returns `{ blobs: BlobObject[], cursor: string | undefined }`.
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `prefix` | `string` | Only keys starting with this. |
+| `limit` | `number` | Page size. |
+| `cursor` | `string` | The `cursor` from the previous page. |
+
+Defaults and paging are on [list](/blob/bucket/reading#list).
+
+---
+
+## publicUrl
+
+```ts
+publicUrl(path: string): Promise<string | undefined>
+```
+
+```ts
+await bucket.publicUrl("avatars/u7.png")
+// 'https://b0f3a91c24d.blob.upstash.io/avatars/u7.png'
+```
+
+`undefined` on a private bucket. An empty path, or one with a `.` or `..` segment, throws a `TypeError`. See [Public URLs](/blob/bucket/reading#public-urls).
+
+---
+
+## signedReadUrl
+
+```ts
+signedReadUrl(path: string, options?: SignedReadUrlOptions): Promise<SignedReadUrl>
+```
+
+```ts
+const { url, expiresAt } = await bucket.signedReadUrl("reports/2026-01.pdf", {
+  expiresIn: "2m",
+  downloadAs: "Report Q3.pdf",
+})
+```
+
+Returns `{ url: string, expiresAt: Date }`. Cache the link until `expiresAt`, never until a deadline you compute from `expiresIn`.
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `expiresIn` | `Duration` | How long to ask for. |
+| `downloadAs` | `string` | Save as this filename instead of displaying inline. |
+| `contentType` | `string` | What storage answers with as `Content-Type`, overriding what was stored. |
+
+Defaults and lifetimes are on [Signed read URLs](/blob/bucket/reading#signed-read-urls).
+
+---
+
+## del
+
+```ts
+del(target: DeleteTarget): Promise<void>
+
+type DeleteTarget = string | string[] | { prefix: string; all?: boolean }
+```
+
+```ts
+await bucket.del("avatars/me.png")                   // one path
+await bucket.del(["a.png", "b.png", "c.png"])        // an array of paths
+await bucket.del({ prefix: "tmp/" })                 // everything under a prefix
+await bucket.del({ prefix: "", all: true })          // the whole bucket, on purpose
+```
+
+Anything else is refused with `invalid_input`. A path with a `.` or `..` segment throws a `TypeError`. What each shape does and throws is on [Deleting](/blob/bucket/deleting).
+
+```ts
+import { BlobError } from "@upstash/blob"
+
+try {
+  await bucket.del(paths)
+} catch (e) {
+  if (BlobError.is(e) && e.code === "partial_delete") {
+    await requeue(e.failed ?? []) // the paths still in the bucket
+    return
+  }
+  throw e
+}
+```
+
+---
+
+## Multipart cleanup
+
+```ts
+listMultipartUploads(options?: { prefix?: string }): Promise<MultipartUpload[]>
+abortMultipartUpload(upload: { path: string; uploadId: string }): Promise<void>
+abortStaleMultipartUploads(options: { olderThan: Duration; prefix?: string }): Promise<MultipartUpload[]>
+
+interface MultipartUpload {
+  path: string
+  uploadId: string
+  initiatedAt: Date
+}
+```
+
+```ts
+const uploads = await bucket.listMultipartUploads({ prefix: "uploads/" })
+await bucket.abortMultipartUpload({ path: "uploads/big.mp4", uploadId: "ABC..." })
+const aborted = await bucket.abortStaleMultipartUploads({ olderThan: "1d", prefix: "uploads/" })
+```
+
+`olderThan` is required. See [Incomplete multipart uploads](/blob/bucket/deleting#incomplete-multipart-uploads).
+
+---
+
+## s3
+
+```ts
+s3(): S3Config
+```
+
+A config for `@aws-sdk/client-s3`. See [Using an S3 client](/blob/sdks/ts/overview#using-an-s3-client).
+
+---
+
+## Records
+
+Four record types come back from the SDK. They nest. What each field means is on [Records](/blob/reference/types#records).
+
+| Type | Fields | Returned by |
+| --- | --- | --- |
+| `BlobObject` | `path`, `url?`, `versionedUrl?`, `size`, `etag`, `uploadedAt` | `list()`, `copy()`, `move()`, `updateJson()` |
+| `CompletedBlob` | `BlobObject` plus `contentType` | `put()`, `onUploadComplete`, a finished browser upload |
+| `BlobInfo` | `BlobObject` plus `contentType` and `metadata` | `info()` |
+| `BlobDownload` | `BlobInfo` plus `body: ReadableStream<Uint8Array>` | `get()` |
+
+| Field | Type |
+| --- | --- |
+| `path` | `string` |
+| `url` | `string \| undefined` |
+| `versionedUrl` | `string \| undefined` |
+| `size` | `number` |
+| `etag` | `string` |
+| `uploadedAt` | `Date` |
+| `contentType` | `string` |
+| `metadata` | `Record<string, string>` |
+
+All four are exported as types from `@upstash/blob`.

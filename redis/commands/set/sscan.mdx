@@ -1,0 +1,189 @@
+---
+title: "SSCAN"
+description: "Incrementally iterate set members."
+---
+
+Use `SSCAN` to iterate the members of a set in batches instead of reading them all at once.
+
+Each call takes a cursor and returns the next cursor together with a batch of members. Start at cursor `0` and keep calling with the cursor from the previous reply until the server returns `0`, which ends the iteration. `MATCH` filters members with a glob-style pattern and `COUNT` hints at how much work each call should do.
+
+Filtering happens after a batch is read, so a call can come back empty while the cursor is still non-zero: only the cursor tells you the iteration is over. Members present for the whole iteration are returned at least once, while those added or removed while it runs may or may not appear, and a member can be returned more than once, so keep the processing idempotent.
+
+## Syntax
+
+```redis
+SSCAN <key> <cursor> [MATCH <pattern>] [COUNT <count>]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Redis key targeted by the command. |
+| `<cursor>` | Yes | No | Cursor returned by the previous call; start at `0`. |
+| `MATCH <pattern>` | No | No | Return only elements matching this glob-style pattern. |
+| `COUNT <count>` | No | No | Hint for how much work each iteration should do. |
+
+## Important points
+
+- This operation can inspect a large part of the database. Prefer cursor-based scans where possible and avoid unbounded use on hot paths.
+- The cursor is opaque. Start with `0` and continue until the server returns cursor `0`; a single iteration may return no elements.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Two-element array: cursor and array of bulk-string members |
+| RESP3 | Two-element array: cursor and array of bulk-string members |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+SSCAN my-key 0
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+await redis.sadd("key", "a", "ab","b", "c");
+const [newCursor, fields] = await redis.sscan("key", 0, { match: "a*"});
+console.log(newCursor); // likely `0` since this is a very small set
+console.log(fields); // ["a", "ab"]
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.sscan("my-key", 0)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.sscan("my-key", "0");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.sScan("my-key", "0");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.sscan("my-key", 0)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, _, err := client.SScan(context.Background(), "my-key", 0, "*", 0).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.sscan("my-key", "0");
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let iter: redis::Iter<String> = connection.sscan("my-key")?;
+    for member in iter {
+        println!("{member}");
+    }
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

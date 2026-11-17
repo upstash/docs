@@ -1,0 +1,169 @@
+---
+title: "TypeScript SDK"
+sidebarTitle: "Overview"
+description: "Install @upstash/blob, pick an entrypoint, and build a Bucket client on Node, Workers or any fetch runtime."
+---
+
+`@upstash/blob` is the TypeScript SDK. It has a `Bucket` client and an upload handler for your server, and the [browser client](/blob/uploads/upload-client) that uploads from the browser straight to storage.
+
+This section is the TypeScript reference: names, types, and framework wiring. What each call does, its defaults and its limits are on the concept pages it links to.
+
+---
+
+## Install
+
+<CodeGroup>
+```bash npm
+npm install @upstash/blob
+```
+
+```bash pnpm
+pnpm add @upstash/blob
+```
+
+```bash yarn
+yarn add @upstash/blob
+```
+
+```bash bun
+bun add @upstash/blob
+```
+</CodeGroup>
+
+The package bundles these docs at `node_modules/@upstash/blob/docs/`.
+
+---
+
+## Entrypoints
+
+| Import | Runs on | Exports |
+| --- | --- | --- |
+| `@upstash/blob` | your server | `Bucket`, `uploadHandler`, `uploadRoute`, `uniquePath`, `BlobError`, `formatBytes`, and the types |
+| `@upstash/blob/browser` | the browser | `upload`, `BlobError`, `formatBytes` |
+| `@upstash/blob/react` | the browser | `uploadHooks`, `useUpload`, `useServerUpload`, `BlobError`, `formatBytes` |
+
+`/browser` and `/react` are the [browser client](/blob/uploads/upload-client). They talk to an upload route over HTTP, so the route behind them can be written with any server SDK.
+
+---
+
+## The Bucket client
+
+```ts lib/blob.ts
+import { Bucket } from "@upstash/blob"
+
+export const bucket = Bucket.fromEnv() // reads UPSTASH_BLOB_TOKEN
+```
+
+```ts lib/blob.ts
+import { Bucket } from "@upstash/blob"
+
+export const bucket = new Bucket({
+  token: process.env.UPSTASH_BLOB_TOKEN!,
+  cache: "immutable",
+  enableTelemetry: false,
+})
+```
+
+`Bucket.fromEnv()` is the same constructor with `token` read from `UPSTASH_BLOB_TOKEN`. It takes the same options minus the token, and a variable name when the token lives somewhere else:
+
+```ts
+Bucket.fromEnv({ cache: "immutable" })
+Bucket.fromEnv("REPORTS_BUCKET_TOKEN", { cache: "immutable" })
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `token` | `string` | Required. The bucket token. See [Connecting](/blob/bucket/connecting). |
+| `cache` | `CacheOption` | The default `Cache-Control` for every object this client stores. A per-call `cache` overrides it. See [Caching](/blob/bucket/caching). |
+| `enableTelemetry` | `boolean` | `false` turns telemetry off for this client. See [Telemetry](/blob/bucket/connecting#telemetry). |
+| `retry` | `RetryConfig` | `false`, or `{ retries, backoff }`. See [Retries](#retries). |
+
+There is no visibility option. Whether the bucket is public or private is a console setting; see [Connecting](/blob/bucket/connecting#public-or-private).
+
+### Cloudflare Workers
+
+There is no `process.env` on Workers, so `Bucket.fromEnv()` throws. Pass the token from the request's `env`:
+
+```ts src/index.ts
+import { Bucket } from "@upstash/blob"
+
+export default {
+  async fetch(request: Request, env: { UPSTASH_BLOB_TOKEN: string }) {
+    const bucket = new Bucket({ token: env.UPSTASH_BLOB_TOKEN })
+    await bucket.put("hits.txt", "1")
+    return new Response("ok")
+  },
+}
+```
+
+An [upload handler](/blob/sdks/ts/upload-handler#the-bucket) on Workers needs the same thing: build the bucket from `env` and pass it as `bucket:`.
+
+### Retries
+
+```ts
+new Bucket({ token, retry: false }) // every request once
+new Bucket({ token, retry: { retries: 5, backoff: (n) => n * 500 } })
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `retries` | `number` | Retries after the first attempt, for every request this client makes. |
+| `backoff` | `(retryCount: number) => number` | Milliseconds before retry `retryCount`, counted from 0. A `Retry-After` from the service wins over it. |
+
+Which requests are retried, and the default budget and backoff, are on [Retries](/blob/bucket/connecting#retries).
+
+---
+
+## Using an S3 client
+
+```ts
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3"
+import { bucket } from "@/lib/blob"
+
+const { endpoint, region, bucket: name, credentials } = bucket.s3()
+const s3 = new S3Client({ endpoint, region, credentials })
+
+await s3.send(
+  new GetObjectCommand({ Bucket: name, Key: "reports/q3.pdf", Range: "bytes=0-1023" }),
+)
+```
+
+`bucket.s3()` returns a config for `@aws-sdk/client-s3`. `endpoint` and `credentials` are async providers rather than values. Pass them through as they come, so the aws-sdk can pick up a fresh credential when the old one expires.
+
+What an S3 client is for, and why it must not presign, is on [Using an S3 client](/blob/bucket/connecting#using-an-s3-client).
+
+---
+
+## Option types
+
+| Type | TypeScript | Grammar |
+| --- | --- | --- |
+| `Size` | `number \| string` | [Size](/blob/reference/types#size) |
+| `Duration` | `number \| string` | [Duration](/blob/reference/types#duration) |
+| `CacheOption` | `Duration \| 'immutable' \| 'revalidate' \| 'no-store'` | [CacheOption](/blob/reference/types#cacheoption). A raw header is a `string`. |
+
+All three are exported as types from `@upstash/blob`.
+
+A limit you write by hand takes a `Size`: `maxSize`, `multipart`. A measurement you forward is a plain `number` of bytes: the `size` option on `put`, and every `size` the SDK returns. That mirrors `File.size` and `Blob.size`, so a value flows from one to the other without conversion.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Bucket API" href="/blob/sdks/ts/bucket">
+    Every `Bucket` method, its options and the records it returns.
+  </Card>
+
+  <Card title="Upload handler" href="/blob/sdks/ts/upload-handler">
+    `uploadHandler` options, callbacks, and mounting it in Next.js, Hono and more.
+  </Card>
+
+  <Card title="Errors" href="/blob/sdks/ts/errors">
+    `BlobError`, `BlobError.is()`, and the fields an error carries.
+  </Card>
+
+  <Card title="Browser client" href="/blob/uploads/upload-client">
+    `useUpload`, `useServerUpload` and the non-React `upload()`.
+  </Card>
+</CardGroup>

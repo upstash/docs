@@ -1,0 +1,233 @@
+---
+title: Upstash Workflow with Next.js
+sidebarTitle: Next.js
+---
+
+This guide provides step-by-step instructions on how to use and deploy Upstash Workflow with Next.js.
+
+<Columns cols={2}>
+<Card title="GitHub Repository" icon="github" href="https://github.com/upstash/workflow-js/tree/main/examples/nextjs" horizontal>
+  You can find the project source code on GitHub.
+</Card>
+<Card title="Deploy With Vercel" icon="triangle" iconType="sharp-solid" href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fupstash%2Fworkflow-js%2Ftree%2Fmain%2Fworkflow%2Fnextjs&env=QSTASH_TOKEN&envDescription=You%20can%20access%20this%20variable%20from%20Upstash%20Console%2C%20under%20QStash%20page.%20&project-name=workflow-nextjs&repository-name=workflow-nextjs&demo-title=Upstash%20Workflow%20Example&demo-description=A%20Next.js%20application%20utilizing%20Upstash%20Workflow" horizontal>
+  Deploy the project to Vercel with a single click.
+</Card>
+</Columns>
+
+## Prerequisites
+
+- Node.js and npm (or another package manager) installed.
+
+You can integrate Upstash Workflow into an existing Next.js app, or follow [this guide](https://nextjs.org/docs/app/getting-started/installation) to create a new Next.js project from scratch.
+
+## Step 1: Installation
+
+Run the following command to install the Upstash Workflow SDK in your Next.js app.
+
+<Tabs>
+  <Tab title="npm">
+  ```bash
+  npm install @upstash/workflow
+  ```
+  </Tab>
+  <Tab title="pnpm">
+  ```bash
+  pnpm install @upstash/workflow
+  ```
+  </Tab>
+  <Tab title="bun">
+  ```bash
+  bun add @upstash/workflow
+  ```
+  </Tab>
+</Tabs>
+
+
+## Step 2: Set up the development server
+
+Upstash Workflow is built on top of Upstash QStash.
+
+In a production environment, your application connects to the managed QStash servers hosted by Upstash.
+This ensures that requests are delivered reliably, securely, and at scale without requiring you to run and maintain your own infrastructure.
+
+For local development, you don't need to depend on the managed QStash servers. Since you are using `@upstash/workflow`, you can just set `QSTASH_DEV=true`, and the SDK will download, start, and connect to a local QStash development server automatically — no tokens or signing keys to copy over.
+
+In the root of your project, create a `.env.local` file (or update your existing one):
+
+```txt .env.local
+QSTASH_DEV=true
+```
+
+Both the workflow client and the `serve()` endpoint pick up the dev server automatically, including signature verification, so there's nothing else to configure. The local server behaves just like the production version but does not require external network calls.
+
+You can enable local mode in the Upstash Workflow dashboard to use the UI while developing locally.
+
+<Frame>
+  <img src="/img/qstash-workflow/local-dev.png" alt="Enable local mode on dashboard" />
+</Frame>
+
+<Tip>
+  Prefer to start the server yourself, or using a runtime other than Node.js? See the [Development Server guide](/workflow/howto/local-development/development-server) for the manual QStash CLI setup, custom ports, and the `registerQStashDev()` helper for Next.js edge routes.
+</Tip>
+
+<Note>
+  For production, set your actual credentials from the Upstash Workflow dashboard instead of `QSTASH_DEV`.
+</Note>
+
+
+## Step 3: Create a Workflow Endpoint
+
+With your environment ready, the next step is to define your first workflow endpoint.
+
+In Upstash Workflow, every workflow is exposed as an endpoint. 
+Every endpoint you expose using the SDK’s `serve()` function acts as a workflow that can be triggered independently.
+
+In Next.js, these endpoints are implemented as **API routes**.
+
+Create the file according to your router setup:
+
+- App Router → put the endpoint under `app/api`
+- Pages Router → put the endpoint under `pages/api`
+
+<Tabs>
+<Tab title="App router">
+```typescript app/api/workflow/route.ts
+import { serve } from "@upstash/workflow/nextjs"
+
+export const { POST } = serve(
+  async (context) => {
+    await context.run("initial-step", () => {
+      console.log("initial step ran")
+    })
+
+    await context.run("second-step", () => {
+      console.log("second step ran")
+    })
+  }
+)
+```
+</Tab>
+
+<Tab title="App router with request object">
+```typescript app/api/workflow/route.ts
+import { serve } from "@upstash/workflow/nextjs";
+import { NextRequest } from "next/server";
+
+export const POST = async (request: NextRequest) => {
+  // do something with the native request object
+  const { POST: handler } = serve(async (context) => {
+    // Your workflow steps
+  });
+
+  return await handler(request);
+}
+```
+</Tab>
+<Tab title="Pages Router">
+```typescript src/pages/api/workflow.ts
+import { servePagesRouter } from "@upstash/workflow/nextjs";
+
+const { handler } = servePagesRouter<string>(
+  async (context) => {
+    await context.run("initial-step", () => {
+      console.log("initial step ran")
+    })
+
+    await context.run("second-step", () => {
+      console.log("second step ran")
+    })
+  }
+)
+export default handler;
+```
+</Tab>
+
+<Tab title="Pages Router with request object">
+```typescript src/pages/api/workflow.ts
+import type { NextApiRequest, NextApiResponse } from "next";
+import { servePagesRouter } from "@upstash/workflow/nextjs";
+
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
+  // do something with the native request object
+  const { handler } = servePagesRouter(
+    async (context) => {
+      // Your workflow steps
+    }
+  )
+
+  await handler(req, res)
+}
+```
+</Tab>
+</Tabs>
+
+## Step 4: Run the Workflow Endpoint
+
+Once your endpoint is defined, the next step is to trigger a workflow run.
+
+You can start a new workflow run using the `trigger()` function from the Upstash Workflow SDK. 
+
+```javascript
+import { Client } from "@upstash/workflow";
+
+const client = new Client({ token: process.env.QSTASH_TOKEN! })
+
+const { workflowRunId } = await client.trigger({
+  url: `http://localhost:3000/api/workflow`,
+  retries: 3
+});
+```
+
+<Info>
+  The `trigger()` function should typically be called from a server-side action (not directly in client-side code) to keep your credentials secure.
+</Info>
+
+Check the Upstash Workflow dashboard to view logs of your workflow run:
+
+<Frame>
+  <img src="/img/qstash-workflow/run-view.png" alt="Debug a workflow run on UI" />
+</Frame>
+
+<Tip>
+Inside the `trigger()` call, you need to provide the URL of your workflow endpoint:
+
+- Local development → use the URL where your app is running, for example: http://localhost:3000/api/PATH
+- Production → use the URL of your deployed app, for example: https://yourapp.com/api/PATH
+
+To avoid hardcoding URLs, you can define a `BASE_URL` constant and set it based on the environment.
+A common pattern is to check an environment variable that only exists in production:
+
+```javascript
+const BASE_URL = process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}`
+  : `http://localhost:3000`
+
+const { workflowRunId } = await client.trigger({
+  url: `${BASE_URL}/api/workflow`,
+  retries: 3
+});
+```
+</Tip>
+
+## Step 5: Deploying to Production
+
+You now have everything you need to deploy your application to production! 🎉
+
+Before deploying, make sure your configuration no longer relies on local development settings:
+
+- **Workflow URL**: Update the `trigger()` call to use your production domain (see the tip above for using a dynamic `BASE_URL`).
+- **Credentials**: Remove `QSTASH_DEV=true` and set your production `QSTASH_TOKEN` and signing keys from the Upstash Console (see [Get your QStash Token](/workflow/howto/get-token)).
+- **Environment Variables**: Verify that all required variables are set correctly in your deployment environment.
+
+## Next Steps
+
+Now that you've created and deployed your first workflow, here are some recommended guides to continue learning:
+
+1. **[Learn the Workflow API](/workflow/basics/context)**: Dive deeper into the full API surface and advanced capabilities.
+
+2. **[Configure Workflow Runs](/workflow/basics/client)**: Learn how to configure workflow execution to fit your app's needs.
+
+3. **[Handle Failures](/workflow/howto/failures)**: Understand how to detect and recover from failed workflow runs.

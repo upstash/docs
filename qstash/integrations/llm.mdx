@@ -1,0 +1,222 @@
+---
+title: Call OpenAI and Other LLM APIs with QStash
+sidebarTitle: "LLM with OpenAI"
+---
+
+QStash has built-in support for calling LLM APIs. This allows you to take advantage of QStash features such as retries, callbacks, and batching while using LLM APIs. 
+
+QStash is especially useful for LLM processing because LLM response times are often highly variable. When accessing LLM APIs from serverless runtimes, invocation timeouts are a common issue. QStash offers an HTTP timeout of 2 hours, which is sufficient for most LLM use cases. By using callbacks and the workflows, you can easily manage the asynchronous nature of LLM APIs.
+
+## QStash LLM API
+
+You can publish (or enqueue) single LLM request or batch LLM requests using all existing QStash features natively. To do this, specify the destination `api` as `llm` with a valid provider. The body of the published or enqueued message should contain a valid chat completion request. For these integrations, you must specify the `Upstash-Callback` header so that you can process the response asynchronously. Note that streaming chat completions cannot be used with them.
+
+All the examples below can be used with **OpenAI-compatible LLM providers**.
+
+### Publishing a Chat Completion Request
+
+<CodeGroup>
+```js JavaScript
+import { Client, upstash } from "@upstash/qstash";
+
+const client = new Client({
+    token: "<QSTASH_TOKEN>",
+});
+
+const result = await client.publishJSON({
+    api: { name: "llm", provider: openai({ token: "_OPEN_AI_TOKEN_"}) },
+    body: {
+        model: "gpt-3.5-turbo",
+        messages: [
+            {
+            role: "user",
+            content: "Write a hello world program in Rust.",
+            },
+        ],
+    },
+    callback: "https://abc.requestcatcher.com/",
+});
+
+console.log(result);
+```
+
+```python Python
+from qstash import QStash
+from qstash.chat import upstash
+
+q = QStash("<QSTASH_TOKEN>")
+
+result = q.message.publish_json(
+    api={"name": "llm", "provider": openai("<OPENAI_API_KEY>")},
+    body={
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Write a hello world program in Rust.",
+            }
+        ],
+    },
+    callback="https://abc.requestcatcher.com/",
+)
+
+print(result)
+```
+</CodeGroup>
+
+### Enqueueing a Chat Completion Request
+
+<CodeGroup>
+```js JavaScript
+import { Client, upstash } from "@upstash/qstash";
+
+const client = new Client({
+    token: "<QSTASH_TOKEN>",
+});
+
+const result = await client.queue({ queueName: "queue-name" }).enqueueJSON({
+    api: { name: "llm", provider: openai({ token: "_OPEN_AI_TOKEN_"}) },
+    body: {
+        "model": "gpt-3.5-turbo",
+        messages: [
+            {
+                role: "user",
+                content: "Write a hello world program in Rust.",
+            },
+        ],
+    },
+    callback: "https://abc.requestcatcher.com",
+});
+
+console.log(result);
+```
+
+```python Python
+from qstash import QStash
+from qstash.chat import upstash
+
+q = QStash("<QSTASH_TOKEN>")
+
+result = q.message.enqueue_json(
+    queue="queue-name",
+    api={"name": "llm", "provider": openai("<OPENAI_API_KEY>")},
+    body={
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Write a hello world program in Rust.",
+            }
+        ],
+    },
+    callback="https://abc.requestcatcher.com",
+)
+
+print(result)
+```
+
+</CodeGroup>
+
+### Sending Chat Completion Requests in Batches
+
+<CodeGroup>
+```js JavaScript
+import { Client, upstash } from "@upstash/qstash";
+
+const client = new Client({
+    token: "<QSTASH_TOKEN>",
+});
+
+const result = await client.batchJSON([
+    {
+        api: { name: "llm", provider: openai({ token: "_OPEN_AI_TOKEN_" }) },
+        body: { ... },
+        callback: "https://abc.requestcatcher.com",
+    },
+    ...
+]);
+
+console.log(result);
+```
+
+```python Python
+from qstash import QStash
+from qstash.chat import upstash
+
+q = QStash("<QSTASH_TOKEN>")
+
+result = q.message.batch_json(
+    [
+        {
+            "api":{"name": "llm", "provider": openai("<OPENAI_API_KEY>")},
+            "body": {...},
+            "callback": "https://abc.requestcatcher.com",
+        },
+        ...
+    ]
+)
+
+print(result)
+```
+
+```shell curl
+curl "https://qstash.upstash.io/v2/batch" \
+    -X POST \
+    -H "Authorization: Bearer QSTASH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '[
+        {
+            "destination": "api/llm",
+            "body": {...},
+            "callback": "https://abc.requestcatcher.com"
+        },
+        ...
+    ]'
+```
+</CodeGroup>
+
+### Retrying After Rate Limit Resets
+
+When the rate limits are exceeded, QStash automatically schedules the retry of
+publish or enqueue of chat completion tasks depending on the reset time
+of the rate limits. That helps with not doing retries prematurely
+when it is definitely going to fail due to exceeding rate limits.
+
+
+
+## Analytics via Helicone
+
+Helicone is a powerful observability platform that provides valuable insights into your LLM usage. Integrating Helicone with QStash is straightforward.
+
+To enable Helicone observability in QStash, you simply need to pass your Helicone API key when initializing your model. Here's how to do it for both custom models and OpenAI:
+
+
+```ts
+import { Client, custom } from "@upstash/qstash";
+
+const client = new Client({
+  token: "<QSTASH_TOKEN>",
+});
+
+await client.publishJSON({
+  api: {
+    name: "llm",
+    provider: custom({
+      token: "XXX",
+      baseUrl: "https://api.together.xyz",
+    }),
+    analytics: { name: "helicone", token: process.env.HELICONE_API_KEY! },
+  },
+  body: {
+    model: "meta-llama/Llama-3-8b-chat-hf",
+    messages: [
+      {
+        role: "user",
+        content: "hello",
+      },
+    ],
+  },
+  callback: "https://oz.requestcatcher.com/",
+});
+```
+

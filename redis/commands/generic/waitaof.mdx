@@ -1,0 +1,178 @@
+---
+title: "WAITAOF"
+description: "Wait for local and replica persistence."
+---
+
+Use `WAITAOF` to block until preceding writes have been persisted to the append-only file locally and on replicas.
+
+`<numlocal>` is how many local acknowledgements to wait for and `<numreplicas>` how many replicas must have persisted the writes. The two-element reply gives the local count first and the replica count second, and either can come back lower than requested when the timeout expires, so both need checking. A timeout of `0` waits indefinitely.
+
+Where [`WAIT`](/redis/commands/generic/wait) confirms only that replicas received a write, `WAITAOF` confirms that it reached persistent storage, which is the stronger guarantee to ask for before acknowledging work that must survive a restart. On Upstash it waits for the writes enqueued before it began, including writes made by other connections.
+
+## Syntax
+
+```redis
+WAITAOF <numlocal> <numreplicas> <timeout>
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `numlocal` | Yes | No | Whether to wait for local persistence: `0` or `1`. |
+| `numreplicas` | Yes | No | Non-negative number of replicas whose append-only files should include prior writes. |
+| `timeout` | Yes | No | Maximum wait in milliseconds; `0` means no timeout. |
+
+## Important points
+
+- This deployment waits for writes enqueued before `WAITAOF` begins, including writes from other connections.
+- The two-element reply contains the local persistence acknowledgement first and the replica persistence count second.
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Two-element array of integers: local and replica acknowledgments |
+| RESP3 | Two-element array of integers: local and replica acknowledgments |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+WAITAOF 1 1 1000
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+<Note>
+  This command is not supported yet in `upstash_redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.call("WAITAOF", "1", "1", "1000");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.sendCommand(["WAITAOF", "1", "1", "1000"]);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.waitaof("1", "1", "1000")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+    "time"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.WaitAOF(context.Background(), 1, 1, time.Second).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.waitAOF(1, 1, 1000);
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("WAITAOF");
+    command.arg("1");
+    command.arg("1");
+    command.arg("1000");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

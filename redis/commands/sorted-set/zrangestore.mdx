@@ -1,0 +1,184 @@
+---
+title: "ZRANGESTORE"
+description: "Store the result of a range query."
+---
+
+Use `ZRANGESTORE` to run the same selection as [`ZRANGE`](/redis/commands/sorted-set/zrange) and store the result in another sorted set instead of returning it.
+
+The selection works exactly as it does for `ZRANGE`: by index, or by score with `BYSCORE`, or by member with `BYLEX`, with `REV` and `LIMIT` available in the same way. The members keep their original scores in the destination, which is overwritten if it exists and deleted when the range is empty. The reply is the number of members stored.
+
+This is how a slice of a large ranking is materialized once, for instance the top thousand of a leaderboard, so that further intersections or repeated paging run against a small key.
+
+## Syntax
+
+```redis
+ZRANGESTORE <dst> <src> <min> <max>
+  [BYSCORE | BYLEX]
+  [REV]
+  [LIMIT <offset> <count>]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<dst>` | Yes | No | Redis key used as dst. |
+| `<src>` | Yes | No | Redis key used as src. |
+| `<min>` | Yes | No | Lower bound. Interpreted as a rank by default, as a score with `BYSCORE`, or lexicographically with `BYLEX`. |
+| `<max>` | Yes | No | Upper bound. Interpreted as a rank by default, as a score with `BYSCORE`, or lexicographically with `BYLEX`. |
+| `(BYSCORE \| BYLEX)` | No | No | How the two range arguments are read: `BYSCORE` as score bounds (inclusive, or exclusive with a `(` prefix, and `-inf`/`+inf` allowed), `BYLEX` as member bounds (`[member`, `(member`, `-`, or `+`), which only makes sense when every member has the same score. They are zero-based indexes when neither is given. |
+| `REV` | No | No | Reverse the result order. |
+| `LIMIT <offset> <count>` | No | No | Skip `<offset>` matches and return at most `<count>`; a `<count>` of `-1` returns all remaining. |
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Integer |
+| RESP3 | Integer |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+ZRANGESTORE destination-key source-key -inf +inf BYSCORE
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+<Note>
+  This command is not supported yet in `@upstash/redis`.
+</Note>
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.zrangestore("destination-key", "source-key", "-inf", "+inf", sortby="BYSCORE")
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.zrangestore("my-key", "my-key", "-inf", "+inf");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.zRangeStore("my-key", "my-key", "-inf", "+inf");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.zrangestore("destination-key", "source-key", "-inf", "+inf", byscore=True)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.ZRangeStore(context.Background(), "destination-key", redis.ZRangeArgs{Key: "source-key", Start: "-inf", Stop: "+inf", ByScore: true}).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.zrangestore("destination-key", "source-key", redis.clients.jedis.params.ZRangeParams.zrangeByScoreParams(Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let mut command = redis::cmd("ZRANGESTORE");
+    command.arg("my-key");
+    command.arg("my-key");
+    command.arg("-inf");
+    command.arg("+inf");
+    let result: redis::Value = command.query(&mut connection)?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

@@ -1,0 +1,203 @@
+---
+title: "Dynamic Workflows"
+---
+
+This example demonstrates how to build **dynamic, configurable workflows** using Upstash Workflow, while safely handling ordering, naming, and versioning constraints. 
+The workflow dynamically executes a list of steps provided at runtime, allowing different customers or versions to run different flows, without breaking the workflow resolution mechanism.
+
+## Use Case
+
+Our workflow will:
+
+1. Receive a list of steps to execute
+2. Execute each step **in order**, one by one
+3. Persist step results between requests
+4. Support multiple workflow versions with different step orders
+5. Ensure workflows do not break when retried or resumed
+
+This pattern is useful when:
+
+* Customers want dynamic workflows with different type of steps and ordering
+* Workflow logic is driven by configuration
+* You need safe retries, resumes, and idempotency
+
+## Code Example
+
+<CodeGroup>
+
+```typescript api/workflow/route.ts
+import { WorkflowNonRetryableError } from "@upstash/workflow";
+import { serve } from "@upstash/workflow/nextjs";
+
+const addOne = (data: number): number => {
+  return data + 1
+}
+
+const multiplyWithTwo = (data: number): number => {
+  return data * 2
+}
+
+type FunctionName = "AddOne" | "MultiplyWithTwo"
+
+const functions: Record<FunctionName, (data: number) => number> = {
+  AddOne: addOne,
+  MultiplyWithTwo: multiplyWithTwo,
+}
+
+interface WorkflowPayload {
+  version: string
+  functions: FunctionName[]
+}
+
+export const { POST } = serve<WorkflowPayload>(async (context) => {
+  const { functions: steps } = context.requestPayload
+
+  let lastResult = 0
+
+  for (let i = 0; i < steps.length; i++) {
+    const stepName = steps[i]
+
+    lastResult = await context.run(
+      `step-${i}:${stepName}`,
+      async () => {
+        const fn = functions[stepName]
+        if (!fn) throw new WorkflowNonRetryableError("Unknown step")
+        return fn(lastResult)
+      }
+    )
+  }
+})
+```
+</CodeGroup>
+
+## Code Breakdown
+
+### 1. Dynamic Step Configuration
+
+Instead of hardcoding the workflow, we accept a **list of step names** from the request payload.
+<CodeGroup>
+```typescript api/workflow/route.ts
+interface WorkflowPayload {
+  version: string
+  functions: FunctionName[]
+}
+```
+</CodeGroup>
+
+This allows different customers or versions to define workflow flows such as:
+
+* Run X: `AddOne → MultiplyWithTwo`
+* Run Y: `MultiplyWithTwo → AddOne → AddOne`
+* Run Z: `AddOne`
+
+<Info>Instead of passing the step list in the request payload, you can store it somewhere else and fetch it inside the workflow as well.</Info>
+
+### 2. Executing Steps One by One
+
+At first glance, the `for` loop looks like a normal synchronous loop. However, in Upstash Workflow, **each iteration of the loop (in other terms, every step) is executed across multiple HTTP requests**, not in a single function invocation.
+
+<CodeGroup>
+```typescript api/workflow/route.ts 
+let lastResult = 0
+
+for (let i = 0; i < steps.length; i++) {
+  const stepName = steps[i]
+
+  lastResult = await context.run(
+    `step-${i}:${stepName}`,
+    async () => {
+      const fn = functions[stepName]
+      if (!fn) throw new WorkflowNonRetryableError("Unknown step")
+      return fn(lastResult)
+    }
+  )
+}
+```
+</CodeGroup>
+
+Here is what actually happens behind the scenes:
+
+**First request**
+1. The workflow endpoint is called with the initial payload.
+2. The loop starts at `i = 0`.
+3. `context.run("step-0:AddOne")` is encountered.
+4. Since this step has never run before, Upstash executes the function body.
+5. The result is stored in durable state.
+6. The HTTP request ends immediately after this step completes.
+
+**Second request**
+1. Upstash triggers the workflow endpoint again.
+2. The request payload now includes the result of `step-0`.
+3. The loop runs again from the beginning.
+4. `context.run("step-0:AddOne")` is encountered, but it is **skipped** because it already exists in state.
+5. The loop continues to `i = 1`.
+6. `context.run("step-1:MultiplyWithTwo")` executes.
+7. The result is persisted, and the request ends.
+
+**Subsequent requests**
+- This process repeats until every step in the loop has been executed exactly once.
+- Each iteration of the loop corresponds to a **separate HTTP execution**.
+
+This is critical — **each logical step must be isolated in its own `context.run` call** so the workflow engine can:
+- Resume execution safely
+- Skip completed work
+- Retry failed steps independently
+- Guarantee exactly-once execution semantics
+
+If you place multiple logical operations inside a single `context.run`, the engine cannot resume partway through that logic.
+
+### 3. Step Naming and Ordering
+
+Upstash Workflow identifies steps using:
+
+- The **order** of `context.run` calls
+- The **step name** passed to `context.run`
+
+For a given workflow execution:
+- Step names **must not change** between retries
+- Step order **must remain the same**
+
+Changing either will break the resolve mechanism.
+
+### 4. Versioning Workflows Safely
+
+If you want to change:
+- Step order
+- Step names
+- Number of steps
+
+You must create a **new version**:
+
+- Keep old versions immutable
+- Route versions inside the same endpoint if needed
+- Ensure each version always executes the same flow
+
+Example:
+
+- `version = v1` → `AddOne → MultiplyWithTwo`
+- `version = v2` → `MultiplyWithTwo → AddOne`
+
+As long as each version is internally consistent, the workflow will work correctly.
+
+### 5. How the Step Result Resolve Mechanism Works
+
+Behind the scenes, the workflow endpoint is called multiple times.
+
+On each request:
+
+1. The request contains the initial payload
+2. Plus results of already executed steps
+3. The engine determines which step is next
+4. Only the next step is executed
+
+As long as the workflow definition does **not change**, execution resumes correctly.
+
+### 6. Common Pitfalls
+
+Avoid the following:
+
+- ❌ Running multiple logical steps inside a single `context.run`
+- ❌ Changing step names and order between executions
+- ❌ Conditional execution based on non-deterministic logic (`Math.random`, `Date.now`)
+
+All workflow logic must be **idempotent**.

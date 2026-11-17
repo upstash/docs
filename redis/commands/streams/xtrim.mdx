@@ -1,0 +1,186 @@
+---
+title: "XTRIM"
+description: "Trim stream to max length."
+---
+
+Use `XTRIM` to cap the size of a stream by removing old entries.
+
+`MAXLEN` keeps at most the given number of entries, dropping the oldest ones, while `MINID` drops every entry with an ID below a threshold, which is how you trim by age since IDs begin with a millisecond timestamp. The reply is the number of entries removed.
+
+`~` makes the trim approximate: the server stops at a convenient boundary and may leave a few extra entries, which is much cheaper on large streams and is the right default for background maintenance. `=` trims exactly, and `LIMIT` caps how many entries a single call may evict, which keeps one call from blocking for a long time.
+
+`KEEPREF`, `DELREF`, and `ACKED` decide what happens to consumer group references of the removed entries: `KEEPREF`, the default, leaves them in place, `DELREF` removes them from every group's pending list, and `ACKED` only removes entries that all groups have read and acknowledged. [`XADD`](/redis/commands/streams/xadd) accepts the same options so a stream can be trimmed as it is written to.
+
+## Syntax
+
+```redis
+XTRIM <key>
+  (MAXLEN | MINID) [= | ~] <threshold>
+  [LIMIT <count>]
+  [KEEPREF | DELREF | ACKED]
+```
+
+## Arguments
+
+| Argument | Required | Repeatable | Description |
+| --- | --- | --- | --- |
+| `<key>` | Yes | No | Redis key targeted by the command. |
+| `(MAXLEN \| MINID) [= \| ~] <threshold> [LIMIT <count>] [KEEPREF \| DELREF \| ACKED]` | Yes | No | Trim the stream. `MAXLEN` caps the number of entries; `MINID` drops entries with a lower ID. `=` trims exactly and is the default; `~` trims approximately and is required before `LIMIT`, which caps how many entries a single call evicts. `KEEPREF` (the default) leaves consumer-group references to the deleted entries in place, `DELREF` removes those references too, and `ACKED` only removes entries that every group has read and acknowledged. |
+
+## Response
+
+The reply reports the result of the operation. Error replies have the same shape in RESP2 and RESP3 and are surfaced as exceptions by the SDKs below.
+
+| Protocol | Reply |
+| --- | --- |
+| RESP2 | Integer |
+| RESP3 | Integer |
+
+<Note>
+  Client libraries often decode bulk strings, maps, sets, and numeric strings into language-native values. The table describes the Redis wire reply.
+</Note>
+
+## Examples
+
+TCP examples use the TLS `REDIS_URL` from the Upstash console. REST examples use `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+
+<AccordionGroup>
+
+<Accordion title="Redis CLI" icon="terminal">
+
+```bash
+XTRIM my-key MAXLEN 100
+```
+
+</Accordion>
+
+<Accordion title="@upstash/redis" icon="node-js" iconType="brands">
+
+```ts
+import { Redis } from "@upstash/redis";
+
+const redis = Redis.fromEnv();
+
+const result = await redis.xtrim("mystream", {
+  strategy: "MAXLEN",
+  threshold: 100,
+  exactness: "~"
+});
+```
+
+</Accordion>
+
+<Accordion title="upstash_redis" icon="python" iconType="brands">
+
+```python
+from upstash_redis import Redis
+
+redis = Redis.from_env()
+result = redis.xtrim("my-key", maxlen=100)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="ioredis" icon="node-js" iconType="brands">
+
+```ts
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const result = await redis.xtrim("my-key", "MAXLEN", "100");
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="node-redis" icon="node-js" iconType="brands">
+
+```ts
+import { createClient } from "redis";
+
+const client = await createClient({ url: process.env.REDIS_URL })
+  .on("error", console.error)
+  .connect();
+const result = await client.xTrim("my-key", "MAXLEN", 100);
+console.log(result);
+```
+
+</Accordion>
+
+<Accordion title="redis-py" icon="python" iconType="brands">
+
+```python
+import os
+import redis
+
+client = redis.from_url(os.environ["REDIS_URL"])
+result = client.xtrim("my-key", maxlen=100)
+print(result)
+```
+
+</Accordion>
+
+<Accordion title="go-redis" icon="golang" iconType="brands">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/redis/go-redis/v9"
+)
+
+func main() {
+    opts, err := redis.ParseURL(os.Getenv("REDIS_URL"))
+    if err != nil {
+        panic(err)
+    }
+    client := redis.NewClient(opts)
+    result, err := client.XTrimMaxLen(context.Background(), "my-key", 100).Result()
+    if err != nil {
+        panic(err)
+    }
+    fmt.Println(result)
+}
+```
+
+</Accordion>
+
+<Accordion title="jedis" icon="java" iconType="brands">
+
+```java
+import java.net.URI;
+
+import redis.clients.jedis.Jedis;
+
+try (Jedis jedis = new Jedis(new URI(System.getenv("REDIS_URL")))) {
+  Object result = jedis.xtrim("my-key", redis.clients.jedis.params.XTrimParams.xTrimParams().maxLen(100));
+  System.out.println(result);
+}
+```
+
+</Accordion>
+
+<Accordion title="redis-rs" icon="rust" iconType="brands">
+
+```rust
+use redis::TypedCommands;
+
+fn main() -> redis::RedisResult<()> {
+    let url = std::env::var("REDIS_URL").expect("REDIS_URL is not set");
+    let client = redis::Client::open(url)?;
+    let mut connection = client.get_connection()?;
+
+    let result = connection.xtrim("my-key", redis::streams::StreamMaxlen::Equals(100))?;
+    println!("{result:?}");
+    Ok(())
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

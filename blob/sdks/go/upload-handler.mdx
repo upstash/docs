@@ -1,0 +1,445 @@
+---
+title: "Upload Handler"
+description: "NewUploadHandler in Go: options, callback arguments, UploadRoute, and mounting it on net/http."
+---
+
+`NewUploadHandler` builds the Go server side of a direct browser upload. What the handler does, the order its callbacks run in, and their guarantees are on [Upload handler](/blob/uploads/upload-handler). This page has the Go names, types and `net/http` wiring.
+
+```go uploads.go
+type User struct{ ID string }
+
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
+	ContentTypes: []string{"image/*", "application/pdf"},
+	MaxSize:      20 * blob.MB,
+
+	Context: func(r *http.Request) (*User, error) {
+		user := sessionUser(r)
+		if user == nil {
+			// 401, nothing is signed
+			return nil, blob.NewError(
+				blob.CodeUnauthorized,
+				blob.ErrorOptions{},
+			)
+		}
+		return user, nil
+	},
+
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[*User],
+	) (blob.BeforeUploadResult, error) {
+		return blob.BeforeUploadResult{
+			Path:     blob.UniquePath(a.Ctx.ID + "/" + a.File.Name),
+			Metadata: map[string]string{"owner": a.Ctx.ID},
+		}, nil
+	},
+
+	OnUploadComplete: func(a blob.UploadCompleteArgs[*User]) (any, error) {
+		err := db.UpsertFile(a.Request.Context(), File{
+			UploadID: a.UploadID,
+			Owner:    a.Metadata["owner"],
+			Path:     a.Path,
+			URL:      a.URL,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"path": a.Path}, nil
+	},
+})
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+The type parameter is what `Context` returns, and it is `a.Ctx` in every callback, typed. With no `Context`, use any type, such as `struct{}`, and `a.Ctx` is its zero value.
+
+`OnBeforeUpload`, `OnUploadComplete` and `OnError` each take one argument, a struct named after the callback. The handler is built once, at startup; bad options are returned as an error there.
+
+---
+
+## Mounting it
+
+```go main.go
+http.Handle("/api/upload", uploads)
+log.Fatal(http.ListenAndServe(":8080", nil))
+```
+
+`*UploadHandler` is an `http.Handler`. It answers `GET` and `POST` at one URL, so mount it on the path for every method rather than behind a pattern such as `POST /api/upload`. Any other method is a 405. It works under any router that takes an `http.Handler`: `chi`'s `r.Handle`, `echo.WrapHandler`, `gin.WrapH`.
+
+The browser side is `@upstash/blob/react`, unchanged. There is no TypeScript type to bind the hooks to, so call `uploadHooks()` without a type parameter:
+
+```ts lib/upload-hooks.ts
+"use client"
+import { uploadHooks } from "@upstash/blob/react"
+
+export const { useUpload } = uploadHooks()
+```
+
+```tsx app/page.tsx
+const { start, upload, accept } = useUpload("/api/upload")
+```
+
+Route names and `upload.blob.data` are not checked at compile time. See [With a server in another language](/blob/uploads/upload-client#with-a-server-in-another-language).
+
+The handler reads the JSON body of each `POST`, at most 1 MiB; the browser client's bodies are a few kilobytes.
+
+---
+
+## Options
+
+```go uploads.go
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
+	Bucket:           bucket,
+	ContentTypes:     []string{"image/*"},
+	MaxSize:          20 * blob.MB,
+	Multipart:        blob.MultipartOver(100 * blob.MB),
+	Endpoint:         "/api/upload",
+	Context:          requireUser,
+	Input:            blob.JSONInput[Thread](),
+	OnBeforeUpload:   authorize,
+	OnUploadComplete: record,
+	OnError:          logRefusal,
+	Routes: map[string]blob.UploadRoute[*User]{
+		"avatar":     avatar,
+		"attachment": attachment,
+	},
+	Logger: slog.Default(),
+})
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Bucket` | `*Bucket` | The bucket every route writes to. See [The bucket](#the-bucket). |
+| `ContentTypes` | `[]string` | What the routes accept. See [Content types](/blob/uploads/constraints#content-types). |
+| `MaxSize` | `int64` | The largest file the routes accept, in bytes. Zero is no limit. See [Max size](/blob/uploads/constraints#max-size). |
+| `Multipart` | `blob.Multipart` | Where an upload stops being one PUT. See [Large files](/blob/uploads/large-files#changing-the-threshold). |
+| `Endpoint` | `string` | Where the handler is mounted. Only needed to separate two handlers on one bucket. |
+| `Context` | `func(*http.Request) (C, error)` | Runs once per POST. Its value is `a.Ctx` in every callback. See [Context](#context). |
+| `Input` | `func(json.RawMessage) (any, error)` | Validates what the browser sends as `input` before `OnBeforeUpload` runs. See [Input and state](#input-and-state). |
+| `OnBeforeUpload` | `func(BeforeUploadArgs[C]) (BeforeUploadResult, error)` | Required, here or on every route. See [OnBeforeUpload](#onbeforeupload). |
+| `OnUploadComplete` | `func(UploadCompleteArgs[C]) (any, error)` | What it returns becomes `upload.blob.data`. See [OnUploadComplete](#onuploadcomplete). |
+| `OnError` | `func(UploadErrorArgs[C]) error` | Sees every refusal except a 405 and a completion result that cannot be encoded. See [OnError](#onerror). |
+| `Routes` | `map[string]UploadRoute[C]` | Mounts several routes at this one endpoint. See [Routes](#routes). |
+| `Logger` | `*slog.Logger` | Receives what a response cannot carry: an object a refusal could not delete, an error answered as a 500, a [CORS warning](#cors-check). Nil is `slog.Default()`. |
+
+There is no constraints struct: `ContentTypes` and `MaxSize` are fields of their own, on the handler, on a route, and on what `OnBeforeUpload` returns.
+
+Everything except `Routes`, `Endpoint`, `Context` and `Logger` is a default each route inherits; see [Multiple routes](/blob/uploads/upload-handler#multiple-routes). `NewUploadHandler` returns an error for a bad option: an invalid route name, an empty non-nil `Routes`, a missing `OnBeforeUpload`, a bad `ContentTypes` entry, a negative `MaxSize`, or a missing token. See [Bad options](/blob/sdks/go/errors#bad-options-are-returned-where-they-are-written).
+
+### The bucket
+
+```go uploads.go
+media, err := blob.NewBucketWith(blob.Options{
+	Token: os.Getenv("MEDIA_BLOB_TOKEN"),
+	Cache: blob.CacheImmutable,
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
+	Bucket:         media,
+	OnBeforeUpload: authorize,
+})
+```
+
+What the handler uses with no `Bucket` is on [Handler options](/blob/uploads/upload-handler#handler-options). Routes that fall back to `UPSTASH_BLOB_TOKEN` share one bucket. Pass `Bucket` when the token lives under another variable or the bucket needs `Cache`.
+
+---
+
+## OnBeforeUpload
+
+```go uploads.go
+func authorize(
+	a blob.BeforeUploadArgs[*User],
+) (blob.BeforeUploadResult, error) {
+	return blob.BeforeUploadResult{
+		Path:     blob.UniquePath(a.Ctx.ID + "/" + a.File.Name),
+		Metadata: map[string]string{"owner": a.Ctx.ID},
+	}, nil
+}
+```
+
+`BeforeUploadArgs[C]`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Ctx` | `C` | Whatever `Context` returned for this request. |
+| `Route` | `string` | The route this file was sent to. `""` when the handler mounts no named routes. |
+| `Request` | `*http.Request` | The `begin` request, headers and cookies intact. |
+| `File` | `UploadFile` | What the browser declared, before a byte was sent: `Name`, `Type` and `Size`. |
+| `Input` | `any` | What the route's `Input` returned, or nil. |
+
+It returns a `BeforeUploadResult`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Path` | `string` | Required. Where the object is stored. |
+| `Cache` | `string` | The `Cache-Control` this object is stored with. See [Caching](/blob/bucket/caching). |
+| `Metadata` | `map[string]string` | Signed into the upload and handed back to `OnUploadComplete`. Keys must be lowercase, as on [`Put`](/blob/sdks/go/bucket#put). |
+| `ContentTypes` | `[]string` | Narrows this one upload's allowed types. |
+| `MaxSize` | `int64` | Narrows this one upload's limit. |
+| `State` | `any` | Anything computed here that `OnUploadComplete` and `OnError` should get without a lookup. It is encoded with `encoding/json`. See [Input and state](#input-and-state). |
+
+What each field does is on [Authorizing an upload](/blob/uploads/upload-handler#authorizing-an-upload). A path with a `.` or `..` segment, an empty segment (`a//b`, a leading `/`) or a control character is refused with `invalid_input`, since a filename from the browser can put one there.
+
+### Refusing
+
+```go uploads.go
+func authorize(
+	a blob.BeforeUploadArgs[*User],
+) (blob.BeforeUploadResult, error) {
+	if overQuota(a.Ctx) {
+		return blob.BeforeUploadResult{}, blob.NewError(
+			blob.CodeTooLarge,
+			blob.ErrorOptions{Message: "you are out of space"},
+		)
+	}
+	path := blob.UniquePath(a.Ctx.ID + "/" + a.File.Name)
+	return blob.BeforeUploadResult{Path: path}, nil
+}
+```
+
+Return a `*blob.Error` to refuse with its code. Any error that is or wraps one works the same. An error with a `StatusCode() int` method between 400 and 599 answers with that status, mapped to a code through the table on [What reaches the browser](/blob/reference/errors#what-reaches-the-browser-in-order), with its `Error()` text as the message:
+
+```go
+type httpError struct {
+	status int
+	msg    string
+}
+
+func (e httpError) Error() string   { return e.msg }
+func (e httpError) StatusCode() int { return e.status }
+
+return blob.BeforeUploadResult{}, httpError{401, "sign in to upload"}
+// reaches the browser as BlobError code 'unauthorized',
+// message 'Sign in to upload'
+```
+
+Any other error is logged on `Logger` and answered as a 500 with no detail.
+
+---
+
+## OnUploadComplete
+
+```go uploads.go
+func record(a blob.UploadCompleteArgs[*User]) (any, error) {
+	err := db.UpsertFile(a.Request.Context(), File{
+		UploadID:    a.UploadID,
+		Owner:       a.Ctx.ID,
+		Path:        a.Path,
+		URL:         a.URL,
+		Size:        a.Size,
+		ContentType: a.ContentType,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"path": a.Path}, nil
+}
+```
+
+`UploadCompleteArgs[C]` embeds a `CompletedBlob`, so the stored object's fields are on it directly:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Path` | `string` | Where the object is stored. |
+| `URL` | `string` | The public URL. `""` on a private bucket. |
+| `VersionedURL` | `string` | `URL` with the etag on the query. |
+| `Size` | `int64` | Bytes actually stored. |
+| `ETag` | `string` | The stored object's etag. |
+| `UploadedAt` | `time.Time` | When storage wrote it. |
+| `ContentType` | `string` | What the object is stored as. |
+| `Ctx` | `C` | What `Context` returned for this request. |
+| `Route` | `string` | The route name, `""` for a sole route. |
+| `Request` | `*http.Request` | The `end` request. |
+| `File` | `UploadFile` | What the browser declared at `begin`. |
+| `UploadID` | `string` | Identifies this upload. Stable across retries. |
+| `MultipartUploadID` | `string` | For [`AbortMultipartUpload`](/blob/sdks/go/bucket#multipart-cleanup). `""` for a single PUT. |
+| `Metadata` | `map[string]string` | What `OnBeforeUpload` returned, minus the SDK's marker. |
+| `State` | `json.RawMessage` | What `OnBeforeUpload` returned as `State`, as JSON. Nil when it returned none. |
+
+What each field means, and why it may run more than once or not at all, is on [Recording the upload](/blob/uploads/upload-handler#recording-the-upload).
+
+What it returns is encoded with `encoding/json` and handed to the browser as `upload.blob.data`. Return nil and `data` is not set. A value that does not encode is logged and answered as a 500, and unlike an error from the callback itself, it does not delete the object.
+
+During `end`, `a.Request.Context()` is not canceled when the browser disconnects, so a database write made with it runs to completion rather than leave a completed object unrecorded.
+
+---
+
+## OnError
+
+```go uploads.go
+func logRefusal(a blob.UploadErrorArgs[*User]) error {
+	slog.Warn("upload refused", "route", a.Route, "path", a.Path, "err", a.Err)
+	var expired PaymentRequired
+	if errors.As(a.Err, &expired) {
+		return blob.NewError(
+			blob.CodeForbidden,
+			blob.ErrorOptions{Message: "plan expired"},
+		)
+	}
+	return nil
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Ctx` | `C` | The zero value when the request failed before `Context` returned: no route matched, or `Context` itself failed. |
+| `Route` | `string` | The name from the query, even when nothing mounts it. |
+| `Request` | `*http.Request` | The request. |
+| `Err` | `error` | Whatever was returned. |
+| `File` | `*UploadFile` | As much as the request had reached before it failed, else nil. |
+| `Path`, `Metadata`, `State` | | As much as the request had reached, else their zero values. |
+
+Return a `*blob.Error`, or an error that wraps one, to answer with it. Return nil, or any other error, to leave the answer alone. See [Handling errors](/blob/uploads/upload-handler#handling-errors).
+
+---
+
+## Context
+
+```go uploads.go
+func requireUser(r *http.Request) (*User, error) {
+	user, err := sessions.Lookup(r.Context(), r.Header.Get("Cookie"))
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, blob.NewError(blob.CodeUnauthorized, blob.ErrorOptions{})
+	}
+	return user, nil
+}
+
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
+	Context: requireUser,
+	Routes: map[string]blob.UploadRoute[*User]{
+		"avatar": {
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				return blob.BeforeUploadResult{Path: "avatars/" + a.Ctx.ID}, nil
+			},
+		},
+		"attachment": {
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				path := blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)
+				return blob.BeforeUploadResult{Path: path}, nil
+			},
+		},
+	},
+})
+```
+
+`Context` takes the request. What it returns is `a.Ctx` in every callback. An error it returns refuses the request under the rules in [Refusing](#refusing). When it runs is on [Context](/blob/uploads/upload-handler#context).
+
+---
+
+## Routes
+
+```go uploads.go
+uploads, err := blob.NewUploadHandler(blob.UploadHandlerOptions[*User]{
+	ContentTypes: []string{"image/*"},
+	MaxSize:      20 * blob.MB,
+	Context:      requireUser,
+	Routes: map[string]blob.UploadRoute[*User]{
+		"avatar": {
+			MaxSize: 2 * blob.MB,
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				return blob.BeforeUploadResult{
+					Path:  "avatars/" + a.Ctx.ID,
+					Cache: blob.CacheRevalidate,
+				}, nil
+			},
+		},
+		"attachment": {
+			// clears the handler's list for this route
+			ContentTypes: []string{},
+			Multipart:    blob.MultipartOver(50 * blob.MB),
+			OnBeforeUpload: func(
+				a blob.BeforeUploadArgs[*User],
+			) (blob.BeforeUploadResult, error) {
+				path := blob.UniquePath("files/" + a.Ctx.ID + "/" + a.File.Name)
+				return blob.BeforeUploadResult{Path: path}, nil
+			},
+			OnUploadComplete: recordFile,
+		},
+	},
+})
+```
+
+```tsx app/page.tsx
+const avatar = useUpload("avatar")       // POSTs to /api/upload?route=avatar
+const attachment = useUpload("attachment")
+```
+
+`UploadRoute[C]` has the fields `Bucket`, `ContentTypes`, `MaxSize`, `Multipart`, `Input`, `OnBeforeUpload`, `OnUploadComplete` and `OnError`. A field it sets overrides the handler's, and one it leaves at its zero value inherits it. Since a zero value means "inherit", clearing a limit the handler set takes a value of its own: `ContentTypes: []string{}` clears the list, and `MaxSize: blob.NoLimit` clears the size. The rules for names and inheritance are on [Multiple routes](/blob/uploads/upload-handler#multiple-routes).
+
+---
+
+## Input and state
+
+```go uploads.go
+type Thread struct {
+	ThreadID string `json:"threadId"`
+}
+
+type threadState struct {
+	ThreadID string `json:"threadId"`
+	Name     string `json:"name"`
+}
+
+thread := blob.UploadRoute[*User]{
+	Input: blob.JSONInput[Thread](),
+
+	OnBeforeUpload: func(
+		a blob.BeforeUploadArgs[*User],
+	) (blob.BeforeUploadResult, error) {
+		t := a.Input.(Thread)
+		if _, err := uuid.Parse(t.ThreadID); err != nil {
+			return blob.BeforeUploadResult{}, blob.NewError(
+				blob.CodeInvalidInput,
+				blob.ErrorOptions{Message: "the threadId is not a UUID"},
+			)
+		}
+		return blob.BeforeUploadResult{
+			Path:  blob.UniquePath("chat/" + t.ThreadID + "/" + a.File.Name),
+			State: threadState{ThreadID: t.ThreadID, Name: a.File.Name},
+		}, nil
+	},
+
+	OnUploadComplete: func(a blob.UploadCompleteArgs[*User]) (any, error) {
+		var s threadState
+		if err := json.Unmarshal(a.State, &s); err != nil {
+			return nil, err
+		}
+		ctx := a.Request.Context()
+		return nil, db.InsertMessage(
+			ctx, a.UploadID, s.ThreadID, s.Name, a.Ctx.ID, a.URL,
+		)
+	},
+}
+```
+
+```tsx app/page.tsx
+const { start } = useUpload("thread")
+start({ file, input: { threadId } })
+```
+
+`Input` and `State` work on any `UploadRoute`, and on the handler itself.
+
+- `Input` gets the raw JSON the browser sent as `input`, nil when it sent none, and returns the parsed value or an error. Its result is `a.Input`, an `any` to assert back to your type.
+- `blob.JSONInput[T]()` is an `Input` that decodes into a `T` with `encoding/json` and refuses a missing `input`. Decoding checks shape, not values: validate fields yourself, in `Input` or in `OnBeforeUpload`.
+- An error from `Input` is refused with `invalid_input`, its `Error()` text as the message. Return a `*blob.Error` to pick the code and message yourself.
+- `State` crosses the browser as JSON, and comes back as the raw `json.RawMessage` to decode into whatever type you like. A value `encoding/json` cannot encode is answered as a 500.
+
+How `input` is validated and what `state` exposes are on [Input and state](/blob/uploads/upload-handler#input-and-state).
+
+---
+
+## CORS check
+
+The first upload from each page origin also sends storage the CORS preflight the browser is about to send, against the URL it just signed. When storage refuses it, the handler logs a warning on `Logger` naming the origin to add to the bucket's CORS settings in the Upstash Console. It runs in the background, never delays or fails the request, and runs once per origin on each route, again only if storage did not answer. The TypeScript handler has no such check. Buckets allow every origin by default; see [Errors the browser raises on its own](/blob/reference/errors#errors-the-browser-raises-on-its-own).
