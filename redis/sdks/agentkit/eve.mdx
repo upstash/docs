@@ -11,10 +11,8 @@ keyword and semantic results merged, with the text embedded by Redis itself. Mem
 share one search index, so they work on a database that allows only one (the Free plan).
 
 <Note>
-  Upgrading from an earlier AgentKit version: the old `agentkit_memory` and `agentkit_chat` indexes are
-  no longer used. On the Free plan (one index), drop them with `SEARCH.DROP` before upgrading. A memory
-  index with a custom `prefix` or `indexName` fails on the first read with an error asking you to run
-  `SEARCH.DROP <index>`. Documents are kept and indexed again.
+  Upgrading from an earlier AgentKit version? See
+  [Upgrading from full-text memory recall](#upgrading-from-full-text-memory-recall).
 </Note>
 
 Two packages bring AgentKit to **Eve, the Vercel agent framework**. They work together in one agent:
@@ -633,6 +631,45 @@ Two complete `eve` apps live in the AgentKit repo:
 - [`examples/eve-demo`](https://github.com/upstash/agentkit/tree/main/examples/eve-demo) uses the
   file-by-file package (memory, search, cached tools, a rate-limit gate, and an Upstash Box sandbox),
   with a chat UI that renders tool calls inline.
+
+## Upgrading from full-text memory recall
+
+`@upstash/agentkit-eve-extension` and `@upstash/agentkit-eve` 0.19 and earlier indexed memory `text` as
+a full-text field, and gave memory and chat history separate indexes, `agentkit_memory` and
+`agentkit_chat`. Newer versions index `text` as a hybrid field and, with default settings, keep memory
+and chat history in one index, `agentkit`. Keys and documents are unchanged, so there is no data to
+migrate: only the search indexes change.
+
+| Your setup | On upgrade | What to do |
+| --- | --- | --- |
+| Default settings | A new `agentkit` index is created, and finds the memories and chats saved earlier. | Nothing. Drop `agentkit_memory` and `agentkit_chat` when convenient; they are no longer used. |
+| Default settings on the Free plan (one index) | The first read fails with `the database has no index slots left`. | Run `SEARCH.DROP agentkit_memory` and `SEARCH.DROP agentkit_chat`. |
+| Memory with a custom `prefix` or `indexName` | The first read fails with `exists with a different definition`. | Run `SEARCH.DROP <index>` with the index the error names. |
+| Chat history with a custom `prefix` or `indexName` | Nothing: its index is the same as before. | Nothing. |
+| [Memory slots](#how-to-use-eves-memory-slots) (`redisMemory()`) | The first read fails with `exists with a different definition`. | Run `SEARCH.DROP agentkit_memorySlot`, or the `indexName` you set. |
+| RAG (`search`, `defineSearchTools`) | Nothing. | Nothing. |
+
+Default settings covers both the extension's `memory` and `chatHistory` and the standalone memory
+tool files.
+
+Dropping an index keeps its documents. The next read creates the new index, which indexes and
+embeds the existing memories again; on a large store, recall can miss some of them until that
+finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+
+Drop old indexes once every deployment runs the new version: an instance still on the old version
+recreates its index on its next read, which on the Free plan takes the only slot again. Until they
+are dropped, unused old indexes keep indexing new writes.
+
+Run `SEARCH.DROP` from the CLI in the Upstash Console, from `redis-cli`, or from code:
+
+```ts
+await redis.search.index({ name: "agentkit_memory" }).drop();
+```
+
+`memory.minScore` (and `minScore` on the memory tool files) changed meaning. It was a BM25 floor on
+keyword recall; now setting it switches recall to keyword only, above that floor. Hybrid scores have no
+relevance cutoff, so remove it to get hybrid recall. Memory slots recall hybrid at the default
+`minScore` of `0`.
 
 <CardGroup cols={2}>
   <Card title="AgentKit on GitHub" icon="github" href="https://github.com/upstash/agentkit">
