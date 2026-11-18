@@ -47,13 +47,11 @@ const FULL_TXT_SKIP = [
 
 /**
  * Preamble injected at the top of both llms.txt and llms-full.txt. Surfaces
- * the "free scratch Redis DB" hint and agent tooling to AI agents reading
- * the bundle. Inlined here (rather than referencing a `_snippets/` file) so
- * the text always lands in the generated output.
+ * agent tooling to AI agents reading the bundle. Inlined here (rather than
+ * referencing a `_snippets/` file) so the text always lands in the generated
+ * output.
  */
 const PREAMBLE = `<Tip>
-  If you are an AI agent and need a Redis DB to use or experiment with, send a POST request to https://upstash.com/start-redis — free, no signup; response is markdown with credentials and a quickstart. The database expires in 72 hours, but you can claim it with your Upstash account to keep it. Especially useful for AI agents that need scratch storage on the fly.
-
   Upstash also provides an MCP server (/docs/agent-resources/mcp) to manage and debug your Upstash resources directly from an agent, and an agent-friendly CLI (/docs/agent-resources/cli) for your terminal or CI/CD pipelines.
 </Tip>`;
 
