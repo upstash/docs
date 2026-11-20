@@ -1,0 +1,409 @@
+---
+title: "Self-hosted Next.js caching with Upstash Redis"
+sidebarTitle: "Self-hosted Next.js Caching"
+description: Share the Next.js cache across every instance of a self-hosted app (Docker, Kubernetes, Railway, Render, Fly.io) with a cache handler backed by Upstash Redis, including tag revalidation.
+---
+
+<Card title="GitHub Repository" icon="github" href="https://github.com/upstash/redis-js/tree/main/examples/nextjs-self-hosted-cache" horizontal>
+  You can find the project source code on GitHub.
+</Card>
+
+When you self-host Next.js with `next start` or a Docker image, each instance
+keeps its own cache in memory and on its local disk. Run two or more instances
+behind a load balancer and they stop agreeing: one instance computes a value that
+the others compute again, and `revalidateTag()` on one instance does not
+invalidate the others. The cache is also lost on every restart.
+
+Next.js solves this with **cache handlers**: a file you point to in
+`next.config.ts` that stores cache entries wherever you want. This tutorial
+writes cache handlers on top of Upstash Redis, so every instance reads and writes
+the same cache and tag revalidation reaches all of them.
+
+<Note>
+  You do not need this on Vercel. Vercel already provides a shared cache for
+  Next.js deployments. This tutorial is for apps you host yourself.
+</Note>
+
+Next.js has two cache handler options. Both are stable; use the one that matches
+how your app caches, or both:
+
+| Option in `next.config.ts` | Caches | Since |
+| --- | --- | --- |
+| `cacheHandlers` (plural) | `"use cache"` and `"use cache: remote"` functions and components ([Cache Components](https://nextjs.org/docs/app/getting-started/caching)) | Next.js 16 |
+| `cacheHandler` (singular) | ISR pages, route handler responses, the `fetch` cache and `unstable_cache` | Next.js 14.1 |
+
+The code below was tested with Next.js 16.4 and `@upstash/redis` 1.41.
+
+## Step 1: Create a database
+
+Create a Redis database in the [Upstash Console](https://console.upstash.com) or with the
+[Upstash CLI](https://github.com/upstash/cli). Copy the **REST URL** and
+**REST token** into a `.env` file in your project:
+
+```shell .env
+UPSTASH_REDIS_REST_URL=<YOUR_URL>
+UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+```
+
+Install the client:
+
+```shell
+npm install @upstash/redis
+```
+
+`@upstash/redis` talks to Redis over HTTP, so there is no connection to open
+during `next build` and no connection pool to manage per instance.
+
+<Note>
+Upstash Redis supports both protocols: the REST API over HTTP used here, and the
+regular Redis protocol over TCP with a `rediss://` URL (TLS is required). If you
+already use a TCP client such as `ioredis` or `node-redis`, you can adapt the
+handler to it; see [Connect your client](/redis/howto/connect-client).
+</Note>
+
+## Step 2: Cache handler for `"use cache"`
+
+Create `cache-handler.js` in the project root:
+
+```javascript cache-handler.js
+const { Redis } = require("@upstash/redis");
+
+const redis = Redis.fromEnv();
+const TAGS_KEY = "next:tags";
+
+// Tag invalidation times in ms, synced from Redis once per request by refreshTags().
+// Fields are "stale:<tag>" and "expired:<tag>".
+let tagTimes = {};
+// Sets still running in this process, so a get() for the same key waits for them.
+const pendingSets = new Map();
+
+const isExpired = (entry) =>
+  entry.tags.some((tag) => {
+    const expired = tagTimes[`expired:${tag}`] ?? 0;
+    return expired > entry.timestamp && expired <= Date.now();
+  });
+
+const isStale = (entry) =>
+  entry.tags.some((tag) => (tagTimes[`stale:${tag}`] ?? 0) > entry.timestamp);
+
+module.exports = {
+  async get(cacheKey) {
+    await pendingSets.get(cacheKey);
+    try {
+      const entry = await redis.get(`next:cache:${cacheKey}`);
+      if (!entry || isExpired(entry)) return undefined;
+
+      return {
+        ...entry,
+        // A stale tag serves the entry once more and refreshes it in the background
+        revalidate: isStale(entry) ? -1 : entry.revalidate,
+        value: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(Buffer.from(entry.value, "base64")));
+            controller.close();
+          },
+        }),
+      };
+    } catch (error) {
+      console.error("cache get failed", error);
+      return undefined;
+    }
+  },
+
+  async set(cacheKey, pendingEntry) {
+    let done;
+    pendingSets.set(cacheKey, new Promise((resolve) => (done = resolve)));
+    try {
+      const entry = await pendingEntry;
+      const bytes = Buffer.from(await new Response(entry.value).arrayBuffer());
+
+      await redis.set(
+        `next:cache:${cacheKey}`,
+        { ...entry, value: bytes.toString("base64") },
+        // Let Redis evict the entry once Next.js would stop serving it
+        Number.isFinite(entry.expire)
+          ? { ex: Math.max(1, Math.ceil(entry.expire)) }
+          : undefined
+      );
+    } catch (error) {
+      console.error("cache set failed", error);
+    } finally {
+      done();
+      pendingSets.delete(cacheKey);
+    }
+  },
+
+  async refreshTags() {
+    tagTimes = (await redis.hgetall(TAGS_KEY)) ?? {};
+  },
+
+  async getExpiration(tags) {
+    return Math.max(0, ...tags.map((tag) => tagTimes[`expired:${tag}`] ?? 0));
+  },
+
+  async updateTags(tags, durations) {
+    const now = Date.now();
+    const updates = {};
+    for (const tag of tags) {
+      if (durations) {
+        // revalidateTag(tag, profile): serve stale while refreshing, expire later
+        updates[`stale:${tag}`] = now;
+        if (durations.expire !== undefined) {
+          updates[`expired:${tag}`] = now + durations.expire * 1000;
+        }
+      } else {
+        // updateTag(tag): expire immediately
+        updates[`expired:${tag}`] = now;
+      }
+    }
+    Object.assign(tagTimes, updates);
+    await redis.hset(TAGS_KEY, updates);
+  },
+};
+```
+
+How it works:
+
+- Each entry is one Redis key, `next:cache:<key>`, holding the entry as JSON with
+  the rendered bytes in base64. The key gets a TTL from the entry's `expire`
+  (set with `cacheLife`), so Redis deletes entries Next.js would no longer serve.
+- Tag invalidations are timestamps in one Redis hash, `next:tags`.
+  `revalidateTag()` and `updateTag()` write to it through `updateTags()`, and
+  every instance reads it once per request in `refreshTags()`. An entry created
+  before its tag was invalidated is treated as a miss (expired) or served once
+  while it refreshes in the background (stale).
+- Soft tags, which back `revalidatePath()`, are checked by Next.js through
+  `getExpiration()`.
+- Errors in `get()` turn into cache misses, so the app keeps working if Redis
+  is unreachable.
+
+Register the handler in `next.config.ts`. `"use cache: remote"` needs Cache
+Components enabled:
+
+```typescript next.config.ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+  cacheHandlers: {
+    remote: require.resolve("./cache-handler.js"),
+  },
+};
+
+export default nextConfig;
+```
+
+The `remote` handler serves `"use cache: remote"`. Plain `"use cache"` keeps
+using the built-in in-memory cache, so you choose per function what goes to
+Redis.
+
+## Step 3: Cache a slow query
+
+Mark a function with `"use cache: remote"`, give it a tag with `cacheTag` and a
+lifetime with `cacheLife`. The short lifetime below makes expiry easy to watch;
+use longer values in production.
+
+```tsx app/page.tsx
+import { Suspense } from "react";
+import { connection } from "next/server";
+import { cacheLife, cacheTag } from "next/cache";
+
+async function getPosts() {
+  "use cache: remote";
+  cacheTag("posts");
+  cacheLife({ stale: 30, revalidate: 30, expire: 30 });
+
+  // Stand-in for a slow database query
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  return { generatedAt: new Date().toISOString() };
+}
+
+async function Posts() {
+  await connection(); // render at request time
+  const posts = await getPosts();
+  return <pre>{JSON.stringify(posts)}</pre>;
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<p>Loading...</p>}>
+      <Posts />
+    </Suspense>
+  );
+}
+```
+
+Add a route that invalidates the `posts` tag. `{ expire: 0 }` expires the
+entries immediately; `"max"` would serve the old value once while it refreshes
+in the background.
+
+```typescript app/api/revalidate/route.ts
+import { revalidateTag } from "next/cache";
+
+export async function POST() {
+  revalidateTag("posts", { expire: 0 });
+  return Response.json({ revalidated: true });
+}
+```
+
+`updateTag("posts")` in a Server Action works too and also reaches every
+instance.
+
+## Step 4: Check it across two instances
+
+Build once and start two instances on different ports:
+
+```shell
+npm run build
+npx next start -p 3001 &
+npx next start -p 3002 &
+```
+
+`next start` loads `.env` on its own. Then:
+
+1. **Shared cache.** Open http://localhost:3001. The first load takes about two
+   seconds. Open http://localhost:3002: it returns at once with the same
+   `generatedAt`, computed by the first instance.
+
+2. **Expiry.** Wait 30 seconds and reload either port. The entry has expired in
+   Redis, so the page takes two seconds again and shows a new `generatedAt`,
+   which the other port then shares.
+
+3. **Tag revalidation.** Invalidate the tag on one instance and load the other:
+
+   ```shell
+   curl -X POST http://localhost:3001/api/revalidate
+   ```
+
+   http://localhost:3002 computes a new value instead of serving the old one.
+
+In Redis you will see one `next:cache:*` key per cached call and the
+`next:tags` hash. You can browse them in the **Data Browser** of the Upstash
+Console.
+
+## Optional: ISR, `fetch` and `unstable_cache`
+
+Incremental Static Regeneration (`export const revalidate`, in apps without
+Cache Components), the `fetch` cache, `unstable_cache` and prerendered page
+shells go through a different option, `cacheHandler` (singular). Its entries
+contain `Buffer` and `Map` values, so this handler serializes them itself and
+turns off the client's automatic JSON parsing.
+
+```javascript incremental-cache-handler.js
+const { Redis } = require("@upstash/redis");
+
+// Entries hold Buffers and Maps, so serialize them ourselves
+const redis = Redis.fromEnv({ automaticDeserialization: false });
+
+function serialize(data) {
+  return JSON.stringify(data, function (key, value) {
+    const raw = this[key];
+    if (Buffer.isBuffer(raw)) return { __buffer: raw.toString("base64") };
+    if (raw instanceof Map) return { __map: [...raw] };
+    return value;
+  });
+}
+
+function deserialize(text) {
+  return JSON.parse(text, (_key, value) => {
+    if (value?.__buffer !== undefined) return Buffer.from(value.__buffer, "base64");
+    if (value?.__map !== undefined) return new Map(value.__map);
+    return value;
+  });
+}
+
+module.exports = class CacheHandler {
+  async get(key) {
+    try {
+      const stored = await redis.get(`next:isr:${key}`);
+      return stored ? deserialize(stored) : null;
+    } catch (error) {
+      console.error("cache get failed", error);
+      return null;
+    }
+  }
+
+  async set(key, data, ctx) {
+    if (!data) return;
+    // fetch entries carry tags in ctx.tags, pages and route handlers in a header
+    const headerTags = data.headers?.["x-next-cache-tags"]?.split(",") ?? [];
+    const tags = [...new Set([...(ctx.tags ?? []), ...headerTags])].filter(Boolean);
+    const expire = ctx.cacheControl?.expire;
+
+    try {
+      const pipeline = redis.pipeline();
+      pipeline.set(
+        `next:isr:${key}`,
+        serialize({ value: data, lastModified: Date.now(), cacheControl: ctx.cacheControl }),
+        Number.isFinite(expire) ? { ex: Math.max(1, Math.ceil(expire)) } : undefined
+      );
+      for (const tag of tags) pipeline.sadd(`next:isr-tag:${tag}`, key);
+      await pipeline.exec();
+    } catch (error) {
+      console.error("cache set failed", error);
+    }
+  }
+
+  async revalidateTag(tags) {
+    for (const tag of [tags].flat()) {
+      const keys = await redis.smembers(`next:isr-tag:${tag}`);
+      await redis.del(`next:isr-tag:${tag}`, ...keys.map((key) => `next:isr:${key}`));
+    }
+  }
+
+  resetRequestCache() {}
+};
+```
+
+Each entry is a `next:isr:<key>` key with a TTL from its `expire`, and each tag
+is a Redis set of the keys that carry it. `revalidateTag()` and
+`revalidatePath()` delete those keys, so every instance misses and renders
+again. This handler expires tagged entries immediately for every
+`revalidateTag()` profile.
+
+Register it next to the other handler, and set `cacheMaxMemorySize: 0` so
+instances do not serve from their own in-memory copy:
+
+```typescript next.config.ts
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  cacheHandler: require.resolve("./incremental-cache-handler.js"),
+  cacheMaxMemorySize: 0, // disable the default in-memory cache
+};
+
+export default nextConfig;
+```
+
+If you use both handlers, put `cacheHandler`, `cacheMaxMemorySize`,
+`cacheComponents` and `cacheHandlers` in the same config object.
+
+## Docker and other hosts
+
+- With `output: "standalone"` in `next.config.ts`, Next.js copies the handler
+  file and `@upstash/redis` into `.next/standalone`, so the usual standalone
+  Dockerfile works unchanged. Start it with `node server.js`.
+- Pass `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` as runtime
+  environment variables on Railway, Render, Fly.io, Kubernetes or wherever the
+  instances run.
+- Run the same build on every instance. Cache keys for `"use cache"` include
+  the build ID, so a new deploy starts with empty entries and the old ones
+  expire through their TTL. If you build per instance, set the same
+  `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` and a `deploymentId` for all of them, as
+  described in the [Next.js self-hosting guide](https://nextjs.org/docs/app/guides/self-hosting#multi-server-deployments).
+
+## Costs and limits
+
+- Every cache read and write is a Redis command. With the `"use cache"`
+  handler, a request that reads the cache costs one `HGETALL` for the tags plus
+  one `GET` per cached call, and a miss adds a `SET`. See
+  [pricing](/redis/overall/pricing) to estimate your bill.
+- Remote caching pays off for slow or rate-limited work, such as database
+  queries and third-party APIs. For values that are cheap to compute or unique
+  per request, plain `"use cache"` or no cache is cheaper.
+- Entries count toward your database size. Keep `expire` finite so old entries
+  leave on their own. ISR pages with no `revalidate` have no TTL and stay until
+  their tag or path is revalidated.
+- The `next:tags` hash keeps one or two fields per tag ever revalidated. That is
+  small for a fixed set of tags; if you create tags per record (for example
+  `post-123`), clear the hash from time to time.
