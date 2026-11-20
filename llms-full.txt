@@ -13563,6 +13563,262 @@ try {
 * [Harnesses](https://tanstack.com/ai/latest/docs/sandbox/harnesses) for running Codex, Grok Build, or any ACP agent instead.
 * [Snapshots](/docs/box/overall/snapshots) and [preview URLs](/docs/box/overall/preview) for what the box does underneath.
 
+# Train a Code Model with TRL and Sandboxed Rewards
+Source: https://upstash.com/docs/box/guides/trl-grpo-training
+
+Train a model to write code with [TRL](https://huggingface.co/docs/trl)'s `GRPOTrainer`. Each training step generates a batch of completions, and every completion runs against a test suite in its own Upstash Box. The share of tests it passes is its reward.
+
+---
+
+## 1. Set up
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box).
+
+```bash
+export UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+```bash
+pip install upstash-box trl datasets
+```
+
+Tested with `trl` 1.18 and `upstash-box` 0.4.
+
+---
+
+## 2. Define the tasks
+
+Each task is a prompt the model continues, a reference solution, and words a completion may not use. The harness is the program that runs in the box. It prints the function's output for each test.
+
+```python title="tasks.py"
+import random
+
+DEDUPE = '''def dedupe(xs: list[int]) -> list[int]:
+    """Remove duplicates from xs, keeping the first occurrence of each value."""
+'''
+
+RUNNING_MAX = '''def running_max(xs: list[int]) -> list[int]:
+    """Return a list where item i is the largest value in xs[: i + 1]."""
+'''
+
+EVENS_FIRST = '''def evens_first(xs: list[int]) -> list[int]:
+    """Return the even values of xs, then the odd values, each in their original order."""
+'''
+
+
+def dedupe(xs):
+    return list(dict.fromkeys(xs))
+
+
+def running_max(xs):
+    return [max(xs[: i + 1]) for i in range(len(xs))]
+
+
+def evens_first(xs):
+    return [x for x in xs if x % 2 == 0] + [x for x in xs if x % 2]
+
+
+TASKS = {
+    DEDUPE: {
+        "name": "dedupe",
+        "reference": dedupe,
+        "banned": ["import", "fromkeys"],
+    },
+    RUNNING_MAX: {
+        "name": "running_max",
+        "reference": running_max,
+        "banned": ["import", "accumulate"],
+    },
+    EVENS_FIRST: {
+        "name": "evens_first",
+        "reference": evens_first,
+        "banned": ["import", "sorted", ".sort("],
+    },
+}
+
+rng = random.Random(0)
+TESTS = [
+    [],
+    [3, 1, 3, 2, 1],
+    [rng.randint(-5, 5) for _ in range(50)],
+    [rng.randint(-1000, 1000) for _ in range(500)],
+]
+
+HARNESS = """import json
+
+{prompt}{body}
+
+outputs = []
+for xs in {tests}:
+    try:
+        outputs.append({name}(xs))
+    except Exception:
+        outputs.append(None)
+print(json.dumps(outputs, default=str))
+"""
+```
+
+---
+
+## 3. Score completions in boxes
+
+`score` keeps the function body from a completion, builds the harness, and runs it in a box with a 2 second timeout. The outputs are compared with the reference on your machine, so a completion cannot change its own grade. A completion that crashes, times out, or uses a banned word gets `-1`.
+
+```python title="rewards.py"
+import asyncio
+import json
+
+from upstash_box import AsyncBox
+
+from tasks import HARNESS, TASKS, TESTS
+
+TIMEOUT_MS = 2000
+
+
+def function_body(completion: str) -> str:
+    lines = []
+    for line in completion.splitlines():
+        if line and not line.startswith("    "):
+            break
+        lines.append(line)
+    return "\n".join(lines).rstrip()
+
+
+async def score(box: AsyncBox, prompt: str, completion: str) -> float:
+    task = TASKS[prompt]
+    body = function_body(completion)
+    if not body.strip() or any(word in body for word in task["banned"]):
+        return -1.0
+
+    code = HARNESS.format(prompt=prompt, body=body, tests=TESTS, name=task["name"])
+    try:
+        run = await box.exec.code(code=code, lang="python", timeout=TIMEOUT_MS)
+        outputs = json.loads(run.result.strip().splitlines()[-1])
+    except Exception:
+        return -1.0
+    if run.exit_code != 0 or not isinstance(outputs, list) or len(outputs) != len(TESTS):
+        return -1.0
+
+    expected = [task["reference"](xs) for xs in TESTS]
+    return sum(o == e for o, e in zip(outputs, expected)) / len(TESTS)
+
+
+async def create_pool(size: int) -> list[AsyncBox]:
+    creates = [AsyncBox.create(runtime="python") for _ in range(size)]
+    results = await asyncio.gather(*creates, return_exceptions=True)
+    pool = [box for box in results if isinstance(box, AsyncBox)]
+    if len(pool) < size:
+        await delete_pool(pool)
+        raise RuntimeError(f"created {len(pool)} of {size} boxes")
+    return pool
+
+
+async def score_batch(pool, prompts, completions) -> list[float]:
+    jobs = [
+        score(pool[i % len(pool)], prompt, completion)
+        for i, (prompt, completion) in enumerate(zip(prompts, completions))
+    ]
+    return await asyncio.gather(*jobs)
+
+
+async def delete_pool(pool) -> None:
+    await asyncio.gather(*[box.delete() for box in pool], return_exceptions=True)
+```
+
+---
+
+## 4. Train
+
+The pool has one box per completion in a step, 64 with these settings, so a whole batch is scored at the same time. It is created once, right before training, and reused at every step. The boxes are deleted when training ends.
+
+```python title="train.py"
+import asyncio
+
+from datasets import Dataset
+from trl import GRPOConfig, GRPOTrainer
+
+from rewards import create_pool, delete_pool, score_batch
+from tasks import TASKS
+
+MODEL = "Qwen/Qwen3-0.6B-Base"
+BATCH_SIZE = 16
+ACCUMULATION_STEPS = 4
+POOL_SIZE = BATCH_SIZE * ACCUMULATION_STEPS
+NUM_GENERATIONS = 8
+
+loop = asyncio.new_event_loop()
+pool = []
+
+
+def reward(prompts, completions, **kwargs):
+    return loop.run_until_complete(score_batch(pool, prompts, completions))
+
+
+config = GRPOConfig(
+    output_dir="grpo-box",
+    per_device_train_batch_size=BATCH_SIZE,
+    gradient_accumulation_steps=ACCUMULATION_STEPS,
+    num_generations=NUM_GENERATIONS,
+    max_completion_length=128,
+    learning_rate=8e-6,
+    max_steps=10,
+    logging_steps=1,
+    report_to="none",
+)
+trainer = GRPOTrainer(
+    model=MODEL,
+    reward_funcs=reward,
+    args=config,
+    train_dataset=Dataset.from_list([{"prompt": prompt} for prompt in TASKS] * 100),
+)
+
+try:
+    pool = loop.run_until_complete(create_pool(POOL_SIZE))
+    trainer.train()
+finally:
+    loop.run_until_complete(delete_pool(pool))
+```
+
+```bash
+python train.py
+```
+
+TRL logs the mean reward at every step, and the checkpoints are saved to `grpo-box/`. The 10 steps only check that everything works. Raise `max_steps` to train for real.
+
+---
+
+## 5. Results
+
+A run with 500 completions per step (`BATCH_SIZE = 20`, `ACCUMULATION_STEPS = 25`, `NUM_GENERATIONS = 50`) on one 48 GB GPU, scored in a pool of 500 boxes:
+
+| Step | Mean reward | Completions passing every test |
+| ---- | ----------- | ------------------------------ |
+| 1    | 0.20        | 78 of 500                      |
+| 2    | 0.37        | 172 of 500                     |
+| 4    | 0.85        | 408 of 500                     |
+| 6    | 0.98        | 489 of 500                     |
+| 8    | 1.00        | 500 of 500                     |
+
+Creating the 500 boxes took 24 seconds, and scoring the 500 completions of a step took 2 to 4 seconds.
+
+---
+
+## 6. Customize
+
+- **Scale up:** raise `BATCH_SIZE` and `ACCUMULATION_STEPS` to fit your GPU. The pool grows with them.
+- **Add a task:** add a prompt to `TASKS` with its function name, reference function, and banned words.
+- **Harder tests:** raise `TIMEOUT_MS` when correct solutions need more time.
+- **Bigger model:** change `MODEL`. The prompts are written for a base model, which continues the code instead of answering in chat.
+
+---
+
+## Troubleshooting
+
+- **Every reward is `-1`:** print `run.result` in `score` to see the error from the box.
+- **`bf16/gpu` error:** the machine has no GPU. Add `use_cpu=True, bf16=False` to `GRPOConfig`.
+- **`num_generations` error:** `NUM_GENERATIONS` has to divide the number of completions in a step, which is `BATCH_SIZE * ACCUMULATION_STEPS`.
+- **Boxes left after a crash:** delete them from the [Upstash Console](https://console.upstash.com/box).
+
 # Playwright Web Scraping with a Cloud Browser
 Source: https://upstash.com/docs/box/guides/web-scraping-playwright
 
