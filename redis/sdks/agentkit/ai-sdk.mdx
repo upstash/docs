@@ -82,13 +82,14 @@ const hits = await history.searchChats({ userId, query: "headphones", target: "b
     ```ts
     createChatHistory({
       redis, // optional: defaults to Redis.fromEnv()
-      prefix: "agentkit:chat", // optional: setting prefix or indexName gives chats their own index
       ttlSeconds: 60 * 60 * 24 * 30, // optional: per-chat TTL (default: no expiry)
     });
     ```
 
     Each chat is one JSON doc at `agentkit:chat:<userId>:<sessionId>` (keyed per user, so two users
-    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Chats are
+    can't collide on a `sessionId`). By default chats and memories share one index, `agentkit`. Setting
+    `prefix` or `indexName`, even to the default `agentkit:chat`, gives chats an index of their own, which
+    a Free-plan database (one index) has no room for next to memory. Chats are
     indexed over `userId` + `sessionId` (filters) and `userMessages` +
     `modelMessages` (`$smart` fuzzy text); the raw `messages` array rides along unindexed. `saveChat`
     overwrites the **whole** array (no delta merge) — `useChat` sends the full conversation. Other
@@ -135,8 +136,9 @@ vegetarian." Saving stays explicit.
 <Accordion title="createAgentMemory options">
   - `createAgentMemory({ redis?, prefix?, indexName?, topK?, minScore?, recallToolName?, saveToolName?, enableTelemetry? })`
   - `memory.tools({ userId })`: the same tools as `createMemoryTools`.
-  - `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options, such
-    as `({ runtimeContext }) => runtimeContext.userId` on a shared agent. `query` defaults to the text of the
+  - `memory.prepareStep({ userId, query?, onError? })`: `userId` can be a function of the step options. On
+    a shared agent, type the runtime context:
+    `memory.prepareStep<{ userId: string }>({ userId: ({ runtimeContext }) => runtimeContext.userId })`. `query` defaults to the text of the
     last user message. A failed recall goes to `onError` (default `console.warn`).
   - `memory.instructions`: guidance on when to use the tools, with your tool names.
   - `memory.store`: the underlying `AgentMemory`, for `add` / `list` / `get` / `forget`.
@@ -345,7 +347,8 @@ and documents are unchanged, so there is no data to migrate: only the search ind
 
 Dropping an index keeps its documents. The next read creates the new index, which indexes and
 embeds the existing memories again; on a large store, recall can miss some of them until that
-finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+finishes. A client that hit the error retries on its next read, so nothing needs a restart. A brand-new
+index can take up to about a minute before newly written memories and chats are searchable.
 
 Drop old indexes once every deployment runs the new version: an instance still on the old version
 recreates its index on its next read, which on the Free plan takes the only slot again. Until they
