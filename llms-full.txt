@@ -1644,6 +1644,19 @@ Source: https://upstash.com/docs/api-reference/qstash/get-qstash-stats
 Retrieves detailed usage statistics for the QStash account including
 daily requests, billing, bandwidth, and workflow metrics over time.
 
+# Get the Next QStash Token
+Source: https://upstash.com/docs/api-reference/qstash/get-the-next-qstash-token
+
+/devops/developer-api/openapi.yaml post /qstash/next-token/{id}
+Returns the next token and next read-only token of the QStash user account,
+creating them if they do not exist yet. Both the current and the next tokens
+are accepted, so you can update your applications with the next token
+without downtime, then call [Roll QStash Token](/api-reference/qstash/roll-qstash-token).
+
+Calling this endpoint again returns the same pair until the token is rolled.
+For a QStash account created through the Vercel Marketplace, the next token is
+also written to the Vercel project's `QSTASH_TOKEN`; redeploy the project before rolling.
+
 # List QStash Users
 Source: https://upstash.com/docs/api-reference/qstash/list-qstash-users
 
@@ -1660,9 +1673,26 @@ Moves a QStash instance to a different team.
 Source: https://upstash.com/docs/api-reference/qstash/reset-qstash-token
 
 /devops/developer-api/openapi.yaml post /qstash/rotate-token/{id}
-Resets the authentication credentials for the QStash user account.
-This invalidates the old password and token, and generates new ones.
-Returns the updated user information with new credentials.
+Immediately replaces the token and read-only token of the QStash user account.
+The old tokens stop working right away, and any next token from
+[Get the Next QStash Token](/api-reference/qstash/get-the-next-qstash-token) is discarded.
+Returns the updated user information with the new tokens.
+
+To switch tokens without downtime, use
+[Get the Next QStash Token](/api-reference/qstash/get-the-next-qstash-token) and
+[Roll QStash Token](/api-reference/qstash/roll-qstash-token) instead.
+
+# Roll QStash Token
+Source: https://upstash.com/docs/api-reference/qstash/roll-qstash-token
+
+/devops/developer-api/openapi.yaml post /qstash/roll-token/{id}
+Makes the next token pair from [Get the Next QStash Token](/api-reference/qstash/get-the-next-qstash-token)
+the current one. The old token and read-only token stop working.
+The next call to Get the Next QStash Token creates a new pair.
+
+`next_token_hash` must match the next token (or next read-only token) you deployed.
+If it does not, the request is rejected with `409`, so a repeated or stale call
+cannot retire the token you just moved to.
 
 # Set QStash Plan
 Source: https://upstash.com/docs/api-reference/qstash/set-qstash-plan
@@ -25504,17 +25534,83 @@ Source: https://upstash.com/docs/qstash/howto/reset-token
 
 Your token is used to interact with the QStash API. You need it to publish
 messages as well as create, read, update or delete other resources, such as
-URL Groups and endpoints.
+URL Groups and endpoints. QStash and [Upstash Workflow](/docs/workflow/howto/reset-token)
+share the same token.
 
-Resetting your token will invalidate your current token and all future requests
-with the old token will be rejected.
+You can switch to a new token without downtime. Every QStash region has a
+current token and a next token, and both are accepted. You move your
+applications to the next token first, then rotate, and only then does the old
+token stop working.
 
-To reset your token, simply click on the "Reset token" button at the bottom in
-the [QStash UI](https://console.upstash.com/qstash) and confirm the dialog.
+## Reset your token in the console
 
-![]()
+<Steps>
+  <Step title="Open the Reset Token dialog">
+    Open your region in the [QStash Console](https://console.upstash.com/qstash),
+    go to the **Settings** tab and click **Reset...** on the **Reset Token** card.
 
-Afterwards you should immediately update your token in all your applications.
+      <img alt="Reset Token card in the QStash settings" />
+  </Step>
+  <Step title="Update your applications">
+    The dialog shows your next token. Copy it and replace `QSTASH_TOKEN` in all
+    your applications and environments. Check **Read-only token** to get the
+    next [read-only token](/docs/qstash/howto/readonly-token) instead.
+
+    Your current token keeps working while you do this, so you can deploy at
+    your own pace. You can close the dialog and come back later: the next token
+    stays the same until you rotate.
+
+      <img alt="Reset Token dialog showing the next token" />
+  </Step>
+  <Step title="Rotate tokens">
+    Once every application uses the new token, open the dialog again and click
+    **Rotate Tokens**. The old token and old read-only token stop working, and
+    the new ones keep working.
+  </Step>
+</Steps>
+
+<Warning>
+Click **Rotate Tokens** only after all your applications use the new token.
+Requests that still use the old token are rejected after the rotation.
+</Warning>
+
+<Note>
+If you use QStash through the Vercel Marketplace, the next token is written to
+your Vercel project's `QSTASH_TOKEN` when you open the dialog. Vercel does not
+redeploy on its own, so redeploy your project before you rotate.
+</Note>
+
+## Reset your token with the Developer API
+
+The same flow is available in the [Developer API](/docs/devops/developer-api/introduction):
+
+1. Call [`POST /v2/qstash/next-token/{id}`](/docs/api-reference/qstash/get-the-next-qstash-token)
+   to get the next token and read-only token. Calling it again returns the same
+   pair until you roll.
+2. Update your applications with the next token.
+3. Call [`POST /v2/qstash/roll-token/{id}`](/docs/api-reference/qstash/roll-qstash-token)
+   with `next_token_hash`, the hex SHA-256 hash of the next token (or next
+   read-only token) you deployed. The next pair becomes current and the old
+   pair stops working. If the hash does not match the current next token, the
+   request is rejected with `409`, so a repeated or stale call cannot retire
+   the token you just moved to.
+
+```bash
+NEXT_TOKEN_HASH=$(printf '%s' "$NEXT_QSTASH_TOKEN" | shasum -a 256 | cut -d' ' -f1)
+
+curl -X POST "https://api.upstash.com/v2/qstash/roll-token/$QSTASH_ID" \
+  -u "$UPSTASH_EMAIL:$UPSTASH_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"next_token_hash\": \"$NEXT_TOKEN_HASH\"}"
+```
+
+## Reset your token immediately
+
+If your token has leaked, you may want to invalidate it right away instead of
+moving your applications over first. [`POST /v2/qstash/rotate-token/{id}`](/docs/api-reference/qstash/reset-qstash-token)
+replaces the current token and read-only token at once and discards the next
+token. All requests with the old tokens are rejected immediately, so update
+your applications right after.
 
 # Run a Delayed Message Now
 Source: https://upstash.com/docs/qstash/howto/retry-now
@@ -127327,6 +127423,19 @@ When `body` is redacted, the step outputs in the dashboard and API will show `RE
 
 If a workflow run fails and moves to the DLQ, the redacted fields remain redacted in the DLQ.
 However, when you retry, resume or restart a workflow run from DLQ, Workflow delivers the original values to your endpoint.
+
+# Reset your QStash Token
+Source: https://upstash.com/docs/workflow/howto/reset-token
+
+Upstash Workflow uses your QStash token, so resetting the QStash token also
+resets the token your workflows use.
+
+You can switch to a new token without downtime: the console gives you a next
+token that already works, you update `QSTASH_TOKEN` in your applications, and
+then you rotate so the old token stops working.
+
+See [Reset Token](/docs/qstash/howto/reset-token) in the QStash docs for the
+step-by-step guide, including the Developer API endpoints.
 
 # Run a Step Now
 Source: https://upstash.com/docs/workflow/howto/retry-now

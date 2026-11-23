@@ -1654,9 +1654,14 @@ paths:
     post:
       summary: Reset QStash Token
       description: |
-        Resets the authentication credentials for the QStash user account.
-        This invalidates the old password and token, and generates new ones.
-        Returns the updated user information with new credentials.
+        Immediately replaces the token and read-only token of the QStash user account.
+        The old tokens stop working right away, and any next token from
+        [Get the Next QStash Token](/api-reference/qstash/get-the-next-qstash-token) is discarded.
+        Returns the updated user information with the new tokens.
+
+        To switch tokens without downtime, use
+        [Get the Next QStash Token](/api-reference/qstash/get-the-next-qstash-token) and
+        [Roll QStash Token](/api-reference/qstash/roll-qstash-token) instead.
       operationId: resetQStashToken
       tags:
         - qstash
@@ -1674,6 +1679,120 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/QStashUser'
+      security:
+        - basicAuth: []
+  /qstash/next-token/{id}:
+    post:
+      summary: Get the Next QStash Token
+      description: |
+        Returns the next token and next read-only token of the QStash user account,
+        creating them if they do not exist yet. Both the current and the next tokens
+        are accepted, so you can update your applications with the next token
+        without downtime, then call [Roll QStash Token](/api-reference/qstash/roll-qstash-token).
+
+        Calling this endpoint again returns the same pair until the token is rolled.
+        For a QStash account created through the Vercel Marketplace, the next token is
+        also written to the Vercel project's `QSTASH_TOKEN`; redeploy the project before rolling.
+      operationId: getQStashNextToken
+      tags:
+        - qstash
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: QStash user ID
+      responses:
+        '200':
+          description: The next token pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QStashNextToken'
+        '400':
+          description: |
+            The request was refused: the account is in the middle of another change,
+            your team role does not allow it, or the next token could not be written to Vercel.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "You are not allowed to do this operation"
+        '404':
+          description: QStash user not found
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "QStash user not found"
+      security:
+        - basicAuth: []
+  /qstash/roll-token/{id}:
+    post:
+      summary: Roll QStash Token
+      description: |
+        Makes the next token pair from [Get the Next QStash Token](/api-reference/qstash/get-the-next-qstash-token)
+        the current one. The old token and read-only token stop working.
+        The next call to Get the Next QStash Token creates a new pair.
+
+        `next_token_hash` must match the next token (or next read-only token) you deployed.
+        If it does not, the request is rejected with `409`, so a repeated or stale call
+        cannot retire the token you just moved to.
+      operationId: rollQStashToken
+      tags:
+        - qstash
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: QStash user ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - next_token_hash
+              properties:
+                next_token_hash:
+                  type: string
+                  description: Hex-encoded SHA-256 hash of the next token or the next read-only token
+                  example: 3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7
+      responses:
+        '200':
+          description: Token rolled, returns updated user information with the new tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QStashUser'
+        '400':
+          description: |
+            The roll was refused: `next_token_hash` is missing, there is no next token to roll to
+            (call Get the Next QStash Token first), the account is in the middle of another change,
+            or your team role does not allow it.
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "QStash user has no next token, get it from /v2/qstash/next-token before rolling"
+        '404':
+          description: QStash user not found
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "QStash user not found"
+        '409':
+          description: "`next_token_hash` does not match the current next token. Get the next token again; do not retry with the same hash."
+          content:
+            application/json:
+              schema:
+                type: string
+                example: "Your next QStash token has changed since it was shown, so your token was not rolled. Get the next token again before rolling."
       security:
         - basicAuth: []
   /qstash/set-plan/{id}:
@@ -3559,6 +3678,22 @@ components:
           type: integer
           description: Total reranking operations count across all indexes
           example: 0
+    QStashNextToken:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the QStash user account
+          example: 99a4c327-31f0-490f-a594-043ade84085a
+        next_token:
+          type: string
+          description: The next token. It is accepted alongside the current token until the token is rolled.
+          example: ZXhhbXBsZUB1cHN0YXNoLmNvbTpuZXh0
+        next_read_only_token:
+          type: string
+          description: The next read-only token
+          example: ZXhhbXBsZUB1cHN0YXNoLmNvbTpuZXh0cm8=
     QStashUser:
       type: object
       properties:
@@ -3579,6 +3714,10 @@ components:
           type: string
           description: Read-only authentication token for QStash operations
           example: ZXhhbXBsZUB1cHN0YXNoLmNvbTpuYWJlcg==
+        has_next_token:
+          type: boolean
+          description: Whether a next token pair has been created and not rolled yet. See [Get the Next QStash Token](/api-reference/qstash/get-the-next-qstash-token).
+          example: false
         active:
           type: boolean
           description: Whether the QStash account is active
