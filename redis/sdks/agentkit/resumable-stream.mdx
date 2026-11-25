@@ -12,24 +12,25 @@ answer where it is, instead of losing it or starting a new generation.
 
 Its built-in providers use the `redis` and `ioredis` clients, which hold a TCP connection open. That
 does not fit serverless and edge functions, where every invocation is short-lived and some
-runtimes cannot open TCP sockets at all. `@upstash/agentkit-resumable-stream` is a provider for
-`resumable-stream` on [`@upstash/redis`](/redis/sdks/ts/overview), which talks to Redis over HTTP,
-so it runs anywhere `fetch` does. It also adds a stop signal that works across instances, since
-the request that stops a generation rarely reaches the instance that runs it.
+runtimes cannot open TCP sockets at all. `@upstash/agentkit-resumable-stream` is a publisher and
+subscriber for `resumable-stream` on [`@upstash/redis`](/redis/sdks/ts/overview), which talks to
+Redis over HTTP, so it runs anywhere `fetch` does. It also adds a stop signal that works across
+instances, since the request that stops a generation rarely reaches the instance that runs it.
 
 | Import | Feature |
 | --- | --- |
-| `createResumableStreamContext` | `resumable-stream`'s context with the Upstash publisher and subscriber. |
-| `createUpstashPublisher`, `createUpstashSubscriber` | The `Publisher` and `Subscriber` for calling `resumable-stream/generic` yourself. |
+| `createUpstashPublisher`, `createUpstashSubscriber` | The `Publisher` and `Subscriber` you pass to `resumable-stream/generic`'s `createResumableStreamContext`. |
 | `requestStop`, `createStopSignal` | Stop a generation from any instance, through an `AbortSignal` the model call listens to. |
 
 ## Install
 
 ```bash
-npm install @upstash/agentkit-resumable-stream resumable-stream
+npm install @upstash/agentkit-resumable-stream resumable-stream @upstash/redis
 ```
 
-`resumable-stream` 2.2.10 or later is a peer dependency.
+`resumable-stream` 2.2.10 or later is a peer dependency; you import its context from
+`resumable-stream/generic`. `@upstash/redis` is only needed for your own code, such as the chat
+store below.
 
 <Note>
   AgentKit reads `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` from the environment by default.
@@ -39,19 +40,60 @@ npm install @upstash/agentkit-resumable-stream resumable-stream
 ## How to resume AI SDK streams in Next.js
 
 This is the AI SDK's [Chatbot Resume Streams](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams)
-flow on the App Router, with three routes: one that starts a generation, one that resumes it, and
-one that stops it. `readChat` and `saveChat` stand for your own chat storage.
+flow on the App Router, laid out like the
+[example app](https://github.com/upstash/agentkit/tree/main/examples/resumable-stream-demo):
+
+| File | What it does |
+| --- | --- |
+| `lib/chat-store.ts` | Stores each chat's messages and `activeStreamId`. |
+| `app/api/chat/route.ts` | `POST`: generates the answer into a resumable stream. |
+| `app/api/chat/[id]/stream/route.ts` | `GET`: resumes the chat's active stream. |
+| `app/api/chat/[id]/stop/route.ts` | `POST`: stops the chat's active stream, from any instance. |
+
+### Store the chat
+
+The resume and stop routes need to know which stream belongs to a chat. Store its id as
+`activeStreamId` on the chat record, next to the messages, as the AI SDK docs do. This store keeps
+one Redis hash per chat:
+
+```ts lib/chat-store.ts
+import { Redis } from "@upstash/redis";
+import type { UIMessage } from "ai";
+
+const key = (id: string) => `chat:${id}`;
+const redis = Redis.fromEnv();
+
+export async function readChat(
+  id: string,
+): Promise<{ messages: UIMessage[]; activeStreamId: string | null }> {
+  const chat = await redis.hgetall<{ messages?: UIMessage[]; activeStreamId?: string }>(key(id));
+  return { messages: chat?.messages ?? [], activeStreamId: chat?.activeStreamId ?? null };
+}
+
+/** Saves the transcript and clears `activeStreamId`. */
+export async function saveMessages(id: string, messages: UIMessage[]): Promise<void> {
+  await redis.pipeline().hset(key(id), { messages }).hdel(key(id), "activeStreamId").exec();
+}
+
+export async function setActiveStreamId(id: string, streamId: string): Promise<void> {
+  await redis.hset(key(id), { activeStreamId: streamId });
+}
+```
+
+Any store works, as long as it is shared: the resume and stop routes usually run on a different
+instance than the one that started the stream, so `activeStreamId` cannot live in memory.
 
 On the client, turn resuming on in `useChat`:
 
 ```tsx
-const { messages, sendMessage } = useChat({ id, resume: true });
+const { messages, sendMessage, status } = useChat({ id, messages: initialMessages, resume: true });
 ```
 
 ### Start the stream
 
 The `POST` route generates the answer and hands a copy of its SSE stream to `resumable-stream`
-through `consumeSseStream`. It also creates a stop signal for the stream and passes it to
+through `consumeSseStream`. The context comes from `resumable-stream/generic`, with the Upstash
+publisher and subscriber. The route also creates a stop signal for the stream and passes it to
 `streamText` as `abortSignal`.
 
 ```ts app/api/chat/route.ts
@@ -61,15 +103,25 @@ import {
   generateId,
   streamText,
   toUIMessageStream,
+  type UIMessage,
 } from "ai";
 import { after } from "next/server";
-import { createResumableStreamContext, createStopSignal } from "@upstash/agentkit-resumable-stream";
+import { createResumableStreamContext } from "resumable-stream/generic";
+import {
+  createStopSignal,
+  createUpstashPublisher,
+  createUpstashSubscriber,
+} from "@upstash/agentkit-resumable-stream";
+import { readChat, saveMessages, setActiveStreamId } from "@/lib/chat-store";
 
 export async function POST(req: Request) {
-  const { id, message } = await req.json();
+  const { id, message }: { id: string; message: UIMessage } = await req.json();
   const messages = [...(await readChat(id)).messages, message];
+  await saveMessages(id, messages); // also clears the previous activeStreamId
+
   const streamId = generateId();
-  const stop = createStopSignal(streamId); // aborts when the stop route is called, on any instance
+  // Aborts the generation once the stop route is called for this stream, on any instance.
+  const stop = createStopSignal(streamId);
 
   const result = streamText({
     model: "openai/gpt-5.4-mini",
@@ -82,17 +134,20 @@ export async function POST(req: Request) {
       stream: result.stream,
       originalMessages: messages,
       generateMessageId: generateId,
+      // Runs after a stop too (`isAborted`), so the partial answer is saved.
       onEnd: async ({ messages }) => {
         stop.dispose();
-        await saveChat({ id, messages, activeStreamId: null });
+        await saveMessages(id, messages);
       },
     }),
     async consumeSseStream({ stream }) {
-      await createResumableStreamContext({ waitUntil: after }).createNewResumableStream(
-        streamId,
-        () => stream,
-      );
-      await saveChat({ id, activeStreamId: streamId });
+      const streamContext = createResumableStreamContext({
+        waitUntil: after,
+        publisher: createUpstashPublisher(),
+        subscriber: createUpstashSubscriber(),
+      });
+      await streamContext.createNewResumableStream(streamId, () => stream);
+      await setActiveStreamId(id, streamId);
     },
   });
 }
@@ -109,15 +164,20 @@ the chat's active stream and resumes it, or answers `204` when there is nothing 
 ```ts app/api/chat/[id]/stream/route.ts
 import { UI_MESSAGE_STREAM_HEADERS } from "ai";
 import { after } from "next/server";
-import { createResumableStreamContext } from "@upstash/agentkit-resumable-stream";
+import { createResumableStreamContext } from "resumable-stream/generic";
+import { createUpstashPublisher, createUpstashSubscriber } from "@upstash/agentkit-resumable-stream";
+import { readChat } from "@/lib/chat-store";
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const { activeStreamId } = await readChat((await params).id);
   if (!activeStreamId) return new Response(null, { status: 204 });
 
-  const stream = await createResumableStreamContext({ waitUntil: after }).resumeExistingStream(
-    activeStreamId,
-  );
+  const streamContext = createResumableStreamContext({
+    waitUntil: after,
+    publisher: createUpstashPublisher(),
+    subscriber: createUpstashSubscriber(),
+  });
+  const stream = await streamContext.resumeExistingStream(activeStreamId);
   if (!stream) return new Response(null, { status: 204 }); // finished or expired
 
   return new Response(stream, { headers: UI_MESSAGE_STREAM_HEADERS });
@@ -126,72 +186,52 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
 
 ### Stop the stream
 
-Aborting the client's request does not stop the generation, which keeps running for resumed
-readers. A stop button calls a route instead, and `requestStop` sets a flag in Redis that the
-producer's `createStopSignal` picks up on whichever instance it runs.
+`useChat`'s own `stop()` only drops the current tab's connection; with resumable streams the
+generation keeps running for resumed readers. A stop button calls a route instead, and
+`requestStop` sets a flag in Redis that the producer's `createStopSignal` picks up on whichever
+instance it runs.
 
 ```ts app/api/chat/[id]/stop/route.ts
 import { requestStop } from "@upstash/agentkit-resumable-stream";
+import { readChat } from "@/lib/chat-store";
 
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const { activeStreamId } = await readChat((await params).id);
   if (activeStreamId) await requestStop(activeStreamId);
-  return Response.json({ success: true });
+  return new Response(null, { status: 204 });
 }
 ```
 
+```tsx
+<button type="button" onClick={() => fetch(`/api/chat/${id}/stop`, { method: "POST" })}>
+  Stop
+</button>
+```
+
 The stopped `streamText` ends its stream, so `onEnd` still runs (with `isAborted: true`), saves the
-partial answer and clears `activeStreamId`, and resumed readers see the stream finish.
+partial answer and clears `activeStreamId`, and every reader sees the stream finish.
 
 `createStopSignal(streamId, { redis?, pollIntervalMs? })` returns `{ signal, dispose }`. It checks
 the flag once right away and then every `pollIntervalMs` (1000 by default) until the flag is set or
 `dispose()` is called, so always call `dispose()` when the generation ends.
 `requestStop(streamId, redis?)` writes the flag, which expires after an hour.
 
-## Where to keep `activeStreamId`
-
-The resume route needs to know which stream belongs to a chat, so store `activeStreamId` on the
-chat record, next to its messages, as the AI SDK docs do:
-
-- Set it in `consumeSseStream`, once the resumable stream exists.
-- Clear it in `onEnd`, together with saving the final messages.
-
-The record can live wherever you keep chats, including Upstash Redis. Keep it next to the
-messages rather than in memory: the resume and stop routes usually run on a different instance
-than the one that started the stream.
-
-## Using the publisher and subscriber directly
-
-`createResumableStreamContext(options)` takes every option of `resumable-stream/generic`'s
-`createResumableStreamContext` (`waitUntil`, `keyPrefix`, `doneWatchdogIntervalMs`) plus an optional
-`redis`, and fills in `publisher` and `subscriber`. Pass your own `publisher` or `subscriber` to
-replace them, for example to change the size at which messages are split:
-
-```ts
-import { Redis } from "@upstash/redis";
-import {
-  createResumableStreamContext,
-  createUpstashPublisher,
-} from "@upstash/agentkit-resumable-stream";
-
-const redis = Redis.fromEnv();
-const context = createResumableStreamContext({
-  waitUntil: after,
-  redis,
-  publisher: createUpstashPublisher(redis, { maxMessageBytes: 128 * 1024 }),
-});
-```
+## The publisher and subscriber
 
 - `createUpstashPublisher(redis?, { maxMessageBytes? })` returns a `resumable-stream` `Publisher`.
   `maxMessageBytes` defaults to 256 KiB.
 - `createUpstashSubscriber(redis?)` returns a `resumable-stream` `Subscriber`.
+
+Both default to `Redis.fromEnv()`. Pass them as `publisher` and `subscriber` to
+`createResumableStreamContext` from `resumable-stream/generic`, alongside its other options
+(`waitUntil`, `keyPrefix`, `doneWatchdogIntervalMs`).
 
 Always use the two together. Upstash delivers SUBSCRIBE messages as Server-Sent Events, which
 `@upstash/redis` splits on newlines and JSON-parses, while `resumable-stream`'s chunks are full of
 newlines. The publisher wraps every message in a JSON envelope, `{"d":"<text>"}`, and the subscriber
 unwraps it, so a message arrives exactly as it was sent.
 
-The publisher also handles two problems of running `resumable-stream` over HTTP:
+The publisher also handles the problems of running `resumable-stream` over HTTP:
 
 - **Large replays are split.** On resume, `resumable-stream` publishes everything generated so far
   as one message, which can exceed the request size your plan allows
@@ -202,9 +242,12 @@ The publisher also handles two problems of running `resumable-stream` over HTTP:
   which would cost one round trip per chunk
   ([vercel/resumable-stream#52](https://github.com/vercel/resumable-stream/issues/52); an upstream
   fix, [vercel/resumable-stream#57](https://github.com/vercel/resumable-stream/pull/57), is pending).
-  Publishes are queued per channel and resolve at once; the queue sends them in order,
-  one pipeline request at a time, and the final DONE message waits until its channel is flushed. If
-  a send fails, the error is logged and the channel's later publishes reject with it.
+  Publishes are queued per channel and resolve at once; the queue sends them in order, one pipeline
+  request at a time, and the final DONE message waits until its channel is flushed.
+- **Publishes never reject.** `resumable-stream` awaits them inside the producer's read loop, so a
+  rejection would freeze the original reader's stream as well. A failed send is logged once and the
+  rest of that channel's messages are dropped: that resumed reader is cut off and closed by
+  `resumable-stream`'s DONE watchdog, while the producer and other readers carry on.
 
 ## Cost in commands
 
@@ -236,4 +279,6 @@ one for each resumed reader.
 ## Example
 
 The [resumable stream demo](https://github.com/upstash/agentkit/tree/main/examples/resumable-stream-demo)
-is a Next.js chat app built on the routes above.
+is a Next.js chat with the files above. It stores chats in Upstash Redis and falls back to a scripted
+model without an OpenAI key, so you can reload mid-answer, follow the same answer in a second tab,
+or stop it from another tab or server instance.
