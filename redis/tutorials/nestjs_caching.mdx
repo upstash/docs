@@ -47,7 +47,10 @@ below. Add the URL to a `.env` file:
 
 ```shell .env
 REDIS_URL="rediss://default:<YOUR_PASSWORD>@<YOUR_ENDPOINT>:6379"
+ADMIN_TOKEN="<A_LONG_RANDOM_STRING>"
 ```
+
+`ADMIN_TOKEN` stands in for your app's real auth on the route that changes products.
 
 ## Project Setup
 
@@ -120,19 +123,28 @@ part of your request path when you set timeouts and health checks.
 
 `CacheInterceptor` caches the response of a route handler. `@CacheKey()` sets
 the Redis key (by default the key is the request URL, including the query
-string) and `@CacheTTL()` overrides the default TTL for that route.
+string, so random query strings would each create a new entry) and `@CacheTTL()`
+overrides the default TTL for that route.
 
 ```ts src/products/products.controller.ts
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Patch,
+  UnauthorizedException,
   UseInterceptors,
 } from '@nestjs/common';
 import { CacheInterceptor, CacheKey, CacheTTL } from '@nestjs/cache-manager';
 import { ProductsService, type Product } from './products.service.js';
+
+// Only cache ids that can exist, so random ids can't fill Redis
+function checkId(id: string) {
+  if (!/^\d+$/.test(id)) throw new BadRequestException('Invalid id');
+}
 
 @Controller('products')
 export class ProductsController {
@@ -148,11 +160,22 @@ export class ProductsController {
 
   @Get(':id')
   findOne(@Param('id') id: string) {
+    checkId(id);
     return this.products.findOne(id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() changes: Partial<Product>) {
+  update(
+    @Param('id') id: string,
+    @Body() changes: Partial<Product>,
+    @Headers('authorization') authorization?: string,
+  ) {
+    // Stand-in for your app's real auth: only admins may change products
+    const token = process.env.ADMIN_TOKEN;
+    if (!token || authorization !== `Bearer ${token}`) {
+      throw new UnauthorizedException();
+    }
+    checkId(id);
     return this.products.update(id, changes);
   }
 }
@@ -161,7 +184,8 @@ export class ProductsController {
 <Warning>
   `CacheInterceptor` only caches `GET` requests, and its key does not include
   the user. Do not put it on routes whose response depends on who is logged in,
-  unless you build a per-user key with `@CacheKey()` or a custom `trackBy()`.
+  unless you include the user in the key by overriding `trackBy()` in a subclass of `CacheInterceptor`.
+  `@CacheKey()` is a fixed string, so it can't do that.
 </Warning>
 
 You can also apply the interceptor to a whole controller with
@@ -252,8 +276,8 @@ Build the app and start two instances on different ports. Node.js loads the
 
 ```shell
 npm run build
-PORT=3001 node --env-file=.env dist/main &
-PORT=3002 node --env-file=.env dist/main &
+PORT=3001 node --env-file=.env dist/main.js &
+PORT=3002 node --env-file=.env dist/main.js &
 ```
 
 Request the same product from both. The first request takes about a second
@@ -285,6 +309,7 @@ cache and loads the product again:
 
 ```shell
 curl -X PATCH localhost:3001/products/42 \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"price":99}'
 
@@ -300,7 +325,7 @@ instance is served from the cache on the other, and after the 10 second
 
 Nothing changes for containers: pass `REDIS_URL` as an environment variable
 (for example with `docker run -e REDIS_URL=...` or your platform's secrets) and
-start the app with `node dist/main`. Use a Node.js 22 base image such as
+start the app with `node dist/main.js`. Use a Node.js 22 base image such as
 `node:22-slim` to meet the `@keyv/redis` Node.js requirement. Every replica
 connects to the same database, so scaling out does not start with a cold cache.
 

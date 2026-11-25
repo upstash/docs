@@ -38,9 +38,11 @@ variables wherever your server runs:
 ```shell .env
 UPSTASH_REDIS_REST_URL=<YOUR_URL>
 UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+CACHE_ADMIN_TOKEN=<A_LONG_RANDOM_STRING>
 ```
 
-The `upstash` driver reads these two variables at runtime, so you don't have to pass them in your config.
+The `upstash` driver reads the two Upstash variables at runtime, so you don't have to pass them in your config.
+`CACHE_ADMIN_TOKEN` protects the routes that delete cache entries, shown below.
 
 <Note>
 Upstash Redis supports both protocols: the REST API over HTTP that the `upstash` driver uses, and the regular
@@ -166,6 +168,8 @@ export const getProduct = defineCachedFunction(
 ```ts server/api/products/[id].get.ts
 export default defineEventHandler((event) => {
   const id = getRouterParam(event, "id")!;
+  // Only cache ids that can exist, so random ids can't fill Redis
+  if (!/^\d+$/.test(id)) throw createError({ statusCode: 400, statusMessage: "Invalid id" });
   return getProduct(id);
 });
 ```
@@ -176,6 +180,8 @@ export default defineEventHandler((event) => {
 - `name` and `getKey` decide the key. With the options above, `getProduct("42")` is stored under
   `nitro:functions:product:42.json` in the `cache` mount, which is the Redis key `my-app:nitro:functions:product:42.json`.
   Without `getKey`, Nitro hashes the arguments, which works but makes keys hard to delete one by one.
+- The route checks the id before calling `getProduct`. Every distinct argument becomes its own Redis key, so
+  don't pass unchecked request input to a cached function.
 
 ## Cache an event handler
 
@@ -190,15 +196,17 @@ export default defineCachedEventHandler(
   },
   {
     name: "stats",
+    // One key for everyone: the response doesn't depend on the query string
+    getKey: () => "all",
     maxAge: 30,
     swr: true,
   }
 );
 ```
 
-The key is built from the request path plus a hash, for example `nitro:handlers:stats:apistats.EZiQb9m8fT.json`.
-Pass `getKey: (event) => ...` if you want to control it, and `varies: ["host"]` (or other header names) if the
-response depends on request headers.
+Without `getKey`, the key is built from the full request URL, query string included, so every new
+`?anything=...` would create another Redis entry. A fixed `getKey` avoids that. If the response depends on a
+request header, list it in `varies`, but only headers your proxy controls, since clients can send any value.
 
 ## Cache routes with route rules
 
@@ -249,9 +257,24 @@ all of them.
 
 When you control the key with `name` and `getKey`, remove it directly:
 
+Both routes below change the cache, so they call a small helper that checks the admin token. Nitro
+auto-imports it from `server/utils`:
+
+```ts server/utils/admin.ts
+import type { H3Event } from "h3";
+
+// Only callers with the admin token may change the cache
+export function requireAdmin(event: H3Event) {
+  const token = process.env.CACHE_ADMIN_TOKEN;
+  if (!token || getHeader(event, "authorization") !== `Bearer ${token}`) {
+    throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+  }
+}
+```
+
 ```ts server/api/products/[id].delete.ts
 export default defineEventHandler(async (event) => {
-  // Protect this route (auth, admin token, ...) in a real app
+  requireAdmin(event);
   const id = getRouterParam(event, "id")!;
   await useStorage("cache").removeItem(`nitro:functions:product:${id}.json`);
   return { invalidated: id };
@@ -261,8 +284,8 @@ export default defineEventHandler(async (event) => {
 For handlers and route rules the key ends with a hash, so list the keys of the group and filter them:
 
 ```ts server/api/admin/flush-leaderboard.post.ts
-export default defineEventHandler(async () => {
-  // Protect this route (auth, admin token, ...) in a real app
+export default defineEventHandler(async (event) => {
+  requireAdmin(event);
   const storage = useStorage("cache");
   const keys = await storage.getKeys("nitro:routes");
   const stale = keys.filter((key) => key.startsWith("nitro:routes:_:apileaderboard."));
@@ -308,7 +331,8 @@ Invalidate the entry through instance A, then ask instance B again. B recomputes
 shows up in `computedBy`:
 
 ```shell
-curl -X DELETE http://localhost:3001/api/products/42
+curl -X DELETE http://localhost:3001/api/products/42 \
+     -H "Authorization: Bearer $CACHE_ADMIN_TOKEN"
 # {"invalidated":"42"}
 
 curl http://localhost:3002/api/products/42
@@ -327,8 +351,8 @@ node .output/server/index.mjs
 ```
 
 and pass `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` as environment variables of the container (for
-example `docker run -e UPSTASH_REDIS_REST_URL=... -e UPSTASH_REDIS_REST_TOKEN=...`) rather than copying a `.env`
-file into the image. Every replica you start then shares the same cache.
+example `docker run --env-file .env ...`, which keeps the token out of your shell history) rather than copying the
+`.env` file into the image. Every replica you start then shares the same cache.
 
 ## When you don't need this
 

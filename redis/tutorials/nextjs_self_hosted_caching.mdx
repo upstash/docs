@@ -43,7 +43,10 @@ Create a Redis database in the [Upstash Console](https://console.upstash.com) or
 ```shell .env
 UPSTASH_REDIS_REST_URL=<YOUR_URL>
 UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+CACHE_ADMIN_TOKEN=<A_LONG_RANDOM_STRING>
 ```
+
+`CACHE_ADMIN_TOKEN` protects the route that expires the cache in Step 3.
 
 Install the client:
 
@@ -74,6 +77,8 @@ const TAGS_KEY = "next:tags";
 // Tag invalidation times in ms, synced from Redis once per request by refreshTags().
 // Fields are "stale:<tag>" and "expired:<tag>".
 let tagTimes = {};
+// True when the last refreshTags() could not reach Redis
+let tagsUnavailable = false;
 // Sets still running in this process, so a get() for the same key waits for them.
 const pendingSets = new Map();
 
@@ -88,6 +93,7 @@ const isStale = (entry) =>
 
 module.exports = {
   async get(cacheKey) {
+    if (tagsUnavailable) return undefined;
     await pendingSets.get(cacheKey);
     try {
       const entry = await redis.get(`next:cache:${cacheKey}`);
@@ -134,10 +140,20 @@ module.exports = {
   },
 
   async refreshTags() {
-    tagTimes = (await redis.hgetall(TAGS_KEY)) ?? {};
+    try {
+      tagTimes = (await redis.hgetall(TAGS_KEY)) ?? {};
+      tagsUnavailable = false;
+    } catch (error) {
+      // Without fresh tag times we can't tell if an entry was invalidated,
+      // so skip the remote cache for this request instead of failing it
+      console.error("cache refreshTags failed", error);
+      tagsUnavailable = true;
+    }
   },
 
   async getExpiration(tags) {
+    // Unknown tag state: report the entries as expired so Next.js recomputes
+    if (tagsUnavailable) return Infinity;
     return Math.max(0, ...tags.map((tag) => tagTimes[`expired:${tag}`] ?? 0));
   },
 
@@ -240,14 +256,20 @@ in the background.
 ```typescript app/api/revalidate/route.ts
 import { revalidateTag } from "next/cache";
 
-export async function POST() {
+export async function POST(request: Request) {
+  // Only callers with the admin token may expire the cache
+  const token = process.env.CACHE_ADMIN_TOKEN;
+  if (!token || request.headers.get("authorization") !== `Bearer ${token}`) {
+    return new Response("Unauthorized", { status: 401 });
+  }
   revalidateTag("posts", { expire: 0 });
   return Response.json({ revalidated: true });
 }
 ```
 
 `updateTag("posts")` in a Server Action works too and also reaches every
-instance.
+instance. Server Actions can be called by anyone who loads the page, so check
+that the user is allowed to before calling it.
 
 ## Step 4: Check it across two instances
 
@@ -272,7 +294,8 @@ npx next start -p 3002 &
 3. **Tag revalidation.** Invalidate the tag on one instance and load the other:
 
    ```shell
-   curl -X POST http://localhost:3001/api/revalidate
+   curl -X POST http://localhost:3001/api/revalidate \
+     -H "Authorization: Bearer $CACHE_ADMIN_TOKEN"
    ```
 
    http://localhost:3002 computes a new value instead of serving the old one.
@@ -294,6 +317,7 @@ const { Redis } = require("@upstash/redis");
 
 // Entries hold Buffers and Maps, so serialize them ourselves
 const redis = Redis.fromEnv({ automaticDeserialization: false });
+const TAGS_KEY = "next:isr-tags";
 
 function serialize(data) {
   return JSON.stringify(data, function (key, value) {
@@ -312,11 +336,35 @@ function deserialize(text) {
   });
 }
 
+// Tags whose entries have to be recomputed. fetch entries are matched on the
+// tags Next.js passes in, including the implicit path tags behind
+// revalidatePath(); pages and route handlers list theirs in a header.
+function entryTags(entry, ctx) {
+  if (entry.value?.kind === "FETCH") {
+    return [...(ctx?.tags ?? []), ...(ctx?.softTags ?? [])];
+  }
+  return entry.value?.headers?.["x-next-cache-tags"]?.split(",") ?? [];
+}
+
 module.exports = class CacheHandler {
-  async get(key) {
+  async get(key, ctx) {
     try {
       const stored = await redis.get(`next:isr:${key}`);
-      return stored ? deserialize(stored) : null;
+      if (!stored) return null;
+      const entry = deserialize(stored);
+
+      // A tag revalidated after this entry was written makes it a miss
+      const tags = [...new Set(entryTags(entry, ctx))].filter(Boolean);
+      if (tags.length > 0) {
+        const times = await redis.hmget(TAGS_KEY, ...tags);
+        const now = Date.now();
+        const expired = Object.values(times ?? {}).some((time) => {
+          const at = Number(time);
+          return at > entry.lastModified && at <= now;
+        });
+        if (expired) return null;
+      }
+      return entry;
     } catch (error) {
       console.error("cache get failed", error);
       return null;
@@ -324,42 +372,38 @@ module.exports = class CacheHandler {
   }
 
   async set(key, data, ctx) {
-    if (!data) return;
-    // fetch entries carry tags in ctx.tags, pages and route handlers in a header
-    const headerTags = data.headers?.["x-next-cache-tags"]?.split(",") ?? [];
-    const tags = [...new Set([...(ctx.tags ?? []), ...headerTags])].filter(Boolean);
     const expire = ctx.cacheControl?.expire;
-
     try {
-      const pipeline = redis.pipeline();
-      pipeline.set(
+      // data is null when a page becomes notFound: store that too, so the old
+      // page stops being served
+      await redis.set(
         `next:isr:${key}`,
         serialize({ value: data, lastModified: Date.now(), cacheControl: ctx.cacheControl }),
         Number.isFinite(expire) ? { ex: Math.max(1, Math.ceil(expire)) } : undefined
       );
-      for (const tag of tags) pipeline.sadd(`next:isr-tag:${tag}`, key);
-      await pipeline.exec();
     } catch (error) {
       console.error("cache set failed", error);
     }
   }
 
   async revalidateTag(tags) {
-    for (const tag of [tags].flat()) {
-      const keys = await redis.smembers(`next:isr-tag:${tag}`);
-      await redis.del(`next:isr-tag:${tag}`, ...keys.map((key) => `next:isr:${key}`));
-    }
+    const now = Date.now();
+    const updates = Object.fromEntries([tags].flat().map((tag) => [tag, now]));
+    if (Object.keys(updates).length > 0) await redis.hset(TAGS_KEY, updates);
   }
 
   resetRequestCache() {}
 };
 ```
 
-Each entry is a `next:isr:<key>` key with a TTL from its `expire`, and each tag
-is a Redis set of the keys that carry it. `revalidateTag()` and
-`revalidatePath()` delete those keys, so every instance misses and renders
-again. This handler expires tagged entries immediately for every
-`revalidateTag()` profile.
+Each entry is a `next:isr:<key>` key with a TTL from its `expire`.
+`revalidateTag()` and `revalidatePath()` write the time of the invalidation to
+the `next:isr-tags` hash, and `get()` treats an entry written before one of its
+tags was invalidated as a miss, on every instance. For `fetch` entries the tags
+come from Next.js on each read, which includes the implicit path tags behind
+`revalidatePath()`. This handler expires tagged entries immediately for every
+`revalidateTag()` profile. A page that turns into `notFound` is stored as an
+empty entry, so instances stop serving the old page.
 
 Register it next to the other handler, and set `cacheMaxMemorySize: 0` so
 instances do not serve from their own in-memory copy:
