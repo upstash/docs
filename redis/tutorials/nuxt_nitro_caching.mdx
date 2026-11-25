@@ -1,0 +1,375 @@
+---
+title: "Self-hosted caching in Nuxt and Nitro with Upstash Redis"
+sidebarTitle: "Nuxt & Nitro Caching"
+description: "Share the Nitro cache between several Nuxt or Nitro server instances by pointing the cache storage at Upstash Redis."
+---
+
+<Card title="GitHub Repository" icon="github" href="https://github.com/upstash/redis-js/tree/main/examples/nuxt-cache" horizontal>
+  You can find the project source code on GitHub.
+</Card>
+
+[Nitro](https://nitro.build) is the server engine behind Nuxt, and it can also be used on its own. Its caching
+helpers (`defineCachedFunction`, `defineCachedEventHandler`) and the `swr` and `cache` route rules all store
+their entries in a storage mount called `cache`. On the Node.js server preset that mount lives in memory
+or on the local filesystem, so every server instance has its own cache.
+
+That is fine on a single server. Once you self-host several instances behind a load balancer (Docker, Railway,
+Render, Fly.io, Kubernetes...), each instance starts with a cold cache and computes the same values again. A
+request that was cached on one instance is a cache miss on the next.
+
+Pointing the `cache` mount at Upstash Redis with the [unstorage `upstash` driver](https://unstorage.unjs.io/drivers/upstash)
+gives every instance the same cache. No change to your caching code is needed.
+
+This guide was tested with Nuxt 4.6, Nitro 2.13 (the `nitropack` package that Nuxt 4 uses), unstorage 1.17
+and `@upstash/redis` 1.41. If you only want to call Redis directly from a Nuxt server route, see
+[Nuxt with Redis](/redis/tutorials/nuxtjs_with_redis) instead.
+
+## Prerequisites
+
+- A Nuxt 4 app, or a standalone Nitro 2 app. Nuxt 4.6 needs Node.js 22.21 or later.
+- An Upstash Redis database. Create one in the [Upstash Console](https://console.upstash.com) by following
+  [our guide for creating a new database](/redis/overall/getstarted).
+
+## Database Setup
+
+Copy the REST URL and token from the **REST API** section of your database page and set them as environment
+variables wherever your server runs:
+
+```shell .env
+UPSTASH_REDIS_REST_URL=<YOUR_URL>
+UPSTASH_REDIS_REST_TOKEN=<YOUR_TOKEN>
+CACHE_ADMIN_TOKEN=<A_LONG_RANDOM_STRING>
+```
+
+The `upstash` driver reads the two Upstash variables at runtime, so you don't have to pass them in your config.
+`CACHE_ADMIN_TOKEN` protects the routes that delete cache entries, shown below.
+
+<Note>
+Upstash Redis supports both protocols: the REST API over HTTP that the `upstash` driver uses, and the regular
+Redis protocol over TCP with a `rediss://` URL (TLS is required). If you prefer a TCP connection, unstorage's
+[`redis` driver](https://unstorage.unjs.io/drivers/redis) works with that URL as well. See
+[Connect your client](/redis/howto/connect-client).
+</Note>
+
+## Install the Redis client
+
+The `upstash` driver uses `@upstash/redis` under the hood, but does not install it for you:
+
+```shell
+npm install @upstash/redis
+```
+
+## Point the cache mount at Upstash Redis
+
+### Nuxt
+
+In a Nuxt app, configure Nitro under the `nitro` key of `nuxt.config.ts`:
+
+```ts nuxt.config.ts
+export default defineNuxtConfig({
+  compatibilityDate: "2025-07-15",
+  nitro: {
+    storage: {
+      cache: {
+        driver: "upstash",
+        base: "my-app",
+        ttl: 60 * 60 * 24,
+      },
+    },
+  },
+});
+```
+
+- `cache` is the mount name Nitro's caching helpers and route rules use by default. Overriding it is
+  enough, there is nothing to change in your handlers.
+- `base` is a prefix added to every Redis key, for example `my-app:nitro:functions:product:42.json`. Use it to
+  keep several apps or environments apart in one database.
+- `ttl` (seconds) is a default expiry for every key the driver writes. Entries cached with `swr: true` (the default)
+  are written without an expiry, so without this option they stay in Redis until you delete them. See
+  [How entries expire](#how-entries-expire).
+
+<Warning>
+  Don't write `url: process.env.UPSTASH_REDIS_REST_URL` or `token: process.env.UPSTASH_REDIS_REST_TOKEN` in the
+  storage config. The storage config is evaluated at build time and copied into the server bundle, so the values
+  from your build machine would end up in `.output`. Leave them out and let the driver read the environment
+  variables when the server starts.
+</Warning>
+
+### Standalone Nitro
+
+In a Nitro app without Nuxt, the same options go at the top level of `nitro.config.ts`:
+
+```ts nitro.config.ts
+export default defineNitroConfig({
+  compatibilityDate: "2025-07-15",
+  storage: {
+    cache: {
+      driver: "upstash",
+      base: "my-app",
+      ttl: 60 * 60 * 24,
+    },
+  },
+  routeRules: {
+    "/leaderboard": { swr: 60 },
+  },
+});
+```
+
+### Development
+
+`storage` only applies to the production build. During `nuxt dev` (or `nitro dev`), Nitro mounts `cache` on the
+local filesystem (`.nuxt/cache` in Nuxt) through `devStorage`. If you want development to use Redis too,
+add a `devStorage` entry with a different `base` so dev entries don't mix with production ones:
+
+```ts nuxt.config.ts
+export default defineNuxtConfig({
+  compatibilityDate: "2025-07-15",
+  nitro: {
+    storage: {
+      cache: {
+        driver: "upstash",
+        base: "my-app",
+        ttl: 60 * 60 * 24,
+      },
+    },
+    devStorage: {
+      cache: {
+        driver: "upstash",
+        base: "my-app-dev",
+        ttl: 60 * 60 * 24,
+      },
+    },
+  },
+});
+```
+
+## Cache a function
+
+`defineCachedFunction` (also exported as `cachedFunction`) wraps any async function, such as a slow database
+query. Here the function waits two seconds to stand in for that query, and returns the process ID so you can see
+which instance computed the value:
+
+```ts server/utils/products.ts
+export const getProduct = defineCachedFunction(
+  async (id: string) => {
+    // Stand-in for a slow database query or third-party API call
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    return { id, name: `Product ${id}`, computedAt: new Date().toISOString(), computedBy: process.pid };
+  },
+  {
+    name: "product",
+    maxAge: 60,
+    swr: false,
+    getKey: (id: string) => id,
+  }
+);
+```
+
+```ts server/api/products/[id].get.ts
+export default defineEventHandler((event) => {
+  const id = getRouterParam(event, "id")!;
+  // Only cache ids that can exist, so random ids can't fill Redis
+  if (!/^\d+$/.test(id)) throw createError({ statusCode: 400, statusMessage: "Invalid id" });
+  return getProduct(id);
+});
+```
+
+- `maxAge` is how long, in seconds, an entry is fresh.
+- `swr: false` makes a request wait for a fresh value once the entry is older than `maxAge`. With `swr: true`
+  (the default) the stale value is returned right away and refreshed in the background.
+- `name` and `getKey` decide the key. With the options above, `getProduct("42")` is stored under
+  `nitro:functions:product:42.json` in the `cache` mount, which is the Redis key `my-app:nitro:functions:product:42.json`.
+  Without `getKey`, Nitro hashes the arguments, which works but makes keys hard to delete one by one.
+- The route checks the id before calling `getProduct`. Every distinct argument becomes its own Redis key, so
+  don't pass unchecked request input to a cached function.
+
+## Cache an event handler
+
+`defineCachedEventHandler` caches the whole response of a route, including its status and headers. Nitro also
+sets `cache-control`, `etag` and `last-modified` headers on the response.
+
+```ts server/api/stats.get.ts
+export default defineCachedEventHandler(
+  async () => {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    return { visitors: 1234, computedAt: new Date().toISOString(), computedBy: process.pid };
+  },
+  {
+    name: "stats",
+    // One key for everyone: the response doesn't depend on the query string
+    getKey: () => "all",
+    maxAge: 30,
+    swr: true,
+  }
+);
+```
+
+Without `getKey`, the key is built from the full request URL, query string included, so every new
+`?anything=...` would create another Redis entry. A fixed `getKey` avoids that. If the response depends on a
+request header, list it in `varies`, but only headers your proxy controls, since clients can send any value.
+
+## Cache routes with route rules
+
+Route rules cache a route without touching its code. Both forms below use the same `cache` mount:
+
+```ts nuxt.config.ts
+export default defineNuxtConfig({
+  // ...nitro.storage from above
+  routeRules: {
+    "/api/leaderboard": { swr: 60 },
+    "/api/categories": { cache: { maxAge: 300, swr: false } },
+  },
+});
+```
+
+- `swr: 60` is shorthand for `cache: { maxAge: 60, swr: true }`.
+- `cache` takes the same options as `defineCachedEventHandler`.
+
+Entries are stored under the `nitro:routes` group, for example `nitro:routes:_:apileaderboard.k8JjZP02ZC.json`.
+
+<Note>
+  The `isr` route rule is implemented by hosting platforms such as Vercel and Netlify. On the Node.js server
+  preset it doesn't cache anything, so use `swr` or `cache` when you self-host.
+</Note>
+
+## How entries expire
+
+Nitro stores each entry as JSON with the value, the time it was written (`mtime`) and an `integrity` hash of the
+cached function and its options. It decides freshness by comparing `mtime` with `maxAge`, not by Redis expiry:
+
+| Options | Redis expiry on the key |
+| --- | --- |
+| `maxAge` with `swr: false` | `maxAge` seconds. The key disappears from Redis when it goes stale. |
+| `swr: true` (the default) | None from Nitro, the driver's `ttl` applies if you set one. The stale entry stays so it can be served while a new value is computed. |
+
+Set the driver `ttl` well above the `maxAge` of your `swr: true` entries, otherwise they are removed before they
+can be served stale. Entries with `swr: false` use their own `maxAge` as the expiry and ignore the driver `ttl`.
+
+Because the `integrity` hash is computed from your code, changing a cached function or its options makes
+existing entries count as stale. During a rolling deploy, old and new instances will recompute values written by
+the other version until the old instances are gone.
+
+## Invalidate cache entries
+
+To drop an entry, remove its key from the `cache` storage with `useStorage("cache")`. The key does not include the
+driver's `base` prefix, unstorage adds that. Because the storage is Redis, removing a key on one instance applies to
+all of them.
+
+The routes that drop entries change the cache, so they call a small helper that checks the admin token. Nitro
+auto-imports it from `server/utils`:
+
+```ts server/utils/admin.ts
+import type { H3Event } from "h3";
+
+// Only callers with the admin token may change the cache
+export function requireAdmin(event: H3Event) {
+  const token = process.env.CACHE_ADMIN_TOKEN;
+  if (!token || getHeader(event, "authorization") !== `Bearer ${token}`) {
+    throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+  }
+}
+```
+
+When you control the key with `name` and `getKey`, remove it directly:
+
+```ts server/api/products/[id].delete.ts
+export default defineEventHandler(async (event) => {
+  requireAdmin(event);
+  const id = getRouterParam(event, "id")!;
+  await useStorage("cache").removeItem(`nitro:functions:product:${id}.json`);
+  return { invalidated: id };
+});
+```
+
+For handlers and route rules the key ends with a hash, so list the keys of the group and filter them:
+
+```ts server/api/admin/flush-leaderboard.post.ts
+export default defineEventHandler(async (event) => {
+  requireAdmin(event);
+  const storage = useStorage("cache");
+  const keys = await storage.getKeys("nitro:routes");
+  const stale = keys.filter((key) => key.startsWith("nitro:routes:_:apileaderboard."));
+  await Promise.all(stale.map((key) => storage.removeItem(key)));
+  return { removed: stale };
+});
+```
+
+`getKeys` runs a Redis `SCAN` over every key under the prefix, so keep it for occasional admin actions rather than
+calling it on every request.
+
+## Verify across two instances
+
+Build the app and start two servers on different ports, both with the Upstash environment variables set:
+
+```shell
+npm run build
+PORT=3001 node --env-file=.env .output/server/index.mjs
+PORT=3002 node --env-file=.env .output/server/index.mjs
+```
+
+Request the same product from both. The first call computes the value on instance A and takes about two seconds,
+the second call is answered by instance B straight from Redis, with A's process ID in `computedBy`:
+
+```shell
+curl http://localhost:3001/api/products/42
+# {"id":"42","name":"Product 42","computedAt":"2026-11-18T12:41:31.196Z","computedBy":56032}
+
+curl http://localhost:3002/api/products/42
+# {"id":"42","name":"Product 42","computedAt":"2026-11-18T12:41:31.196Z","computedBy":56032}
+```
+
+Look at the keys in the Data Browser of the Upstash Console, or with the Redis CLI there:
+
+```shell
+KEYS my-app:*
+# my-app:nitro:functions:product:42.json
+TTL my-app:nitro:functions:product:42.json
+# 59
+```
+
+Invalidate the entry through instance A, then ask instance B again. B recomputes the value, and its own process ID
+shows up in `computedBy`:
+
+```shell
+curl -X DELETE http://localhost:3001/api/products/42 \
+     -H "Authorization: Bearer $CACHE_ADMIN_TOKEN"
+# {"invalidated":"42"}
+
+curl http://localhost:3002/api/products/42
+# {"id":"42","name":"Product 42","computedAt":"2026-11-18T12:41:41.263Z","computedBy":56034}
+```
+
+If you wait 60 seconds instead, the key expires in Redis because of `maxAge: 60` with `swr: false`, and the next
+request on either instance computes a new value.
+
+## Running in Docker
+
+The build output in `.output` is self-contained. In a container, run the server with:
+
+```shell
+node .output/server/index.mjs
+```
+
+and pass `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` as environment variables of the container (for
+example `docker run --env-file .env ...`, which keeps the token out of your shell history) rather than copying the
+`.env` file into the image. Every replica you start then shares the same cache.
+
+## When you don't need this
+
+- **A single instance.** The default in-memory and filesystem cache is faster than a network round trip and costs
+  nothing.
+- **Platforms with their own cache or KV.** On Vercel, Netlify or Cloudflare, Nitro's presets can use the
+  platform's own caching (for example `isr` on Vercel) or KV store. Use Upstash there only if you want the same cache
+  across platforms or regions.
+
+## Cost
+
+Each cache read and write is a Redis command:
+
+- A cache hit is one `GET`.
+- A miss or a refresh is a `GET` followed by a `SET`.
+- `removeItem` is one `UNLINK`, and `getKeys` is one `SCAN` per page of keys.
+
+Cache what is expensive to compute, such as database queries, third-party API calls and rendered responses,
+rather than every route. See [pricing](/redis/overall/pricing) for how commands are billed. For the lowest latency,
+create the database in the same region as your servers.
