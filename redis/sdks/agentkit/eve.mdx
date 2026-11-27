@@ -62,7 +62,7 @@ mount gives the model long-term memory:
 // agent/extensions/agentkit.ts
 import agentkit from "@upstash/agentkit-eve-extension";
 
-export default agentkit();
+export default agentkit({});
 ```
 
 The filename supplies the namespace, so contributions compose as `agentkit__recall_memory`,
@@ -71,7 +71,8 @@ system prompt telling the model when to save and recall.
 
 The three feature groups below are independent of each other. Memory holds facts the model decided to
 keep. Chat history is the transcript of what was said. Search is retrieval over documents you write
-into your own index. Each has its own Redis keyspace and its own search index.
+into your own index. Each has its own Redis keyspace. Memory and chat history share one search index,
+`agentkit`, so both fit on a Free-plan database; search uses an index of its own.
 
 ### How to add memory to Vercel Eve
 
@@ -451,6 +452,11 @@ Like Eve's `defineTool`, but the `execute` result is memoized in Redis.
 import { z } from "zod";
 import { defineCachedTool } from "@upstash/agentkit-eve";
 
+async function fetchWeather(city: string) {
+  const res = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=j1`);
+  return res.json();
+}
+
 export default defineCachedTool({
   description: "Get the current weather for a city.",
   inputSchema: z.object({ city: z.string() }),
@@ -654,7 +660,8 @@ tool files.
 
 Dropping an index keeps its documents. The next read creates the new index, which indexes and
 embeds the existing memories again; on a large store, recall can miss some of them until that
-finishes. A client that hit the error retries on its next read, so nothing needs a restart.
+finishes. A client that hit the error retries on its next read, so nothing needs a restart. A brand-new
+index can take up to about a minute before newly written memories and chats are searchable.
 
 Drop old indexes once every deployment runs the new version: an instance still on the old version
 recreates its index on its next read, which on the Free plan takes the only slot again. Until they
