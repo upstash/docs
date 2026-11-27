@@ -13200,8 +13200,8 @@ Set up a box once, take a [snapshot](/docs/box/overall/snapshots), and start eve
 
 Get a Box API key from the [Upstash Console](https://console.upstash.com/box).
 
-```bash title=".env"
-UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+```bash
+export UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 Create a box, install what you need, and snapshot it:
@@ -13212,8 +13212,15 @@ import { Box } from "@upstash/box"
 
 const base = await Box.create({ runtime: "python" })
 
-await base.exec.command("sudo apt-get update && sudo apt-get install -y ffmpeg")
-await base.exec.command("pip install pandas duckdb")
+const setup = [
+  "sudo apt-get update && sudo apt-get install -y ffmpeg",
+  "pip install pandas duckdb",
+]
+
+for (const command of setup) {
+  const run = await base.exec.command(command)
+  if (run.exitCode !== 0) throw new Error(`${command}\n${run.result}`)
+}
 
 const snapshot = await base.snapshot({ name: "analyst-v1" })
 await base.delete()
@@ -13226,8 +13233,15 @@ from upstash_box import Box
 
 base = Box.create(runtime="python")
 
-base.exec.command("sudo apt-get update && sudo apt-get install -y ffmpeg")
-base.exec.command("pip install pandas duckdb")
+setup = [
+    "sudo apt-get update && sudo apt-get install -y ffmpeg",
+    "pip install pandas duckdb",
+]
+
+for command in setup:
+    run = base.exec.command(command)
+    if run.exit_code != 0:
+        raise RuntimeError(f"{command}\n{run.result}")
 
 snapshot = base.snapshot(name="analyst-v1")
 base.delete()
@@ -13238,11 +13252,11 @@ print(snapshot.id)
 
 Save the printed ID:
 
-```bash title=".env"
-SNAPSHOT_ID=3f9c2a1e-7b4d-4c8e-9a51-2d6f0b8e4c17
+```bash
+export SNAPSHOT_ID=3f9c2a1e-7b4d-4c8e-9a51-2d6f0b8e4c17
 ```
 
-The snapshot does not depend on the box it came from, so the base box can be deleted.
+A failed command does not throw, so the script checks each exit code before it snapshots. The snapshot does not depend on the box it came from, so the base box can be deleted.
 
 ### Set it up by hand instead
 
@@ -13349,7 +13363,8 @@ Restore the current version, change it, and snapshot again:
 import { Box } from "@upstash/box"
 
 const base = await Box.fromSnapshot(process.env.SNAPSHOT_ID!)
-await base.exec.command("pip install matplotlib")
+const run = await base.exec.command("pip install matplotlib")
+if (run.exitCode !== 0) throw new Error(run.result)
 
 const snapshot = await base.snapshot({ name: "analyst-v2" })
 await base.delete()
@@ -13362,7 +13377,9 @@ import os
 from upstash_box import Box
 
 base = Box.from_snapshot(os.environ["SNAPSHOT_ID"])
-base.exec.command("pip install matplotlib")
+run = base.exec.command("pip install matplotlib")
+if run.exit_code != 0:
+    raise RuntimeError(run.result)
 
 snapshot = base.snapshot(name="analyst-v2")
 base.delete()
