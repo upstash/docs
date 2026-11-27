@@ -1,0 +1,212 @@
+---
+title: "Use a Snapshot as a Custom Base Image"
+sidebarTitle: "Custom Base Image"
+description: "Set up an Upstash Box once, snapshot it, and start every new box from that snapshot in code. A snapshot works like a template or a Docker image, with no Dockerfile to write."
+---
+
+Box has no Dockerfile. You set up a box once, take a [snapshot](/box/overall/snapshots), and start every new box from it in code. System packages, dependencies, repos and files are already there when the box starts.
+
+---
+
+## 1. Build the image
+
+Get a Box API key from the [Upstash Console](https://console.upstash.com/box).
+
+```bash title=".env"
+UPSTASH_BOX_API_KEY=box_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Create a box, install what you need, and snapshot it:
+
+<CodeGroup>
+```typescript build.ts
+import { Box } from "@upstash/box"
+
+const base = await Box.create({ runtime: "python" })
+
+await base.exec.command("sudo apt-get update && sudo apt-get install -y ffmpeg")
+await base.exec.command("pip install pandas duckdb")
+
+const snapshot = await base.snapshot({ name: "analyst-v1" })
+await base.delete()
+
+console.log(snapshot.id)
+```
+
+```python build.py
+from upstash_box import Box
+
+base = Box.create(runtime="python")
+
+base.exec.command("sudo apt-get update && sudo apt-get install -y ffmpeg")
+base.exec.command("pip install pandas duckdb")
+
+snapshot = base.snapshot(name="analyst-v1")
+base.delete()
+
+print(snapshot.id)
+```
+</CodeGroup>
+
+Save the printed ID:
+
+```bash title=".env"
+SNAPSHOT_ID=3f9c2a1e-7b4d-4c8e-9a51-2d6f0b8e4c17
+```
+
+The snapshot does not depend on the box it came from, so the base box can be deleted.
+
+### Set it up by hand instead
+
+The setup does not have to be code. Create a box in the console, connect [over SSH](/box/overall/shell#ssh), and prepare it like any Linux machine. You can also ask the box's [agent](/box/overall/agent) to do it. When the box looks right, snapshot it by ID:
+
+<CodeGroup>
+```typescript snapshot.ts
+import { Box } from "@upstash/box"
+
+const base = await Box.get("current-wasp-05510")
+const snapshot = await base.snapshot({ name: "analyst-v1" })
+
+console.log(snapshot.id)
+```
+
+```python snapshot.py
+from upstash_box import Box
+
+base = Box.get("current-wasp-05510")
+snapshot = base.snapshot(name="analyst-v1")
+
+print(snapshot.id)
+```
+</CodeGroup>
+
+---
+
+## 2. Start boxes from it
+
+Each job gets its own box with everything already installed.
+
+<CodeGroup>
+```typescript app.ts
+import { Box } from "@upstash/box"
+
+const snapshotId = process.env.SNAPSHOT_ID!
+
+export async function runJob(jobId: string, script: string) {
+  const box = await Box.fromSnapshot(snapshotId, { name: `job-${jobId}` })
+
+  try {
+    await box.files.write({ path: "job.py", content: script })
+    const run = await box.exec.command("python job.py")
+    return run.result
+  } finally {
+    await box.delete()
+  }
+}
+```
+
+```python app.py
+import os
+from upstash_box import Box
+
+snapshot_id = os.environ["SNAPSHOT_ID"]
+
+def run_job(job_id: str, script: str) -> str:
+    box = Box.from_snapshot(snapshot_id, name=f"job-{job_id}")
+
+    try:
+        box.files.write(path="job.py", content=script)
+        run = box.exec.command("python job.py")
+        return run.result
+    finally:
+        box.delete()
+```
+</CodeGroup>
+
+In our tests a restore took between 1 and 9 seconds. `EphemeralBox.fromSnapshot()` works the same way for short jobs that should clean up after themselves.
+
+---
+
+## 3. Pass settings on restore
+
+A snapshot holds the disk, the env vars, and the runtime, agent model and browser setting. Everything else is set per box, so pass it to `fromSnapshot()`:
+
+<CodeGroup>
+```typescript app.ts
+const box = await Box.fromSnapshot(snapshotId, {
+  size: "medium",
+  initCommand: "nohup python -m http.server 8000 > server.log 2>&1 &",
+  networkPolicy: { mode: "custom", allowedDomains: ["api.github.com"] },
+})
+```
+
+```python app.py
+box = Box.from_snapshot(
+    snapshot_id,
+    size="medium",
+    init_command="nohup python -m http.server 8000 > server.log 2>&1 &",
+    network_policy={"mode": "custom", "allowed_domains": ["api.github.com"]},
+)
+```
+</CodeGroup>
+
+Running processes are not part of a snapshot. Start servers and databases with `initCommand`, which runs each time the box starts.
+
+---
+
+## 4. Update the image
+
+Restore the current version, change it, and snapshot again:
+
+<CodeGroup>
+```typescript update.ts
+import { Box } from "@upstash/box"
+
+const base = await Box.fromSnapshot(process.env.SNAPSHOT_ID!)
+await base.exec.command("pip install matplotlib")
+
+const snapshot = await base.snapshot({ name: "analyst-v2" })
+await base.delete()
+
+console.log(snapshot.id)
+```
+
+```python update.py
+import os
+from upstash_box import Box
+
+base = Box.from_snapshot(os.environ["SNAPSHOT_ID"])
+base.exec.command("pip install matplotlib")
+
+snapshot = base.snapshot(name="analyst-v2")
+base.delete()
+
+print(snapshot.id)
+```
+</CodeGroup>
+
+Point `SNAPSHOT_ID` at the new ID to roll forward, and back at the old one to roll back. Boxes that are already running keep the version they started from.
+
+---
+
+## Coming from a Dockerfile
+
+| Dockerfile | Box |
+| --- | --- |
+| `FROM` | `runtime` on the base box |
+| `RUN` | `exec.command()`, an SSH session, or an agent prompt |
+| `COPY` | `files.write()`, `files.upload()` or `git.clone()` |
+| `ENV` | `env` on the base box |
+| `WORKDIR` | `box.cd()` after restore |
+| `CMD` | `initCommand` on restore |
+| `EXPOSE` | [Preview URLs](/box/overall/preview) |
+| image tag | snapshot ID |
+
+---
+
+## Troubleshooting
+
+- **`apt-get` or `npm install -g` fails with a permission error**: a box runs as the non-root `boxuser`. Use `sudo` for system-wide installs.
+- **The server is not running in a restored box**: processes do not survive a snapshot. Pass `initCommand` on restore.
+- **The network policy is gone after restore**: it is not inherited. Pass `networkPolicy` again.
+- **The agent uses a different API key**: a key passed as `apiKey` is not stored in the snapshot. Pass `agent` again on restore.
